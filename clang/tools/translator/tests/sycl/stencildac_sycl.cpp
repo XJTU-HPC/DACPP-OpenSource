@@ -33,9 +33,14 @@ const float delta_t = 0.4f * dt_stability; // 选择一个更严格的时间步�
 
 using namespace sycl;
 
-void stencil(float* mat, float* out) 
+void stencil(float* mat, float* out,
+sycl::accessor<int, 1, sycl::access::mode::read_write> info_mat_acc,
+sycl::accessor<int, 1, sycl::access::mode::read_write> info_out_acc
+) 
 {
     out[0] = mat[1*3+1] + alpha *delta_t * (((mat[2*3+1] - 2.0f * mat[1*3+1] + mat[0*3+1]) / (dx * dx))+ ((mat[1*3+2] - 2.0f * mat[1*3+1] + mat[1*3+0]) / (dy * dy)));
+    info_mat_acc[0]=0;
+    info_out_acc[0]=0;
 }
 
 
@@ -199,6 +204,8 @@ void stencilShell(const dacpp::Tensor<float, 2> & matIn, dacpp::Tensor<float, 2>
     matIn_ops.push_back(sp2);
     matIn_tool.init(info_matIn,matIn_ops);
     matIn_tool.Reconstruct(r_matIn,matIn);
+    std::vector<int> info_partition_matIn=para_gene_tool.init_partition_data_shape(info_matIn,matIn_ops);
+    sycl::buffer<int> info_partition_matIn_buffer(info_partition_matIn.data(), sycl::range<1>(info_partition_matIn.size()));
     // 数据重组
     DataReconstructor<float> matOut_tool;
     float* r_matOut=(float*)malloc(sizeof(float)*matOut_Size);
@@ -214,6 +221,8 @@ void stencilShell(const dacpp::Tensor<float, 2> & matIn, dacpp::Tensor<float, 2>
     matOut_ops.push_back(idx2);
     matOut_tool.init(info_matOut,matOut_ops);
     matOut_tool.Reconstruct(r_matOut,matOut);
+    std::vector<int> info_partition_matOut=para_gene_tool.init_partition_data_shape(info_matOut,matOut_ops);
+    sycl::buffer<int> info_partition_matOut_buffer(info_partition_matOut.data(), sycl::range<1>(info_partition_matOut.size()));
     
     // 数据移动
     q.memcpy(d_matIn,r_matIn,matIn_Size*sizeof(float)).wait();
@@ -223,6 +232,8 @@ void stencilShell(const dacpp::Tensor<float, 2> & matIn, dacpp::Tensor<float, 2>
     sycl::range<3> global(1, 1, 1);
     //队列提交命令组
     q.submit([&](handler &h) {
+        auto info_partition_matIn_accessor = info_partition_matIn_buffer.get_access<sycl::access::mode::read_write>(h);
+        auto info_partition_matOut_accessor = info_partition_matOut_buffer.get_access<sycl::access::mode::read_write>(h);
         h.parallel_for(sycl::nd_range<3>(global * local, local),[=](sycl::nd_item<3> item) {
             const auto item_id = item.get_local_id(2);
             // 索引初始化
@@ -232,8 +243,10 @@ void stencilShell(const dacpp::Tensor<float, 2> & matIn, dacpp::Tensor<float, 2>
             const auto sp2_=(item_id+(0))%sp2.split_size;
             const auto idx2_=(item_id+(0))%idx2.split_size;
             // 嵌入计算
-			
-            stencil(d_matIn+(sp1_*SplitLength[0][0]+sp2_*SplitLength[0][1]),d_matOut+(sp1_*SplitLength[1][0]+sp2_*SplitLength[1][1]));
+            stencil(d_matIn+(sp1_*SplitLength[0][0]+sp2_*SplitLength[0][1]),d_matOut+(sp1_*SplitLength[1][0]+sp2_*SplitLength[1][1]),
+                info_partition_matIn_accessor,
+                info_partition_matOut_accessor
+            );
         });
     }).wait();
     

@@ -469,6 +469,8 @@ void dacpp::Source2Source::recursiveRewriteMain(Stmt* curStmt) {
 void dacppTranslator::Rewriter::rewriteMain() {
     for (int exprCount = 0; exprCount < dacppFile->getNumExpression(); exprCount++) {
         Expression* expr = dacppFile->getExpression(exprCount);
+        Shell* shell = expr->getShell();
+        Calc* calc = expr->getCalc();
         Expr *dacExprLHS = expr->getDacExpr()->getLHS();
         CallExpr *shellCall = getNode<CallExpr>(dacExprLHS);
         std::string str;
@@ -478,6 +480,7 @@ void dacppTranslator::Rewriter::rewriteMain() {
         clang::PrintingPolicy policy(langOpts);
         shellCall->printPretty(rso, nullptr, policy);
         std::string code = rso.str();
+        code.replace(code.find(shell->getName()), shell->getName().size(), shell->getName() + "_" + calc->getName());
         rewriter->ReplaceText(expr->getDacExpr()->getSourceRange(), code);   
     }
 }

@@ -244,6 +244,18 @@ class ParameterGeneration
         //     }
         //     return (in_op_product / out_op_product > 1);
         // }
+        std::vector<int> init_partition_data_shape(DataInfo data_info,Dac_Ops ops) {
+            std::vector<int> tmp=data_info.dimLength;
+            for(int i=0;i<ops.size;i++) {
+                tmp[ops[i].dimId]=ops[i].size;
+            }
+            std::vector<int> res;
+            for(int i=0;i<tmp.size();i++) {
+                if(tmp[i]==1) continue;
+                res.push_back(tmp[i]);
+            }
+            return res;
+        }
 };
 
 #endif

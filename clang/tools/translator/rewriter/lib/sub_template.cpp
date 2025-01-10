@@ -206,7 +206,9 @@ const char *DATA_RECON_Template = R"~~~(
     {{TYPE}}* r_{{NAME}}=({{TYPE}}*)malloc(sizeof({{TYPE}})*{{SIZE}});
     {{DATA_OPS_INIT}}
     {{NAME}}_tool.init(info_{{NAME}},{{NAME}}_ops);
-    {{NAME}}_tool.Reconstruct(r_{{NAME}},{{NAME}});)~~~";
+    {{NAME}}_tool.Reconstruct(r_{{NAME}},{{NAME}});
+	std::vector<int> info_partition_{{NAME}}=para_gene_tool.init_partition_data_shape(info_{{NAME}},{{NAME}}_ops);
+    sycl::buffer<int> info_partition_{{NAME}}_buffer(info_partition_{{NAME}}.data(), sycl::range<1>(info_partition_{{NAME}}.size()));)~~~";
 
 std::string CodeGen_DataReconstruct(std::string type,std::string name,std::string size,std::string dataOpsInit){
     return templateString(DATA_RECON_Template,
@@ -292,7 +294,7 @@ std::string CodeGen_H2DMemMov(std::string type,std::string name,std::string size
 	});
 }
 
-const char *KERNEL_EXECUTE_Template = R"~~~(
+const char *KERNEL_EXECUTE_OLD_Template = R"~~~(
     //工作项划分
     sycl::range<3> local(1, 1, {{SPLIT_SIZE}});
     sycl::range<3> global(1, 1, 1);
@@ -310,7 +312,7 @@ const char *KERNEL_EXECUTE_Template = R"~~~(
 )~~~";
 
 std::string CodeGen_KernelExecute(std::string SplitSize,std::string IndexInit,std::string CalcEmbed){
-    return templateString(KERNEL_EXECUTE_Template,
+    return templateString(KERNEL_EXECUTE_OLD_Template,
 	{
 		{"{{SPLIT_SIZE}}",    SplitSize},
 		{"{{INDEX_INIT}}",    IndexInit},
@@ -318,6 +320,43 @@ std::string CodeGen_KernelExecute(std::string SplitSize,std::string IndexInit,st
 	});
 }
 
+const char *KERNEL_EXECUTE_Template = R"~~~(
+    //工作项划分
+    sycl::range<3> local(1, 1, {{SPLIT_SIZE}});
+    sycl::range<3> global(1, 1, 1);
+    //队列提交命令组
+    q.submit([&](handler &h) {
+        // 访问器初始化
+        {{ACCESSOR_INIT}}
+        h.parallel_for(sycl::nd_range<3>(global * local, local),[=](sycl::nd_item<3> item) {
+            const auto item_id = item.get_local_id(2);
+            // 索引初始化
+			{{INDEX_INIT}}
+            // 嵌入计算
+			{{CALC_EMBED}}
+        });
+    }).wait();
+    
+)~~~";
+
+std::string CodeGen_KernelExecute(std::string SplitSize,std::string AccessorInit,std::string IndexInit,std::string CalcEmbed){
+    return templateString(KERNEL_EXECUTE_Template,
+	{
+		{"{{SPLIT_SIZE}}",    SplitSize},
+		{"{{ACCESSOR_INIT}}", AccessorInit},
+		{"{{INDEX_INIT}}",    IndexInit},
+		{"{{CALC_EMBED}}",    CalcEmbed}
+	});
+}
+
+const char *ACCESSOR_INIT_Template = R"~~~(
+        auto info_partition_{{NAME}}_accessor = info_partition_{{NAME}}_buffer.get_access<sycl::access::mode::read_write>(h);)~~~";
+std::string CodeGen_AccessorInit(std::string name) {
+	return templateString(ACCESSOR_INIT_Template,
+	{
+		{"{{NAME}}",    name}
+	});
+}
 const char *INDEX_INIT_Template = R"~~~(
             const auto {{NAME}}={{EXPRESSION}};)~~~";
 
@@ -431,9 +470,50 @@ std::string CodeGen_CalcEmbed(std::string Name,Args args){
 			DacCalcArgs+=args[i].name + "+" + IndexComb;
 		}		
 		if(i==len-1){
+			DacCalcArgs+=",";
+			for(int j=0;j<len;j++) {
+				DacCalcArgs+="info_partition_"+args[j].name.substr(2)+"_accessor";
+				if(j!=len-1) DacCalcArgs+=",";
+			}
 			DacCalcArgs+=");";
 		}
 		else{
+			DacCalcArgs+=",";
+		}
+	}
+	return templateString(CALC_EMBED_Template,
+	{
+		{"{{DAC_CALC_NAME}}",    Name},
+		{"{{DAC_CALC_ARGS}}",    DacCalcArgs}
+	});
+}
+
+std::string CodeGen_CalcEmbed2(std::string Name,Args args, std::vector<std::string> accessor_names){
+		std::string DacCalcArgs = "(";
+	int len = args.size;
+	for(int i=0;i<len;i++){
+		std::string IndexComb="(";
+		for(int j=0;j<args[i].ops.size;j++){
+			std::string opsname = args[i].ops[j].name;
+			//IndexComb+= args[i].ops[j].name + "_" + "*" + "SplitLength[" + std::to_string(i) + "][" + std::to_string(j) + "]";
+			IndexComb+= opsname + "_" + "*" + "SplitLength[" + std::to_string(i) + "][" + std::to_string(j) + "]";
+			if(j!=args[i].ops.size-1) IndexComb+="+";
+		}
+		IndexComb+=")";
+		if(IndexComb == "()")
+		{
+			DacCalcArgs+=args[i].name;
+		}
+		else{
+			DacCalcArgs+=args[i].name + "+" + IndexComb;
+		}		
+		DacCalcArgs+=",";
+	}
+	for (int z = 0; z < accessor_names.size(); z++) {
+		DacCalcArgs+="info_partition_"+accessor_names[z]+"_accessor";
+		if (z == accessor_names.size() - 1) {
+			DacCalcArgs+=");";
+		} else {
 			DacCalcArgs+=",";
 		}
 	}
@@ -1061,6 +1141,11 @@ std::string CodeGen_CalcEmbed2(std::string Name,Args args){
 			DacCalcArgs+=args[i].name + "+" + IndexComb;
 		}		
 		if(i==len-1){
+			DacCalcArgs+=",";
+			for(int j=0;j<len;j++) {
+				DacCalcArgs+="info_partition_"+args[j].name.substr(2)+"_accessor";
+				if(j!=len-1) DacCalcArgs+=",";
+			}
 			DacCalcArgs+=");";
 		}
 		else{

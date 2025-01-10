@@ -55,7 +55,10 @@ std::string CodeGen_DeviceMemAllocReduction(std::string  type,std::string name,s
 
 std::string CodeGen_H2DMemMov(std::string type,std::string name,std::string size);
 
+//aborted
 std::string CodeGen_KernelExecute(std::string SplitSize,std::string IndexInit,std::string CalcEmbed);
+
+std::string CodeGen_KernelExecute(std::string SplitSize,std::string AccessorInit,std::string IndexInit,std::string CalcEmbed);
 
 //aborted
 std::string CodeGen_IndexInit(Dac_Ops ops);
@@ -63,6 +66,8 @@ std::string CodeGen_IndexInit(Dac_Ops ops);
 std::string CodeGen_IndexInit(Dac_Ops ops,std::vector<std::string> sets,std::vector<std::string> offsets);
 
 std::string CodeGen_CalcEmbed(std::string Name,Args args);
+
+std::string CodeGen_CalcEmbed2(std::string Name,Args args, std::vector<std::string> accessor_names);
 
 std::string CodeGen_Reduction(std::string SplitSize,std::string Name,std::string Type,std::string ReductionRule);
 
@@ -121,4 +126,6 @@ std::string CodeGen_ParameterGenerate(std::string InitOPS,std::string InitDevice
 //std::string CodeGen_IndexInit2(std::string opName,std::string dim_id,std::string TENSOR_NAME);
 
 std::string CodeGen_InitParameterTool(std::string DIM_NUM);
+
+std::string CodeGen_AccessorInit(std::string name);
 #endif

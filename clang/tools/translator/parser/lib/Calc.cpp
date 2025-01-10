@@ -1,4 +1,5 @@
 #include <string>
+#include <regex>
 
 #include "clang/AST/Attr.h"
 #include "clang/AST/DeclFriend.h"
@@ -4734,7 +4735,39 @@ void dacppTranslator::Calc::setBody(Stmt* body) {
 }
 
 std::string dacppTranslator::Calc::getBody(int idx) {
-    return body[idx];
+    std::string code = body[idx];
+    std::string res = "";
+    size_t last_pos = 0;
+    for (int i = 0; i < getNumParams(); i++) {
+      std::string name = getParam(i)->getName();
+      
+      std::regex pattern(name + R"((\[[^\[\]]\]){2,})");
+      std::sregex_iterator it(code.begin(), code.end(), pattern);
+      std::sregex_iterator end;
+
+      while (it != end) {
+          std::smatch match = *it; // 获取当前匹配结果
+          std::string str = match.str();
+          res += code.substr(last_pos, match.position() - last_pos);
+          int b_count = std::count(str.begin(), str.end(), '[');
+          int pos = str.find("][");
+          int count = 1;
+          std::string r_str = "";
+          while (pos != -1) {
+            for (int k = count; k < b_count; k++) {
+              r_str += "*info_" + name + "_acc[" + std::to_string(k) + "]+";
+            }
+            str.replace(pos, 2, r_str);
+            pos = str.find("][");
+            count++;
+          }
+          res += str;
+          last_pos = match.position() + match.length();
+          ++it; // 移动到下一个匹配结果
+      }
+    }
+    res += code.substr(last_pos);
+    return res;
 }
 
 int dacppTranslator::Calc::getNumBody() {
