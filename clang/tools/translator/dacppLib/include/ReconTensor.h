@@ -208,6 +208,8 @@ namespace dacpp {
 
     template<class ImplType, int N>
     class Tensor: public TensorBase <ImplType>{
+        friend class dacpp::TensorProxy<ImplType, N>;
+        friend class dacpp::TensorProxy<ImplType, 1>;
     public:
         Tensor(){
             this->dim_ = N;
@@ -505,6 +507,7 @@ namespace dacpp {
         template <class InputIt>
         void initialize(InputIt first, InputIt last);
     public:
+        friend class dacpp::TensorProxy<ImplType, 1>;
         Tensor(){
             this->dim_ = 1;
             this->shape_.reset(new int[1]);
@@ -771,6 +774,23 @@ namespace dacpp {
             for(int i = 0; i < data.size(); i++)
                 this->data_.get()[i] = data[i];
         }
+        Tensor<ImplType, N> copy(){
+            Tensor<ImplType, N>tmp = new Tensor<ImplType, N>();
+            tmp.offset_ = 0;
+            std::vector<ImplType> dtmp;
+            this->tensor2Array(dtmp);
+            tmp.data_.reset(new ImplType[dtmp.size()]); 
+            for(int i = tmp.dim_ - 1; i >=0; i--){
+                tmp.shape_.get()[i] = this->getShape(i);
+                if(i == tmp.dim_ - 1)
+                    tmp.stride_.get()[i] = 1;
+                else
+                    tmp.stride_.get()[i] = tmp.stride_.get()[i + 1] * tmp.shape_.get()[i + 1];
+            }
+            for(int i = 0; i < dtmp.size(); i++)
+                tmp.data_.get()[i] = dtmp[i];
+            return tmp;
+        }
         template<int M>
         TensorProxy<ImplType, N>& operator =(const TensorProxy<ImplType, M>& operand);
         template<int M>
@@ -991,7 +1011,23 @@ namespace dacpp {
             for(int i = 0; i < data.size(); i++)
                 this->data_.get()[i] = data[i];
         }
-
+        Tensor<ImplType, 1> copy(){
+            Tensor<ImplType, 1>tmp = Tensor<ImplType, 1>();
+            tmp.offset_ = 0;
+            std::vector<ImplType> dtmp;
+            this->tensor2Array(dtmp);
+            tmp.data_.reset(new ImplType[dtmp.size()]); 
+            for(int i = tmp.dim_ - 1; i >=0; i--){
+                tmp.shape_.get()[i] = this->getShape(i);
+                if(i == tmp.dim_ - 1)
+                    tmp.stride_.get()[i] = 1;
+                else
+                    tmp.stride_.get()[i] = tmp.stride_.get()[i + 1] * tmp.shape_.get()[i + 1];
+            }
+            for(int i = 0; i < dtmp.size(); i++)
+                tmp.data_.get()[i] = dtmp[i];
+            return tmp;
+        }
         template<int M>
         TensorProxy& operator =(const TensorProxy<ImplType, M>& operand);
         template<int M>

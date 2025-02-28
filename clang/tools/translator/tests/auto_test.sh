@@ -1,4 +1,5 @@
 # !/usr/bin/env bash
+
 exec 2>/dev/null
 
 # Delete all temporary files
@@ -32,9 +33,9 @@ INCLUDE_DIRS=(
     "$WORK_DIR/std_lib/include/"
 )
 
-SRC_FILES=(
-    "$WORK_DIR/rewriter/lib/dacInfo.cpp"
-)
+# SRC_FILES=(
+#     "$WORK_DIR/rewriter/lib/dacInfo.cpp"
+# )
 
 echo "------------------------------------------------------------------------------------------"
 echo "DACPP to SYCL transpilation test"
@@ -100,6 +101,7 @@ for dir in ${examples[@]}; do
     if diff -y --suppress-common-lines "./tmp/$dir/$exe_file.out" "$std_res"; then
         echo "Example $dir: execution test succeeded"
     else
+        echo
         echo "Example $dir: execution test failed with some different lines listed above"
     fi
 done

@@ -151,7 +151,8 @@ public:
         rewriter->setDacppFile(dacppFile);
         // dacppTranslator::printDacppFileInfo(dacppFile);
         // rewriter->rewriteDac();
-        rewriter->rewriteDac_Soft_Buffer();
+        rewriter->rewriteDac_Usm();
+        // rewriter->rewriteDac_Buffer();
         rewriter->rewriteMain();
 
         // // this will output to screen as what you got.
