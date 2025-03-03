@@ -9,9 +9,6 @@ namespace dacpp {
 using namespace std;
 
 
-
-
-
 #include <sycl/sycl.hpp>
 #include "DataReconstructor.h"
 #include "ParameterGeneration.h"

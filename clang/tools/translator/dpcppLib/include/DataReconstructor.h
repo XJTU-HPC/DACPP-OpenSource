@@ -42,6 +42,7 @@ class DataReconstructor{
         DataInfo myDataInfo;                   // 数据信息 形状
         Dac_Ops ops;                           // 作用于数据的算子组
         std::vector<PosNumber> posNumberList;  // 数据索引与物理位置的映射   
+        
         void GetPos(std::vector<int> &pos, Dac_Ops &ops, int now) {
             if (now == this->myDataInfo.dim) {
                 GetPosNumber(pos, ops);
@@ -53,6 +54,7 @@ class DataReconstructor{
                 pos.pop_back();
             }
         }
+
         void GetPosNumber(std::vector<int> &pos, Dac_Ops &ops) {
             int dimNum = this->myDataInfo.dim;
             std::vector<Range> region;
@@ -133,8 +135,7 @@ class DataReconstructor{
             this->myDataInfo=dataInfo;
             this->ops=ops;
             std::vector<int> pos; // 存位置的中间变量
-            GetPos(pos, ops, 0);
-            
+            GetPos(pos, ops, 0);            
             std::sort(this->posNumberList.begin(),this->posNumberList.end(),[](PosNumber a,PosNumber b){return (a.number==b.number)?a.pos<b.pos:a.number<b.number;});
         }
 
