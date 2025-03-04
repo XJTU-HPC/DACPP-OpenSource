@@ -1,5 +1,11 @@
 #!/usr/bin/env bash
 
+# Check icpx availability
+if ! which icpx &> /dev/null; then
+    echo "Loading Intel oneAPI environment..."
+    source /data/qinian/share/intel/oneapi2025/setvars.sh intel64 &> /dev/null
+fi
+
 # Get the directory of this script
 SCRIPT_PATH=$(realpath "${BASH_SOURCE[0]}")
 WORK_DIR=$(dirname "$SCRIPT_PATH")

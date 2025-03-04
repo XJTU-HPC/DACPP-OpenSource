@@ -39,7 +39,7 @@ int main() {
             float x = i * dx;
             float y = j * dy;
             // 高斯分布
-            u_curr[i * NY + j] = exp(-((x - Lx/2.0f)*(x - Lx/2.0f) + (y - Ly/2.0f)*(y - Ly/2.0f)) / (2.0f * sigma * sigma));
+            u_curr[i * NY + j] = std::exp(-((x - Lx/2.0f)*(x - Lx/2.0f) + (y - Ly/2.0f)*(y - Ly/2.0f)) / (2.0f * sigma * sigma));
         }
     }
 
