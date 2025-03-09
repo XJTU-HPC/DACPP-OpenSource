@@ -60,7 +60,7 @@ void waveEqShell_waveEq(const dacpp::Matrix<double> & matCur, const dacpp::Matri
         q.emplace_back(dev);
     }
     int numDevices = q.size();
-    printf("Running on %d GPU\n", numDevices);
+    // printf("Running on %d GPU\n", numDevices);
     //声明参数生成工具
     //ParameterGeneration<int,2> para_gene_tool;
     ParameterGeneration para_gene_tool;
@@ -269,7 +269,7 @@ void waveEqShell_waveEq(const dacpp::Matrix<double> & matCur, const dacpp::Matri
     
 
     for(int numDevice = 0; numDevice < numDevices; numDevice++){
-        PrintTargetInfo(q[numDevice]);
+        // PrintTargetInfo(q[numDevice]);
         // 设备内存分配
         double *d_matCur=malloc_device<double>(matCur_Size,q[numDevice]);
         // 设备内存分配
@@ -324,10 +324,20 @@ void waveEqShell_waveEq(const dacpp::Matrix<double> & matCur, const dacpp::Matri
             }
             q[numDevice].memcpy(d_matNext,reduction_matNext, Reduction_Size*sizeof(double)).wait();
         }
-        printf("BreakTest6\n");
+        // printf("BreakTest6\n");
 
         // 归并结果返回
         q[numDevice].memcpy(r_matNext + numDevice * matNext_Size/numDevices, d_matNext + numDevice * matNext_Size/numDevices, matNext_Size*sizeof(double)/numDevices).wait();     
+        double* host_matNext = (double*)malloc(sizeof(double) * matNext_Size*sizeof(double)/numDevices);
+        q[numDevice].memcpy(host_matNext, d_matNext + numDevice * matNext_Size/numDevices, matNext_Size*sizeof(double)/numDevices).wait();
+        // 打印 d_matNext 的值
+        printf("The Device %d result is: ", numDevice);
+        for (int i = 0; i < matNext_Size/numDevices; i++) {
+            printf("%f ", host_matNext[i]);
+        }
+        printf("\n");
+        free(host_matNext);
+    
         // q[numDevice].memcpy(r_matNext, d_matNext, matNext_Size*sizeof(double)).wait();     
         // 内存释放
         sycl::free(d_matCur, q[numDevice]);
@@ -366,7 +376,7 @@ int main() {
     dacpp::Matrix<double> u_prev_tensor({NX, NY}, u_prev);
     dacpp::Matrix<double> u_next_tensor({NX, NY}, u_next);
     dacpp::Matrix<double> u_prev_middle_tensor = u_prev_tensor[{1,7}][{1,7}];
-    for(int i = 0;i < TIME_STEPS; i++) {
+    for(int i = 0;i < 3; i++) {
         dacpp::Matrix<double> u_next_middle_tensor = u_next_tensor[{1,7}][{1,7}];
         waveEqShell_waveEq(u_curr_tensor, u_prev_middle_tensor, u_next_middle_tensor);
         for (int i = 1; i <= NX-2; i++) {

@@ -219,6 +219,54 @@ class ParameterGeneration
             }
             return res;
         }
+
+        int init_Data_SplitNum(Dac_Ops ops,DataInfo data_info){
+            int result = 1;//初始化结果为1 
+            for(int i = 0;i < ops.size;i ++)
+            {
+                int dimId = ops[i].dimId;//拿到算子的维度
+                int split_num = (data_info.dimLength[dimId] - ops[i].size) / ops[i].stride + 1;//计算算子的划分数
+                // int length = split_num * ops[i].size;//划分数乘以划分的大小
+                result *= split_num;
+            }
+            return result;
+        }
+
+        int  init_Data_SplitSize(int data_SplitNum, int Total_Size){
+            return Total_Size / data_SplitNum;
+        }
+
+        std::vector<int> init_Device_Size(int numDevices,int data_Splitsize, int data_SplitNum){
+            bool flag = false;
+            if(data_SplitNum % numDevices == 0){
+                flag = true;
+            }
+            std::vector<int> res;
+            for(int i = 0; i < numDevices; i++){
+                if(i == 0 && !flag){
+                    res.push_back(( data_SplitNum / numDevices + 1));
+                }else{
+                    res.push_back((data_SplitNum / numDevices));
+                }
+            }
+            return res;
+        }
+
+        std::vector<int> init_Device_Local(int numDevices,int data_Splitsize, int data_SplitNum){
+            bool flag = false;
+            if(data_SplitNum % numDevices == 0){
+                flag = true;
+            }
+            std::vector<int> res;
+            for(int i = 0; i < numDevices; i++){
+                if(i == 0 && !flag){
+                    res.push_back(data_SplitNum / numDevices + 1);
+                }else{
+                    res.push_back(data_SplitNum / numDevices);
+                }
+            }
+            return res;
+        }
 };
 
 #endif

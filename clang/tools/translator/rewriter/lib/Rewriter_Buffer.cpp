@@ -288,6 +288,7 @@ void dacppTranslator::Rewriter::rewriteDac_Buffer() {
         std::string H2DMemMove = "";
         for(int NumShellParam = 0; NumShellParam < shell->getNumShellParams(); NumShellParam++){
             ShellParam* shellParam = shell->getShellParam(NumShellParam);
+            H2DMemMove += BUFFER_TEMPLATE::CodeGen_DeviceDataInit(shellParam->getBasicType(),shellParam->getName(),shellParam->getName()+"_Size");
             if(shellParam->getRw() == 0){
                 H2DMemMove += BUFFER_TEMPLATE::CodeGen_H2DMemMov(shellParam->getBasicType(),shellParam->getName(),shellParam->getName()+"_Size");
             }

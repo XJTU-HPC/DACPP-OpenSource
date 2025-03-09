@@ -27,16 +27,16 @@ INCLUDE_DIRS=(
     "$WORK_DIR/rewriter/include/"
 )
 
-SRC_FILES=(
-    "$WORK_DIR/rewriter/lib/dacInfo.cpp"
-)
+# SRC_FILES=(
+#     "$WORK_DIR/rewriter/lib/dacInfo.cpp"
+# )
+
 ICPX=$(which icpx)
 
 # icpx -fsycl -fsycl-targets=nvptx64-nvidia-cuda --cuda-path=/data/cuda/cuda-11.8 -o test test.cpp
 icpx() {
 
     "$ICPX" "$@" \
-    "${SRC_FILES[@]}" \
     "${INCLUDE_DIRS[@]/#/-I}"
 
 }
@@ -46,7 +46,6 @@ icpx-cpu() {
 
     "$ICPX" -fsycl \
      "$@" \
-    "${SRC_FILES[@]}" \
     "${INCLUDE_DIRS[@]/#/-I}"
     
 }
@@ -58,7 +57,6 @@ icpx-gpu() {
     -fsycl-targets=nvptx64-nvidia-cuda \
     --cuda-path=/data/cuda/cuda-11.8 \
      "$@" \
-    "${SRC_FILES[@]}" \
     "${INCLUDE_DIRS[@]/#/-I}"
     
 }
