@@ -21,6 +21,7 @@ examples=(
     "MDP1.0"
     "mandel1.0"
     "oddeven0.1"
+    "test"
 )
 
 

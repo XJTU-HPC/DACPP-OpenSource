@@ -38,6 +38,8 @@ add_executable(mdpdac mdp.dac_sycl.cpp)
 add_executable(DFTdac DFT.dac_sycl.cpp)
 add_executable(mandeldac mandel.dac_sycl.cpp)
 add_executable(oddEvendac oddEven.dac_sycl.cpp)
+add_executable(test test.cpp)
+
 
 add_executable(syclBlockMatMul0 blockMatMul0.sycl.cpp)
 add_executable(syclBlockMatMul1 blockMatMul1.sycl.cpp)
@@ -104,6 +106,9 @@ set_target_properties(mandeldac PROPERTIES
 set_target_properties(oddEvendac PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/translator/tests
 )
+set_target_properties(test PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/translator/tests
+)
 
 
 
@@ -146,6 +151,7 @@ target_link_libraries(mdpdac PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib
 target_link_libraries(DFTdac PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
 target_link_libraries(mandeldac PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
 target_link_libraries(oddEvendac PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
+target_link_libraries(test PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
 
 
 
