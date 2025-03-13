@@ -3,7 +3,7 @@
 #include <vector>
 #include <cmath>
 
-namespace sycl = cl::sycl;
+// namespace sycl = cl::sycl;
 
 void calculateDecay(const std::vector<double>& lambdas, const std::vector<double>& N0s, double dt, double T) {
     size_t numIsotopes = lambdas.size();  // 同位素的数量
