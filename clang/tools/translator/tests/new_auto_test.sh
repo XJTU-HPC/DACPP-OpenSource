@@ -6,6 +6,8 @@ if ! which icpx &> /dev/null; then
     source /data/qinian/share/intel/oneapi2025/setvars.sh intel64 &> /dev/null
 fi
 
+source ../env.sh
+
 exec 2>/dev/null
 
 # Delete all temporary files
@@ -15,7 +17,6 @@ mkdir ./tmp
 # Edit examples here
 examples=(
     "matMul1.0"
-    # "block_mat_mul"
     "waveEquation1.0"
     "stencil1.0"
     "jacobi1.0"
@@ -27,6 +28,7 @@ examples=(
     "MDP1.0"
     "mandel1.0"
     "oddeven0.1"
+    # "block_mat_mul"
 )
 
 
@@ -39,9 +41,6 @@ INCLUDE_DIRS=(
     "$WORK_DIR/std_lib/include/"
 )
 
-# SRC_FILES=(
-#     "$WORK_DIR/rewriter/lib/dacInfo.cpp"
-# )
 
 echo "------------------------------------------------------------------------------------------"
 echo "DACPP to SYCL transpilation test"
@@ -56,16 +55,49 @@ for dir in ${examples[@]}; do
     fi
     mkdir -p "./tmp/$dir"
     cp "$dacpp_file" "./tmp/$dir"
-    ../../../../build/bin/translator/translator "./tmp/$dacpp_file" \
-    -extra-arg=-std=c++17 --  \
-    "${INCLUDE_DIRS[@]/#/-I}" \
-    >/dev/null
+    dacpp "./tmp/$dacpp_file" >/dev/null
     sycl_file=$(find "./tmp/$dir" -type f -name "*.dac_sycl.cpp")
     if [ -z "$sycl_file" ]; then
         echo "Example $dir: DACPP to SYCL transpilation failed"
     else
         echo "Example $dir: DACPP to SYCL transpilation succeeded"
     fi
+done
+
+echo "------------------------------------------------------------------------------------------"
+echo "Compile standard sycl files"
+echo
+
+# Compile standard sycl files
+for dir in ${examples[@]}; do
+    std_sycl_file=$(find "./$dir/" -type f -name "*.StandardSycl.cpp" | head -n 1)
+    if [ -z "$std_sycl_file" ]; then
+        std_file=$(find "./$dir/" -type f -name "*.serial.cpp" | head -n 1)
+        if [ "$std_file" ]; then
+            echo "Example $dir: Standard SYCL file does not exist but serial C++ file exists"
+            g++ "$std_file" -o "./tmp/$dir/std_$dir"
+            exe_file=$(find "./tmp/$dir/" -type f -name "std_$dir")
+            if [ -z "$exe_file" ]; then
+                echo "Example $dir: Serial C++ file compilation failed"
+            else
+                exe_file="${exe_file#./tmp/$dir}"
+                "./tmp/$dir/$exe_file" > "./tmp/$dir/$exe_file.std.out"
+            fi
+        else
+            echo "Example $dir: No standard SYCL file or serial C++ file found"
+        fi
+    else
+        icpx-gpu "$std_sycl_file" -o "./tmp/$dir/std_$dir"
+        # icpx-cpu "$std_sycl_file" -o "./tmp/$dir/std_$dir"
+        exe_file=$(find "./tmp/$dir/" -type f -name "std_$dir")
+        if [ -z "$exe_file" ]; then
+            echo "Example $dir: Standard SYCL file compilation failed"
+        else
+            exe_file="${exe_file#./tmp/$dir}"
+            "./tmp/$dir/$exe_file" > "./tmp/$dir/$exe_file.std.out"
+        fi
+    fi
+    
 done
 
 echo "------------------------------------------------------------------------------------------"
@@ -78,11 +110,8 @@ for dir in ${examples[@]}; do
     if [ -z "$sycl_file" ]; then
         continue
     fi
-    icpx -fsycl -fsycl-targets=nvptx64-nvidia-cuda \
-    --cuda-path=/data/cuda/cuda-11.8 \
-    "$sycl_file" \
-    "${INCLUDE_DIRS[@]/#/-I}" \
-    -o "./tmp/$dir/$dir" 
+    icpx-gpu "$sycl_file" -o "./tmp/$dir/$dir"
+    # icpx-cpu "$sycl_file" -o "./tmp/$dir/$dir"
     exe_file=$(find "./tmp/$dir/" -type f -name "$dir")
     if [ -z "$exe_file" ]; then
         echo "Example $dir: SYCL compilation failed"
@@ -103,8 +132,7 @@ for dir in ${examples[@]}; do
     fi
     exe_file="${exe_file#./tmp/$dir}"
     "./tmp/$dir/$exe_file" > "./tmp/$dir/$exe_file.out" 
-    perl -pi -e 'chomp if eof' "./tmp/$dir/$exe_file.out"
-    std_res=$(find "./$dir/" -type f -name "*.out" | head -n 1)
+    std_res=$(find "./tmp/$dir/" -type f -name "*.std.out" | head -n 1)
     if diff -y --suppress-common-lines "./tmp/$dir/$exe_file.out" "$std_res"; then
         echo "Example $dir: execution test succeeded"
     else

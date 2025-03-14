@@ -16,13 +16,13 @@ namespace Func{
         return 0;
     }
     double beta(double x){
-        return exp(x)+1;
+        return std::exp(x)+1;
     }
     double f(double x,double t){
-        return x*exp(t)-6*x;
+        return x*std::exp(t)-6*x;
     }
     double exact(double x,double t){
-        return x*(x*x+exp(t));
+        return x*(x*x+std::exp(t));
     }
 };
 using namespace Func;
@@ -81,7 +81,7 @@ int main(){
     for(int i=0;i<=m;i++)for(int j=0;j<=n;j++)u[i][j]=flat_u[i*(n+1)+j];
 	 int number=int(0.4/h);
 	 for(int k=int(0.2/tau);k<=n;k=k+int(0.2/tau)){
-	 	printf("(x,t)=(%.1f,%.1f), y=%f, exact=%f, err=%.4e.\n",x[number],t[k],u[number][k],exact(x[number],t[k]),fabs(u[number][k]-exact(x[number],t[k])));
+	 	printf("(x,t)=(%.1f,%.1f), y=%f, exact=%f, err=%.4e.\n",x[number],t[k],u[number][k],exact(x[number],t[k]),std::fabs(u[number][k]-exact(x[number],t[k])));
 	 }
     auto end = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double> duration_sycl = end - start;
