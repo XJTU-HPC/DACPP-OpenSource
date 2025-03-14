@@ -7,29 +7,13 @@
 #include "Param.h"
 #include "dacInfo.h"
 #include "universal_template.h"
-#include "buffer_template.h"
 #include "usm_template.h"
-
-// void DFS(int node, std::vector<bool>& visited, Dac_Ops ops, Dac_Ops component, int componentID, std::vector<std::string>& sets) {
-//             visited[node] = true;
-//             sets[node] = std::to_string(componentID);  // 给当前节点标记一个连通分量的ID
-
-//             // 将当前节点加入到当前连通分量
-//             component.push_back(ops[node]);
-
-//             // 遍历所有与当前节点相连的节点
-//             for (int i = 0; i < ops.size; ++i) {
-//                 int k;
-//                 if (!visited[i] && GetBindInfo(node, i,k)) {
-//                     DFS(i, visited, ops, component, componentID, sets);
-//                 }
-//             }   
-// }
+#include "Multiple_template.h"
 
 
 
-void dacppTranslator::Rewriter::rewriteDac_Buffer() {
-    std::cout << "软编码BUFFER版本翻译" << std::endl;
+void dacppTranslator::Rewriter::rewriteDac_Multiple() {
+    std::cout << "软编码USM版本翻译单机多卡" << std::endl;
 
     std::string code = "";
     
@@ -54,7 +38,7 @@ void dacppTranslator::Rewriter::rewriteDac_Buffer() {
 
         std::vector<BINDINFO> info;
         shell->GetBindInfo(&info);//获取binding信息
-         Dac_Ops ops;
+        Dac_Ops ops;
         std::vector<std::string> sets;  // 存储每个节点所属的连通分量的ID
         std::vector<std::string> bindoffset;  // 存储每个节点相对于其连通分量代表节点的偏移
         int componentID = 1;                               // 连通分量的编号
@@ -72,6 +56,7 @@ void dacppTranslator::Rewriter::rewriteDac_Buffer() {
                 Index tmp = Index(index->getId());
                 tmp.SetSplitSize(index->getSplitNumber());
                 tmp.setDimId(index->getDimIdx());
+
                 ops.push_back(tmp);
                 sets.push_back("id"+std::to_string(info[i].icls));
                 bindoffset.push_back(info[i].offset);
@@ -84,6 +69,126 @@ void dacppTranslator::Rewriter::rewriteDac_Buffer() {
                 ops.push_back(tmp);
                 sets.push_back("id"+std::to_string(info[i].icls));
                 bindoffset.push_back(info[i].offset);
+            }
+        }
+
+        std::set<std::string> set2;
+        std::string DeviceSet;
+        int count = 0;
+        // int countFirst = 0;
+        std::vector<bool> isFullOnDevice(shell->getNumShellParams(),true);
+        for(int NumShellParam = 0; NumShellParam < shell->getNumShellParams(); NumShellParam++){
+            ShellParam* shellParam = shell->getShellParam(NumShellParam);
+            if(shellParam->getRw() == 1){
+                isFullOnDevice[NumShellParam] = false;
+                continue;
+            }
+            if(NumShellParam == 0){
+                    isFullOnDevice[NumShellParam] = false;
+                    for(int NumSplit = 0; NumSplit < shellParam->getNumSplit(); NumSplit++){
+                        if(shellParam->getSplit(NumSplit)->getId() == "void") {continue;}
+                        Split* split = shellParam->getSplit(NumSplit);
+                        // if(split->type.compare("RegularSplit") == 0){                            
+                        //     RegularSplit* regularSplit = static_cast<RegularSplit*>(split);
+                        //     if(regularSplit->getSplitStride() != regularSplit->getSplitSize()){
+                        //         isFullOnDevice[NumShellParam] = true;
+                        //     }
+                        // }
+                        for(int i = 0; i < info.size(); i++){
+                            if(shell->search_symbol(info[i].v)->getId() == split->getId())
+                                DeviceSet = std::to_string(info[i].icls);
+                        }
+                        if(set2.count(DeviceSet) == 1) {
+                            continue;
+                        }
+                        set2.insert(DeviceSet);
+                        // countFirst++;
+                    }
+                }else{
+                    for(int NumSplit = 0; NumSplit < shellParam->getNumSplit(); NumSplit++){
+                        if(shellParam->getSplit(NumSplit)->getId() == "void") {continue;}
+                        Split* split = shellParam->getSplit(NumSplit);
+                        // if(split->type.compare("RegularSplit") == 0){                            
+                        //     RegularSplit* regularSplit = static_cast<RegularSplit*>(split);
+                        //     if(regularSplit->getSplitStride() != regularSplit->getSplitSize()){
+                        //         isFullOnDevice[NumShellParam] = true;
+                        //         count++;
+                        //     }
+                        // }
+
+                        for(int i = 0; i < info.size(); i++){
+                            if(shell->search_symbol(info[i].v)->getId() == split->getId())
+                                DeviceSet = std::to_string(info[i].icls);
+                        }
+                        if(set2.count(DeviceSet) == 1) {
+                            count++;
+                            // isFullOnDevice[NumShellParam] = false;
+                            break;
+                        }
+                    }
+                    if(count = 0)
+                        isFullOnDevice[NumShellParam] = false;
+                    count = 0;
+            }
+
+        }
+        std::string Calc_Size = "";
+        std::set<std::string> IsBinding;
+        std::string isBinding = "";
+        for(int NumShellParam = 0; NumShellParam < shell->getNumShellParams(); NumShellParam++){
+            ShellParam* shellParam = shell->getShellParam(NumShellParam);
+            if(shellParam->getRw() == 0){
+                // for(int NumSplit = 0; NumSplit < shellParam->getNumSplit(); NumSplit++){
+                //     if(shellParam->getSplit(NumSplit)->getId() == "void") { continue;}
+                //     Split* split = shellParam->getSplit();   
+                //     for(int i = 0; i < info.size(); i++){
+                //         if(shell->search_symbol(info[i].v)->getId() == split->getId())
+                //             isBinding = std::to_string(info[i].icls);
+                //     }
+                //     if(IsBinding.count(isBinding) == 1) {
+
+                //         continue;
+                //     }
+                    Calc_Size += shellParam->getName()+"_Device_Size[numDevice]*";
+                //     IsBinding.insert(isBinding);     
+                // }
+            }
+        }
+
+        Calc_Size.pop_back();
+        for(int NumShellParam = 0; NumShellParam < shell->getNumShellParams(); NumShellParam++){
+            ShellParam* shellParam = shell->getShellParam(NumShellParam);
+            if(shellParam->getRw() == 0){
+                for(int NumSplit = 0; NumSplit < shellParam->getNumSplit(); NumSplit++){
+                    if(shellParam->getSplit(NumSplit)->getId() == "void") { continue;}
+                    Split* split = shellParam->getSplit(NumSplit);
+                    if(NumShellParam ==0){
+                        for(int i = 0; i < info.size(); i++){
+                            if(shell->search_symbol(info[i].v)->getId() == split->getId())
+                                isBinding = std::to_string(info[i].icls);
+                        }
+                        IsBinding.insert(isBinding);
+                        continue;
+                    }else{
+                        for(int i = 0; i < info.size(); i++){
+                            if(shell->search_symbol(info[i].v)->getId() == split->getId())
+                                isBinding = std::to_string(info[i].icls);
+                        }
+                        if(IsBinding.count(isBinding) == 1) {
+                            if(split->type.compare("IndexSplit") == 0){
+                                // IndexSplit* indexSplit = static_cast<IndexSplit*>(split);
+                                // data_info.dimLength[si.dimId]
+                                Calc_Size += "/ info_"+shellParam->getName()+".dimLength["+std::to_string(NumSplit)+"]";
+                                continue;
+                            }else if(split->type.compare("RegularSplit") == 0){
+                                // RegularSplit* regularSplit = static_cast<RegularSplit*>(split);
+                                Calc_Size += "/"+split->getId()+".SplitSize";
+                                continue;
+                            }
+                        }
+                    // Calc_Size += "*"+shellParam->getName()+"_Device_Size[numDevice]";
+                    }
+                }
             }
         }
 
@@ -185,7 +290,7 @@ void dacppTranslator::Rewriter::rewriteDac_Buffer() {
                         continue;
                     }
                     add2Op_outops += UNIVERSAL_TEMPLATE::CodeGen_AddOp2Ops(split->getId(),std::to_string(outflag),"Out_Ops");//将算子添加到输出算子组中去
-                    add2Op_reductions += UNIVERSAL_TEMPLATE::CodeGen_AddOp2Ops(split->getId(),std::to_string(outflag),"Reduction_Ops");//将算子添加到归约算子组中去
+                    add2Op_reductions += UNIVERSAL_TEMPLATE::CodeGen_AddOp2Ops(split->getId(),std::to_string(outflag),shellParam->getName()+"Reduction_Ops");//将算子添加到归约算子组中去
                     outflag++;
                     setOut.insert(set);
                 }
@@ -270,33 +375,61 @@ void dacppTranslator::Rewriter::rewriteDac_Buffer() {
 
         std::string ParameterGenerate = UNIVERSAL_TEMPLATE::CodeGen_ParameterGenerate(InitOPS,divice_memory,splitLength,InitSplitLengthMatrix,item_number,Init_Reduction_Split_Size,Init_Reduction_Split_Length); 
         // std::cout << ParameterGenerate;
+        std::string deviceMem = "";
+        for(int NumShellParam = 0; NumShellParam < shell->getNumShellParams(); NumShellParam++){
+            ShellParam* shellParam = shell->getShellParam(NumShellParam);
+            if(shellParam->getRw() == 1){
+                deviceMem += MULTIPLE_TEMPLATE::CodeGen_DeviceMem(shellParam->getBasicType(),shellParam->getName());
+                deviceMem += MULTIPLE_TEMPLATE::CodeGen_DeviceMemReduction(shellParam->getBasicType(),shellParam->getName());
+            }
+            else{
+                deviceMem += MULTIPLE_TEMPLATE::CodeGen_DeviceMem(shellParam->getBasicType(),shellParam->getName());
+            }
+        }
+        std::string Device_HaveMalloc = "";
+        for(int NumShellParam = 0; NumShellParam < shell->getNumShellParams(); NumShellParam++){
+            ShellParam* shellParam = shell->getShellParam(NumShellParam);
+                Device_HaveMalloc += MULTIPLE_TEMPLATE::CodeGen_DeviceDataHaveMalloc(shellParam->getName());
+        }
+        Device_HaveMalloc += MULTIPLE_TEMPLATE::CodeGen_DeviceDataHaveMalloc("Result");
+        deviceMem += Device_HaveMalloc;
         //设置内存分配
         std::string deviceMemAlloc = "";
         for(int NumShellParam = 0; NumShellParam < shell->getNumShellParams(); NumShellParam++){
             ShellParam* shellParam = shell->getShellParam(NumShellParam);
             if(shellParam->getRw() == 1){
-                deviceMemAlloc += BUFFER_TEMPLATE::CodeGen_DeviceMemAlloc(shellParam->getBasicType(),shellParam->getName(),shellParam->getName()+"_Size");
-                deviceMemAlloc += BUFFER_TEMPLATE::CodeGen_DeviceMemAllocReduction(shellParam->getBasicType(),shellParam->getName(),shellParam->getName()+"Reduction_Size");
+                deviceMemAlloc += MULTIPLE_TEMPLATE::CodeGen_DeviceMemAllocOutData(shellParam->getBasicType(),shellParam->getName(),Calc_Size);
+                deviceMemAlloc += MULTIPLE_TEMPLATE::CodeGen_DeviceMemAllocReduction(shellParam->getBasicType(),shellParam->getName(),shellParam->getName()+"Reduction_Size");
             }
             else{
-                deviceMemAlloc += BUFFER_TEMPLATE::CodeGen_DeviceMemAlloc(shellParam->getBasicType(),shellParam->getName(),shellParam->getName()+"_Size");
+                deviceMemAlloc += MULTIPLE_TEMPLATE::CodeGen_DeviceMemAlloc(shellParam->getBasicType(),shellParam->getName(),shellParam->getName()+"_Size");
             }
         }
         // std::cout << deviceMemAlloc;
-
+        
         //主机数据移动至设备
         std::string H2DMemMove = "";
         for(int NumShellParam = 0; NumShellParam < shell->getNumShellParams(); NumShellParam++){
             ShellParam* shellParam = shell->getShellParam(NumShellParam);
-            H2DMemMove += BUFFER_TEMPLATE::CodeGen_DeviceDataInit(shellParam->getBasicType(),shellParam->getName(),shellParam->getName()+"_Size");
             if(shellParam->getRw() == 0){
-                H2DMemMove += BUFFER_TEMPLATE::CodeGen_H2DMemMov(shellParam->getBasicType(),shellParam->getName(),shellParam->getName()+"_Size");
+                H2DMemMove += MULTIPLE_TEMPLATE::CodeGen_H2DMemMov(shellParam->getBasicType(),shellParam->getName(),shellParam->getName()+"_Size",isFullOnDevice[NumShellParam]);
             }
         }
         // std::cout << H2DMemMove;
 
        
         std::string BindingInit = UNIVERSAL_TEMPLATE::CodeGen_IndexInit2(ops,sets,bindoffset);
+
+        std::string data_split = "";
+        for(int NumShellParam = 0; NumShellParam < shell->getNumShellParams(); NumShellParam++){
+            ShellParam* shellParam = shell->getShellParam(NumShellParam);
+            if(shellParam->getRw() == 0){
+                data_split += MULTIPLE_TEMPLATE::CodeGen_DataSplit(shellParam->getName());
+                data_split += MULTIPLE_TEMPLATE::CodeGen_DataDeviceMalloc(shellParam->getName(),isFullOnDevice[NumShellParam]);
+            }else{
+                data_split += MULTIPLE_TEMPLATE::CodeGen_DataSplit(shellParam->getName());
+            }
+        }
 
         // 嵌入计算
         Args args = Args();
@@ -323,13 +456,15 @@ void dacppTranslator::Rewriter::rewriteDac_Buffer() {
         for (int z = 0; z < shell->getNumParams(); z++) {
             accessor_names.push_back(shell->getParam(z)->getName());
         }
-        std::string CalcEmbed = UNIVERSAL_TEMPLATE::CodeGen_CalcEmbed2(calc->getName(),args, accessor_names);
+        
+        std::string CalcEmbed = MULTIPLE_TEMPLATE::CodeGen_CalcEmbed2(calc->getName(),args, accessor_names,isFullOnDevice);
         std::string AccessorInit = "";
         for (int argCount = 0; argCount < shell->getNumShellParams(); argCount++) {
-            AccessorInit += BUFFER_TEMPLATE::CodeGen_AccessorInit(shell->getShellParam(argCount)->getName());
+            AccessorInit += USM_TEMPLATE::CodeGen_AccessorInit(shell->getShellParam(argCount)->getName());
         }
-	    std::string KernelExecute = BUFFER_TEMPLATE::CodeGen_KernelExecute("Item_Size",AccessorInit,BindingInit,CalcEmbed);//注意这里面填的size的大小需要是前面算出来的大小
+	    std::string KernelExecute = MULTIPLE_TEMPLATE::CodeGen_KernelExecute(Calc_Size,"Item_Size",AccessorInit,BindingInit,CalcEmbed);//注意这里面填的size的大小需要是前面算出来的大小
         // std::cout << KernelExecute;
+
 
         std::string Reduction;
         std::string D2HMemMove;
@@ -337,8 +472,8 @@ void dacppTranslator::Rewriter::rewriteDac_Buffer() {
         for(int NumShellParam = 0; NumShellParam < shell->getNumShellParams(); NumShellParam++){
             ShellParam* shellParam = shell->getShellParam(NumShellParam);
             if(shellParam->getRw() == 1){
-                Reduction = BUFFER_TEMPLATE::CodeGen_Reduction_Span(shellParam->getName()+"Reduction_Size","Reduction_Split_Size","Reduction_Split_Length",shellParam->getName(),shellParam->getBasicType(),ReductionRule);
-	            D2HMemMove = BUFFER_TEMPLATE::CodeGen_D2HMemMov(shellParam->getName(),shellParam->getBasicType(),shellParam->getName()+"_Size",false);
+                Reduction = MULTIPLE_TEMPLATE::CodeGen_Reduction_Span(shellParam->getName()+"Reduction_Size","Reduction_Split_Size","Reduction_Split_Length",shellParam->getName(),shellParam->getBasicType(),ReductionRule);
+	            D2HMemMove = MULTIPLE_TEMPLATE::CodeGen_D2HMemMov(shellParam->getName(),shellParam->getBasicType(),Calc_Size,false);
             }
         }
         // std::cout << Reduction;
@@ -355,27 +490,55 @@ void dacppTranslator::Rewriter::rewriteDac_Buffer() {
                 opPushBack += UNIVERSAL_TEMPLATE::CodeGen_OpPushBack2Ops(shellParam->getName(),split->getId(),std::to_string(split->getDimIdx()));
             }
             std::string dataOpsInit = UNIVERSAL_TEMPLATE::CodeGen_DataOpsInit(shellParam->getName(),opPushBack);
-            dataRecon += UNIVERSAL_TEMPLATE::CodeGen_DataReconstruct(shellParam->getBasicType(),shellParam->getName(),shellParam->getName()+"_Size",dataOpsInit);
+            dataRecon += UNIVERSAL_TEMPLATE::CodeGen_DataReconstruct(shellParam->getBasicType(),shellParam->getName(),shellParam->getName()+"_Size",dataOpsInit); 
        }
+       dataRecon += data_split;
         // std::cout << dataRecon;
         // std::cout << "-----------------------------------------------------------------------";
         // 内存释放
         std::string MemFree = "";
-        // for(int j = 0; j < shell->getNumParams(); j++) {
-        //     ShellParam* shellParam = shell->getShellParam(j);
-        //     MemFree += BUFFER_TEMPLATE::CodeGen_MemFree(shellParam->getName());
-        // }
+        for(int j = 0; j < shell->getNumParams(); j++) {
+            ShellParam* shellParam = shell->getShellParam(j);
+            MemFree += MULTIPLE_TEMPLATE::CodeGen_MemFree(shellParam->getName());
+        }
+        
+        std::string Store_Device_Mem = "";
+        std::string Load_Device_Mem = "";
+        for(int NumShellParam = 0; NumShellParam < shell->getNumShellParams(); NumShellParam++){
+            ShellParam* shellParam = shell->getShellParam(NumShellParam);
+            if(shellParam->getRw() == 1){
+                Store_Device_Mem += MULTIPLE_TEMPLATE::CodeGen_StoreDeviceMem(shellParam->getName());
+                Store_Device_Mem += MULTIPLE_TEMPLATE::CodeGen_StoreDeviceMemReduction(shellParam->getName());
+                Load_Device_Mem += MULTIPLE_TEMPLATE::CodeGen_LoadDeviceMem(shellParam->getBasicType(),shellParam->getName());
+                Load_Device_Mem += MULTIPLE_TEMPLATE::CodeGen_LoadDeviceMemReduction(shellParam->getBasicType(),shellParam->getName());
+            }
+            else{
+                Store_Device_Mem += MULTIPLE_TEMPLATE::CodeGen_StoreDeviceMem(shellParam->getName());
+                Load_Device_Mem += MULTIPLE_TEMPLATE::CodeGen_LoadDeviceMem(shellParam->getBasicType(),shellParam->getName());
+            }
+        }
+        std::string H2DMemMoveF = "";
+        for(int NumShellParam = 0; NumShellParam < shell->getNumShellParams(); NumShellParam++){
+            ShellParam* shellParam = shell->getShellParam(NumShellParam);
+            if(shellParam->getRw() == 1){
+                H2DMemMoveF += MULTIPLE_TEMPLATE::CodeGen_D2HMemMovF(shellParam->getName());
+            }
+        }
+      
+        
+        std::string dac = MULTIPLE_TEMPLATE::CodeGen_Kernel(deviceMem,deviceMemAlloc,H2DMemMove,KernelExecute,Store_Device_Mem,Load_Device_Mem,Reduction,D2HMemMove,MemFree);
+        std::cout << dac;
+        dac+=H2DMemMoveF;
 
-        std::string dac = UNIVERSAL_TEMPLATE::CodeGen_DataAssocComp(dataRecon, H2DMemMove, KernelExecute, Reduction, D2HMemMove);
-	    std::string res = USM_TEMPLATE::CodeGen_DAC2SYCL2(
+	    std::string res = MULTIPLE_TEMPLATE::CodeGen_DAC2SYCL2(
 		dacShellName,
 		dacShellParams,
         opInit,
         ParameterGenerate,
-		deviceMemAlloc,
-		dac,
-		MemFree);
+        dataRecon,
+		dac);
         code += res;
+
         code += "\n\n";
         rewriter->RemoveText(shell->getShellLoc()->getSourceRange());
         rewriter->RemoveText(calc->getCalcLoc()->getSourceRange());

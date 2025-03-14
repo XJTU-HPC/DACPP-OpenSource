@@ -16,7 +16,7 @@ set(SYCL_PATH "/data/qinian/share/intel/oneapi2025/compiler/latest/include")
 set(OpenCL_LIBRARY "/data/qinian/share/intel/oneapi2025/compiler/latest/lib/libOpenCL.so")
 
 include_directories(${SYCL_PATH})
-
+find_package(Threads REQUIRED)
 # 添加源文件
 
 add_executable(FOuLadac FOuLa.dac_sycl.cpp)
@@ -41,12 +41,16 @@ add_executable(oddEvendac oddEven.dac_sycl.cpp)
 add_executable(test test.cpp)
 
 
+
 add_executable(syclBlockMatMul0 blockMatMul0.sycl.cpp)
 add_executable(syclBlockMatMul1 blockMatMul1.sycl.cpp)
 add_executable(syclBlockMatMul2 blockMatMul2.sycl.cpp)
 add_executable(syclBlockMatMul3 blockMatMul3.sycl.cpp)
 add_executable(syclVectorMul0 vectorMul0.sycl.cpp)
 add_executable(outputSyclBlockMatrixMultiplication blockMatrixMultiplication_sycl.cpp)
+
+#---------------------MutipleGpuTest------------------------------------
+add_executable(MutipleGpuTest MutipleGpuTest.cpp)
 
 set_target_properties(FOuLadac PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/translator/tests
@@ -131,7 +135,10 @@ set_target_properties(syclVectorMul0 PROPERTIES
 # set_target_properties(outputSyclBlockMatrixMultiplication PROPERTIES
 #     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/translator/tests
 # )
-
+#---------------------MutipleGpuTest------------------------------------
+set_target_properties(MutipleGpuTest PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/translator/tests
+)
 target_link_libraries(FOuLadac PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
 target_link_libraries(stencildac PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
 target_link_libraries(stencilStandardSycl PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
@@ -143,7 +150,7 @@ target_link_libraries(liuliangdac PRIVATE ${OpenCL_LIBRARY} sycl DacppLib Rewrit
 target_link_libraries(liuliangStandardSycl PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
 target_link_libraries(decay_chaindac PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
 target_link_libraries(decay_chainStandardSycl PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
-target_link_libraries(matMuldac PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
+target_link_libraries(matMuldac PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib Threads::Threads)
 target_link_libraries(matMulStandardSycl PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
 target_link_libraries(imageAdjustmentdac PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
 target_link_libraries(mdpdac PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
@@ -152,6 +159,7 @@ target_link_libraries(DFTdac PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib
 target_link_libraries(mandeldac PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
 target_link_libraries(oddEvendac PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
 target_link_libraries(test PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
+target_link_libraries(MutipleGpuTest PRIVATE ${OpenCL_LIBRARY} sycl Threads::Threads)
 
 
 
@@ -161,3 +169,5 @@ target_link_libraries(syclBlockMatMul2 PRIVATE ${OpenCL_LIBRARY} sycl DacppLib R
 target_link_libraries(syclBlockMatMul3 PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
 target_link_libraries(syclVectorMul0 PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
 target_link_libraries(outputSyclBlockMatrixMultiplication PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
+#---------------------MutipleGpuTest------------------------------------
+target_link_libraries(MutipleGpuTest PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)

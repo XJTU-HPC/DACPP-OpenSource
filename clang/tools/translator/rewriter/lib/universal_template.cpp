@@ -461,7 +461,6 @@ std::string CodeGen_CalcEmbed2(std::string Name,Args args, std::vector<std::stri
 		std::string IndexComb="(";
 		for(int j=0;j<args[i].ops.size;j++){
 			std::string opsname = args[i].ops[j].name;
-			//IndexComb+= args[i].ops[j].name + "_" + "*" + "SplitLength[" + std::to_string(i) + "][" + std::to_string(j) + "]";
 			IndexComb+= opsname + "_" + "*" + "SplitLength[" + std::to_string(i) + "][" + std::to_string(j) + "]";
 			if(j!=args[i].ops.size-1) IndexComb+="+";
 		}
