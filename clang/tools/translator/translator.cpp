@@ -150,9 +150,9 @@ public:
         rewriter->setRewriter(clangRewriter);
         rewriter->setDacppFile(dacppFile);
         // dacppTranslator::printDacppFileInfo(dacppFile);
-        // rewriter->rewriteDac_Usm();
-        //rewriter->rewriteDac_Buffer();
-        rewriter->rewriteDac_Multiple();
+        rewriter->rewriteDac_Usm();
+        // rewriter->rewriteDac_Buffer();
+        // rewriter->rewriteDac_Multiple();
         rewriter->rewriteMain();
 
         // // this will output to screen as what you got.

@@ -290,7 +290,7 @@ void dacppTranslator::Rewriter::rewriteDac_Multiple() {
                         continue;
                     }
                     add2Op_outops += UNIVERSAL_TEMPLATE::CodeGen_AddOp2Ops(split->getId(),std::to_string(outflag),"Out_Ops");//将算子添加到输出算子组中去
-                    add2Op_reductions += UNIVERSAL_TEMPLATE::CodeGen_AddOp2Ops(split->getId(),std::to_string(outflag),"Reduction_Ops");//将算子添加到归约算子组中去
+                    add2Op_reductions += UNIVERSAL_TEMPLATE::CodeGen_AddOp2Ops(split->getId(),std::to_string(outflag),shellParam->getName()+"Reduction_Ops");//将算子添加到归约算子组中去
                     outflag++;
                     setOut.insert(set);
                 }
@@ -324,7 +324,7 @@ void dacppTranslator::Rewriter::rewriteDac_Multiple() {
             ShellParam* shellParam = shell->getShellParam(NumShellParam);
             if(shellParam->getRw() == 1){
                 divice_memory += UNIVERSAL_TEMPLATE::CodeGen_DeviceMemSizeGenerate(shellParam->getName()+"_Size","In_Ops","Out_Ops","info_"+shellParam->getName());
-                divice_memory += UNIVERSAL_TEMPLATE::CodeGen_DeviceMemSizeGenerate("Reduction_Size","info_"+shellParam->getName(),"Reduction_Ops");
+                divice_memory += UNIVERSAL_TEMPLATE::CodeGen_DeviceMemSizeGenerate(shellParam->getName()+"Reduction_Size","info_"+shellParam->getName(),"Reduction_Ops");
             }
             else{
                 divice_memory += UNIVERSAL_TEMPLATE::CodeGen_DeviceMemSizeGenerate(shellParam->getName()+"_Size","info_"+shellParam->getName(),shellParam->getName()+"_Ops");
@@ -399,7 +399,7 @@ void dacppTranslator::Rewriter::rewriteDac_Multiple() {
             ShellParam* shellParam = shell->getShellParam(NumShellParam);
             if(shellParam->getRw() == 1){
                 deviceMemAlloc += MULTIPLE_TEMPLATE::CodeGen_DeviceMemAllocOutData(shellParam->getBasicType(),shellParam->getName(),Calc_Size);
-                deviceMemAlloc += MULTIPLE_TEMPLATE::CodeGen_DeviceMemAllocReduction(shellParam->getBasicType(),shellParam->getName(),"Reduction_Size");
+                deviceMemAlloc += MULTIPLE_TEMPLATE::CodeGen_DeviceMemAllocReduction(shellParam->getBasicType(),shellParam->getName(),shellParam->getName()+"Reduction_Size");
             }
             else{
                 deviceMemAlloc += MULTIPLE_TEMPLATE::CodeGen_DeviceMemAlloc(shellParam->getBasicType(),shellParam->getName(),shellParam->getName()+"_Size");
@@ -472,7 +472,7 @@ void dacppTranslator::Rewriter::rewriteDac_Multiple() {
         for(int NumShellParam = 0; NumShellParam < shell->getNumShellParams(); NumShellParam++){
             ShellParam* shellParam = shell->getShellParam(NumShellParam);
             if(shellParam->getRw() == 1){
-                Reduction = MULTIPLE_TEMPLATE::CodeGen_Reduction_Span("Reduction_Size","Reduction_Split_Size","Reduction_Split_Length",shellParam->getName(),shellParam->getBasicType(),ReductionRule);
+                Reduction = MULTIPLE_TEMPLATE::CodeGen_Reduction_Span(shellParam->getName()+"Reduction_Size","Reduction_Split_Size","Reduction_Split_Length",shellParam->getName(),shellParam->getBasicType(),ReductionRule);
 	            D2HMemMove = MULTIPLE_TEMPLATE::CodeGen_D2HMemMov(shellParam->getName(),shellParam->getBasicType(),Calc_Size,false);
             }
         }
