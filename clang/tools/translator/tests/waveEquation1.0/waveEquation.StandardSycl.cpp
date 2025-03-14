@@ -7,8 +7,8 @@ using namespace sycl;
 using namespace std;
 
 // 网格参数
-const int NX = 512;    // x方向网格数量
-const int NY = 512;    // y方向网格数量
+const int NX = 8;    // x方向网格数量
+const int NY = 8;    // y方向网格数量
 const double Lx = 10.0f; // x方向长度
 const double Ly = 10.0f; // y方向长度
 const double c = 1.0f;   // 波速
@@ -41,8 +41,8 @@ int main() {
     
     // SYCL队列
     queue q(gpu_selector_v);
-    cout << "Running on "
-         << q.get_device().get_info<info::device::name>() << "\n";
+    // cout << "Running on "
+    //      << q.get_device().get_info<info::device::name>() << "\n";
     
     // 分配设备内存
     double *d_u_prev = malloc_device<double>(NX * NY, q);
@@ -96,22 +96,28 @@ int main() {
         swap(d_u_curr, d_u_next);
         
         // 可选：每隔一定步数复制回主机并输出
-        if(t % 100 == 0) {
-            q.memcpy(u_curr.data(), d_u_curr, sizeof(double) * NX * NY).wait();
-            cout << "Step " << t << " completed.\n";
-            // 这里可以添加保存或可视化代码
-        }
+        // if(t % 100 == 0) {
+        //     q.memcpy(u_curr.data(), d_u_curr, sizeof(double) * NX * NY).wait();
+        //     cout << "Step " << t << " completed.\n";
+        //     // 这里可以添加保存或可视化代码
+        // }
     }
     
     // 复制结果回主机
     q.memcpy(u_curr.data(), d_u_curr, sizeof(double) * NX * NY).wait();
     
+    std::cout << "{";
     for(int i = 0; i < 1; i++){
+        //std::cout << "{";
         for(int j = 0; j < NY; j++){
-            std::cout << u_curr[i * NX + j] << " " ;
+            std::cout << u_curr[i * NX + j]  ;
+            if (j < NY - 1) std::cout << ", ";
         }
-        std::cout << std::endl;
+        //std::cout << "}";
+        //if (i < NX - 1) std::cout << ", ";
+        
     }
+    std::cout << "}" << std::endl;
 
     // 释放设备内存
     free(d_u_prev, q);
@@ -119,7 +125,7 @@ int main() {
     free(d_u_next, q);
     
     // 输出最终结果的某些值作为示例
-    cout << "Final wave state at center: " << u_curr[(NX/2)*NY + (NY/2)] << "\n";
+    //cout << u_curr[(NX/2)*NY + (NY/2)] << "\n";
     
     return 0;
 }

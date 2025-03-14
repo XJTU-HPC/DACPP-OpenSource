@@ -78,16 +78,16 @@ int main() {
     // for (int i = 0; i < N; i++) {
     //     array[i] = rand() % 10;  // 随机生成0到1000之间的整数
     // }
-    for (int i = N; i > 0; i--) {
-        array[i] = N-i;  // 随机生成0到1000之间的整数
+    for (int i = 0; i < N; i++) {
+        array[i] = N - i;  // 初始化为递减的数组
     }
 
     // 打印排序前的数组（前10个）
-    std::cout << "Array before sorting (first 10 elements):" << std::endl;
+    //std::cout << "Array before sorting (first 10 elements):" << std::endl;
     for (int i = 0; i < N; i++) {
-        std::cout << array[i] << " ";
+        //std::cout << array[i] << " ";
     }
-    std::cout << std::endl;
+    //std::cout << std::endl;
 
     // 执行奇偶归并排序
     oddEvenMergeSort(array, N);

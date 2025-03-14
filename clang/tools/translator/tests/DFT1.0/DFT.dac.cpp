@@ -66,10 +66,10 @@ int main() {
     }
 
     // 输出原始数据
-    std::cout << "原始数据（时间域）:" << std::endl;
-    for (const auto& val : input) {
-        std::cout << val << std::endl;
-    }
+    //std::cout << "原始数据（时间域）:" << std::endl;
+    // for (const auto& val : input) {
+    //     //std::cout << val << std::endl;
+    // }
 
     // 计算离散傅里叶变换
     vector<Complex> output(N);

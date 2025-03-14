@@ -7,55 +7,31 @@
 namespace dacpp {
     typedef std::vector<std::any> list;
 }
-void DECAY(const dacpp::Tensor<double, 1> & N0s, const dacpp::Tensor<double, 1> & lambdas, dacpp::Tensor<double, 1> & local_A, const dacpp::Tensor<double, 1> & t);
+
 
 
 
 
 // 计算每种同位素在时间 t 的数量
-void calculateDecay(const std::vector<double>& lambdas, const std::vector<double>& N0s, double dt, double T) {
-    size_t numIsotopes = lambdas.size(); // 同位素的数量
-    std::vector<double> A(50*10, 0.0);  // 存储每个同位素在不同时间点的数量
-    std::vector<double> time;  // 时间序列
-    std::vector<double> t;
-    t.push_back(static_cast<double>(0));
-
-    // 串行计算每个同位素的衰变过程
-    std::vector<double> local_A(10, 0.0);
-    dacpp::Tensor<double, 1> local_A_tensor(local_A);
-    dacpp::Tensor<double, 1> N0s_tensor(N0s);
-    dacpp::Tensor<double, 1> lambdas_tensor(lambdas);
-    dacpp::Tensor<double, 1> t_tensor(t);
-    dacpp::Tensor<double, 2> A_tensor({50, 10}, A);
-    
-
-    while(t_tensor[0] < T){        
-        DECAY(N0s_tensor, lambdas_tensor, local_A_tensor, t_tensor);
-        A_tensor[10*t_tensor[0]] = local_A_tensor;
-        t_tensor[0] += dt;
-    }
-    A_tensor.print();
-}
-
 #include <sycl/sycl.hpp>
 #include "DataReconstructor.h"
 #include "ParameterGeneration.h"
 
 using namespace sycl;
 
-void decay(double* N0s, double* lambdas, double* local_A, double* t) 
+void decay(double* N0s,double* lambdas,double* local_A,double* t,sycl::accessor<int, 1, sycl::access::mode::read_write> info_N0s_acc, sycl::accessor<int, 1, sycl::access::mode::read_write> info_lambdas_acc, sycl::accessor<int, 1, sycl::access::mode::read_write> info_local_A_acc, sycl::accessor<int, 1, sycl::access::mode::read_write> info_t_acc) 
 {
     local_A[0] = N0s[0] * std::exp(-lambdas[0] * t[0]);
 }
 
 
 // 生成函数调用
-void DECAY(const dacpp::Tensor<double, 1> & N0s, const dacpp::Tensor<double, 1> & lambdas, dacpp::Tensor<double, 1> & local_A, const dacpp::Tensor<double, 1> & t) { 
+void DECAY_decay(const dacpp::Vector<double> & N0s, const dacpp::Vector<double> & lambdas, dacpp::Vector<double> & local_A, const dacpp::Vector<double> & t) { 
     // 设备选择
-    auto selector = gpu_selector_v;
+    auto selector = default_selector_v;
     queue q(selector);
     //声明参数生成工具
-    ParameterGeneration<int,2> para_gene_tool;
+    ParameterGeneration para_gene_tool;
     // 算子初始化
     
     // 数据信息初始化
@@ -211,10 +187,11 @@ void DECAY(const dacpp::Tensor<double, 1> & N0s, const dacpp::Tensor<double, 1> 
     Dac_Ops N0s_ops;
     
     i.setDimId(0);
-    i.setSplitLength(8);
     N0s_ops.push_back(i);
     N0s_tool.init(info_N0s,N0s_ops);
     N0s_tool.Reconstruct(r_N0s,N0s);
+	std::vector<int> info_partition_N0s=para_gene_tool.init_partition_data_shape(info_N0s,N0s_ops);
+    sycl::buffer<int> info_partition_N0s_buffer(info_partition_N0s.data(), sycl::range<1>(info_partition_N0s.size()));
     // 数据重组
     DataReconstructor<double> lambdas_tool;
     double* r_lambdas=(double*)malloc(sizeof(double)*lambdas_Size);
@@ -223,10 +200,11 @@ void DECAY(const dacpp::Tensor<double, 1> & N0s, const dacpp::Tensor<double, 1> 
     Dac_Ops lambdas_ops;
     
     i.setDimId(0);
-    i.setSplitLength(8);
     lambdas_ops.push_back(i);
     lambdas_tool.init(info_lambdas,lambdas_ops);
     lambdas_tool.Reconstruct(r_lambdas,lambdas);
+	std::vector<int> info_partition_lambdas=para_gene_tool.init_partition_data_shape(info_lambdas,lambdas_ops);
+    sycl::buffer<int> info_partition_lambdas_buffer(info_partition_lambdas.data(), sycl::range<1>(info_partition_lambdas.size()));
     // 数据重组
     DataReconstructor<double> local_A_tool;
     double* r_local_A=(double*)malloc(sizeof(double)*local_A_Size);
@@ -235,10 +213,11 @@ void DECAY(const dacpp::Tensor<double, 1> & N0s, const dacpp::Tensor<double, 1> 
     Dac_Ops local_A_ops;
     
     i.setDimId(0);
-    i.setSplitLength(8);
     local_A_ops.push_back(i);
     local_A_tool.init(info_local_A,local_A_ops);
     local_A_tool.Reconstruct(r_local_A,local_A);
+	std::vector<int> info_partition_local_A=para_gene_tool.init_partition_data_shape(info_local_A,local_A_ops);
+    sycl::buffer<int> info_partition_local_A_buffer(info_partition_local_A.data(), sycl::range<1>(info_partition_local_A.size()));
     // 数据重组
     DataReconstructor<double> t_tool;
     double* r_t=(double*)malloc(sizeof(double)*t_Size);
@@ -248,11 +227,21 @@ void DECAY(const dacpp::Tensor<double, 1> & N0s, const dacpp::Tensor<double, 1> 
     
     t_tool.init(info_t,t_ops);
     t_tool.Reconstruct(r_t,t);
+	std::vector<int> info_partition_t=para_gene_tool.init_partition_data_shape(info_t,t_ops);
+    sycl::buffer<int> info_partition_t_buffer(info_partition_t.data(), sycl::range<1>(info_partition_t.size()));
     
+    // 设备数据初始化
+    q.memset(d_N0s,0,N0s_Size*sizeof(double)).wait();
     // 数据移动
     q.memcpy(d_N0s,r_N0s,N0s_Size*sizeof(double)).wait();
+    // 设备数据初始化
+    q.memset(d_lambdas,0,lambdas_Size*sizeof(double)).wait();
     // 数据移动
     q.memcpy(d_lambdas,r_lambdas,lambdas_Size*sizeof(double)).wait();
+    // 设备数据初始化
+    q.memset(d_local_A,0,local_A_Size*sizeof(double)).wait();
+    // 设备数据初始化
+    q.memset(d_t,0,t_Size*sizeof(double)).wait();
     // 数据移动
     q.memcpy(d_t,r_t,t_Size*sizeof(double)).wait();
 	
@@ -261,6 +250,12 @@ void DECAY(const dacpp::Tensor<double, 1> & N0s, const dacpp::Tensor<double, 1> 
     sycl::range<3> global(1, 1, 1);
     //队列提交命令组
     q.submit([&](handler &h) {
+        // 访问器初始化
+        
+        auto info_partition_N0s_accessor = info_partition_N0s_buffer.get_access<sycl::access::mode::read_write>(h);
+        auto info_partition_lambdas_accessor = info_partition_lambdas_buffer.get_access<sycl::access::mode::read_write>(h);
+        auto info_partition_local_A_accessor = info_partition_local_A_buffer.get_access<sycl::access::mode::read_write>(h);
+        auto info_partition_t_accessor = info_partition_t_buffer.get_access<sycl::access::mode::read_write>(h);
         h.parallel_for(sycl::nd_range<3>(global * local, local),[=](sycl::nd_item<3> item) {
             const auto item_id = item.get_local_id(2);
             // 索引初始化
@@ -268,7 +263,7 @@ void DECAY(const dacpp::Tensor<double, 1> & N0s, const dacpp::Tensor<double, 1> 
             const auto i_=(item_id+(0))%i.split_size;
             // 嵌入计算
 			
-            decay(d_N0s+(i_*SplitLength[0][0]),d_lambdas+(i_*SplitLength[1][0]),d_local_A+(i_*SplitLength[2][0]),d_t);
+            decay(d_N0s+(i_*SplitLength[0][0]),d_lambdas+(i_*SplitLength[1][0]),d_local_A+(i_*SplitLength[2][0]),d_t,info_partition_N0s_accessor,info_partition_lambdas_accessor,info_partition_local_A_accessor,info_partition_t_accessor);
         });
     }).wait();
     
@@ -304,6 +299,30 @@ void DECAY(const dacpp::Tensor<double, 1> & N0s, const dacpp::Tensor<double, 1> 
     sycl::free(d_lambdas, q);
     sycl::free(d_local_A, q);
     sycl::free(d_t, q);
+}
+
+void calculateDecay(const std::vector<double>& lambdas, const std::vector<double>& N0s, double dt, double T) {
+    size_t numIsotopes = lambdas.size(); // 同位素的数量
+    std::vector<double> A(50*10, 0.0);  // 存储每个同位素在不同时间点的数量
+    std::vector<double> time;  // 时间序列
+    std::vector<double> t;
+    t.push_back(static_cast<double>(0));
+
+    // 串行计算每个同位素的衰变过程
+    std::vector<double> local_A(10, 0.0);
+    dacpp::Vector<double> local_A_tensor(local_A);
+    dacpp::Vector<double> N0s_tensor(N0s);
+    dacpp::Vector<double> lambdas_tensor(lambdas);
+    dacpp::Vector<double> t_tensor(t);
+    dacpp::Matrix<double> A_tensor({50, 10}, A);
+    
+
+    while(t_tensor[0] <= T){        
+        DECAY_decay(N0s_tensor, lambdas_tensor, local_A_tensor, t_tensor);
+        A_tensor[10*t_tensor[0]] = local_A_tensor;
+        t_tensor[0] += dt;
+    }
+    A_tensor.print();
 }
 
 int main() {

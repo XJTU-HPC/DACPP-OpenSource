@@ -34,9 +34,9 @@ using namespace sycl;
 void waveEq(double* cur,double* prev,double* next,sycl::accessor<int, 1, sycl::access::mode::read_write> info_cur_acc, sycl::accessor<int, 1, sycl::access::mode::read_write> info_prev_acc, sycl::accessor<int, 1, sycl::access::mode::read_write> info_next_acc) 
 {
     double dt = 0.5F * std::fmin(dx, dy) / c;
-    double u_xx = (cur[2][1] - 2.F * cur[1][1] + cur[0][1]) / (dx * dx);
-    double u_yy = (cur[1][2] - 2.F * cur[1][1] + cur[1][0]) / (dy * dy);
-    next[0] = 2.F * cur[1][1] - prev[0] + (c * c) * dt * dt * (u_xx + u_yy);
+    double u_xx = (cur[2*info_cur_acc[1]+1] - 2.F * cur[1*info_cur_acc[1]+1] + cur[0*info_cur_acc[1]+1]) / (dx * dx);
+    double u_yy = (cur[1*info_cur_acc[1]+2] - 2.F * cur[1*info_cur_acc[1]+1] + cur[1*info_cur_acc[1]+0]) / (dy * dy);
+    next[0] = 2.F * cur[1*info_cur_acc[1]+1] - prev[0] + (c * c) * dt * dt * (u_xx + u_yy);
 }
 
 
@@ -46,7 +46,7 @@ void waveEqShell_waveEq(const dacpp::Matrix<double> & matCur, const dacpp::Matri
     auto selector = default_selector_v;
     queue q(selector);
     //声明参数生成工具
-    ParameterGeneration<int,2> para_gene_tool;
+    ParameterGeneration para_gene_tool;
     // 算子初始化
     
     // 数据信息初始化
@@ -217,10 +217,8 @@ void waveEqShell_waveEq(const dacpp::Matrix<double> & matCur, const dacpp::Matri
     Dac_Ops matCur_ops;
     
     sp1.setDimId(0);
-    sp1.setSplitLength(8);
     matCur_ops.push_back(sp1);
     sp2.setDimId(1);
-    sp2.setSplitLength(8);
     matCur_ops.push_back(sp2);
     matCur_tool.init(info_matCur,matCur_ops);
     matCur_tool.Reconstruct(r_matCur,matCur);
@@ -234,10 +232,8 @@ void waveEqShell_waveEq(const dacpp::Matrix<double> & matCur, const dacpp::Matri
     Dac_Ops matPrev_ops;
     
     idx1.setDimId(0);
-    idx1.setSplitLength(8);
     matPrev_ops.push_back(idx1);
     idx2.setDimId(1);
-    idx2.setSplitLength(8);
     matPrev_ops.push_back(idx2);
     matPrev_tool.init(info_matPrev,matPrev_ops);
     matPrev_tool.Reconstruct(r_matPrev,matPrev);
@@ -251,20 +247,24 @@ void waveEqShell_waveEq(const dacpp::Matrix<double> & matCur, const dacpp::Matri
     Dac_Ops matNext_ops;
     
     idx1.setDimId(0);
-    idx1.setSplitLength(8);
     matNext_ops.push_back(idx1);
     idx2.setDimId(1);
-    idx2.setSplitLength(8);
     matNext_ops.push_back(idx2);
     matNext_tool.init(info_matNext,matNext_ops);
     matNext_tool.Reconstruct(r_matNext,matNext);
 	std::vector<int> info_partition_matNext=para_gene_tool.init_partition_data_shape(info_matNext,matNext_ops);
     sycl::buffer<int> info_partition_matNext_buffer(info_partition_matNext.data(), sycl::range<1>(info_partition_matNext.size()));
     
+    // 设备数据初始化
+    q.memset(d_matCur,0,matCur_Size*sizeof(double)).wait();
     // 数据移动
     q.memcpy(d_matCur,r_matCur,matCur_Size*sizeof(double)).wait();
+    // 设备数据初始化
+    q.memset(d_matPrev,0,matPrev_Size*sizeof(double)).wait();
     // 数据移动
     q.memcpy(d_matPrev,r_matPrev,matPrev_Size*sizeof(double)).wait();
+    // 设备数据初始化
+    q.memset(d_matNext,0,matNext_Size*sizeof(double)).wait();
 	
     //工作项划分
     sycl::range<3> local(1, 1, Item_Size);
@@ -341,12 +341,12 @@ int main() {
         }
     }
 
-    for(int i = 0; i < 1; i++){
-        for(int j = 0; j < NY; j++){
-            std::cout << u_prev[i * NX + j] << " " ;
-        }
-        std::cout << std::endl;
-    }
+    // for(int i = 0; i < 1; i++){
+    //     for(int j = 0; j < NY; j++){
+    //         //std::cout << u_prev[i * NX + j] << " " ;
+    //     }
+    //     //std::cout << std::endl;
+    // }
 
     dacpp::Matrix<double> u_curr_tensor({NX, NY}, u_curr);
     dacpp::Matrix<double> u_prev_tensor({NX, NY}, u_prev);
@@ -379,6 +379,6 @@ int main() {
 
         
     }
-    u_curr_tensor.print(); 
+    u_curr_tensor[0].print(); 
     return 0;
 }
