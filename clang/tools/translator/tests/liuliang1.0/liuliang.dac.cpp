@@ -59,11 +59,11 @@ int main() {
     initializeDensity(rho);
     dacpp::Vector<double> rho_tensor(rho);
     dacpp::Vector<double> new_rho_tensor(new_rho);
-    dacpp::Vector<double> middle_out_tensor = new_rho_tensor[{1,99}];
-    dacpp::Vector<double> middle_in_tensor = rho_tensor[{0,99}];
+    dacpp::Vector<double> middle_out_tensor = new_rho_tensor[{1,WIDTH-1}];
+    dacpp::Vector<double> middle_in_tensor = rho_tensor[{0,WIDTH-1}];
     for (int t = 0; t < TIME_STEPS; ++t) {
         LWR_shell(middle_in_tensor, middle_out_tensor) <-> lwr;
-        for (int i = 1; i <= 98; i++) {
+        for (int i = 1; i <= WIDTH-2; i++) {
             middle_in_tensor[i] = middle_out_tensor[i-1];
         }
         

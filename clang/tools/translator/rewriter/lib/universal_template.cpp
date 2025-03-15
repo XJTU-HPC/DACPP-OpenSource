@@ -39,6 +39,31 @@ std::string CodeGen_DataInfoInit(std::string name){
 	});
 }
 
+//参数生成的总模板
+const char *PARA_GENE_Template = R"~~~(
+    // 参数生成 提前计算后面需要用到的参数	
+	{{InitOPS}}
+	{{InitDeviceMemorySize}}
+	{{InitSplitLength}}
+	{{InitSpilitLengthMatrix}}
+	{{ItemNumber}}
+	{{InitReductionSplitSize}}
+	{{InitReductionSplitLength}}
+)~~~";
+
+std::string CodeGen_ParameterGenerate(std::string InitOPS,std::string InitDeviceMemorySize,std::string InitSplitLength,std::string InitSpilitLengthMatrix,std::string ItemNumber,std::string InitReductionSplitSize,std::string InitReductionSplitLength){
+    return templateString(PARA_GENE_Template,
+	{
+		{"{{InitOPS}}", InitOPS},
+		{"{{InitDeviceMemorySize}}", InitDeviceMemorySize},//设备内存的分配大小计算
+		{"{{InitSplitLength}}",InitSplitLength},
+		{"{{InitSpilitLengthMatrix}}",InitSpilitLengthMatrix},
+		{"{{ItemNumber}}",ItemNumber},
+		{"{{InitReductionSplitSize}}",InitReductionSplitSize},
+		{"{{InitReductionSplitLength}}",InitReductionSplitLength}
+	});
+}
+
 const char *OP_REGULAR_SLICE_INIT_Template2 = R"~~~(
     // 规则分区算子初始化
     RegularSlice {{OP_NAME}} = RegularSlice("{{OP_NAME}}", {{SIZE}}, {{STRIDE}});
@@ -73,61 +98,6 @@ std::string CodeGen_IndexInit2(std::string opName,std::string dim_id,std::string
 		{"{{DATA_INFO_NAME}}", DATA_INFO_NAME}
 	});
 }
-
-//参数生成的总模板
-const char *PARA_GENE_Template = R"~~~(
-    // 参数生成 提前计算后面需要用到的参数	
-	{{InitOPS}}
-	{{InitDeviceMemorySize}}
-	{{InitSplitLength}}
-	{{InitSpilitLengthMatrix}}
-	{{ItemNumber}}
-	{{InitReductionSplitSize}}
-	{{InitReductionSplitLength}}
-)~~~";
-
-std::string CodeGen_ParameterGenerate(std::string InitOPS,std::string InitDeviceMemorySize,std::string InitSplitLength,std::string InitSpilitLengthMatrix,std::string ItemNumber,std::string InitReductionSplitSize,std::string InitReductionSplitLength){
-    return templateString(PARA_GENE_Template,
-	{
-		{"{{InitOPS}}", InitOPS},
-		{"{{InitDeviceMemorySize}}", InitDeviceMemorySize},//设备内存的分配大小计算
-		{"{{InitSplitLength}}",InitSplitLength},
-		{"{{InitSpilitLengthMatrix}}",InitSpilitLengthMatrix},
-		{"{{ItemNumber}}",ItemNumber},
-		{"{{InitReductionSplitSize}}",InitReductionSplitSize},
-		{"{{InitReductionSplitLength}}",InitReductionSplitLength}
-	});
-}
-
-//将算子添加到算子组的模板 数据重组时也有添加算子到算子组的模板 每次添加都将要重新设置作用的维度
-const char *ADD_OP2OPS_Template = R"~~~(
-    {{OP_NAME}}.setDimId({{DIM_ID}});
-    {{OPS_NAME}}.push_back({{OP_NAME}});
-)~~~";
-
-std::string CodeGen_AddOp2Ops(std::string OP_NAME,std::string DIM_ID,std::string OPS_NAME){
-    return templateString(ADD_OP2OPS_Template,
-	{
-		{"{{OP_NAME}}",    OP_NAME},
-		{"{{DIM_ID}}",     DIM_ID},
-		{"{{OPS_NAME}}",   OPS_NAME}
-	});
-}
-
-const char *OPS_INIT_Template = R"~~~(
-    // 算子组初始化
-    Dac_Ops {{OPS_NAME}};
-    {{ADD_OP2OPS}}
-)~~~";
-
-std::string CodeGen_DataOpsInit2(std::string OPS_NAME,std::string ADD_OP2OPS){
-    return templateString(OPS_INIT_Template,
-	{
-		{"{{OPS_NAME}}",       OPS_NAME},
-		{"{{ADD_OP2OPS}}",    ADD_OP2OPS}
-	});
-}
-
 
 //生成设备内存分配大小的模板 对应mat[分区][分区] mat[分区][降维] mat[分区][] mat[降维][]
 const char *DEVICE_MEM_SIZE_Generate_Template1 = R"~~~(
@@ -171,6 +141,35 @@ std::string CodeGen_DeviceMemSizeGenerate(std::string NAME,std::string IN_DAC_OP
 		{"{{IN_DAC_OPS_NAME}}", IN_DAC_OPS_NAME},//输入算子组的名字
 		{"{{OUT_DAC_OPS_NAME}}",OUT_DAC_OPS_NAME},//输出算子组的名字
 		{"{{DATA_INFO_NAME}}",      DATA_INFO_NAME}//输出数据TENSOR的名字
+	});
+}
+
+//将算子添加到算子组的模板 数据重组时也有添加算子到算子组的模板 每次添加都将要重新设置作用的维度
+const char *ADD_OP2OPS_Template = R"~~~(
+    {{OP_NAME}}.setDimId({{DIM_ID}});
+    {{OPS_NAME}}.push_back({{OP_NAME}});
+)~~~";
+
+std::string CodeGen_AddOp2Ops(std::string OP_NAME,std::string DIM_ID,std::string OPS_NAME){
+    return templateString(ADD_OP2OPS_Template,
+	{
+		{"{{OP_NAME}}",    OP_NAME},
+		{"{{DIM_ID}}",     DIM_ID},
+		{"{{OPS_NAME}}",   OPS_NAME}
+	});
+}
+
+const char *OPS_INIT_Template = R"~~~(
+    // 算子组初始化
+    Dac_Ops {{OPS_NAME}};
+    {{ADD_OP2OPS}}
+)~~~";
+
+std::string CodeGen_DataOpsInit2(std::string OPS_NAME,std::string ADD_OP2OPS){
+    return templateString(OPS_INIT_Template,
+	{
+		{"{{OPS_NAME}}",       OPS_NAME},
+		{"{{ADD_OP2OPS}}",    ADD_OP2OPS}
 	});
 }
 
@@ -331,19 +330,6 @@ std::string CodeGen_OpPushBack2Ops(std::string name, std::string opName, std::st
 	});
 }
 
-const char *DATA_OPS_INIT_Template = R"~~~(
-    // 数据算子组初始化
-    Dac_Ops {{NAME}}_ops;
-    {{OP_PUSH_BACK2OPS}})~~~";
-
-std::string CodeGen_DataOpsInit(std::string name,std::string opPushBack2Ops){
-    return templateString(DATA_OPS_INIT_Template,
-	{
-		{"{{NAME}}",       name},
-		{"{{OP_PUSH_BACK2OPS}}",    opPushBack2Ops},
-	});
-}
-
 const char *OP_PUSH_BACK2TOOL_Template = R"~~~(
     {{OP_NAME}}.setDimId({{DIM_ID}});
     {{NAME}}_tool.push_back({{OP_NAME}});)~~~";
@@ -354,6 +340,19 @@ std::string CodeGen_OpPushBack2Tool(std::string name, std::string opName, std::s
 		{"{{OP_NAME}}",    opName},
 		{"{{NAME}}",       name},
 		{"{{DIM_ID}}",     dimId}
+	});
+}
+
+const char *DATA_OPS_INIT_Template = R"~~~(
+    // 数据算子组初始化
+    Dac_Ops {{NAME}}_ops;
+    {{OP_PUSH_BACK2OPS}})~~~";
+
+std::string CodeGen_DataOpsInit(std::string name,std::string opPushBack2Ops){
+    return templateString(DATA_OPS_INIT_Template,
+	{
+		{"{{NAME}}",       name},
+		{"{{OP_PUSH_BACK2OPS}}",    opPushBack2Ops},
 	});
 }
 
@@ -462,7 +461,6 @@ std::string CodeGen_CalcEmbed2(std::string Name,Args args, std::vector<std::stri
 		std::string IndexComb="(";
 		for(int j=0;j<args[i].ops.size;j++){
 			std::string opsname = args[i].ops[j].name;
-			//IndexComb+= args[i].ops[j].name + "_" + "*" + "SplitLength[" + std::to_string(i) + "][" + std::to_string(j) + "]";
 			IndexComb+= opsname + "_" + "*" + "SplitLength[" + std::to_string(i) + "][" + std::to_string(j) + "]";
 			if(j!=args[i].ops.size-1) IndexComb+="+";
 		}

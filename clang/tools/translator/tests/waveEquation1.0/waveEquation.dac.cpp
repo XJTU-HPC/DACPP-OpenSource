@@ -67,9 +67,9 @@ int main() {
     dacpp::Matrix<double> u_curr_tensor({NX, NY}, u_curr);
     dacpp::Matrix<double> u_prev_tensor({NX, NY}, u_prev);
     dacpp::Matrix<double> u_next_tensor({NX, NY}, u_next);
-    dacpp::Matrix<double> u_prev_middle_tensor = u_prev_tensor[{1,7}][{1,7}];
+    dacpp::Matrix<double> u_prev_middle_tensor = u_prev_tensor[{1,NX-1}][{1,NY-1}];
     for(int i = 0;i < TIME_STEPS; i++) {
-        dacpp::Matrix<double> u_next_middle_tensor = u_next_tensor[{1,7}][{1,7}];
+        dacpp::Matrix<double> u_next_middle_tensor = u_next_tensor[{1,NX-1}][{1,NY-1}];
         waveEqShell(u_curr_tensor, u_prev_middle_tensor, u_next_middle_tensor) <-> waveEq;
         for (int i = 1; i <= NX-2; i++) {
             for(int j = 1; j <=NY-2; j++){
