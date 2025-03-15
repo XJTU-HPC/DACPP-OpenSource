@@ -157,7 +157,7 @@ const char *KERNEL_EXECUTE_Template1 = R"~~~(
         {{ACCESSOR_INIT}}
         h.parallel_for(sycl::nd_range<3>(global, local),[=](sycl::nd_item<3> item) {
             const auto item_id = item.get_group(2)*item.get_local_range(2)+item.get_local_id(2);
-            if(item_id > Item_Size)
+            if(item_id >= Item_Size)
                 return;
             // 索引初始化
 			{{INDEX_INIT}}

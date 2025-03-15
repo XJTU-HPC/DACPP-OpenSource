@@ -129,7 +129,8 @@ class ParameterGeneration
             {
                 out_op_product *= ops_out.DacOps[i].split_size; //spilit在前面初始化算子的时候已经完成
             }
-            return init_device_memory_size(data_info,ops_out) * in_op_product / out_op_product;
+            //return init_device_memory_size(data_info,ops_out) * in_op_product / out_op_product;
+            return in_op_product / out_op_product * init_device_memory_size(data_info,ops_out);
         }
 
         //生成开辟工作项多少 localsize
