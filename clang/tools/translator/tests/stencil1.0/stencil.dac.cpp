@@ -63,15 +63,15 @@ int main() {
     }
 
     //std::vector<int> shape = {32, 32};
-    dacpp::Matrix<double> u_curr_tensor({32, 32}, u_curr);
-    dacpp::Matrix<double> u_next_tensor({32, 32}, u_next);
+    dacpp::Matrix<double> u_curr_tensor({NX, NY}, u_curr);
+    dacpp::Matrix<double> u_next_tensor({NX, NY}, u_next);
 
     for(int i=0;i<TIME_STEPS;i++) {
-        dacpp::Matrix<double> middle_tensor = u_next_tensor[{1,31}][{1,31}];
+        dacpp::Matrix<double> middle_tensor = u_next_tensor[{1,NX-1}][{1,NY-1}];
         stencilShell(u_curr_tensor, middle_tensor) <-> stencil;
 
-        for (int i = 1; i <= 30; i++) {
-            for(int j = 1; j <=30; j++){
+        for (int i = 1; i <= NX-2; i++) {
+            for(int j = 1; j <=NY-2; j++){
                 double* data = new double[1];
                 u_curr_tensor[i][j]=middle_tensor[i-1][j-1];
             }

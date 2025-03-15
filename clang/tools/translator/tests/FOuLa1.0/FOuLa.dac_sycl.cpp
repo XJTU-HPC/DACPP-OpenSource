@@ -123,7 +123,7 @@ void PDE_pde(const dacpp::Vector<double> & u_kin, dacpp::Vector<double> & u_kout
     int u_kout_Size = para_gene_tool.init_device_memory_size(In_Ops,Out_Ops,info_u_kout);
 
     //生成设备内存分配大小
-    int Reduction_Size = para_gene_tool.init_device_memory_size(info_u_kout,Reduction_Ops);
+    int u_koutReduction_Size = para_gene_tool.init_device_memory_size(info_u_kout,Reduction_Ops);
 
     //生成设备内存分配大小
     int r_Size = para_gene_tool.init_device_memory_size(info_r,r_Ops);
@@ -173,7 +173,7 @@ void PDE_pde(const dacpp::Vector<double> & u_kin, dacpp::Vector<double> & u_kout
     // 设备内存分配
     double *d_u_kout=malloc_device<double>(u_kout_Size,q);
     // 归约设备内存分配
-    double *reduction_u_kout = malloc_device<double>(Reduction_Size,q);
+    double *reduction_u_kout = malloc_device<double>(u_koutReduction_Size,q);
     // 设备内存分配
     double *d_r=malloc_device<double>(r_Size,q);
     // 数据关联计算
@@ -228,9 +228,12 @@ void PDE_pde(const dacpp::Vector<double> & u_kin, dacpp::Vector<double> & u_kout
     // 数据移动
     q.memcpy(d_r,r_r,r_Size*sizeof(double)).wait();
 	
-    //工作项划分
-    sycl::range<3> local(1, 1, Item_Size);
-    sycl::range<3> global(1, 1, 1);
+    sycl::device device = q.get_device();
+    int max_global_size = device.get_info<sycl::info::device::max_work_item_sizes<3>>()[2];
+	//工作项划分
+    int work_group_size = (Item_Size + max_global_size - 1) / max_global_size;  // 计算所需的工作组数量
+    sycl::range<3> local(1, 1, std::min(Item_Size, max_global_size)); 
+    sycl::range<3> global(1, 1, (Item_Size <= max_global_size) ? Item_Size : work_group_size * max_global_size);
     //队列提交命令组
     q.submit([&](handler &h) {
         // 访问器初始化
@@ -238,8 +241,10 @@ void PDE_pde(const dacpp::Vector<double> & u_kin, dacpp::Vector<double> & u_kout
         auto info_partition_u_kin_accessor = info_partition_u_kin_buffer.get_access<sycl::access::mode::read_write>(h);
         auto info_partition_u_kout_accessor = info_partition_u_kout_buffer.get_access<sycl::access::mode::read_write>(h);
         auto info_partition_r_accessor = info_partition_r_buffer.get_access<sycl::access::mode::read_write>(h);
-        h.parallel_for(sycl::nd_range<3>(global * local, local),[=](sycl::nd_item<3> item) {
-            const auto item_id = item.get_local_id(2);
+        h.parallel_for(sycl::nd_range<3>(global, local),[=](sycl::nd_item<3> item) {
+            const auto item_id = item.get_group(2)*item.get_local_range(2)+item.get_local_id(2);
+            if(item_id > Item_Size)
+                return;
             // 索引初始化
 			
             const auto i_=(item_id+(0))%i.split_size;
@@ -255,7 +260,7 @@ void PDE_pde(const dacpp::Vector<double> & u_kin, dacpp::Vector<double> & u_kout
     // 归约
     if(Reduction_Split_Size > 1)
     {
-        for(int i=0;i<Reduction_Size;i++) {
+        for(int i=0;i<u_koutReduction_Size;i++) {
             q.submit([&](handler &h) {
     	        h.parallel_for(
                 range<1>(Reduction_Split_Size),
@@ -267,7 +272,7 @@ void PDE_pde(const dacpp::Vector<double> & u_kin, dacpp::Vector<double> & u_kout
      	        });
          }).wait();
         }
-        q.memcpy(d_u_kout,reduction_u_kout, Reduction_Size*sizeof(double)).wait();
+        q.memcpy(d_u_kout,reduction_u_kout, u_koutReduction_Size*sizeof(double)).wait();
     }
 
 
@@ -285,7 +290,7 @@ void PDE_pde(const dacpp::Vector<double> & u_kin, dacpp::Vector<double> & u_kout
 
 int main() {
     int n = 100; //时间域n等分
-    int m = 5; //空间域m等分
+    int m = 100; //空间域m等分
     double r = 0.25;
     double a = 1.0;
     double h = 1.0 / m; //空间步长
@@ -322,10 +327,10 @@ int main() {
         }
     }
 
-    dacpp::Matrix<double> u_tensor({6, 101}, u_flat);
+    dacpp::Matrix<double> u_tensor({m+1, n+1}, u_flat);
 
     for (int k = 0; k < n; k++) {
-        dacpp::Vector<double> middle_tensor = u_tensor[{1,5}][k+1];
+        dacpp::Vector<double> middle_tensor = u_tensor[{1,m}][k+1];
         std::vector<double> r_data;
         r_data.push_back(r);
         dacpp::Vector<double> R(r_data);
@@ -333,7 +338,7 @@ int main() {
         PDE_pde(u_test1, middle_tensor, R);
         
         //计算完毕后，替换第1到4个点
-        for (int i = 1; i <= 4; i++) {
+        for (int i = 1; i <= m-1; i++) {
             u_tensor[i][k+1] = middle_tensor[i-1];
         }
 

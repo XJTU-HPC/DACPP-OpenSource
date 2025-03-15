@@ -80,10 +80,10 @@ int main() {
         }
     }
 
-    dacpp::Matrix<double> u_tensor({6, 101}, u_flat);
+    dacpp::Matrix<double> u_tensor({m+1, n+1}, u_flat);
 
     for (int k = 0; k < n; k++) {
-        dacpp::Vector<double> middle_tensor = u_tensor[{1,5}][k+1];
+        dacpp::Vector<double> middle_tensor = u_tensor[{1,m}][k+1];
         std::vector<double> r_data;
         r_data.push_back(r);
         dacpp::Vector<double> R(r_data);
@@ -91,7 +91,7 @@ int main() {
         PDE(u_test1, middle_tensor, R) <-> pde;
         
         //计算完毕后，替换第1到4个点
-        for (int i = 1; i <= 4; i++) {
+        for (int i = 1; i <= m-1; i++) {
             u_tensor[i][k+1] = middle_tensor[i-1];
         }
 
