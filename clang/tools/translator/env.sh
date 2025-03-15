@@ -3,7 +3,7 @@
 # Check icpx availability
 if ! which icpx &> /dev/null; then
     echo "Loading Intel oneAPI environment..."
-    source /data/zhouyh/share/intel/oneapi/setvars.sh intel64 &> /dev/null
+    source /data/qinian/share/intel/oneapi/setvars.sh intel64 &> /dev/null
 fi
 
 # Get the directory of this script
