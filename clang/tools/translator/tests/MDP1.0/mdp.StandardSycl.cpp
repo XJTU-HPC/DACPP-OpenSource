@@ -62,20 +62,25 @@ int main() {
             });
 
             // 归一化分布
-            normalize(p);
+            //normalize(p);
 
             // 更新p，顺序执行，因为没有并发冲突
             for (int i = 1; i < N - 1; ++i) {
                 p[i] = new_p[i];  // 更新内部点
             }
             // 设置边界条件
-            p[0] = 0.0;
-            p[N - 1] = 0.0;
+            //p[0] = 0.0;
+            //p[N - 1] = 0.0;
         }
+        // std::cout << "{";
+        // for (int i = 2; i < 2; ++i) {
+        //     std::cout << p[i];
+        //     //if (i < N - 1) std::cout << ", ";
+        // }
+        // std::cout << "}" << std::endl;
 
-        for (int i = 0; i < N; ++i) {
-            std::cout << p[i] << ",";
-        }
+        std::cout << p[2] << std::endl;
+        
 
             
     }

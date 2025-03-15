@@ -57,12 +57,12 @@ int main() {
         }
     }
 
-    for(int i = 0; i < 1; i++){
-        for(int j = 0; j < NY; j++){
-            std::cout << u_prev[i * NX + j] << " " ;
-        }
-        std::cout << std::endl;
-    }
+    // for(int i = 0; i < 1; i++){
+    //     for(int j = 0; j < NY; j++){
+    //         //std::cout << u_prev[i * NX + j] << " " ;
+    //     }
+    //     //std::cout << std::endl;
+    // }
 
     dacpp::Matrix<double> u_curr_tensor({NX, NY}, u_curr);
     dacpp::Matrix<double> u_prev_tensor({NX, NY}, u_prev);
@@ -95,6 +95,6 @@ int main() {
 
         
     }
-    u_curr_tensor.print(); 
+    u_curr_tensor[0].print(); 
     return 0;
 }

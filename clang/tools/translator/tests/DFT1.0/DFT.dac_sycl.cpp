@@ -24,11 +24,11 @@ const int N = 8;
 
 using namespace sycl;
 
-void dft(std::complex<double>* input,std::complex<double>* output,std::complex<double>* vec,sycl::accessor<int, 1, sycl::access::mode::read_write> info_input_acc, sycl::accessor<int, 1, sycl::access::mode::read_write> info_output_acc, sycl::accessor<int, 1, sycl::access::mode::read_write> info_vec_acc) 
+void dft(std::complex<double>* input,std::complex<double>* output,int* vec,sycl::accessor<int, 1, sycl::access::mode::read_write> info_input_acc, sycl::accessor<int, 1, sycl::access::mode::read_write> info_output_acc, sycl::accessor<int, 1, sycl::access::mode::read_write> info_vec_acc) 
 {
     Complex sum(0, 0);
     for (int n = 0; n < N; ++n) {
-        double angle = <recovery-expr>(-2. * 3.1415926535897931 * vec[0], n) / N;
+        double angle = -2. * 3.1415926535897931 * vec[0] * n / N;
         Complex W_n(std::cos(angle), std::sin(angle));
         sum += input[n] * W_n;
     }
@@ -42,7 +42,7 @@ void DFT_dft(const dacpp::Vector<std::complex<double> > & input, dacpp::Vector<s
     auto selector = default_selector_v;
     queue q(selector);
     //声明参数生成工具
-    ParameterGeneration<int,2> para_gene_tool;
+    ParameterGeneration para_gene_tool;
     // 算子初始化
     
     // 数据信息初始化
@@ -188,7 +188,6 @@ void DFT_dft(const dacpp::Vector<std::complex<double> > & input, dacpp::Vector<s
     Dac_Ops output_ops;
     
     i.setDimId(0);
-    i.setSplitLength(8);
     output_ops.push_back(i);
     output_tool.init(info_output,output_ops);
     output_tool.Reconstruct(r_output,output);
@@ -202,15 +201,20 @@ void DFT_dft(const dacpp::Vector<std::complex<double> > & input, dacpp::Vector<s
     Dac_Ops vec_ops;
     
     i.setDimId(0);
-    i.setSplitLength(8);
     vec_ops.push_back(i);
     vec_tool.init(info_vec,vec_ops);
     vec_tool.Reconstruct(r_vec,vec);
 	std::vector<int> info_partition_vec=para_gene_tool.init_partition_data_shape(info_vec,vec_ops);
     sycl::buffer<int> info_partition_vec_buffer(info_partition_vec.data(), sycl::range<1>(info_partition_vec.size()));
     
+    // 设备数据初始化
+    q.memset(d_input,0,input_Size*sizeof(std::complex<double>)).wait();
     // 数据移动
     q.memcpy(d_input,r_input,input_Size*sizeof(std::complex<double>)).wait();
+    // 设备数据初始化
+    q.memset(d_output,0,output_Size*sizeof(std::complex<double>)).wait();
+    // 设备数据初始化
+    q.memset(d_vec,0,vec_Size*sizeof(int)).wait();
     // 数据移动
     q.memcpy(d_vec,r_vec,vec_Size*sizeof(int)).wait();
 	
@@ -298,10 +302,10 @@ int main() {
     }
 
     // 输出原始数据
-    std::cout << "原始数据（时间域）:" << std::endl;
-    for (const auto& val : input) {
-        std::cout << val << std::endl;
-    }
+    //std::cout << "原始数据（时间域）:" << std::endl;
+    // for (const auto& val : input) {
+    //     //std::cout << val << std::endl;
+    // }
 
     // 计算离散傅里叶变换
     vector<Complex> output(N);

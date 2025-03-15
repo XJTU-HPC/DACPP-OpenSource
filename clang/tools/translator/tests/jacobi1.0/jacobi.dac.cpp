@@ -112,8 +112,8 @@ int main() {
 
 
     // 输出结果
-    std::cout << "迭代次数: " << iter << std::endl;
-    std::cout << "解向量 x:" << std::endl;
+    //std::cout << "迭代次数: " << iter << std::endl;
+    //std::cout << "解向量 x:" << std::endl;
     for (int i = 0; i < N; ++i) {
         std::cout << data2[i] << " ";
     }

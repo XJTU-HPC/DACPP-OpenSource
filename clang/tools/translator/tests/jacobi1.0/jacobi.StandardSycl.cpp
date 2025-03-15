@@ -82,14 +82,14 @@ int main() {
 
     // 获取最终结果
     auto x_result = x_new_buf.get_access<access::mode::read>();
-    std::cout << "迭代次数: " << iter << std::endl;
-    std::cout << "解向量 x:" << std::endl;
+    //std::cout << "迭代次数: " << iter << std::endl;
+    //std::cout << "解向量 x:" << std::endl;
     for (int i = 0; i < N; ++i) {
         std::cout << x_result[i] << " ";
     }
     std::cout << std::endl;
     auto end_time = std::chrono::high_resolution_clock::now(); // 结束时间测量
     std::chrono::duration<double> duration = end_time - start_time; // 计算持续时间
-    std::cout << "总执行时间: " << duration.count() << " 秒" << std::endl; // 输出执行时间
+    //std::cout << "总执行时间: " << duration.count() << " 秒" << std::endl; // 输出执行时间
     return 0;
 }

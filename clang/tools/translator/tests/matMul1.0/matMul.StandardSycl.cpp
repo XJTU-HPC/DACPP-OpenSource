@@ -1,100 +1,73 @@
+#include <CL/sycl.hpp>
 #include <vector>
-
-#include "ReconTensor.h"
-
-using dacpp::Tensor;
-
-namespace dacpp {
-typedef std::vector<std::any> list;
-}
-
-
-
-
-
-#include <sycl/sycl.hpp>
-#include "DataReconstructor.h"
+#include <iostream>
 
 using namespace sycl;
 
-void matMul(int* vecA, int* vecB, int* dotProduct) 
-{
-    for (int i = 0; i < 5; i++) {
-        dotProduct[0] += vecA[i] * vecB[i];
-    }
-}
-
-
-// 生成函数调用
-void matMulSplit(const std::vector<int> & matA, const std::vector<int> & matB, std::vector<int> & matC) { 
-    // 设备选择
-    auto selector = gpu_selector_v;
-    queue q(selector);
-    
-    // 设备内存分配
-    int *d_matA=malloc_device<int>(20,q);
-    // 设备内存分配
-    int *d_matB=malloc_device<int>(20,q);
-    // 设备内存分配
-    int *d_matC=malloc_device<int>(16,q);
-    // 数据移动
-    
-    // 数据移动
-    q.memcpy(d_matA,matA.data(),20*sizeof(int)).wait();
-    // 数据移动
-    q.memcpy(d_matB,matB.data(),20*sizeof(int)).wait();   
-    // 内核执行
-    
-    //工作项划分
-    sycl::range<3> local(1, 1, 16);
-    sycl::range<3> global(1, 1, 1);
-    //队列提交命令组
-    q.submit([&](handler &h) {
-        h.parallel_for(sycl::nd_range<3>(global * local, local),[=](sycl::nd_item<3> item) {
-            const auto item_id = item.get_local_id(2);
-            // 索引初始化
-			
-            const auto i=(item_id/4+(0)+4)%4;
-            const auto j=(item_id+(0)+4)%4;
-            // 嵌入计算
-			
-            matMul(d_matA+(i*5),d_matB+(j*5),d_matC+(i*4+j*1));
-        });
-    }).wait();
-    
-    
-    // 归约
-    
-    // 返回计算结果
-    
-    // 归并结果返回
-    q.memcpy(matC.data(), d_matC, 16*sizeof(int)).wait();
-    // 内存释放
-    
-    sycl::free(d_matA, q);
-    sycl::free(d_matB, q);
-    sycl::free(d_matC, q);
-}
-
 int main() {
-    auto start_time = std::chrono::high_resolution_clock::now(); // 开始时间测量
+    constexpr int M = 4, K = 5, N = 4;
 
-    std::vector<int> dataA{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20};
+    // 矩阵 A (4×5) 按行存储
+    std::vector<int> dataA{
+        1, 2, 3, 4, 5,
+        6, 7, 8, 9, 10,
+        11, 12, 13, 14, 15,
+        16, 17, 18, 19, 20
+    };
 
-    std::vector<int> dataB{1, 5, 9, 13, 17, 2, 6, 10, 14, 18, 3, 7, 11, 15, 19, 4, 8, 12, 16, 20};
+    // 矩阵 B (5×4) 按列存储
+    std::vector<int> dataB{
+        1, 5, 9, 13,
+        17, 2, 6, 10,
+        14, 18, 3, 7,
+        11, 15, 19, 4,
+        8, 12, 16, 20
+    };
 
-    std::vector<int> dataC{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16};
+    // 结果矩阵 C (4×4)
+    std::vector<int> result(M * N, 0);
 
-    matMulSplit(dataA, dataB, dataC);
-    
-    for(int i=0;i<4;i++) {
-        for(int j=0;j<4;j++) {
-            std::cout << dataC[i*4+j] << " ";
-        }
-        std::cout << std::endl;
+    {
+        queue q;  // 创建 SYCL 队列
+
+        // 分配 SYCL 设备内存
+        buffer<int, 1> bufA(dataA.data(), range<1>(M * K));
+        buffer<int, 1> bufB(dataB.data(), range<1>(K * N));
+        buffer<int, 1> bufC(result.data(), range<1>(M * N));
+
+        q.submit([&](handler& h) {
+            accessor a(bufA, h, read_only);
+            accessor b(bufB, h, read_only);
+            accessor c(bufC, h, write_only, no_init);
+
+            h.parallel_for(range<2>(M, N), [=](id<2> idx) {
+                int i = idx[0];
+                int j = idx[1];
+                int sum = 0;
+
+                for (int k = 0; k < K; k++) {
+                    sum += a[i * K + k] * b[k * N + j];
+                }
+
+                c[i * N + j] = sum;
+            });
+        });
+
+        q.wait();  // 等待计算完成
     }
-    auto end_time = std::chrono::high_resolution_clock::now(); // 结束时间测量
-    std::chrono::duration<double> duration = end_time - start_time; // 计算持续时间
-    std::cout << "总执行时间: " << duration.count() << " 秒" << std::endl; // 输出执行时间
+
+    // 格式化输出：{{a, b, c, d}, {e, f, g, h}, ...}
+    std::cout << "{";
+    for (int i = 0; i < M; i++) {
+        std::cout << "{";
+        for (int j = 0; j < N; j++) {
+            std::cout << result[i * N + j];
+            if (j < N - 1) std::cout << ", ";
+        }
+        std::cout << "}";
+        if (i < M - 1) std::cout << ", ";
+    }
+    std::cout << "}" << std::endl;
+
     return 0;
 }

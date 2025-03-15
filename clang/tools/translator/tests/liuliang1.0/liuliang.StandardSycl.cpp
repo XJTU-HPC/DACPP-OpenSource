@@ -59,9 +59,9 @@ int main() {
                     new_rho_acc[x] = std::max(0.0, new_rho_acc[x]);
 
                     // 扩散效应
-                    if (x > 1 && x < WIDTH - 2) {
-                        new_rho_acc[x] += 0.1 * (rho_acc[x - 1] + rho_acc[x + 1] - 2 * rho_acc[x]);
-                    }
+                    // if (x > 1 && x < WIDTH - 2) {
+                    //     new_rho_acc[x] += 0.1 * (rho_acc[x - 1] + rho_acc[x + 1] - 2 * rho_acc[x]);
+                    // }
                 });
             });
         }
@@ -74,11 +74,14 @@ int main() {
         rho = new_rho;
 
         // 输出当前时间步的密度分布
-        std::cout << "Time Step " << t << ": ";
-        for (int x = 0; x < WIDTH; ++x) {
-            std::cout << static_cast<int>(rho[x]) << " ";
-        }
-        std::cout << std::endl;
+        //std::cout << "Time Step " << t << ": ";
+        //for (int x = 0; x < WIDTH; ++x) {
+            //std::cout << static_cast<int>(rho[x]) << " ";
+        //}
+        //std::cout << std::endl;
+    }
+    for (int x = 15; x < 16; ++x) {
+        std::cout << static_cast<int>(rho[x]) << std::endl;
     }
 
     return 0;

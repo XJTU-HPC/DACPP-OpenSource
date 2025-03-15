@@ -68,9 +68,13 @@ int main() {
         }
         
         middle_in_tensor[0] = middle_out_tensor[0]; // 左边界无车流
+        //middle_in_tensor[99] = middle_out_tensor[97];
 
     }
-    middle_in_tensor.print();
+    std::cout << middle_in_tensor[15] << std::endl;
+    
+
+    
 
     // 释放动态分配的内存
 
