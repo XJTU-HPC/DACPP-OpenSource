@@ -3,7 +3,7 @@
 # Check icpx availability
 if ! which icpx &> /dev/null; then
     echo "Loading Intel oneAPI environment..."
-    source /data/qinian/share/intel/oneapi2025/setvars.sh intel64 &> /dev/null
+    source /data/qinian/share/intel/oneapi/setvars.sh intel64 &> /dev/null
 fi
 
 # Get the directory of this script
@@ -38,6 +38,8 @@ INCLUDE_DIRS=(
 # )
 
 ICPX=$(which icpx)
+MPICXX=$(which mpicxx)
+MPIICPC=$(which mpiicpc)
 
 # icpx -fsycl -fsycl-targets=nvptx64-nvidia-cuda --cuda-path=/data/cuda/cuda-11.8 -o test test.cpp
 icpx() {
@@ -60,6 +62,42 @@ icpx-cpu() {
 icpx-gpu() {
 
     "$ICPX" -fsycl \
+    -fsycl-targets=nvptx64-nvidia-cuda \
+    --cuda-path=/data/cuda/cuda-11.8 \
+     "$@" \
+    "${INCLUDE_DIRS[@]/#/-I}"
+    
+}
+
+export I_MPI_CXX=icpx
+
+#mpicxx -fsycl -o test test.cpp
+mpicxx () {
+    "$MPICXX" "$@" \
+    "${INCLUDE_DIRS[@]/#/-I}"
+}
+
+# mpicxx-gpu -o test test.cpp
+mpicxx-gpu() {
+
+    "$MPICXX" -fsycl \
+    -fsycl-targets=nvptx64-nvidia-cuda \
+    --cuda-path=/data/cuda/cuda-11.8 \
+     "$@" \
+    "${INCLUDE_DIRS[@]/#/-I}"
+    
+}
+
+# mpiicpc -fsycl -o test test.cpp
+mpiicpc () {
+    "$MPIICPC" "$@" \
+    "${INCLUDE_DIRS[@]/#/-I}"
+}
+
+# mpiicpc-gpu -o test test.cpp
+mpiicpc-gpu() {
+
+    "$MPIICPC" -fsycl \
     -fsycl-targets=nvptx64-nvidia-cuda \
     --cuda-path=/data/cuda/cuda-11.8 \
      "$@" \
