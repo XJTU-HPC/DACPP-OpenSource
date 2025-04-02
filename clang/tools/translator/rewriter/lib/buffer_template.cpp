@@ -149,15 +149,21 @@ std::string CodeGen_AccessorInit(std::string name) {
 }
 
 const char *KERNEL_EXECUTE_Template = R"~~~(
-    //工作项划分
-    sycl::range<3> local(1, 1, {{SPLIT_SIZE}});
-    sycl::range<3> global(1, 1, 1);
+    sycl::device device = q.get_device();
+    int max_global_size = device.get_info<sycl::info::device::max_work_item_sizes<3>>()[2];
+	//工作项划分
+    int work_group_size = (Item_Size + max_global_size - 1) / max_global_size;  // 计算所需的工作组数量
+    sycl::range<3> local(1, 1, std::min(Item_Size, max_global_size)); 
+    sycl::range<3> global(1, 1, (Item_Size <= max_global_size) ? Item_Size : work_group_size * max_global_size);
+
     //队列提交命令组
     q.submit([&](handler &h) {
     {{ACCESSOR_LIST}}
     {{ACCESSOR_INIT}}
-        h.parallel_for(sycl::nd_range<3>(global * local, local),[=](sycl::nd_item<3> item) {
-            const auto item_id = item.get_local_id(2);
+        h.parallel_for(sycl::nd_range<3>(global, local),[=](sycl::nd_item<3> item) {
+            const auto item_id = item.get_group(2)*item.get_local_range(2)+item.get_local_id(2);
+            if(item_id >= Item_Size)
+                return;
             // 索引初始化
 			{{INDEX_INIT}}
             // 获得accessor指针
