@@ -224,13 +224,20 @@ std::string CodeGen_Reduction_Span(std::string SpanSize,std::string SplitSize,st
 
 const char *D2H_MEM_MOV_1_Template = R"~~~(
     // 归并结果返回
-    q.memcpy(r_{{NAME}}, d_{{NAME}}, {{SIZE}}*sizeof({{TYPE}})).wait();
-    {{NAME}}_tool.UpdateData(r_{{NAME}},{{NAME}});)~~~";
+	{{TYPE}} *d_myTensor2=malloc_device<{{TYPE}}>({{SIZE}},q);
+    {{NAME}}_tool.UpdateData(d_{{NAME}},d_myTensor2,q);
+	{{TYPE}}* res = ({{TYPE}}*)malloc({{SIZE}}*sizeof({{TYPE}}));
+	q.memcpy(res,d_myTensor2, {{SIZE}}*sizeof({{TYPE}})).wait();
+	{{NAME}}.array2Tensor(res);)~~~";
 
 const char *D2H_MEM_MOV_2_Template = R"~~~(
-    // 归约结果返回
-    q.memcpy(r_{{NAME}},d__{{NAME}}, {{SIZE}}*sizeof({{TYPE}})).wait();
-    {{NAME}}_tool.UpdateData(r_{{NAME}},{{NAME}});)~~~";
+    // 归并结果返回
+	{{TYPE}} *d_myTensor2=malloc_device<{{TYPE}}>({{SIZE}},q);
+    {{NAME}}_tool.UpdateData(d_{{NAME}},d_myTensor2,q);
+	{{TYPE}}* res = ({{TYPE}}*)malloc({{SIZE}}*sizeof({{TYPE}}));
+	q.memcpy(res,d_myTensor2, {{SIZE}}*sizeof({{TYPE}})).wait();
+	{{NAME}}.array2Tensor(res);)~~~";
+
 
 std::string CodeGen_D2HMemMov(std::string Name,std::string Type,std::string Size,bool isReduction){
     if(isReduction){
