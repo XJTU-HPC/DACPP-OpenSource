@@ -1,7 +1,3 @@
-#include<string>
-#include<iostream>
-#include<fstream>
-#include<vector>
 #include"sub_template.h"
 
 /*
@@ -47,76 +43,76 @@ std::string CodeGen_DataAssocComp(std::string dataRecon, std::string H2DMemMove,
 	});
 }
 
-const char *DAC2SYCL_Template_1 = R"~~~(
-// 生成函数调用
-void {{DAC_SHELL_NAME}}({{DAC_SHELL_PARAMS}}) { 
-    // 设备选择
-    auto selector = gpu_selector_v;
-    queue q(selector);
-    // 设备内存分配
-    {{DEVICE_MEM_ALLOC}}
-    // 算子初始化
-    {{OP_INIT}}
-    // 数据关联计算
-    {{DATA_ASSOC_COMP}}
-    // 内存释放
-    {{MEM_FREE}}
-})~~~";
+// const char *DAC2SYCL_Template_1 = R"~~~(
+// // 生成函数调用
+// void {{DAC_SHELL_NAME}}({{DAC_SHELL_PARAMS}}) { 
+//     // 设备选择
+//     auto selector = default_selector_v;
+//     queue q(selector);
+//     // 设备内存分配
+//     {{DEVICE_MEM_ALLOC}}
+//     // 算子初始化
+//     {{OP_INIT}}
+//     // 数据关联计算
+//     {{DATA_ASSOC_COMP}}
+//     // 内存释放
+//     {{MEM_FREE}}
+// })~~~";
 
-std::string CodeGen_DAC2SYCL(std::string dacShellName, std::string dacShellParams, std::string deviceMemAlloc, std::string opInit, std::string dataAssocComp, std::string memFree){
-    return templateString(DAC2SYCL_Template_1,
-	{
-		{"{{DAC_SHELL_NAME}}",    dacShellName},
-		{"{{DAC_SHELL_PARAMS}}",  dacShellParams},
-		{"{{OP_INIT}}",           opInit},
-		{"{{DEVICE_MEM_ALLOC}}",  deviceMemAlloc},
-		{"{{DATA_ASSOC_COMP}}",   dataAssocComp},
-        {"{{MEM_FREE}}",          memFree}
-	});
-}
-
-// aborted
-const char *DAC2SYCL_Template = R"~~~(
-// 生成函数调用
-void {{DAC_SHELL_NAME}}({{DAC_SHELL_PARAMS}}) { 
-    // 设备选择
-    auto selector = gpu_selector_v;
-    queue q(selector);
-    // 算子初始化
-    {{OP_INIT}}
-    // 数据重组
-    {{DATA_RECON}}
-    // 设备内存分配
-    {{DEVICE_MEM_ALLOC}}
-    // 数据移动
-    {{H2D_MEM_MOV}}   
-    // 内核执行
-    {{KERNEL_EXECUTE}}    
-    // 归约
-    {{REDUCTION}}
-    // 返回计算结果
-    {{D2H_MEM_MOV}}
-    // 内存释放
-    {{MEM_FREE}}
-})~~~";
+// std::string CodeGen_DAC2SYCL(std::string dacShellName, std::string dacShellParams, std::string deviceMemAlloc, std::string opInit, std::string dataAssocComp, std::string memFree){
+//     return templateString(DAC2SYCL_Template_1,
+// 	{
+// 		{"{{DAC_SHELL_NAME}}",    dacShellName},
+// 		{"{{DAC_SHELL_PARAMS}}",  dacShellParams},
+// 		{"{{OP_INIT}}",           opInit},
+// 		{"{{DEVICE_MEM_ALLOC}}",  deviceMemAlloc},
+// 		{"{{DATA_ASSOC_COMP}}",   dataAssocComp},
+//         {"{{MEM_FREE}}",          memFree}
+// 	});
+// }
 
 // aborted
-std::string CodeGen_DAC2SYCL(std::string dacShellName,std::string dacShellParams,std::string opInit,std::string dataRecon,
-	std::string deviceMemAlloc,std::string H2DMemMove,std::string kernelExecute,std::string reduction,std::string D2HMemMove,std::string memFree){
-    return templateString(DAC2SYCL_Template,
-	{
-		{"{{DAC_SHELL_NAME}}",    dacShellName},
-		{"{{DAC_SHELL_PARAMS}}",  dacShellParams},
-		{"{{OP_INIT}}",           opInit},
-        {"{{DATA_RECON}}",        dataRecon},
-		{"{{DEVICE_MEM_ALLOC}}",  deviceMemAlloc},
-        {"{{H2D_MEM_MOV}}",       H2DMemMove},
-        {"{{KERNEL_EXECUTE}}",    kernelExecute},
-		{"{{REDUCTION}}",         reduction},
-        {"{{D2H_MEM_MOV}}",       D2HMemMove},
-        {"{{MEM_FREE}}",          memFree}
-	});
-}
+// const char *DAC2SYCL_Template = R"~~~(
+// // 生成函数调用
+// void {{DAC_SHELL_NAME}}({{DAC_SHELL_PARAMS}}) { 
+//     // 设备选择
+//     auto selector = default_selector_v;
+//     queue q(selector);
+//     // 算子初始化
+//     {{OP_INIT}}
+//     // 数据重组
+//     {{DATA_RECON}}
+//     // 设备内存分配
+//     {{DEVICE_MEM_ALLOC}}
+//     // 数据移动
+//     {{H2D_MEM_MOV}}   
+//     // 内核执行
+//     {{KERNEL_EXECUTE}}    
+//     // 归约
+//     {{REDUCTION}}
+//     // 返回计算结果
+//     {{D2H_MEM_MOV}}
+//     // 内存释放
+//     {{MEM_FREE}}
+// })~~~";
+
+//aborted
+// std::string CodeGen_DAC2SYCL(std::string dacShellName,std::string dacShellParams,std::string opInit,std::string dataRecon,
+// 	std::string deviceMemAlloc,std::string H2DMemMove,std::string kernelExecute,std::string reduction,std::string D2HMemMove,std::string memFree){
+//     return templateString(DAC2SYCL_Template,
+// 	{
+// 		{"{{DAC_SHELL_NAME}}",    dacShellName},
+// 		{"{{DAC_SHELL_PARAMS}}",  dacShellParams},
+// 		{"{{OP_INIT}}",           opInit},
+//         {"{{DATA_RECON}}",        dataRecon},
+// 		{"{{DEVICE_MEM_ALLOC}}",  deviceMemAlloc},
+//         {"{{H2D_MEM_MOV}}",       H2DMemMove},
+//         {"{{KERNEL_EXECUTE}}",    kernelExecute},
+// 		{"{{REDUCTION}}",         reduction},
+//         {"{{D2H_MEM_MOV}}",       D2HMemMove},
+//         {"{{MEM_FREE}}",          memFree}
+// 	});
+// }
 
 const char *DATA_INFO_INIT_Template = R"~~~(
     // 数据信息初始化
@@ -129,61 +125,91 @@ std::string CodeGen_DataInfoInit(std::string name){
 		{"{{NAME}}",    name}
 	});
 }
-const char *OP_REGULAR_SLICE_INIT_Template = R"~~~(
-    // 规则分区算子初始化
-    RegularSlice {{OP_NAME}} = RegularSlice("{{OP_NAME}}", {{SIZE}}, {{STRIDE}});
-    {{OP_NAME}}.SetSplitSize({{SPLIT_SIZE}});)~~~";
 
-std::string CodeGen_RegularSliceInit(std::string opName,std::string size,std::string stride,std::string splitSize){
-    return templateString(OP_REGULAR_SLICE_INIT_Template,
-	{
-		{"{{OP_NAME}}",    opName},
-		{"{{SIZE}}",       size},
-		{"{{STRIDE}}",     stride},
-		{"{{SPLIT_SIZE}}", splitSize}
-	});
-}
+// const char *OP_REGULAR_SLICE_INIT_Template = R"~~~(
+//     // 规则分区算子初始化
+//     RegularSlice {{OP_NAME}} = RegularSlice("{{OP_NAME}}", {{SIZE}}, {{STRIDE}});
+//     {{OP_NAME}}.SetSplitSize({{SPLIT_SIZE}});)~~~";
 
-const char *OP_INDEX_INIT_Template = R"~~~(
-    // 降维算子初始化
-    Index {{OP_NAME}} = Index("{{OP_NAME}}");
-    {{OP_NAME}}.SetSplitSize({{SPLIT_SIZE}});)~~~";
+// std::string CodeGen_RegularSliceInit(std::string opName,std::string size,std::string stride,std::string splitSize){
+//     return templateString(OP_REGULAR_SLICE_INIT_Template,
+// 	{
+// 		{"{{OP_NAME}}",    opName},
+// 		{"{{SIZE}}",       size},
+// 		{"{{STRIDE}}",     stride},
+// 		{"{{SPLIT_SIZE}}", splitSize}
+// 	});
+// }
 
-std::string CodeGen_IndexInit(std::string opName,std::string splitSize){
-    return templateString(OP_INDEX_INIT_Template,
-	{
-		{"{{OP_NAME}}",    opName},
-		{"{{SPLIT_SIZE}}", splitSize}
-	});
-}
+// const char *OP_INDEX_INIT_Template = R"~~~(
+//     // 降维算子初始化
+//     Index {{OP_NAME}} = Index("{{OP_NAME}}");
+//     {{OP_NAME}}.SetSplitSize({{SPLIT_SIZE}});)~~~";
+
+// std::string CodeGen_IndexInit(std::string opName,std::string splitSize){
+//     return templateString(OP_INDEX_INIT_Template,
+// 	{
+// 		{"{{OP_NAME}}",    opName},
+// 		{"{{SPLIT_SIZE}}", splitSize}
+// 	});
+// }
+
+
+// 划分数不需要了 已经修改 应该没有问题
+// 下面这个rewriter.cpp里面还在用 只在.h文件中保留了声明 因为现在这个不用了
+// const char *OP_PUSH_BACK2OPS_Template = R"~~~(
+//     {{OP_NAME}}.setDimId({{DIM_ID}});
+//     {{OP_NAME}}.setSplitLength({{SPLIT_LENGTH}});
+//     {{NAME}}_ops.push_back({{OP_NAME}});)~~~";
+
+// std::string CodeGen_OpPushBack2Ops(std::string name, std::string opName, std::string dimId, std::string splitLength){
+//     return templateString(OP_PUSH_BACK2OPS_Template,
+// 	{
+// 		{"{{OP_NAME}}",    opName},
+// 		{"{{NAME}}",       name},
+// 		{"{{DIM_ID}}",     dimId},
+// 		{"{{SPLIT_LENGTH}}", splitLength}
+// 	});
+// }
 
 const char *OP_PUSH_BACK2OPS_Template = R"~~~(
     {{OP_NAME}}.setDimId({{DIM_ID}});
-    {{OP_NAME}}.setSplitLength({{SPLIT_LENGTH}});
     {{NAME}}_ops.push_back({{OP_NAME}});)~~~";
 
-std::string CodeGen_OpPushBack2Ops(std::string name, std::string opName, std::string dimId, std::string splitLength){
+std::string CodeGen_OpPushBack2Ops(std::string name, std::string opName, std::string dimId){
     return templateString(OP_PUSH_BACK2OPS_Template,
 	{
 		{"{{OP_NAME}}",    opName},
 		{"{{NAME}}",       name},
-		{"{{DIM_ID}}",     dimId},
-		{"{{SPLIT_LENGTH}}", splitLength}
+		{"{{DIM_ID}}",     dimId}
 	});
 }
 
+// const char *OP_PUSH_BACK2TOOL_Template = R"~~~(
+//     {{OP_NAME}}.setDimId({{DIM_ID}});
+//     {{OP_NAME}}.setSplitLength({{SPLIT_LENGTH}});
+//     {{NAME}}_tool.push_back({{OP_NAME}});)~~~";
+
+// std::string CodeGen_OpPushBack2Tool(std::string name, std::string opName, std::string dimId, std::string splitLength){
+//     return templateString(OP_PUSH_BACK2TOOL_Template,
+// 	{
+// 		{"{{OP_NAME}}",    opName},
+// 		{"{{NAME}}",       name},
+// 		{"{{DIM_ID}}",     dimId},
+// 		{"{{SPLIT_LENGTH}}", splitLength}
+// 	});
+// }
+
 const char *OP_PUSH_BACK2TOOL_Template = R"~~~(
     {{OP_NAME}}.setDimId({{DIM_ID}});
-    {{OP_NAME}}.setSplitLength({{SPLIT_LENGTH}});
     {{NAME}}_tool.push_back({{OP_NAME}});)~~~";
 
-std::string CodeGen_OpPushBack2Tool(std::string name, std::string opName, std::string dimId, std::string splitLength){
+std::string CodeGen_OpPushBack2Tool(std::string name, std::string opName, std::string dimId){
     return templateString(OP_PUSH_BACK2TOOL_Template,
 	{
 		{"{{OP_NAME}}",    opName},
 		{"{{NAME}}",       name},
-		{"{{DIM_ID}}",     dimId},
-		{"{{SPLIT_LENGTH}}", splitLength}
+		{"{{DIM_ID}}",     dimId}
 	});
 }
 
@@ -293,32 +319,44 @@ std::string CodeGen_H2DMemMov(std::string type,std::string name,std::string size
 		{"{{SIZE}}", size}
 	});
 }
+const char *DEVICE_DATA_INIT_Template = R"~~~(
+    // 设备数据初始化
+    q.memset(d_{{NAME}},0,{{SIZE}}*sizeof({{TYPE}})).wait();)~~~";
 
-const char *KERNEL_EXECUTE_OLD_Template = R"~~~(
-    //工作项划分
-    sycl::range<3> local(1, 1, {{SPLIT_SIZE}});
-    sycl::range<3> global(1, 1, 1);
-    //队列提交命令组
-    q.submit([&](handler &h) {
-        h.parallel_for(sycl::nd_range<3>(global * local, local),[=](sycl::nd_item<3> item) {
-            const auto item_id = item.get_local_id(2);
-            // 索引初始化
-			{{INDEX_INIT}}
-            // 嵌入计算
-			{{CALC_EMBED}}
-        });
-    }).wait();
-    
-)~~~";
-
-std::string CodeGen_KernelExecute(std::string SplitSize,std::string IndexInit,std::string CalcEmbed){
-    return templateString(KERNEL_EXECUTE_OLD_Template,
+std::string CodeGen_DeviceDataInit(std::string type,std::string name,std::string size){
+    return templateString(DEVICE_DATA_INIT_Template,
 	{
-		{"{{SPLIT_SIZE}}",    SplitSize},
-		{"{{INDEX_INIT}}",    IndexInit},
-		{"{{CALC_EMBED}}",    CalcEmbed}
+		{"{{TYPE}}", type},
+		{"{{NAME}}", name},
+		{"{{SIZE}}", size}
 	});
 }
+
+// const char *KERNEL_EXECUTE_OLD_Template = R"~~~(
+//     //工作项划分
+//     sycl::range<3> local(1, 1, {{SPLIT_SIZE}});
+//     sycl::range<3> global(1, 1, 1);
+//     //队列提交命令组
+//     q.submit([&](handler &h) {
+//         h.parallel_for(sycl::nd_range<3>(global * local, local),[=](sycl::nd_item<3> item) {
+//             const auto item_id = item.get_local_id(2);
+//             // 索引初始化
+// 			{{INDEX_INIT}}
+//             // 嵌入计算
+// 			{{CALC_EMBED}}
+//         });
+//     }).wait();
+    
+// )~~~";
+
+// std::string CodeGen_KernelExecute(std::string SplitSize,std::string IndexInit,std::string CalcEmbed){
+//     return templateString(KERNEL_EXECUTE_OLD_Template,
+// 	{
+// 		{"{{SPLIT_SIZE}}",    SplitSize},
+// 		{"{{INDEX_INIT}}",    IndexInit},
+// 		{"{{CALC_EMBED}}",    CalcEmbed}
+// 	});
+// }
 
 const char *KERNEL_EXECUTE_Template = R"~~~(
     //工作项划分
@@ -361,132 +399,132 @@ const char *INDEX_INIT_Template = R"~~~(
             const auto {{NAME}}={{EXPRESSION}};)~~~";
 
 //aborted
-std::string CodeGen_IndexInit(Dac_Ops ops)
-{
-	int len = ops.size;
-	std::vector<std::string> index_expression;//增加
-	for(int i=0;i<len;i++){
-		std::string sub_expression = "item_id";
-		for(int j=i+1;j<len;j++){
-			sub_expression = sub_expression + "/" + std::to_string(ops[j].split_size);
-		}
-		sub_expression = sub_expression + "%" + std::to_string(ops[i].split_size);
-		index_expression.push_back(sub_expression);//增加
-		//ops[i].setExp(sub_expression);
-	}
+// std::string CodeGen_IndexInit(Dac_Ops ops)
+// {
+// 	int len = ops.size;
+// 	std::vector<std::string> index_expression;//增加
+// 	for(int i=0;i<len;i++){
+// 		std::string sub_expression = "item_id";
+// 		for(int j=i+1;j<len;j++){
+// 			sub_expression = sub_expression + "/" + std::to_string(ops[j].split_size);
+// 		}
+// 		sub_expression = sub_expression + "%" + std::to_string(ops[i].split_size);
+// 		index_expression.push_back(sub_expression);//增加
+// 		//ops[i].setExp(sub_expression);
+// 	}
 
-	std::string expression = "";
-	for(int i=0;i<len;i++){
-		std::string ops_i_name = ops[i].name;
-		std::string index_i_expression = index_expression[i];
-		expression = expression + templateString(INDEX_INIT_Template,
-		{
-			//{"{{NAME}}", ops[i].name},
-			{"{{NAME}}", ops_i_name},
-			//{"{{EXPRESSION}}", ops[i].getExp()}
-			{"{{EXPRESSION}}", index_i_expression}
-		});
-	}
+// 	std::string expression = "";
+// 	for(int i=0;i<len;i++){
+// 		std::string ops_i_name = ops[i].name;
+// 		std::string index_i_expression = index_expression[i];
+// 		expression = expression + templateString(INDEX_INIT_Template,
+// 		{
+// 			//{"{{NAME}}", ops[i].name},
+// 			{"{{NAME}}", ops_i_name},
+// 			//{"{{EXPRESSION}}", ops[i].getExp()}
+// 			{"{{EXPRESSION}}", index_i_expression}
+// 		});
+// 	}
 
-	return expression;
-}
+// 	return expression;
+// }
 
-std::string CodeGen_IndexInit(Dac_Ops ops,std::vector<std::string> sets,std::vector<std::string> offsets)//sets表示每个算子属于的集合的名字 offsets表示每个算子相对于集合的偏移量
-{ 
-    std::set<std::string> sets_map;//用于辅助找到不同的集合的个数
-    std::vector<std::string> sets_order;//记录了不同的集合出现的顺序，储存集合的名字： idx idy idz
-    std::vector<int> sets_split;//记录了不同集合对应的划分数，与集合名相对应： idx的划分数 idy的划分数 idz的划分数 
-    for (int i = 0; i < sets.size(); ++i) 
-    {
-        if (sets_map.find(sets[i]) == sets_map.end())//如果容器里没有
-        {
-            sets_map.insert(sets[i]);//将集合插入容器
-            sets_order.push_back(sets[i]);//将集合放入到集合的数组中
-            sets_split.push_back(ops[i].split_size);//将集合对应的划分数放入数组中
-        }
-    }
+// std::string CodeGen_IndexInit(Dac_Ops ops,std::vector<std::string> sets,std::vector<std::string> offsets)//sets表示每个算子属于的集合的名字 offsets表示每个算子相对于集合的偏移量
+// { 
+//     std::set<std::string> sets_map;//用于辅助找到不同的集合的个数
+//     std::vector<std::string> sets_order;//记录了不同的集合出现的顺序，储存集合的名字： idx idy idz
+//     std::vector<int> sets_split;//记录了不同集合对应的划分数，与集合名相对应： idx的划分数 idy的划分数 idz的划分数 
+//     for (int i = 0; i < sets.size(); ++i) 
+//     {
+//         if (sets_map.find(sets[i]) == sets_map.end())//如果容器里没有
+//         {
+//             sets_map.insert(sets[i]);//将集合插入容器
+//             sets_order.push_back(sets[i]);//将集合放入到集合的数组中
+//             sets_split.push_back(ops[i].split_size);//将集合对应的划分数放入数组中
+//         }
+//     }
     
-    int sets_size = sets_map.size();//得到各类集合总个数
-    std::unordered_map<std::string,std::string> sets_sub_expression;//<集合的名称，集合对应的索引表达式>
+//     int sets_size = sets_map.size();//得到各类集合总个数
+//     std::unordered_map<std::string,std::string> sets_sub_expression;//<集合的名称，集合对应的索引表达式>
 
-    for(int i = 0;i < sets_size; i++)//有几个集合就循环几次
-    {
-		std::string sub_expression = "item_id";
-		for(int j = i + 1;j < sets_size;j ++){
-			sub_expression = sub_expression + "/" + std::to_string(sets_split[j]);
-		}
-		//sub_expression = sub_expression + "%" + std::to_string(sets_split[i]);//取模操作应该在偏移之后
-        sets_sub_expression[sets_order[i]] = sub_expression;//将子表达式和集合的名字进行关联
-	}
+//     for(int i = 0;i < sets_size; i++)//有几个集合就循环几次
+//     {
+// 		std::string sub_expression = "item_id";
+// 		for(int j = i + 1;j < sets_size;j ++){
+// 			sub_expression = sub_expression + "/" + std::to_string(sets_split[j]);
+// 		}
+// 		//sub_expression = sub_expression + "%" + std::to_string(sets_split[i]);//取模操作应该在偏移之后
+//         sets_sub_expression[sets_order[i]] = sub_expression;//将子表达式和集合的名字进行关联
+// 	}
 
-    //下面根据偏移量来计算各个算子对应的索引
-    int len = ops.size;
-	std::vector<std::string> index_expression_vector;//新增加
-    for(int i = 0;i < len;i ++)
-    {
-        std::string index_expression = "(";
-        index_expression = index_expression + sets_sub_expression[sets[i]];//得到集合的索引
-        index_expression = index_expression + "+" + "(" + offsets[i] + ")" + "+" + std::to_string(ops[i].split_size) + ")";//加上偏移量和划分数 防止出现负数
-		index_expression = index_expression + "%" + std::to_string(ops[i].split_size);//偏移之后再取模
-        //ops[i].setExp(index_expression);
-		index_expression_vector.push_back(index_expression);//新增加
-    }
+//     //下面根据偏移量来计算各个算子对应的索引
+//     int len = ops.size;
+// 	std::vector<std::string> index_expression_vector;//新增加
+//     for(int i = 0;i < len;i ++)
+//     {
+//         std::string index_expression = "(";
+//         index_expression = index_expression + sets_sub_expression[sets[i]];//得到集合的索引
+//         index_expression = index_expression + "+" + "(" + offsets[i] + ")" + "+" + std::to_string(ops[i].split_size) + ")";//加上偏移量和划分数 防止出现负数
+// 		index_expression = index_expression + "%" + std::to_string(ops[i].split_size);//偏移之后再取模
+//         //ops[i].setExp(index_expression);
+// 		index_expression_vector.push_back(index_expression);//新增加
+//     }
 
-	std::string expression = "";
-	for(int i=0;i<len;i++){
-		std::string opsname = ops[i].name;
-		std::string index_i_expression = index_expression_vector[i];
-		expression = expression + templateString(INDEX_INIT_Template,
-		{
-			//{"{{NAME}}", ops[i].name},
-			{"{{NAME}}", opsname},
-			//{"{{EXPRESSION}}", ops[i].getExp()}
-			{"{{EXPRESSION}}", index_i_expression}
-		});
-	}
-	return expression;
-}
+// 	std::string expression = "";
+// 	for(int i=0;i<len;i++){
+// 		std::string opsname = ops[i].name;
+// 		std::string index_i_expression = index_expression_vector[i];
+// 		expression = expression + templateString(INDEX_INIT_Template,
+// 		{
+// 			//{"{{NAME}}", ops[i].name},
+// 			{"{{NAME}}", opsname},
+// 			//{"{{EXPRESSION}}", ops[i].getExp()}
+// 			{"{{EXPRESSION}}", index_i_expression}
+// 		});
+// 	}
+// 	return expression;
+// }
 
 const char *CALC_EMBED_Template = R"~~~(
             {{DAC_CALC_NAME}}{{DAC_CALC_ARGS}})~~~";
 
-std::string CodeGen_CalcEmbed(std::string Name,Args args){
-	std::string DacCalcArgs = "(";
-	int len = args.size;
-	for(int i=0;i<len;i++){
-		std::string IndexComb="(";
-		for(int j=0;j<args[i].ops.size;j++){
-			std::string opsname = args[i].ops[j].name;
-			//IndexComb+= args[i].ops[j].name + "*" + std::to_string(args[i].ops[j].split_length);
-			IndexComb+= opsname + "*" + std::to_string(args[i].ops[j].split_length);
-			if(j!=args[i].ops.size-1) IndexComb+="+";
-		}
-		IndexComb+=")";
-		if(IndexComb == "()")
-		{
-			DacCalcArgs+=args[i].name;
-		}
-		else{
-			DacCalcArgs+=args[i].name + "+" + IndexComb;
-		}		
-		if(i==len-1){
-			DacCalcArgs+=",";
-			for(int j=0;j<len;j++) {
-				DacCalcArgs+="info_partition_"+args[j].name.substr(2)+"_accessor";
-				if(j!=len-1) DacCalcArgs+=",";
-			}
-			DacCalcArgs+=");";
-		}
-		else{
-			DacCalcArgs+=",";
-		}
-	}
-	return templateString(CALC_EMBED_Template,
-	{
-		{"{{DAC_CALC_NAME}}",    Name},
-		{"{{DAC_CALC_ARGS}}",    DacCalcArgs}
-	});
-}
+// std::string CodeGen_CalcEmbed(std::string Name,Args args){
+// 	std::string DacCalcArgs = "(";
+// 	int len = args.size;
+// 	for(int i=0;i<len;i++){
+// 		std::string IndexComb="(";
+// 		for(int j=0;j<args[i].ops.size;j++){
+// 			std::string opsname = args[i].ops[j].name;
+// 			//IndexComb+= args[i].ops[j].name + "*" + std::to_string(args[i].ops[j].split_length);
+// 			IndexComb+= opsname + "*" + std::to_string(args[i].ops[j].split_length);
+// 			if(j!=args[i].ops.size-1) IndexComb+="+";
+// 		}
+// 		IndexComb+=")";
+// 		if(IndexComb == "()")
+// 		{
+// 			DacCalcArgs+=args[i].name;
+// 		}
+// 		else{
+// 			DacCalcArgs+=args[i].name + "+" + IndexComb;
+// 		}		
+// 		if(i==len-1){
+// 			DacCalcArgs+=",";
+// 			for(int j=0;j<len;j++) {
+// 				DacCalcArgs+="info_partition_"+args[j].name.substr(2)+"_accessor";
+// 				if(j!=len-1) DacCalcArgs+=",";
+// 			}
+// 			DacCalcArgs+=");";
+// 		}
+// 		else{
+// 			DacCalcArgs+=",";
+// 		}
+// 	}
+// 	return templateString(CALC_EMBED_Template,
+// 	{
+// 		{"{{DAC_CALC_NAME}}",    Name},
+// 		{"{{DAC_CALC_ARGS}}",    DacCalcArgs}
+// 	});
+// }
 
 std::string CodeGen_CalcEmbed2(std::string Name,Args args, std::vector<std::string> accessor_names){
 		std::string DacCalcArgs = "(";
@@ -525,26 +563,26 @@ std::string CodeGen_CalcEmbed2(std::string Name,Args args, std::vector<std::stri
 }
 
 // aborted
-const char *REDUCTION_Template = R"~~~(
-    // 归约
-    //使用内核函数进行归约
-    q.submit([&](handler &h) {
-    	h.parallel_for(range<1>({{SPLIT_SIZE}}),reduction(reduction_{{NAME}}, {{REDUCTION_RULE}},property::reduction::initialize_to_identity()),[=](id<1> i,auto &reducer) {
-            	reducer.combine(d_{{NAME}}[i]);
-     	});
- }).wait();
-)~~~";
+// const char *REDUCTION_Template = R"~~~(
+//     // 归约
+//     //使用内核函数进行归约
+//     q.submit([&](handler &h) {
+//     	h.parallel_for(range<1>({{SPLIT_SIZE}}),reduction(reduction_{{NAME}}, {{REDUCTION_RULE}},property::reduction::initialize_to_identity()),[=](id<1> i,auto &reducer) {
+//             	reducer.combine(d_{{NAME}}[i]);
+//      	});
+//  }).wait();
+// )~~~";
 
-// aborted
-std::string CodeGen_Reduction(std::string SplitSize,std::string Name,std::string Type,std::string ReductionRule) {
-    return templateString(REDUCTION_Template,
-	{
-		{"{{SPLIT_SIZE}}",       SplitSize},
-		{"{{TYPE}}",             Type},
-		{"{{NAME}}",             Name},
-		{"{{REDUCTION_RULE}}",   ReductionRule}
-	});
-}
+// // aborted
+// std::string CodeGen_Reduction(std::string SplitSize,std::string Name,std::string Type,std::string ReductionRule) {
+//     return templateString(REDUCTION_Template,
+// 	{
+// 		{"{{SPLIT_SIZE}}",       SplitSize},
+// 		{"{{TYPE}}",             Type},
+// 		{"{{NAME}}",             Name},
+// 		{"{{REDUCTION_RULE}}",   ReductionRule}
+// 	});
+// }
 
 const char *REDUCTION_Template_Span = R"~~~(
     // 归约
@@ -628,10 +666,10 @@ const char *DAC2SYCL_Template_2 = R"~~~(
 // 生成函数调用
 void {{DAC_SHELL_NAME}}({{DAC_SHELL_PARAMS}}) { 
     // 设备选择
-    auto selector = gpu_selector_v;
+    auto selector = default_selector_v;
     queue q(selector);
     //声明参数生成工具
-    ParameterGeneration<int,2> para_gene_tool;
+    ParameterGeneration para_gene_tool;
     // 算子初始化
     {{OP_INIT}}
     //参数生成
@@ -656,72 +694,6 @@ std::string CodeGen_DAC2SYCL2(std::string dacShellName, std::string dacShellPara
         {"{{MEM_FREE}}",          memFree}
 	});
 }
-
-// const char *DAC2SYCL_Template_2 = R"~~~(
-// // 生成函数调用
-// void {{DAC_SHELL_NAME}}({{DAC_SHELL_PARAMS}}) { 
-//     // 设备选择
-//     auto selector = gpu_selector_v;
-//     queue q(selector);
-//     //声明参数生成工具
-//     {{ParameterTool}}
-//     // 算子初始化
-//     {{OP_INIT}}
-//     //参数生成
-// 	{{ParameterGenerate}}
-//     // 设备内存分配
-//     {{DEVICE_MEM_ALLOC}}
-//     // 数据关联计算
-//     {{DATA_ASSOC_COMP}}
-//     // 内存释放
-//     {{MEM_FREE}}
-// })~~~";
-
-// std::string CodeGen_DAC2SYCL2(std::string dacShellName, std::string dacShellParams,std::string parameter_tool, std::string opInit, std::string parameter_generate, std::string deviceMemAlloc, std::string dataAssocComp, std::string memFree){
-//     return templateString(DAC2SYCL_Template_2,
-// 	{	
-// 		{"{{DAC_SHELL_NAME}}",    dacShellName},
-// 		{"{{DAC_SHELL_PARAMS}}",  dacShellParams},
-// 		{"{{ParameterTool}}",     parameter_tool},
-// 		{"{{OP_INIT}}",           opInit},
-// 		{"{{ParameterGenerate}}", parameter_generate},
-// 		{"{{DEVICE_MEM_ALLOC}}",  deviceMemAlloc},
-// 		{"{{DATA_ASSOC_COMP}}",   dataAssocComp},
-//         {"{{MEM_FREE}}",          memFree}
-// 	});
-// }
-
-// 下面已经不需要了
-// //参数生成工具的声明 Tensor是几维的这个就应该是几维的
-// const char *INIT_PARAMETER_TOOL_Template = R"~~~(
-//     ParameterGeneration<int,{{DIM_NUM}}> para_gene_tool{{NUM}};
-// )~~~";
-
-// std::string CodeGen_InitParameterTool(std::string DIM_NUM){
-//     return templateString(INIT_PARAMETER_TOOL_Template,
-// 	{
-// 		{"{{DIM_NUM}}",    DIM_NUM}
-// 	});
-// }
-
-//新的 规则分区算子初始化
-// const char *OP_REGULAR_SLICE_INIT_Template2 = R"~~~(
-//     // 规则分区算子初始化
-//     RegularSlice {{OP_NAME}} = RegularSlice("{{OP_NAME}}", {{SIZE}}, {{STRIDE}});
-//     {{OP_NAME}}.setDimId({{DIM_ID}});
-//     {{OP_NAME}}.SetSplitSize(para_gene_tool.init_operetor_splitnumber({{OP_NAME}},{{TENSOR_NAME}}));
-// )~~~";
-
-// std::string CodeGen_RegularSliceInit2(std::string opName,std::string size,std::string stride,std::string dim_id,std::string tensor_name){
-//     return templateString(OP_REGULAR_SLICE_INIT_Template2,
-// 	{
-// 		{"{{OP_NAME}}",    opName},
-// 		{"{{SIZE}}",       size},
-// 		{"{{STRIDE}}",     stride},
-// 		{"{{DIM_ID}}",     dim_id}, //需要通过dimId来计算算子的划分数了
-// 		{"{{TENSOR_NAME}}",     tensor_name}
-// 	});
-// }
 
 const char *OP_REGULAR_SLICE_INIT_Template2 = R"~~~(
     // 规则分区算子初始化
@@ -758,21 +730,6 @@ std::string CodeGen_IndexInit2(std::string opName,std::string dim_id,std::string
 	});
 }
 
-//生成算子划分数的模板 在初始化算子时直接进行划分数的赋值了
-// const char *OP_SPILIT_NUMBER_Generate_Template = R"~~~(
-// 	//生成算子的划分数
-//     int {{OP_NAME}}_spilit_number = para_gene_tool.init_operetor_splitnumber({{OP_NAME}},{{TENSOR_NAME}});
-// 	{{OP_NAME}}.SetSplitSize({{OP_NAME}}_spilit_number);
-// )~~~";
-
-// std::string CodeGen_OpSpilitNumberGenerate(std::string op_name, std::string tensor_name){
-//     return templateString(OP_SPILIT_NUMBER_Generate_Template,
-// 	{
-//         {"{{OP_NAME}}",        op_name}, //算子的名字 注意这里有一个逗号
-// 		{"{{TENSOR_NAME}}",    tensor_name} //存数据的tensor的名字 
-// 	});
-// }
-
 //参数生成的总模板
 const char *PARA_GENE_Template = R"~~~(
     // 参数生成 提前计算后面需要用到的参数	
@@ -797,34 +754,6 @@ std::string CodeGen_ParameterGenerate(std::string InitOPS,std::string InitDevice
 		{"{{InitReductionSplitLength}}",InitReductionSplitLength}
 	});
 }
-
-/*下面函数已废弃*/
-//构造tensor_in std::vector<dacpp::Tensor<ImplType>> tensor_in
-// const char *Tensor_Vector_Declaration_Template = R"~~~(
-// 	std::vector<dacpp::Tensor<{{TYPE}}>> {{NAME}};
-// )~~~";
-
-// std::string CodeGen_TensorVectorDeclarationGenerate(std::string TYPE, std::string tensor_name){
-//     return templateString(Tensor_Vector_Declaration_Template,
-// 	{
-//         {"{{TYPE}}",        TYPE}, //Tensor里面的数据类型
-// 		{"{{NAME}}",    tensor_name} //Tensor vector组的名字 注意前后命名一致性 
-// 	});
-// }
-
-// //tensor_in.pushback();往vector组里面添加数据
-// const char *Tensor_Vector_Add_Template = R"~~~(
-// 	{{NAME}}.push_back({{NAME2}});
-// )~~~";
-
-// std::string CodeGen_TensorVectorAddGenerate(std::string NAME, std::string NAME2){
-//     return templateString(Tensor_Vector_Add_Template,
-// 	{
-//         {"{{NAME}}",        NAME}, //Tensor vector组的名字
-// 		{"{{NAME2}}",       NAME2} //加到里面的Tensor的名字 
-// 	});
-// }
-/*上面函数已废弃*/
 
 //生成设备内存分配大小的模板 对应mat[分区][分区] mat[分区][降维] mat[分区][] mat[降维][]
 const char *DEVICE_MEM_SIZE_Generate_Template1 = R"~~~(
@@ -854,25 +783,6 @@ std::string CodeGen_DeviceMemSizeGenerate(std::string NAME, std::string DATA_INF
 		{"{{DATA_INFO_NAME}}",     DATA_INFO_NAME} //tensor的名字
 	});
 }
-
-/*下面函数已废弃*/
-//生成设备内存分配的大小 对应数据重组需要分配的大小
-// const char *DEVICE_MEM_SIZE_Generate_Template3 = R"~~~(
-// 	//生成设备内存分配大小
-//     int {{NAME}}_size = para_gene_tool.init_device_memory_size({{TENSOR_IN_NAME}},{{TENSOR_OUT_NAME}},{{IN_DAC_OPS_NAME}},{{OUT_DAC_OPS_NAME}});
-// )~~~";
-
-// std::string CodeGen_DeviceMemSizeGenerate(std::string NAME, std::string TENSOR_IN_NAME,std::string TENSOR_OUT_NAME,std::string IN_DAC_OPS_NAME,std::string OUT_DAC_OPS_NAME){
-//     return templateString(DEVICE_MEM_SIZE_Generate_Template3,
-// 	{
-//         {"{{NAME}}",        NAME}, //设备内存的名字
-// 		{"{{TENSOR_IN_NAME}}",     TENSOR_IN_NAME}, //输入tensor组的名字
-// 		{"{{TENSOR_OUT_NAME}}", TENSOR_OUT_NAME},//输出Tensor的名字 这个就一个Tensor
-// 		{"{{IN_DAC_OPS_NAME}}", IN_DAC_OPS_NAME},//输入算子组的组的名字
-// 		{"{{OUT_DAC_OPS_NAME}}",OUT_DAC_OPS_NAME}//输出算子组的名字
-// 	});
-// }
-/*上面函数已废弃*/
 
 //生成设备内存分配的大小 对应数据重组需要分配的大小 
 const char *DEVICE_MEM_SIZE_Generate_Template3 = R"~~~(
@@ -1103,7 +1013,6 @@ std::string CodeGen_IndexInit2(Dac_Ops ops,std::vector<std::string> sets,std::ve
 		index_expression = index_expression + "+" + "(" + offsets[i] + ")" + ")";
 		index_expression = index_expression + "%" + ops[i].name + ".split_size";
 		index_expression_vector.push_back(index_expression);
-        //ops[i].setExp(index_expression);
     }
 
 	std::string expression = "";
@@ -1113,7 +1022,6 @@ std::string CodeGen_IndexInit2(Dac_Ops ops,std::vector<std::string> sets,std::ve
 		expression = expression + templateString(INDEX_INIT_Template,
 		{
 			{"{{NAME}}", opsname + "_"},//注意这里加了下划线
-			//{"{{EXPRESSION}}", ops[i].getExp()}
 			{"{{EXPRESSION}}", index_i_expression}
 		});
 	}
@@ -1121,40 +1029,40 @@ std::string CodeGen_IndexInit2(Dac_Ops ops,std::vector<std::string> sets,std::ve
 }
 
 //新的嵌入计算的模板 
-std::string CodeGen_CalcEmbed2(std::string Name,Args args){
-	std::string DacCalcArgs = "(";
-	int len = args.size;
-	for(int i=0;i<len;i++){
-		std::string IndexComb="(";
-		for(int j=0;j<args[i].ops.size;j++){
-			std::string opsname = args[i].ops[j].name;
-			//IndexComb+= args[i].ops[j].name + "_" + "*" + "SplitLength[" + std::to_string(i) + "][" + std::to_string(j) + "]";
-			IndexComb+= opsname + "_" + "*" + "SplitLength[" + std::to_string(i) + "][" + std::to_string(j) + "]";
-			if(j!=args[i].ops.size-1) IndexComb+="+";
-		}
-		IndexComb+=")";
-		if(IndexComb == "()")
-		{
-			DacCalcArgs+=args[i].name;
-		}
-		else{
-			DacCalcArgs+=args[i].name + "+" + IndexComb;
-		}		
-		if(i==len-1){
-			DacCalcArgs+=",";
-			for(int j=0;j<len;j++) {
-				DacCalcArgs+="info_partition_"+args[j].name.substr(2)+"_accessor";
-				if(j!=len-1) DacCalcArgs+=",";
-			}
-			DacCalcArgs+=");";
-		}
-		else{
-			DacCalcArgs+=",";
-		}
-	}
-	return templateString(CALC_EMBED_Template,
-	{
-		{"{{DAC_CALC_NAME}}",    Name},
-		{"{{DAC_CALC_ARGS}}",    DacCalcArgs}
-	});
-}
+// std::string CodeGen_CalcEmbed2(std::string Name,Args args){
+// 	std::string DacCalcArgs = "(";
+// 	int len = args.size;
+// 	for(int i=0;i<len;i++){
+// 		std::string IndexComb="(";
+// 		for(int j=0;j<args[i].ops.size;j++){
+// 			std::string opsname = args[i].ops[j].name;
+// 			//IndexComb+= args[i].ops[j].name + "_" + "*" + "SplitLength[" + std::to_string(i) + "][" + std::to_string(j) + "]";
+// 			IndexComb+= opsname + "_" + "*" + "SplitLength[" + std::to_string(i) + "][" + std::to_string(j) + "]";
+// 			if(j!=args[i].ops.size-1) IndexComb+="+";
+// 		}
+// 		IndexComb+=")";
+// 		if(IndexComb == "()")
+// 		{
+// 			DacCalcArgs+=args[i].name;
+// 		}
+// 		else{
+// 			DacCalcArgs+=args[i].name + "+" + IndexComb;
+// 		}		
+// 		if(i==len-1){
+// 			DacCalcArgs+=",";
+// 			for(int j=0;j<len;j++) {
+// 				DacCalcArgs+="info_partition_"+args[j].name.substr(2)+"_accessor";
+// 				if(j!=len-1) DacCalcArgs+=",";
+// 			}
+// 			DacCalcArgs+=");";
+// 		}
+// 		else{
+// 			DacCalcArgs+=",";
+// 		}
+// 	}
+// 	return templateString(CALC_EMBED_Template,
+// 	{
+// 		{"{{DAC_CALC_NAME}}",    Name},
+// 		{"{{DAC_CALC_ARGS}}",    DacCalcArgs}
+// 	});
+// }

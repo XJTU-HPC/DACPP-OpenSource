@@ -23,8 +23,8 @@ const float dy = Ly / (NY - 1);
 const float dt_stability = (dx * dx * dy * dy) / (2.0f * alpha * (dx * dx + dy * dy));
 const float delta_t = 0.4f * dt_stability; // 选择一个更严格的时间步长以确保稳定性
 
-shell dacpp::list stencilShell(const dacpp::Tensor<float, 2>& matIn, 
-                                dacpp::Tensor<float, 2>& matOut) {
+shell dacpp::list stencilShell(const dacpp::Matrix<float>& matIn, 
+                                dacpp::Matrix<float>& matOut) {
     dacpp::split sp1(3, 1), sp2(3, 1);
     dacpp::index idx1, idx2;
     binding(sp1, idx1);
@@ -33,8 +33,8 @@ shell dacpp::list stencilShell(const dacpp::Tensor<float, 2>& matIn,
     return dataList;
 }
 
-calc void stencil(dacpp::Tensor<float, 2>& mat, 
-                    dacpp::Tensor<float, 1>& out) {
+calc void stencil(dacpp::Matrix<float>& mat, 
+                    float* out) {
     out[0] = mat[1][1] + alpha *delta_t * (((mat[2][1] - 2.0f * mat[1][1] + mat[0][1]) / (dx * dx))+ ((mat[1][2] - 2.0f * mat[1][1] + mat[1][0]) / (dy * dy)));                
 }
 
@@ -63,20 +63,11 @@ int main() {
     }
 
     //std::vector<int> shape = {32, 32};
-    dacpp::Tensor<float, 2> u_curr_tensor({32, 32}, u_curr);
+    dacpp::Matrix<float> u_curr_tensor({32, 32}, u_curr);
+    dacpp::Matrix<float> u_next_tensor({32, 32}, u_next);
 
     for(int i=0;i<TIME_STEPS;i++) {
-        std::vector<float> middle_points(NX * NY, 0.0f);
-        for (int i = 1; i <= 30; i++) {
-            std::vector<float> row;
-            for (int j = 1; j <= 30; j++) {  
-                middle_points.push_back(static_cast<float>(u_next[i*NY+j]));  
-            }
-            
-        }
-        //std::vector<int> shape2 = {30, 30};
-        dacpp::Tensor<float, 2> middle_tensor({30, 30}, middle_points);
-
+        dacpp::Matrix<float> middle_tensor = u_next_tensor[{1,31}][{1,31}];
         stencilShell(u_curr_tensor, middle_tensor) <-> stencil;
 
         for (int i = 1; i <= 30; i++) {
@@ -100,7 +91,8 @@ int main() {
         }
         
     }
-    
+    u_curr_tensor[2].print();
+
 
     // 输出最终结果的某些值作为示例
     //cout << "Final temperature at center: " << vec2D[(NX/2)*NY + (NY/2)] << "\n";

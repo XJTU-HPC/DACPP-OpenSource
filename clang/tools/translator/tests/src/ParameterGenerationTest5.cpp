@@ -157,8 +157,11 @@ int main(){
 	args.push_back(d_matB);
 	args.push_back(d_matC);
 
-    std::string CalcEmbed = CodeGen_CalcEmbed2("block_mat_mul",args);//注意调用了新的嵌入计算模板
-	std::string KernelExecute = CodeGen_KernelExecute("item_size",IndexInit,CalcEmbed);//注意这里面填的size的大小需要是前面算出来的大小
+    // std::string CalcEmbed = CodeGen_CalcEmbed2("block_mat_mul",args);//注意调用了新的嵌入计算模板
+	// std::string KernelExecute = CodeGen_KernelExecute("item_size",IndexInit,CalcEmbed);//注意这里面填的size的大小需要是前面算出来的大小
+    
+    std::string CalcEmbed = "";
+	std::string KernelExecute = "";
 	//std::cout<<KernelExecute;
 
     //std::string Reduction = CodeGen_Reduction("8","matC","int","sycl::plus<>()");//这个调用的是已经弃用的归约模板

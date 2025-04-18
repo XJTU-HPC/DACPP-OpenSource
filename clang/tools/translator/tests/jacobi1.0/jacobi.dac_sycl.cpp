@@ -21,20 +21,20 @@ namespace dacpp {
 
 using namespace sycl;
 
-void jacobi(float* a, float* b, float* x, float* x_new, float* num) 
+void jacobi(float* a,float* b,float* x,float* x_new,int* num,sycl::accessor<int, 1, sycl::access::mode::read_write> info_a_acc, sycl::accessor<int, 1, sycl::access::mode::read_write> info_b_acc, sycl::accessor<int, 1, sycl::access::mode::read_write> info_x_acc, sycl::accessor<int, 1, sycl::access::mode::read_write> info_x_new_acc, sycl::accessor<int, 1, sycl::access::mode::read_write> info_num_acc) 
 {
-    float sigma = 0;
+    floa[0]t sigma[0] = 0;
     for (int i = 0; i < N; ++i) {
         if (i != num[0]) {
-            sigma += a[i] * x[i];
+            sigma[0] += a[i] * x[i];
         }
     }
-    x_new[0] = (b[0] - sigma) / a[num[0]];
+    x[0]_new[0] = (b[0] - sigma[0]) / a[num[0]];
 }
 
 
 // 生成函数调用
-void jacobiShell(const dacpp::Tensor<float, 2> & A, const dacpp::Tensor<float, 1> & b, const dacpp::Tensor<float, 1> & x, dacpp::Tensor<float, 1> & x_new, const dacpp::Tensor<int, 1> & nums) { 
+void jacobiShell_jacobi(const dacpp::Tensor<float, 2> & A, const dacpp::Tensor<float, 1> & b, const dacpp::Tensor<float, 1> & x, dacpp::Tensor<float, 1> & x_new, const dacpp::Tensor<int, 1> & nums) { 
     // 设备选择
     auto selector = gpu_selector_v;
     queue q(selector);
@@ -220,6 +220,8 @@ void jacobiShell(const dacpp::Tensor<float, 2> & A, const dacpp::Tensor<float, 1
     A_ops.push_back(idx1);
     A_tool.init(info_A,A_ops);
     A_tool.Reconstruct(r_A,A);
+	std::vector<int> info_partition_A=para_gene_tool.init_partition_data_shape(info_A,A_ops);
+    sycl::buffer<int> info_partition_A_buffer(info_partition_A.data(), sycl::range<1>(info_partition_A.size()));
     // 数据重组
     DataReconstructor<float> b_tool;
     float* r_b=(float*)malloc(sizeof(float)*b_Size);
@@ -232,6 +234,8 @@ void jacobiShell(const dacpp::Tensor<float, 2> & A, const dacpp::Tensor<float, 1
     b_ops.push_back(idx1);
     b_tool.init(info_b,b_ops);
     b_tool.Reconstruct(r_b,b);
+	std::vector<int> info_partition_b=para_gene_tool.init_partition_data_shape(info_b,b_ops);
+    sycl::buffer<int> info_partition_b_buffer(info_partition_b.data(), sycl::range<1>(info_partition_b.size()));
     // 数据重组
     DataReconstructor<float> x_tool;
     float* r_x=(float*)malloc(sizeof(float)*x_Size);
@@ -241,6 +245,8 @@ void jacobiShell(const dacpp::Tensor<float, 2> & A, const dacpp::Tensor<float, 1
     
     x_tool.init(info_x,x_ops);
     x_tool.Reconstruct(r_x,x);
+	std::vector<int> info_partition_x=para_gene_tool.init_partition_data_shape(info_x,x_ops);
+    sycl::buffer<int> info_partition_x_buffer(info_partition_x.data(), sycl::range<1>(info_partition_x.size()));
     // 数据重组
     DataReconstructor<float> x_new_tool;
     float* r_x_new=(float*)malloc(sizeof(float)*x_new_Size);
@@ -253,6 +259,8 @@ void jacobiShell(const dacpp::Tensor<float, 2> & A, const dacpp::Tensor<float, 1
     x_new_ops.push_back(idx1);
     x_new_tool.init(info_x_new,x_new_ops);
     x_new_tool.Reconstruct(r_x_new,x_new);
+	std::vector<int> info_partition_x_new=para_gene_tool.init_partition_data_shape(info_x_new,x_new_ops);
+    sycl::buffer<int> info_partition_x_new_buffer(info_partition_x_new.data(), sycl::range<1>(info_partition_x_new.size()));
     // 数据重组
     DataReconstructor<int> nums_tool;
     int* r_nums=(int*)malloc(sizeof(int)*nums_Size);
@@ -265,6 +273,8 @@ void jacobiShell(const dacpp::Tensor<float, 2> & A, const dacpp::Tensor<float, 1
     nums_ops.push_back(idx1);
     nums_tool.init(info_nums,nums_ops);
     nums_tool.Reconstruct(r_nums,nums);
+	std::vector<int> info_partition_nums=para_gene_tool.init_partition_data_shape(info_nums,nums_ops);
+    sycl::buffer<int> info_partition_nums_buffer(info_partition_nums.data(), sycl::range<1>(info_partition_nums.size()));
     
     // 数据移动
     q.memcpy(d_A,r_A,A_Size*sizeof(float)).wait();
@@ -280,6 +290,13 @@ void jacobiShell(const dacpp::Tensor<float, 2> & A, const dacpp::Tensor<float, 1
     sycl::range<3> global(1, 1, 1);
     //队列提交命令组
     q.submit([&](handler &h) {
+        // 访问器初始化
+        
+        auto info_partition_A_accessor = info_partition_A_buffer.get_access<sycl::access::mode::read_write>(h);
+        auto info_partition_b_accessor = info_partition_b_buffer.get_access<sycl::access::mode::read_write>(h);
+        auto info_partition_x_accessor = info_partition_x_buffer.get_access<sycl::access::mode::read_write>(h);
+        auto info_partition_x_new_accessor = info_partition_x_new_buffer.get_access<sycl::access::mode::read_write>(h);
+        auto info_partition_nums_accessor = info_partition_nums_buffer.get_access<sycl::access::mode::read_write>(h);
         h.parallel_for(sycl::nd_range<3>(global * local, local),[=](sycl::nd_item<3> item) {
             const auto item_id = item.get_local_id(2);
             // 索引初始化
@@ -287,7 +304,7 @@ void jacobiShell(const dacpp::Tensor<float, 2> & A, const dacpp::Tensor<float, 1
             const auto idx1_=(item_id+(0))%idx1.split_size;
             // 嵌入计算
 			
-            jacobi(d_A+(idx1_*SplitLength[0][0]),d_b+(idx1_*SplitLength[1][0]),d_x,d_x_new+(idx1_*SplitLength[3][0]),d_nums+(idx1_*SplitLength[4][0]));
+            jacobi(d_A+(idx1_*SplitLength[0][0]),d_b+(idx1_*SplitLength[1][0]),d_x,d_x_new+(idx1_*SplitLength[3][0]),d_nums+(idx1_*SplitLength[4][0]),info_partition_A_accessor,info_partition_b_accessor,info_partition_x_accessor,info_partition_x_new_accessor,info_partition_nums_accessor);
         });
     }).wait();
     
@@ -346,7 +363,7 @@ int main() {
             mat_A[i * N + i + 1] = -1.0f; // 上三角元素
         }
 
-        vec_b[i] = i; // 初始化向量 b，可根据需要修改
+        vec_b[i] = 1.0f; // 初始化向量 b，可根据需要修改
     }
 
     // std::vector<int> A_shape = {100, 100};
@@ -371,7 +388,7 @@ int main() {
     float* data2 = new float[1 * 100];
 
     while (!converged && iter < max_iter) {
-        jacobiShell(A, b, x, x_new, tensor_nums);
+        jacobiShell_jacobi(A, b, x, x_new, tensor_nums);
         
         x.tensor2Array(data);
         x_new.tensor2Array(data2);

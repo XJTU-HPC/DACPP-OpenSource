@@ -10,6 +10,8 @@
 
 using namespace llvm;
 
+using namespace llvm;
+
 /*
     参数
 */
@@ -68,52 +70,80 @@ void dacppTranslator::Param::setType(clang::QualType newType) {
   split = newType.split();
   const clang::Type *ty = split.Ty;
   bool found_p = false;
-  if (const clang::LValueReferenceType *LRT =
-          dyn_cast<clang::LValueReferenceType>(ty)) {
-    clang::QualType Inner =
-        skipTopLevelReferences(LRT->getPointeeTypeAsWritten());
-    clang::SplitQualType Split = Inner.split();
-    if (const auto *ET = dyn_cast<clang::ElaboratedType>(Split.Ty)) {
-      if (!ET->getOwnedTagDecl()) {
-        Split = ET->getNamedType().split();
-        if (const auto *SpecTy =
-                dyn_cast<clang::TemplateSpecializationType>(Split.Ty)) {
-          std::string BSBuf;
-          llvm::raw_string_ostream BSStream(BSBuf);
-          SpecTy->getTemplateName().print(BSStream, clang::LangOptions(),
-                                          clang::TemplateName::Qualified::None);
-          if (!strcmp("Tensor", BSBuf.c_str())) {
-            found_p = true;
-            clang::TemplateDecl *TD =
-                SpecTy->getTemplateName().getAsTemplateDecl();
-            llvm::ArrayRef<clang::TemplateArgument> Args =
-                SpecTy->template_arguments();
-            const clang::TemplateParameterList *TPL =
-                TD ? TD->getTemplateParameters() : nullptr;
-            bool __attribute__((unused)) FirstArg = true;
-            for (const auto &Arg : Args) {
-              // Print the argument into a string.
-              llvm::SmallString<128> Buf;
-              llvm::raw_svector_ostream ArgOS(Buf);
-              const clang::TemplateArgument &Argument = (Arg);
-              if (Argument.getKind() == clang::TemplateArgument::Pack) {
-              } else {
-                if (clang::TemplateArgument::Type == Argument.getKind()) {
-                  newType = Argument.getAsType();
-                  break;
-                }
-              }
-              if (!FirstArg)
-                llvm_unreachable("unreachable");
-              FirstArg = false;
-            }
-          }
+  const clang::LValueReferenceType *LRT;
+  clang::QualType Inner;
+  clang::SplitQualType Split;
+  const clang::Type *Ty;
+  const clang::ElaboratedType *ET;
+  clang::NestedNameSpecifier *Qualifier;
+  const clang::TemplateSpecializationType *SpecTy;
+  std::string BSBuf;
+  llvm::raw_string_ostream BSStream(BSBuf);
+  llvm::ArrayRef<clang::TemplateArgument> Args;
+
+  LRT = dyn_cast<clang::LValueReferenceType>(ty);
+  if (!LRT)
+    goto fail;
+
+  Inner = skipTopLevelReferences(LRT->getPointeeTypeAsWritten());
+  Split = Inner.split();
+  Ty = Inner.getTypePtrOrNull();
+  if (Ty->getAsTagDecl()) {
+    for (const clang::DeclContext *DC = Ty->getAsTagDecl()->getDeclContext();
+         DC->isNamespace(); DC = DC->getParent()) {
+      if (const auto *Namespace = dyn_cast<clang::NamespaceDecl>(DC)) {
+        if (Namespace->getDeclName() &&
+            strcmp(Namespace->getName().str().c_str(), "dacpp") == 0) {
+          found_p = true;
         }
       }
     }
+    if (!found_p)
+      goto fail;
   }
+  found_p = false;
+
+  ET = dyn_cast<clang::ElaboratedType>(Split.Ty);
+  if (!ET)
+    goto fail;
+
+  Qualifier = ET->getQualifier();
+  if (Qualifier &&
+      Qualifier->getKind() == clang::NestedNameSpecifier::Namespace &&
+      strcmp(Qualifier->getAsNamespace()->getNameAsString().c_str(), "dacpp"))
+    goto fail;
+
+  if (ET->getOwnedTagDecl())
+    goto fail;
+  Split = ET->getNamedType().split();
+
+  SpecTy = dyn_cast<clang::TemplateSpecializationType>(Split.Ty);
+  if (!SpecTy)
+    goto fail;
+
+  SpecTy->getTemplateName().print(BSStream, clang::LangOptions(),
+                                  clang::TemplateName::Qualified::None);
+  if (strcmp("Tensor", BSBuf.c_str()) && strcmp("Vector", BSBuf.c_str()) &&
+      strcmp("Matrix", BSBuf.c_str()))
+    goto fail;
+
+  found_p = true;
+  Args = SpecTy->template_arguments();
+  for (const auto &Arg : Args) {
+    // Print the argument into a string.
+    llvm::SmallString<128> Buf;
+    llvm::raw_svector_ostream ArgOS(Buf);
+    const clang::TemplateArgument &Argument = (Arg);
+    if (clang::TemplateArgument::Type == Argument.getKind()) {
+      newType = Argument.getAsType();
+      break;
+    }
+    llvm_unreachable("unreachable");
+  }
+
+fail:
   if (!found_p)
-    newType = GetBaseType (newType);
+    newType = GetBaseType(newType);
   this->BasicType = newType;
 }
 

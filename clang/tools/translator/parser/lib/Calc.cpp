@@ -1,5 +1,6 @@
 #include <string>
 #include <regex>
+#include <set>
 
 #include "clang/AST/Attr.h"
 #include "clang/AST/DeclFriend.h"
@@ -4734,13 +4735,52 @@ void dacppTranslator::Calc::setBody(Stmt* body) {
   this->body.push_back(Msg);
 }
 
+std::string func(std::string code, std::string name) {
+    std::regex pattern(name + R"((?![\w]|\[))");
+
+    std::string result = "";
+    size_t lastPos = 0;
+
+    // 遍历所有匹配
+    for (std::sregex_iterator it(code.begin(), code.end(), pattern), end; it != end; ++it) {
+        std::smatch match = *it;
+        if (match.position() == 0 || !isalnum(code[match.position() - 1])) {
+          result += code.substr(lastPos, match.position() - lastPos); // 添加非匹配部分
+          result += match.str() + "[0]"; // 添加匹配部分的自定义替换
+          lastPos = match.position() + match.length(); // 更新位置
+        } else {
+          result += code.substr(lastPos, match.position() - lastPos + match.str().size());
+          lastPos = match.position() + match.length();
+        }
+    }
+
+    // 添加最后的非匹配部分
+    result += code.substr(lastPos);
+    return result;
+}
+
 std::string dacppTranslator::Calc::getBody(int idx) {
     std::string code = body[idx];
+    for (int i = 0; i < getNumParams(); i++) {
+      std::string name = getParam(i)->getName();
+      if (getParam(i)->getType().find("Tensor") != -1 ||
+      getParam(i)->getType().find("Vector") != -1 || 
+      getParam(i)->getType().find("Matrix") != -1) {
+        continue;
+      }
+      //std::regex pattern(name + R"((?![\w]|\[))");
+      //code = std::regex_replace(code, pattern, name + "[0]");
+      code = func(code, name);
+    }
     std::string res = "";
     size_t last_pos = 0;
     for (int i = 0; i < getNumParams(); i++) {
       std::string name = getParam(i)->getName();
-      
+      if (getParam(i)->getType().find("Tensor") == -1 &&
+      getParam(i)->getType().find("Vector") == -1 && 
+      getParam(i)->getType().find("Matrix") == -1) {
+        continue;
+      }
       std::regex pattern(name + R"((\[[^\[\]]\]){2,})");
       std::sregex_iterator it(code.begin(), code.end(), pattern);
       std::sregex_iterator end;
@@ -4755,11 +4795,13 @@ std::string dacppTranslator::Calc::getBody(int idx) {
           std::string r_str = "";
           while (pos != -1) {
             for (int k = count; k < b_count; k++) {
-              r_str += "*info_" + name + "_acc[" + std::to_string(k) + "]+";
+              r_str += "*info_" + name + "_acc[" + std::to_string(k) + "]";
             }
+            r_str += "+";
             str.replace(pos, 2, r_str);
             pos = str.find("][");
             count++;
+            r_str = "";
           }
           res += str;
           last_pos = match.position() + match.length();
@@ -4767,6 +4809,31 @@ std::string dacppTranslator::Calc::getBody(int idx) {
       }
     }
     res += code.substr(last_pos);
+
+    // code = res;
+    
+    // std::string res1 = "";
+    // last_pos = 0;
+    // for (int i = 0; i < getNumParams(); i++) {
+    //   std::string name = getParam(i)->getName();
+    //   if (getParam(i)->getType().find("Tensor") != -1) {
+    //     continue;
+    //   }
+    //   std::regex pattern(name + R"((?![\w]|\[))");
+    //   std::sregex_iterator it(code.begin(), code.end(), pattern);
+    //   std::sregex_iterator end;
+
+    //   while (it != end) {
+    //       std::smatch match = *it; // 获取当前匹配结果
+    //       std::string str = match.str();
+    //       res1 += code.substr(last_pos, match.position() - last_pos);
+    //       res1 += str + "[0]";
+    //       last_pos = match.position() + match.length();
+    //       ++it; // 移动到下一个匹配结果
+    //   }
+    // }
+    // res1 += code.substr(last_pos);
+
     return res;
 }
 
@@ -4816,7 +4883,7 @@ void dacppTranslator::Calc::parseCalc(const BinaryOperator* dacExpr) {
     Shell* shell = getFather()->getShell();
 
     // 获取 DAC 数据关联表达式右值
-    Expr* dacExprRHS = dacExpr->getRHS();
+    Expr* dacExprRHS = dacppTranslator::Expression::shellLHS_p (dacExpr) ? dacExpr->getRHS() : dacExpr->getLHS();
     FunctionDecl* calcFunc = dyn_cast<FunctionDecl>(dyn_cast<DeclRefExpr>(dacExprRHS)->getDecl());
     
     // 设置 AST 中 Calc 节点的位置
@@ -4837,6 +4904,24 @@ void dacppTranslator::Calc::parseCalc(const BinaryOperator* dacExpr) {
         
         // 设置参数名称
         param->setName(calcFunc->getParamDecl(paramsCount)->getNameAsString());
+
+        std::set<std::string> ruleSet;
+        ruleSet.insert("plus");
+        ruleSet.insert("multiplies");
+        ruleSet.insert("bit_and");
+        ruleSet.insert("bit_or");
+        ruleSet.insert("bit_xor");
+        ruleSet.insert("logical_and");
+        ruleSet.insert("logical_or");
+        ruleSet.insert("minimum");
+        ruleSet.insert("maximum");
+
+        param->rule = "sycl::plus<>()";
+        for (auto *attr : calcFunc->getParamDecl(paramsCount)->specific_attrs<clang::AnnotateAttr>()) {
+          if (ruleSet.find(attr->getAnnotation().str()) != ruleSet.end()) {
+            param->rule = "sycl::" + attr->getAnnotation().str() + "<>()";
+          }
+        }
         
         // 设置参数形状
         ShellParam* shellParam = shell->getShellParam(paramsCount);

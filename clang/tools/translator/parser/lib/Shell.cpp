@@ -6,6 +6,7 @@
 #include "llvm/ADT/StringExtras.h"
 
 #include "ASTParse.h"
+#include "DacppStructure.h"
 #include "Param.h"
 #include "Shell.h"
 
@@ -502,7 +503,7 @@ void dacppTranslator::Shell::parseShell(const BinaryOperator* dacExpr, std::vect
       左值为CallExpr节点，表示shell函数调用
       右值为DeclRefExpr，表示calc函数引用
   */
-  Expr *dacExprLHS = dacExpr->getLHS();
+  Expr *dacExprLHS = dacppTranslator::Expression::shellLHS_p (dacExpr) ? dacExpr->getLHS() : dacExpr->getRHS();
   CallExpr *shellCall = getNode<CallExpr>(dacExprLHS);
   FunctionDecl *shellFunc = shellCall->getDirectCallee();
 

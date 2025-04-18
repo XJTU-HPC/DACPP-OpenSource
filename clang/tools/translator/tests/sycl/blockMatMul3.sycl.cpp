@@ -23,8 +23,8 @@ void blockMatMul(dacpp::Tensor<int,2> &matA, dacpp::Tensor<int,2> &matB, dacpp::
     // 设备选择
     auto selector = gpu_selector_v;
     queue q(selector);
-    ParameterGeneration<int,2> para_gene_tool; //参数生成工具
-
+    //ParameterGeneration<int,2> para_gene_tool; //参数生成工具
+    ParameterGeneration para_gene_tool;
     DataInfo info_matA;
     info_matA.dim = matA.getDim();
     for(int i = 0; i < info_matA.dim; i++) info_matA.dimLength.push_back(matA.getShape(i));

@@ -9,7 +9,7 @@ int main()
     const int col = 3;
     int matrix[row][col] = {0};
 
-    ParameterGeneration<int,2> para_gene_tool;
+    ParameterGeneration para_gene_tool;
 
     // 规则分区算子初始化
     RegularSlice si = RegularSlice("si", 2, 2);

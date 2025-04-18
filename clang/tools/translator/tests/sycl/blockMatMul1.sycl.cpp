@@ -18,7 +18,7 @@ void block_mat_mul(int *matA, int *matB, int *matC) {
 }
 void blockMatMulSplit(dacpp::Tensor<int,2> &matA, dacpp::Tensor<int,2> &matB, dacpp::Tensor<int,2> &matC)
 {
-    auto selector = gpu_selector_v;
+    auto selector = default_selector_v;
     queue q(selector);
 
     DataInfo info_matA;

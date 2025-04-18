@@ -1,5 +1,11 @@
 # !/usr/bin/env bash
 
+# Check icpx availability
+if ! which icpx &> /dev/null; then
+    echo "Loading Intel oneAPI environment..."
+    source /data/qinian/share/intel/oneapi2025/setvars.sh intel64 &> /dev/null
+fi
+
 exec 2>/dev/null
 
 # Delete all temporary files
@@ -8,12 +14,19 @@ mkdir ./tmp
 
 # Edit examples here
 examples=(
-    # "matMul"
+    "matMul1.0"
     # "block_mat_mul"
     "waveEquation1.0"
     "stencil1.0"
     "jacobi1.0"
     "FOuLa1.0"
+    "decay1.0"
+    "DFT1.0"
+    "imageAdjustment1.0"
+    "liuliang1.0"
+    "MDP1.0"
+    "mandel1.0"
+    "oddeven0.1"
 )
 
 
@@ -26,9 +39,9 @@ INCLUDE_DIRS=(
     "$WORK_DIR/std_lib/include/"
 )
 
-SRC_FILES=(
-    "$WORK_DIR/rewriter/lib/dacInfo.cpp"
-)
+# SRC_FILES=(
+#     "$WORK_DIR/rewriter/lib/dacInfo.cpp"
+# )
 
 echo "------------------------------------------------------------------------------------------"
 echo "DACPP to SYCL transpilation test"
@@ -66,8 +79,8 @@ for dir in ${examples[@]}; do
         continue
     fi
     icpx -fsycl -fsycl-targets=nvptx64-nvidia-cuda \
+    --cuda-path=/data/cuda/cuda-11.8 \
     "$sycl_file" \
-    "${SRC_FILES[@]}" \
     "${INCLUDE_DIRS[@]/#/-I}" \
     -o "./tmp/$dir/$dir" 
     exe_file=$(find "./tmp/$dir/" -type f -name "$dir")
@@ -90,10 +103,12 @@ for dir in ${examples[@]}; do
     fi
     exe_file="${exe_file#./tmp/$dir}"
     "./tmp/$dir/$exe_file" > "./tmp/$dir/$exe_file.out" 
+    perl -pi -e 'chomp if eof' "./tmp/$dir/$exe_file.out"
     std_res=$(find "./$dir/" -type f -name "*.out" | head -n 1)
     if diff -y --suppress-common-lines "./tmp/$dir/$exe_file.out" "$std_res"; then
         echo "Example $dir: execution test succeeded"
     else
+        echo
         echo "Example $dir: execution test failed with some different lines listed above"
     fi
 done

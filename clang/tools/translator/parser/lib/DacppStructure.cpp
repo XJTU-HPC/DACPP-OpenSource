@@ -1,5 +1,6 @@
 #include <string>
 
+#include "clang/AST/Attr.h"
 #include "llvm/ADT/StringExtras.h"
 
 #include "DacppStructure.h"
@@ -77,14 +78,55 @@ const clang::BinaryOperator* dacppTranslator::Expression::getDacExpr() {
     return dacExpr;
 }
 
-void dacppTranslator::Expression::setFatherFunc(FunctionDecl* fatherFunc) {
+bool dacppTranslator::Expression::shellLHS_p(const BinaryOperator *dacExpr) {
+  bool found_p = false;
+  Expr *LHS;
+  const CXXBindTemporaryExpr *BTE;
+  const CallExpr *Call;
+  const ImplicitCastExpr *ICE;
+  const DeclRefExpr *DRE;
+  const FunctionDecl *FD;
 
+  do {
+    LHS = dacExpr->getLHS();
+    BTE = dyn_cast<CXXBindTemporaryExpr>(LHS);
+    if (!BTE)
+      break;
+
+    Call = dyn_cast<CallExpr>(BTE->getSubExpr());
+    if (!Call)
+      break;
+
+    ICE = dyn_cast<ImplicitCastExpr>(Call->getCallee());
+    if (!ICE)
+      break;
+
+    DRE = dyn_cast<DeclRefExpr>(ICE->getSubExpr());
+    if (!DRE)
+      break;
+
+    FD = dyn_cast<FunctionDecl>(DRE->getDecl());
+    if (!FD)
+      break;
+
+    if (!FD->getDescribedFunctionTemplate() &&
+        !FD->isFunctionTemplateSpecialization()) {
+      if (FD->hasAttrs()) {
+        const AttrVec &Attrs = FD->getAttrs();
+        for (auto *A : Attrs) {
+          std::string BSBuf;
+          llvm::raw_string_ostream BSStream(BSBuf);
+          A->printPretty(BSStream, PrintingPolicy(LangOptions()));
+          if (!strcmp(BSBuf.c_str(), "shell")) {
+            found_p = true;
+            break;
+          }
+        }
+      }
+    }
+  } while (0);
+  return found_p;
 }
-
-FunctionDecl* dacppTranslator::Expression::getFatherFunc() {
-
-}
-
 
 /**
  * 存储DACPP文件信息类实现
@@ -122,7 +164,7 @@ int dacppTranslator::DacppFile::getNumNameSpace() {
 
 void dacppTranslator::DacppFile::setExpression(const BinaryOperator* dacExpr) {
     // 获取 DAC 数据关联表达式左值
-    Expr* dacExprLHS = dacExpr->getLHS();
+    Expr* dacExprLHS = dacppTranslator::Expression::shellLHS_p (dacExpr) ?  dacExpr->getLHS() : dacExpr->getRHS();
     CallExpr* shellCall = getNode<CallExpr>(dacExprLHS);
     // 获取实参的形状
     // 这里的实参目前指的是 DACPP:Tensor

@@ -25,9 +25,9 @@ double f(double x, double t) { return x*exp(t)-6*x; }
 double exact(double x, double t) { return x*(x*x+exp(t)); }
 
 //同样的问题，划分时，一个待计算数据和三个计算数据，一共四个数据要划分到一起
-shell dacpp::list PDE(const dacpp::Tensor<int, 1>& u_kin,
-                        dacpp::Tensor<int, 1>& u_kout,
-                        const dacpp::Tensor<int, 1>& r) {
+shell dacpp::list PDE(const dacpp::Vector<int>& u_kin,
+                        dacpp::Vector<int>& u_kout,
+                        const dacpp::Vector<int>& r) {
     dacpp::index i;
     dacpp::split s(3,1);
     binding(i, s);
@@ -35,9 +35,9 @@ shell dacpp::list PDE(const dacpp::Tensor<int, 1>& u_kin,
     return dataList;
 }
 
-calc void pde(dacpp::Tensor<int, 1>& u_kin,
-                dacpp::Tensor<int, 1>& u_kout,
-                dacpp::Tensor<int, 1>& r) {
+calc void pde(dacpp::Vector<int>& u_kin,
+                int* u_kout,
+                int* r) {
     u_kout[0] = r[0] * u_kin[0] + (1 - 2 * r[0]) * u_kin[1] + r[0] * u_kin[2];
 }
 
@@ -80,26 +80,14 @@ int main() {
         }
     }
 
-    // Define the shape of the tensor (rows, columns) and create the Tensor
-    // std::vector<int> shape = {6, 101};
-    dacpp::Tensor<int, 2> u_tensor({6, 101}, u_flat);
-    
+    dacpp::Matrix<int> u_tensor({6, 101}, u_flat);
+
     for (int k = 0; k < n-1; k++) {
-        //输入数据是6个点，3个一组分为四组，输出数据四个点，降维
-        //这里再输入之前要把输出那一行初始化为各长度为4的Tensor
-        std::vector<int> middle_points;
-        for (int i = 1; i <= 4; i++) {
-          middle_points.push_back(static_cast<int>(u[i][k+1]));
-        }
-        //std::vector<int> shape2 = {4, 1};
-        dacpp::Tensor<int, 1> middle_tensor(middle_points);
-        //std::vector<int> shape3 = {1, 1};
+        dacpp::Vector<int> middle_tensor = u_tensor[{1,5}][k+1];
         std::vector<int> r_data;
         r_data.push_back(r);
-        dacpp::Tensor<int, 1> R(r_data);
-
-        dacpp::Tensor<int,1> u_test1 = u_tensor.slice(1,k);
-        // std::cout << typeid(u_tensor[{}][k]) << std::endl;
+        dacpp::Vector<int> R(r_data);
+        dacpp::Vector<int> u_test1 = u_tensor[{}][k];
         PDE(u_test1, middle_tensor, R) <-> pde;
         
         //计算完毕后，替换第1到4个点

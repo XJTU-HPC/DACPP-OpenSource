@@ -101,24 +101,24 @@ class DataReconstructor{
             将特定位置元素写入res长向量。
         */
         void WriteRes(int &cnt, ImplType* res, std::vector<int> pos, const dacpp::TensorBase<ImplType> &myTensor) {
-            // res[cnt++]=myTensor.getElement(pos);
-            int index = 0;
-            for(int i=0;i<myTensor.getDim();i++) {
-                index = index + myTensor.getStride(i)*pos[i];
-            }
-            res[cnt++]=myTensor.getDataPtr().get()[index];
+            res[cnt++]=myTensor.getElement(pos);
+            // int index = 0;
+            // for(int i=0;i<myTensor.getDim();i++) {
+            //     index = index + myTensor.getStride(i)*pos[i];
+            // }
+            // res[cnt++]=myTensor.getDataPtr().get()[index];
         }
 
         /*
             将更新结果写入 myTensor
         */
         void WriteData(int &cnt, ImplType* res, std::vector<int> pos, dacpp::TensorBase<ImplType> &myTensor) {
-            int index = 0;
-            for(int i=0;i<myTensor.getDim();i++) {
-                index = index + myTensor.getStride(i)*pos[i];
-            }
-            myTensor.getDataPtr().get()[index]=res[cnt++];
-            // myTensor.reviseValue(res[cnt++],pos);
+            // int index = 0;
+            // for(int i=0;i<myTensor.getDim();i++) {
+            //     index = index + myTensor.getStride(i)*pos[i];
+            // }
+            // myTensor.getDataPtr().get()[index]=res[cnt++];
+            myTensor.reviseValue(res[cnt++],pos);
         }
         
     public:

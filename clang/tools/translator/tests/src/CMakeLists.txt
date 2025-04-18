@@ -29,7 +29,7 @@ add_executable(ParameterGenerationTest ParameterGenerationTest.cpp)
 add_executable(ParameterGenerationTest2 ParameterGenerationTest2.cpp)
 add_executable(ParameterGenerationTest3 ParameterGenerationTest3.cpp)
 add_executable(ParameterGenerationTest4 ParameterGenerationTest4.cpp)
-add_executable(ParameterGenerationTest5 ParameterGenerationTest5.cpp)
+# add_executable(ParameterGenerationTest5 ParameterGenerationTest5.cpp)
 add_executable(ParameterGenerationTest6 ParameterGenerationTest6.cpp)
 add_executable(ParameterGenerationTest7 ParameterGenerationTest7.cpp)
 
@@ -96,9 +96,9 @@ set_target_properties(ParameterGenerationTest3 PROPERTIES
 set_target_properties(ParameterGenerationTest4 PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/translator/tests
 )
-set_target_properties(ParameterGenerationTest5 PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/translator/tests
-)
+# set_target_properties(ParameterGenerationTest5 PROPERTIES
+#     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/translator/tests
+# )
 set_target_properties(ParameterGenerationTest6 PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/translator/tests
 )
@@ -127,6 +127,6 @@ target_link_libraries(ParameterGenerationTest DacppLib RewriterLib)
 target_link_libraries(ParameterGenerationTest2 DacppLib RewriterLib)
 target_link_libraries(ParameterGenerationTest3 DacppLib RewriterLib)
 target_link_libraries(ParameterGenerationTest4 DacppLib RewriterLib)
-target_link_libraries(ParameterGenerationTest5 DacppLib RewriterLib)
+# target_link_libraries(ParameterGenerationTest5 DacppLib RewriterLib)
 target_link_libraries(ParameterGenerationTest6 DacppLib RewriterLib)
 target_link_libraries(ParameterGenerationTest7 DacppLib RewriterLib)

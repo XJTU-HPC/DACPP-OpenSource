@@ -35,16 +35,16 @@ double exact(double x, double t) { return x*(x*x+exp(t)); }
 
 using namespace sycl;
 
-void pde(int* u_kin, int* u_kout, int* r) 
+void pde(int* u_kin,int* u_kout,int* r,sycl::accessor<int, 1, sycl::access::mode::read_write> info_u_kin_acc, sycl::accessor<int, 1, sycl::access::mode::read_write> info_u_kout_acc, sycl::accessor<int, 1, sycl::access::mode::read_write> info_r_acc) 
 {
     u_kout[0] = r[0] * u_kin[0] + (1 - 2 * r[0]) * u_kin[1] + r[0] * u_kin[2];
 }
 
 
 // 生成函数调用
-void PDE(const dacpp::Tensor<int, 1> & u_kin, dacpp::Tensor<int, 1> & u_kout, const dacpp::Tensor<int, 1> & r) { 
+void PDE_pde(const dacpp::Vector<int> & u_kin, dacpp::Vector<int> & u_kout, const dacpp::Vector<int> & r) { 
     // 设备选择
-    auto selector = gpu_selector_v;
+    auto selector = default_selector_v;
     queue q(selector);
     //声明参数生成工具
     ParameterGeneration<int,2> para_gene_tool;
@@ -191,6 +191,8 @@ void PDE(const dacpp::Tensor<int, 1> & u_kin, dacpp::Tensor<int, 1> & u_kout, co
     u_kin_ops.push_back(s);
     u_kin_tool.init(info_u_kin,u_kin_ops);
     u_kin_tool.Reconstruct(r_u_kin,u_kin);
+	std::vector<int> info_partition_u_kin=para_gene_tool.init_partition_data_shape(info_u_kin,u_kin_ops);
+    sycl::buffer<int> info_partition_u_kin_buffer(info_partition_u_kin.data(), sycl::range<1>(info_partition_u_kin.size()));
     // 数据重组
     DataReconstructor<int> u_kout_tool;
     int* r_u_kout=(int*)malloc(sizeof(int)*u_kout_Size);
@@ -203,6 +205,8 @@ void PDE(const dacpp::Tensor<int, 1> & u_kin, dacpp::Tensor<int, 1> & u_kout, co
     u_kout_ops.push_back(i);
     u_kout_tool.init(info_u_kout,u_kout_ops);
     u_kout_tool.Reconstruct(r_u_kout,u_kout);
+	std::vector<int> info_partition_u_kout=para_gene_tool.init_partition_data_shape(info_u_kout,u_kout_ops);
+    sycl::buffer<int> info_partition_u_kout_buffer(info_partition_u_kout.data(), sycl::range<1>(info_partition_u_kout.size()));
     // 数据重组
     DataReconstructor<int> r_tool;
     int* r_r=(int*)malloc(sizeof(int)*r_Size);
@@ -212,6 +216,8 @@ void PDE(const dacpp::Tensor<int, 1> & u_kin, dacpp::Tensor<int, 1> & u_kout, co
     
     r_tool.init(info_r,r_ops);
     r_tool.Reconstruct(r_r,r);
+	std::vector<int> info_partition_r=para_gene_tool.init_partition_data_shape(info_r,r_ops);
+    sycl::buffer<int> info_partition_r_buffer(info_partition_r.data(), sycl::range<1>(info_partition_r.size()));
     
     // 数据移动
     q.memcpy(d_u_kin,r_u_kin,u_kin_Size*sizeof(int)).wait();
@@ -223,6 +229,11 @@ void PDE(const dacpp::Tensor<int, 1> & u_kin, dacpp::Tensor<int, 1> & u_kout, co
     sycl::range<3> global(1, 1, 1);
     //队列提交命令组
     q.submit([&](handler &h) {
+        // 访问器初始化
+        
+        auto info_partition_u_kin_accessor = info_partition_u_kin_buffer.get_access<sycl::access::mode::read_write>(h);
+        auto info_partition_u_kout_accessor = info_partition_u_kout_buffer.get_access<sycl::access::mode::read_write>(h);
+        auto info_partition_r_accessor = info_partition_r_buffer.get_access<sycl::access::mode::read_write>(h);
         h.parallel_for(sycl::nd_range<3>(global * local, local),[=](sycl::nd_item<3> item) {
             const auto item_id = item.get_local_id(2);
             // 索引初始化
@@ -231,7 +242,7 @@ void PDE(const dacpp::Tensor<int, 1> & u_kin, dacpp::Tensor<int, 1> & u_kout, co
             const auto s_=(item_id+(0))%s.split_size;
             // 嵌入计算
 			
-            pde(d_u_kin+(s_*SplitLength[0][0]),d_u_kout+(s_*SplitLength[1][0]),d_r);
+            pde(d_u_kin+(s_*SplitLength[0][0]),d_u_kout+(s_*SplitLength[1][0]),d_r,info_partition_u_kin_accessor,info_partition_u_kout_accessor,info_partition_r_accessor);
         });
     }).wait();
     
@@ -307,27 +318,15 @@ int main() {
         }
     }
 
-    // Define the shape of the tensor (rows, columns) and create the Tensor
-    // std::vector<int> shape = {6, 101};
-    dacpp::Tensor<int, 2> u_tensor({6, 101}, u_flat);
-    
+    dacpp::Matrix<int> u_tensor({6, 101}, u_flat);
+
     for (int k = 0; k < n-1; k++) {
-        //输入数据是6个点，3个一组分为四组，输出数据四个点，降维
-        //这里再输入之前要把输出那一行初始化为各长度为4的Tensor
-        std::vector<int> middle_points;
-        for (int i = 1; i <= 4; i++) {
-          middle_points.push_back(static_cast<int>(u[i][k+1]));
-        }
-        //std::vector<int> shape2 = {4, 1};
-        dacpp::Tensor<int, 1> middle_tensor(middle_points);
-        //std::vector<int> shape3 = {1, 1};
+        dacpp::Vector<int> middle_tensor = u_tensor[{1,5}][k+1];
         std::vector<int> r_data;
         r_data.push_back(r);
-        dacpp::Tensor<int, 1> R(r_data);
-
-        dacpp::Tensor<int,1> u_test1 = u_tensor.slice(1,k);
-        // std::cout << typeid(u_tensor[{}][k]) << std::endl;
-        PDE(u_test1, middle_tensor, R);
+        dacpp::Vector<int> R(r_data);
+        dacpp::Vector<int> u_test1 = u_tensor[{}][k];
+        PDE_pde(u_test1, middle_tensor, R);
         
         //计算完毕后，替换第1到4个点
         for (int i = 1; i <= 4; i++) {

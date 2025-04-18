@@ -11,11 +11,11 @@ namespace dacpp {
 }
 
 
-shell dacpp::list jacobiShell(const dacpp::Tensor<float, 2>& A, 
-                                const dacpp::Tensor<float, 1>& b, 
-                                const dacpp::Tensor<float, 1>& x, 
-                                dacpp::Tensor<float, 1>& x_new,
-                                const dacpp::Tensor<int, 1>& nums) {
+shell dacpp::list jacobiShell(const dacpp::Matrix<float>& A, 
+                                const dacpp::Vector<float>& b, 
+                                const dacpp::Vector<float>& x, 
+                                dacpp::Vector<float>& x_new,
+                                const dacpp::Vector<int>& nums) {
     dacpp::index idx1;
 //     dacpp::Index idx2("idx1");
 //     dacpp::Index idx3("idx1");
@@ -30,11 +30,11 @@ shell dacpp::list jacobiShell(const dacpp::Tensor<float, 2>& A,
     return dataList;
 }
 
-calc void jacobi(dacpp::Tensor<float, 1>& a, 
-                dacpp::Tensor<float, 1>& b, 
-                dacpp::Tensor<float, 1>& x, 
-                dacpp::Tensor<float, 1>& x_new, 
-                dacpp::Tensor<int, 1>& num) {
+calc void jacobi(float* a, 
+                float* b, 
+                float* x, 
+                float* x_new, 
+                int* num) {
     float sigma = 0;
     for(int i = 0;i < N;++i) {
         if(i != num[0]) {
@@ -72,10 +72,10 @@ int main() {
     // std::vector<int> b_shape = {100};
     // std::vector<int> x_shape = {100};
     // std::vector<int> x_new_shape = {100};
-    dacpp::Tensor<float, 2> A({100, 100}, mat_A);
-    dacpp::Tensor<float, 1> b(vec_b);
-    dacpp::Tensor<float, 1> x(vec_x);
-    dacpp::Tensor<float, 1> x_new(vec_x_new);
+    dacpp::Matrix<float> A({100, 100}, mat_A);
+    dacpp::Vector<float> b(vec_b);
+    dacpp::Vector<float> x(vec_x);
+    dacpp::Vector<float> x_new(vec_x_new);
     
     bool converged = false;
     int iter = 0;
@@ -85,7 +85,7 @@ int main() {
         nums[i] = i;
     }
     //std::vector<int> nums_shape = {100};
-    dacpp::Tensor<int, 1> tensor_nums(nums);
+    dacpp::Vector<int> tensor_nums(nums);
     float* data = new float[1 * 100];
     float* data2 = new float[1 * 100];
 

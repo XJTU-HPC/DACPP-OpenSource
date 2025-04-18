@@ -21,6 +21,7 @@ private:
 
 public:
     Param();
+    std::string rule;
 
     void setRw(bool rw);
     bool getRw();
