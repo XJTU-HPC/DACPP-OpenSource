@@ -44,7 +44,10 @@ add_executable(syclBlockMatMul1 blockMatMul1.sycl.cpp)
 add_executable(syclBlockMatMul2 blockMatMul2.sycl.cpp)
 add_executable(syclBlockMatMul3 blockMatMul3.sycl.cpp)
 add_executable(syclVectorMul0 vectorMul0.sycl.cpp)
-add_executable(outputSyclBlockMatrixMultiplication blockMatrixMultiplication_sycl.cpp)
+# add_executable(outputSyclBlockMatrixMultiplication blockMatrixMultiplication_sycl.cpp)
+
+add_executable(DataReconNewTest DataReconNewTest.sycl.cpp)
+add_executable(dataReorder dataReorder.cpp)
 
 set_target_properties(FOuLadac PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/translator/tests
@@ -104,10 +107,6 @@ set_target_properties(mandeldac PROPERTIES
 set_target_properties(oddEvendac PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/translator/tests
 )
-
-
-
-
 set_target_properties(syclBlockMatMul0 PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/translator/tests
 )
@@ -126,6 +125,13 @@ set_target_properties(syclVectorMul0 PROPERTIES
 # set_target_properties(outputSyclBlockMatrixMultiplication PROPERTIES
 #     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/translator/tests
 # )
+set_target_properties(DataReconNewTest PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/translator/tests
+)
+set_target_properties(dataReorder PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/translator/tests
+)
+
 
 target_link_libraries(FOuLadac PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
 target_link_libraries(stencildac PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
@@ -146,12 +152,11 @@ target_link_libraries(mdpdac PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib
 target_link_libraries(DFTdac PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
 target_link_libraries(mandeldac PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
 target_link_libraries(oddEvendac PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
-
-
-
 target_link_libraries(syclBlockMatMul1 PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
 target_link_libraries(syclBlockMatMul0 PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
 target_link_libraries(syclBlockMatMul2 PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
 target_link_libraries(syclBlockMatMul3 PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
 target_link_libraries(syclVectorMul0 PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
-target_link_libraries(outputSyclBlockMatrixMultiplication PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
+# target_link_libraries(outputSyclBlockMatrixMultiplication PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
+target_link_libraries(DataReconNewTest PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
+target_link_libraries(dataReorder PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)

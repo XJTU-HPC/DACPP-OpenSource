@@ -13,7 +13,7 @@ const int NY = 8;    // y方向网格数量
 const double Lx = 10.0f; // x方向长度
 const double Ly = 10.0f; // y方向长度
 const double c = 1.0f;   // 波速
-const int TIME_STEPS = 10000; // 时间步数
+const int TIME_STEPS = 1000000; // 时间步数
 // 网格步长
 const double dx = Lx / (NX - 1);
 const double dy = Ly / (NY - 1);
@@ -26,8 +26,9 @@ const double dt = 0.5f * std::fmin(dx, dy) / c; // 满足稳定性条件
 
 
 #include <sycl/sycl.hpp>
-#include "DataReconstructor.h"
+#include "DataReconstructor.new.h"
 #include "ParameterGeneration.h"
+#include "utils.h"
 
 using namespace sycl;
 
@@ -42,6 +43,8 @@ void waveEq(double* cur,double* prev,double* next,sycl::accessor<int, 1, sycl::a
 
 // 生成函数调用
 void waveEqShell_waveEq(const dacpp::Matrix<double> & matCur, const dacpp::Matrix<double> & matPrev, dacpp::Matrix<double> & matNext) { 
+    // matCur.print();
+    
     // 设备选择
     auto selector = default_selector_v;
     queue q(selector);
@@ -200,19 +203,32 @@ void waveEqShell_waveEq(const dacpp::Matrix<double> & matCur, const dacpp::Matri
     // 设备内存分配
     
     // 设备内存分配
-    double *d_matCur=malloc_device<double>(matCur_Size,q);
+    double *d_matCur=malloc_device<double>(matCur.getSize(),q);
     // 设备内存分配
-    double *d_matPrev=malloc_device<double>(matPrev_Size,q);
+    double *d_matPrev=malloc_device<double>(matPrev.getSize(),q);
     // 设备内存分配
-    double *d_matNext=malloc_device<double>(matNext_Size,q);
+    double *d_matNext=malloc_device<double>(matNext.getSize(),q);
     // 归约设备内存分配
     double *reduction_matNext = malloc_device<double>(Reduction_Size,q);
+
+    // 数据移动
+    double* h_matCur = (double*)malloc(matCur.getSize()*sizeof(double));
+    matCur.tensor2Array(h_matCur);
+    q.memcpy(d_matCur,h_matCur,matCur.getSize()*sizeof(double)).wait();
+    // 数据移动
+    double* h_matPrev=(double*)malloc(matPrev.getSize()*sizeof(double));
+    matPrev.tensor2Array(h_matPrev);
+    q.memcpy(d_matPrev,h_matPrev,matPrev.getSize()*sizeof(double)).wait();
+    double* h_matNext=(double*)malloc(matNext.getSize()*sizeof(double));
+    matPrev.tensor2Array(h_matNext);
+    q.memset(d_matNext, 0, matNext.getSize()*sizeof(double)).wait();
+
     // 数据关联计算
     
     
     // 数据重组
     DataReconstructor<double> matCur_tool;
-    double* r_matCur=(double*)malloc(sizeof(double)*matCur_Size);
+    // double* r_matCur=(double*)malloc(sizeof(double)*matCur_Size);
     
     // 数据算子组初始化
     Dac_Ops matCur_ops;
@@ -224,12 +240,13 @@ void waveEqShell_waveEq(const dacpp::Matrix<double> & matCur, const dacpp::Matri
     sp2.setSplitLength(8);
     matCur_ops.push_back(sp2);
     matCur_tool.init(info_matCur,matCur_ops);
-    matCur_tool.Reconstruct(r_matCur,matCur);
+    double *r_matCur=malloc_device<double>(matCur_Size,q);
+    matCur_tool.Reconstruct_1(r_matCur,d_matCur,q);
 	std::vector<int> info_partition_matCur=para_gene_tool.init_partition_data_shape(info_matCur,matCur_ops);
     sycl::buffer<int> info_partition_matCur_buffer(info_partition_matCur.data(), sycl::range<1>(info_partition_matCur.size()));
     // 数据重组
     DataReconstructor<double> matPrev_tool;
-    double* r_matPrev=(double*)malloc(sizeof(double)*matPrev_Size);
+    // double* r_matPrev=(double*)malloc(sizeof(double)*matPrev_Size);
     
     // 数据算子组初始化
     Dac_Ops matPrev_ops;
@@ -241,12 +258,13 @@ void waveEqShell_waveEq(const dacpp::Matrix<double> & matCur, const dacpp::Matri
     idx2.setSplitLength(8);
     matPrev_ops.push_back(idx2);
     matPrev_tool.init(info_matPrev,matPrev_ops);
-    matPrev_tool.Reconstruct(r_matPrev,matPrev);
+    double *r_matPrev=malloc_device<double>(matPrev_Size,q);
+    matPrev_tool.Reconstruct_1(r_matPrev,d_matPrev,q);
 	std::vector<int> info_partition_matPrev=para_gene_tool.init_partition_data_shape(info_matPrev,matPrev_ops);
     sycl::buffer<int> info_partition_matPrev_buffer(info_partition_matPrev.data(), sycl::range<1>(info_partition_matPrev.size()));
     // 数据重组
     DataReconstructor<double> matNext_tool;
-    double* r_matNext=(double*)malloc(sizeof(double)*matNext_Size);
+    // double* r_matNext=(double*)malloc(sizeof(double)*matNext_Size);
     
     // 数据算子组初始化
     Dac_Ops matNext_ops;
@@ -258,64 +276,124 @@ void waveEqShell_waveEq(const dacpp::Matrix<double> & matCur, const dacpp::Matri
     idx2.setSplitLength(8);
     matNext_ops.push_back(idx2);
     matNext_tool.init(info_matNext,matNext_ops);
-    matNext_tool.Reconstruct(r_matNext,matNext);
+    double *r_matNext=malloc_device<double>(matNext_Size,q);
+    matPrev_tool.Reconstruct_1(r_matNext,d_matNext,q);
 	std::vector<int> info_partition_matNext=para_gene_tool.init_partition_data_shape(info_matNext,matNext_ops);
     sycl::buffer<int> info_partition_matNext_buffer(info_partition_matNext.data(), sycl::range<1>(info_partition_matNext.size()));
-    
-    // 数据移动
-    q.memcpy(d_matCur,r_matCur,matCur_Size*sizeof(double)).wait();
-    // 数据移动
-    q.memcpy(d_matPrev,r_matPrev,matPrev_Size*sizeof(double)).wait();
 	
-    //工作项划分
-    sycl::range<3> local(1, 1, Item_Size);
-    sycl::range<3> global(1, 1, 1);
-    //队列提交命令组
-    q.submit([&](handler &h) {
-        // 访问器初始化
+    for(int step = 0; step < TIME_STEPS; step++) {
+        //工作项划分
+        sycl::range<3> local(1, 1, Item_Size);
+        sycl::range<3> global(1, 1, 1);
+        //队列提交命令组
+        q.submit([&](handler &h) {
+            // 访问器初始化
+            auto info_partition_matCur_accessor = info_partition_matCur_buffer.get_access<sycl::access::mode::read_write>(h);
+            auto info_partition_matPrev_accessor = info_partition_matPrev_buffer.get_access<sycl::access::mode::read_write>(h);
+            auto info_partition_matNext_accessor = info_partition_matNext_buffer.get_access<sycl::access::mode::read_write>(h);
+            h.parallel_for(sycl::nd_range<3>(global * local, local),[=](sycl::nd_item<3> item) {
+                const auto item_id = item.get_local_id(2);
+                // 索引初始化
+                
+                const auto sp1_=(item_id/sp2.split_size+(0))%sp1.split_size;
+                const auto idx1_=(item_id/sp2.split_size+(0))%idx1.split_size;
+                const auto sp2_=(item_id+(0))%sp2.split_size;
+                const auto idx2_=(item_id+(0))%idx2.split_size;
+                // 嵌入计算
+                
+                waveEq(r_matCur+(sp1_*SplitLength[0][0]+sp2_*SplitLength[0][1]),r_matPrev+(idx1_*SplitLength[1][0]+idx2_*SplitLength[1][1]),r_matNext+(sp1_*SplitLength[2][0]+sp2_*SplitLength[2][1]),info_partition_matCur_accessor,info_partition_matPrev_accessor,info_partition_matNext_accessor);
+            });
+        }).wait();
         
-        auto info_partition_matCur_accessor = info_partition_matCur_buffer.get_access<sycl::access::mode::read_write>(h);
-        auto info_partition_matPrev_accessor = info_partition_matPrev_buffer.get_access<sycl::access::mode::read_write>(h);
-        auto info_partition_matNext_accessor = info_partition_matNext_buffer.get_access<sycl::access::mode::read_write>(h);
-        h.parallel_for(sycl::nd_range<3>(global * local, local),[=](sycl::nd_item<3> item) {
-            const auto item_id = item.get_local_id(2);
-            // 索引初始化
-			
-            const auto sp1_=(item_id/sp2.split_size+(0))%sp1.split_size;
-            const auto idx1_=(item_id/sp2.split_size+(0))%idx1.split_size;
-            const auto sp2_=(item_id+(0))%sp2.split_size;
-            const auto idx2_=(item_id+(0))%idx2.split_size;
-            // 嵌入计算
-			
-            waveEq(d_matCur+(sp1_*SplitLength[0][0]+sp2_*SplitLength[0][1]),d_matPrev+(idx1_*SplitLength[1][0]+idx2_*SplitLength[1][1]),d_matNext+(sp1_*SplitLength[2][0]+sp2_*SplitLength[2][1]),info_partition_matCur_accessor,info_partition_matPrev_accessor,info_partition_matNext_accessor);
-        });
-    }).wait();
-    
-
-	
-    // 归约
-    if(Reduction_Split_Size > 1)
-    {
-        for(int i=0;i<Reduction_Size;i++) {
-            q.submit([&](handler &h) {
-    	        h.parallel_for(
-                range<1>(Reduction_Split_Size),
-                reduction(reduction_matNext+i, 
-                sycl::plus<>(),
-                property::reduction::initialize_to_identity()),
-                [=](id<1> idx,auto &reducer) {
-                    reducer.combine(d_matNext[(i/Reduction_Split_Length)*Reduction_Split_Length*Reduction_Split_Size+i%Reduction_Split_Length+idx*Reduction_Split_Length]);
-     	        });
-         }).wait();
+        // 归约
+        if(Reduction_Split_Size > 1)
+        {
+            for(int i=0;i<Reduction_Size;i++) {
+                q.submit([&](handler &h) {
+                    h.parallel_for(
+                    range<1>(Reduction_Split_Size),
+                    reduction(reduction_matNext+i, 
+                    sycl::plus<>(),
+                    property::reduction::initialize_to_identity()),
+                    [=](id<1> idx,auto &reducer) {
+                        reducer.combine(r_matNext[(i/Reduction_Split_Length)*Reduction_Split_Length*Reduction_Split_Size+i%Reduction_Split_Length+idx*Reduction_Split_Length]);
+                    });
+            }).wait();
+            }
+            q.memcpy(r_matNext,reduction_matNext, Reduction_Size*sizeof(double)).wait();
         }
-        q.memcpy(d_matNext,reduction_matNext, Reduction_Size*sizeof(double)).wait();
+        matNext_tool.UpdateData_1(r_matNext, d_matNext, q);
+        if(step < TIME_STEPS - 1) {
+            std::vector<Range> region(info_matCur.dim);
+            for(int i=0;i<info_matCur.dim;i++) {
+                region[i].start = 1;
+                region[i].end = info_matCur.dimLength[i]-1;
+            }
+            // if(step==0) {
+            //     q.memcpy(h_matCur, d_matCur, matCur.getSize()*sizeof(double)).wait();
+            //     for(int i=0;i<info_matCur.dimLength[0];i++) {
+            //         for(int j=0;j<info_matCur.dimLength[1];j++) {
+            //             std::cout<<h_matCur[i*info_matCur.dimLength[1]+j]<<" ";
+            //         }
+            //         std::cout<<std::endl;
+            //     }
+            //     std::cout<<std::endl;
+            // }
+            Slice(d_matPrev, d_matCur, info_matCur.dimLength, region, q);
+            // if(step==0) {
+            //     q.memcpy(h_matPrev, d_matPrev, matPrev.getSize()*sizeof(double)).wait();
+            //     for(int i=0;i<info_matPrev.dimLength[0];i++) {
+            //         for(int j=0;j<info_matPrev.dimLength[1];j++) {
+            //             std::cout<<h_matPrev[i*info_matPrev.dimLength[1]+j]<<" ";
+            //         }
+            //         std::cout<<std::endl<<std::endl;
+            //     }
+
+            // }
+            // matPrev.array2Tensor(h_matPrev);
+            // matPrev.print();
+
+            SetValue(d_matCur, d_matNext, info_matCur.dimLength, region, q);
+            q.memcpy(h_matCur, d_matCur, matCur.getSize()*sizeof(double)).wait();
+            // if(step==0) {
+            //     for(int i=0;i<info_matCur.dimLength[0];i++) {
+            //         for(int j=0;j<info_matCur.dimLength[1];j++) {
+            //             std::cout<<h_matCur[i*info_matCur.dimLength[1]+j]<<" ";
+            //         }
+            //         std::cout<<std::endl;
+            //     }
+            // }
+            
+
+            std::vector<Range> region1(info_matCur.dim);
+            region1[0].start=0;region1[0].end=1;
+            region1[1].start=0;region1[1].end=info_matCur.dimLength[1];
+            SetValue(d_matCur, 0.0, info_matCur.dimLength, region1, q);
+
+            std::vector<Range> region2(info_matCur.dim);
+            region2[0].start=info_matCur.dimLength[0]-1;region2[0].end=info_matCur.dimLength[0];
+            region2[1].start=0;region2[0].end=info_matCur.dimLength[1];
+            SetValue(d_matCur, 0.0, info_matCur.dimLength, region2, q);
+
+            std::vector<Range> region3(info_matCur.dim);
+            region3[0].start=0;region3[0].end=info_matCur.dimLength[0];
+            region3[1].start=0;region3[0].end=1;
+            SetValue(d_matCur, 0.0, info_matCur.dimLength, region3, q);
+
+            std::vector<Range> region4(info_matCur.dim);
+            region4[0].start=0;region4[0].end=info_matCur.dimLength[0];
+            region4[1].start=info_matCur.dimLength[1]-1;region4[0].end=info_matCur.dimLength[1];
+            SetValue(d_matCur, 0.0, info_matCur.dimLength, region4, q);
+
+            matCur_tool.Reconstruct_1(r_matCur,d_matCur,q);
+            matPrev_tool.Reconstruct_1(r_matPrev,d_matPrev,q);
+            matNext_tool.Reconstruct_1(r_matNext,d_matNext,q);
+        }
+        
     }
-
-
-	
-    // 归并结果返回
-    q.memcpy(r_matNext, d_matNext, matNext_Size*sizeof(double)).wait();
-    matNext_tool.UpdateData(r_matNext,matNext);
+    // 结果返回
+    q.memcpy(h_matNext, d_matNext, matNext_Size*sizeof(double)).wait();
+    matNext.array2Tensor(h_matNext);
 
     // 内存释放
     
@@ -353,33 +431,31 @@ int main() {
     dacpp::Matrix<double> u_prev_tensor({NX, NY}, u_prev);
     dacpp::Matrix<double> u_next_tensor({NX, NY}, u_next);
     dacpp::Matrix<double> u_prev_middle_tensor = u_prev_tensor[{1,7}][{1,7}];
-    for(int i = 0;i < TIME_STEPS; i++) {
-        dacpp::Matrix<double> u_next_middle_tensor = u_next_tensor[{1,7}][{1,7}];
-        waveEqShell_waveEq(u_curr_tensor, u_prev_middle_tensor, u_next_middle_tensor);
-        for (int i = 1; i <= NX-2; i++) {
-            for(int j = 1; j <=NY-2; j++){
-                u_prev_middle_tensor[i-1][j-1]=u_curr_tensor[i][j];
-            }
-        }
+    dacpp::Matrix<double> u_next_middle_tensor = u_next_tensor[{1,7}][{1,7}];
 
-        for (int i = 1; i <= NX-2; i++) {
-            for(int j = 1; j <=NY-2; j++){
-                u_curr_tensor[i][j]=u_next_middle_tensor[i-1][j-1];
-            }
+    waveEqShell_waveEq(u_curr_tensor, u_prev_middle_tensor, u_next_middle_tensor);
+    // for(int i = 0;i < TIME_STEPS; i++) {
+    for (int i = 1; i <= NX-2; i++) {
+        for(int j = 1; j <=NY-2; j++){
+            u_prev_middle_tensor[i-1][j-1]=u_curr_tensor[i][j];
         }
-        // 处理边界条件（绝热边界：导数为零）
-        for (int i = 0; i < NX; ++i) {       
-            u_curr_tensor[i][NY-1]=0;
-            u_curr_tensor[i][0]=0;
-        }
-        for (int j = 0; j < NY; ++j) {
-            u_curr_tensor[NX - 1][j]=0;
-            u_curr_tensor[0][j]=0;
-             // 底部边界
-        }
-
-        
     }
-    u_curr_tensor.print(); 
+    for (int i = 1; i <= NX-2; i++) {
+        for(int j = 1; j <=NY-2; j++){
+            u_curr_tensor[i][j]=u_next_middle_tensor[i-1][j-1];
+        }
+    }
+    // 处理边界条件（绝热边界：导数为零）
+    for (int i = 0; i < NX; ++i) {       
+        u_curr_tensor[i][NY-1]=0;
+        u_curr_tensor[i][0]=0;
+    }
+    for (int j = 0; j < NY; ++j) {
+        u_curr_tensor[NX - 1][j]=0;
+        u_curr_tensor[0][j]=0;
+            // 底部边界
+    }    
+    // }
+   u_curr_tensor.print(); 
     return 0;
 }
