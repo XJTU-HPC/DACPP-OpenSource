@@ -12,7 +12,7 @@ const int NY = 8;    // y方向网格数量
 const double Lx = 10.0f; // x方向长度
 const double Ly = 10.0f; // y方向长度
 const double c = 1.0f;   // 波速
-const int TIME_STEPS = 1000000; // 时间步数
+const int TIME_STEPS = 100000; // 时间步数
 
 int main() {
     // 网格步长
@@ -44,6 +44,8 @@ int main() {
     cout << "Running on "
          << q.get_device().get_info<info::device::name>() << "\n";
     
+    double total_time=0;
+    auto total_start = std::chrono::high_resolution_clock::now();
     // 分配设备内存
     double *d_u_prev = malloc_device<double>(NX * NY, q);
     double *d_u_curr = malloc_device<double>(NX * NY, q);
@@ -106,6 +108,9 @@ int main() {
     // 复制结果回主机
     q.memcpy(u_curr.data(), d_u_curr, sizeof(double) * NX * NY).wait();
     
+    auto total_end = std::chrono::high_resolution_clock::now();
+    total_time += std::chrono::duration<double>(total_end - total_start).count();
+    std::cout<<"total time: "<<total_time<<std::endl;
     for(int i = 0; i < NX; i++){
         for(int j = 0; j < NY; j++){
             std::cout << u_curr[i * NX + j] << " " ;

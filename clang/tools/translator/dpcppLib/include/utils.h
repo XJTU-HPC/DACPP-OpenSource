@@ -6,6 +6,77 @@
 #include <sycl/sycl.hpp>
 using namespace sycl;
 
+struct VirtualMapParams {
+    int block_size;
+    int dim_num;
+    sycl::accessor<int, 1, sycl::access::mode::read_write> start;
+    sycl::accessor<int, 1, sycl::access::mode::read_write> data_shape;
+    sycl::accessor<int, 1, sycl::access::mode::read_write> data_stride;
+    sycl::accessor<int, 1, sycl::access::mode::read_write> view_shape;
+    sycl::accessor<int, 1, sycl::access::mode::read_write> view_stride;
+    sycl::accessor<int, 1, sycl::access::mode::read_write> block_shape;
+    sycl::accessor<int, 1, sycl::access::mode::read_write> block_stride;
+    sycl::accessor<int, 1, sycl::access::mode::read_write> block_move;
+    sycl::accessor<int, 1, sycl::access::mode::read_write> grid_shape;
+    sycl::accessor<int, 1, sycl::access::mode::read_write> grid_stride;
+};
+
+template<typename T>
+SYCL_EXTERNAL T virtual_to_physical_read(
+        T* data,
+        int index,
+        const VirtualMapParams& p)
+{
+    int total_block_id = index / p.block_size;
+    int total_lane_id = index % p.block_size;
+    int lane_id[20];
+    int block_id[20];
+    int total_pos = 0;
+    for (int i = 0; i < p.dim_num; i++) {
+        lane_id[i] = total_lane_id / p.block_stride[i] % p.block_shape[i];
+        block_id[i] = total_block_id / p.grid_stride[i] % p.grid_shape[i];
+        int pos = (block_id[i] * p.block_move[i] + lane_id[i]);
+        if (pos < -p.start[i] || pos > -p.start[i] + p.data_shape[i] - 1) {
+            return (T)0;
+        }
+        total_pos += (p.start[i] + pos) * p.data_stride[i];
+    }
+    return data[total_pos];
+}
+
+template<typename T>
+SYCL_EXTERNAL T& virtual_to_physical(
+        T* data,
+        int index,
+        const VirtualMapParams& p)
+{
+    int total_block_id = index / p.block_size;
+    int total_lane_id = index % p.block_size;
+    int lane_id[20];
+    int block_id[20];
+    int total_pos = 0;
+    for (int i = 0; i < p.dim_num; i++) {
+        lane_id[i] = total_lane_id / p.block_stride[i] % p.block_shape[i];
+        block_id[i] = total_block_id / p.grid_stride[i] % p.grid_shape[i];
+        int pos = (block_id[i] * p.block_move[i] + lane_id[i]);
+        if (pos < -p.start[i] || pos > -p.start[i] + p.data_shape[i] - 1) {
+            static const T zero = 0;  // 返回只读的静态常量
+            return const_cast<T&>(zero);  //  需要强转以匹配返回类型
+        }
+        total_pos += (p.start[i] + pos) * p.data_stride[i];
+    }
+    return data[total_pos];
+}
+
+// template<typename T>
+// void Slice(DataReconstructor<T> &tool,
+//            int start,
+//            std::vector<int> data_shape)
+// {
+//     tool.set_start(start);
+//     tool.set_data_shape(data_shape);
+// }
+
 template<typename ImplType>
 void Slice(ImplType* res, ImplType* d_a, std::vector<int> shape, std::vector<Range> region, sycl::queue& q) {    
     // 初始化切片起点

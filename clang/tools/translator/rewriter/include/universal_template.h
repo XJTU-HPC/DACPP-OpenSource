@@ -78,6 +78,8 @@ namespace UNIVERSAL_TEMPLATE{
 
     std::string CodeGen_DataReconstruct(std::string type,std::string name,std::string size,std::string dataOpsInit);
 
+    std::string CodeGen_DataReconstruct(std::string type,std::string name,std::string size,std::string dataOpsInit, bool isOut);
+
     std::string CodeGen_OpPushBack2Ops(std::string name, std::string opName, std::string dimId);
 
     std::string CodeGen_OpPushBack2Tool(std::string name, std::string opName, std::string dimId);

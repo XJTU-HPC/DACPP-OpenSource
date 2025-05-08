@@ -85,6 +85,8 @@ public:
 
     void rewriteDac_Buffer();
 
+    void rewriteDac_Multiple();
+
     void rewriteMain() {
 for (int exprCount = 0; exprCount < dacppFile->dacExprs.size(); exprCount++) {
         const BinaryOperator* dacExpr = dacppFile->dacExprs[exprCount];

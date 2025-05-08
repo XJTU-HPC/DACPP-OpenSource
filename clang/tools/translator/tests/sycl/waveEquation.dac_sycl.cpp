@@ -1,6 +1,7 @@
 #include <iostream>
 #include <vector>
 #include <cmath>
+#include <chrono>
 #include "ReconTensor.h"
 using namespace std;
 
@@ -13,7 +14,7 @@ const int NY = 8;    // y方向网格数量
 const double Lx = 10.0f; // x方向长度
 const double Ly = 10.0f; // y方向长度
 const double c = 1.0f;   // 波速
-const int TIME_STEPS = 10000; // 时间步数
+const int TIME_STEPS = 1000; // 时间步数
 // 网格步长
 const double dx = Lx / (NX - 1);
 const double dy = Ly / (NY - 1);
@@ -39,7 +40,10 @@ void waveEq(double* cur,double* prev,double* next,sycl::accessor<int, 1, sycl::a
     next[0] = 2.F * cur[1*info_cur_acc[1]+1] - prev[0] + (c * c) * dt * dt * (u_xx + u_yy);
 }
 
-
+double total_memcpy = 0, total_kernel = 0;
+double tool_init_time = 0, tool_recon_and_update_time = 0;
+double swap_time = 0;
+double param_time = 0;
 // 生成函数调用
 void waveEqShell_waveEq(const dacpp::Matrix<double> & matCur, const dacpp::Matrix<double> & matPrev, dacpp::Matrix<double> & matNext) { 
     // 设备选择
@@ -50,6 +54,7 @@ void waveEqShell_waveEq(const dacpp::Matrix<double> & matCur, const dacpp::Matri
     ParameterGeneration para_gene_tool;
     // 算子初始化
     
+    auto start = std::chrono::high_resolution_clock::now();
     // 数据信息初始化
     DataInfo info_matCur;
     info_matCur.dim = matCur.getDim();
@@ -195,7 +200,8 @@ void waveEqShell_waveEq(const dacpp::Matrix<double> & matCur, const dacpp::Matri
 	
     // 计算归约中split_length的大小
     int Reduction_Split_Length = para_gene_tool.init_reduction_split_length(Out_Ops);
-
+    auto end = std::chrono::high_resolution_clock::now();
+    param_time += std::chrono::duration<double>(end - start).count();
 
     // 设备内存分配
     
@@ -223,8 +229,17 @@ void waveEqShell_waveEq(const dacpp::Matrix<double> & matCur, const dacpp::Matri
     sp2.setDimId(1);
     sp2.setSplitLength(8);
     matCur_ops.push_back(sp2);
+
+    start = std::chrono::high_resolution_clock::now();
     matCur_tool.init(info_matCur,matCur_ops);
+    end = std::chrono::high_resolution_clock::now();
+    tool_init_time += std::chrono::duration<double>(end - start).count();
+
+    start = std::chrono::high_resolution_clock::now();
     matCur_tool.Reconstruct(r_matCur,matCur);
+    end = std::chrono::high_resolution_clock::now();
+    tool_recon_and_update_time += std::chrono::duration<double>(end - start).count();
+
 	std::vector<int> info_partition_matCur=para_gene_tool.init_partition_data_shape(info_matCur,matCur_ops);
     sycl::buffer<int> info_partition_matCur_buffer(info_partition_matCur.data(), sycl::range<1>(info_partition_matCur.size()));
     // 数据重组
@@ -240,8 +255,17 @@ void waveEqShell_waveEq(const dacpp::Matrix<double> & matCur, const dacpp::Matri
     idx2.setDimId(1);
     idx2.setSplitLength(8);
     matPrev_ops.push_back(idx2);
+
+    start = std::chrono::high_resolution_clock::now();
     matPrev_tool.init(info_matPrev,matPrev_ops);
+    end = std::chrono::high_resolution_clock::now();
+    tool_init_time += std::chrono::duration<double>(end - start).count();
+
+    start = std::chrono::high_resolution_clock::now();
     matPrev_tool.Reconstruct(r_matPrev,matPrev);
+    end = std::chrono::high_resolution_clock::now();
+    tool_recon_and_update_time += std::chrono::duration<double>(end - start).count();
+
 	std::vector<int> info_partition_matPrev=para_gene_tool.init_partition_data_shape(info_matPrev,matPrev_ops);
     sycl::buffer<int> info_partition_matPrev_buffer(info_partition_matPrev.data(), sycl::range<1>(info_partition_matPrev.size()));
     // 数据重组
@@ -257,20 +281,32 @@ void waveEqShell_waveEq(const dacpp::Matrix<double> & matCur, const dacpp::Matri
     idx2.setDimId(1);
     idx2.setSplitLength(8);
     matNext_ops.push_back(idx2);
+
+    start = std::chrono::high_resolution_clock::now();
     matNext_tool.init(info_matNext,matNext_ops);
+    end = std::chrono::high_resolution_clock::now();
+    tool_init_time += std::chrono::duration<double>(end - start).count();
+
+    start = std::chrono::high_resolution_clock::now();
     matNext_tool.Reconstruct(r_matNext,matNext);
-	std::vector<int> info_partition_matNext=para_gene_tool.init_partition_data_shape(info_matNext,matNext_ops);
+    end = std::chrono::high_resolution_clock::now();
+    tool_recon_and_update_time += std::chrono::duration<double>(end - start).count();
+	
+    std::vector<int> info_partition_matNext=para_gene_tool.init_partition_data_shape(info_matNext,matNext_ops);
     sycl::buffer<int> info_partition_matNext_buffer(info_partition_matNext.data(), sycl::range<1>(info_partition_matNext.size()));
     
+    start = std::chrono::high_resolution_clock::now();
     // 数据移动
     q.memcpy(d_matCur,r_matCur,matCur_Size*sizeof(double)).wait();
     // 数据移动
     q.memcpy(d_matPrev,r_matPrev,matPrev_Size*sizeof(double)).wait();
-	
+	end = std::chrono::high_resolution_clock::now();
+    total_memcpy += std::chrono::duration<double>(end - start).count();
     //工作项划分
     sycl::range<3> local(1, 1, Item_Size);
     sycl::range<3> global(1, 1, 1);
     //队列提交命令组
+    start = std::chrono::high_resolution_clock::now();
     q.submit([&](handler &h) {
         // 访问器初始化
         
@@ -290,7 +326,8 @@ void waveEqShell_waveEq(const dacpp::Matrix<double> & matCur, const dacpp::Matri
             waveEq(d_matCur+(sp1_*SplitLength[0][0]+sp2_*SplitLength[0][1]),d_matPrev+(idx1_*SplitLength[1][0]+idx2_*SplitLength[1][1]),d_matNext+(sp1_*SplitLength[2][0]+sp2_*SplitLength[2][1]),info_partition_matCur_accessor,info_partition_matPrev_accessor,info_partition_matNext_accessor);
         });
     }).wait();
-    
+    end = std::chrono::high_resolution_clock::now();
+    total_kernel += std::chrono::duration<double>(end - start).count();
 
 	
     // 归约
@@ -314,9 +351,14 @@ void waveEqShell_waveEq(const dacpp::Matrix<double> & matCur, const dacpp::Matri
 
 	
     // 归并结果返回
+    start = std::chrono::high_resolution_clock::now();
     q.memcpy(r_matNext, d_matNext, matNext_Size*sizeof(double)).wait();
-    matNext_tool.UpdateData(r_matNext,matNext);
+    end = std::chrono::high_resolution_clock::now();
+    total_memcpy += std::chrono::duration<double>(end - start).count();
 
+    start = std::chrono::high_resolution_clock::now();
+    matNext_tool.UpdateData(r_matNext,matNext);
+    tool_recon_and_update_time += std::chrono::duration<double>(end - start).count();
     // 内存释放
     
     sycl::free(d_matCur, q);
@@ -353,9 +395,15 @@ int main() {
     dacpp::Matrix<double> u_prev_tensor({NX, NY}, u_prev);
     dacpp::Matrix<double> u_next_tensor({NX, NY}, u_next);
     dacpp::Matrix<double> u_prev_middle_tensor = u_prev_tensor[{1,7}][{1,7}];
+    double total_time = 0;
     for(int i = 0;i < TIME_STEPS; i++) {
         dacpp::Matrix<double> u_next_middle_tensor = u_next_tensor[{1,7}][{1,7}];
+        auto start = std::chrono::high_resolution_clock::now();
         waveEqShell_waveEq(u_curr_tensor, u_prev_middle_tensor, u_next_middle_tensor);
+        auto end = std::chrono::high_resolution_clock::now();
+        total_time += std::chrono::duration<double>(end - start).count();
+
+        auto swap_start = std::chrono::high_resolution_clock::now();
         for (int i = 1; i <= NX-2; i++) {
             for(int j = 1; j <=NY-2; j++){
                 u_prev_middle_tensor[i-1][j-1]=u_curr_tensor[i][j];
@@ -377,9 +425,16 @@ int main() {
             u_curr_tensor[0][j]=0;
              // 底部边界
         }
-
-        
+        auto swap_end = std::chrono::high_resolution_clock::now();
+        swap_time += std::chrono::duration<double>(swap_end - swap_start).count();     
     }
+    std::cout<<"total memcpy time: "<<total_memcpy<<std::endl;
+    std::cout<<"total kernel time: "<<total_kernel<<std::endl;
+    std::cout<<"tool init time: "<<tool_init_time<<std::endl;
+    std::cout<<"tool recon and update: "<<tool_recon_and_update_time<<std::endl;
+    std::cout<<"swap time: "<<swap_time<<std::endl;
+    std::cout<<"param time: "<<param_time<<std::endl;
+    std::cout<<"total time: "<<total_time<<std::endl;
     u_curr_tensor.print(); 
     return 0;
 }

@@ -133,7 +133,7 @@ bool dacppTranslator::Expression::shellLHS_p(const BinaryOperator *dacExpr) {
  */
 dacppTranslator::DacppFile::DacppFile() {
     setHeaderFile("<sycl/sycl.hpp>");
-    setHeaderFile("\"DataReconstructor.h\"");
+    setHeaderFile("\"DataReconstructor.new.h\"");
     setHeaderFile("\"ParameterGeneration.h\"");
     setNameSpace("sycl");
 }

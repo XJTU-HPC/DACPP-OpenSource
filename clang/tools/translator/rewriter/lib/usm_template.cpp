@@ -115,16 +115,50 @@ std::string CodeGen_DeviceDataInit(std::string type,std::string name,std::string
 	});
 }
 
-const char *KERNEL_EXECUTE_Template = R"~~~(
-    //工作项划分
-    sycl::range<3> local(1, 1, {{SPLIT_SIZE}});
-    sycl::range<3> global(1, 1, 1);
+// const char *KERNEL_EXECUTE_Template = R"~~~(
+//     //工作项划分
+//     sycl::range<3> local(1, 1, {{SPLIT_SIZE}});
+//     sycl::range<3> global(1, 1, 1);
+//     //队列提交命令组
+//     q.submit([&](handler &h) {
+//         // 访问器初始化
+//         {{ACCESSOR_INIT}}
+//         h.parallel_for(sycl::nd_range<3>(global * local, local),[=](sycl::nd_item<3> item) {
+//             const auto item_id = item.get_local_id(2);
+//             // 索引初始化
+// 			{{INDEX_INIT}}
+//             // 嵌入计算
+// 			{{CALC_EMBED}}
+//         });
+//     }).wait();
+    
+// )~~~";
+
+// std::string CodeGen_KernelExecute(std::string SplitSize,std::string AccessorInit,std::string IndexInit,std::string CalcEmbed){
+//     return templateString(KERNEL_EXECUTE_Template,
+// 	{
+// 		{"{{SPLIT_SIZE}}",    SplitSize},
+// 		{"{{ACCESSOR_INIT}}", AccessorInit},
+// 		{"{{INDEX_INIT}}",    IndexInit},
+// 		{"{{CALC_EMBED}}",    CalcEmbed}
+// 	});
+// }
+
+const char *KERNEL_EXECUTE_Template1 = R"~~~(
+    sycl::device device = q.get_device();
+    int max_global_size = device.get_info<sycl::info::device::max_work_item_sizes<3>>()[2];
+	//工作项划分
+    int work_group_size = (Item_Size + max_global_size - 1) / max_global_size;  // 计算所需的工作组数量
+    sycl::range<3> local(1, 1, std::min(Item_Size, max_global_size)); 
+    sycl::range<3> global(1, 1, (Item_Size <= max_global_size) ? Item_Size : work_group_size * max_global_size);
     //队列提交命令组
     q.submit([&](handler &h) {
         // 访问器初始化
         {{ACCESSOR_INIT}}
-        h.parallel_for(sycl::nd_range<3>(global * local, local),[=](sycl::nd_item<3> item) {
-            const auto item_id = item.get_local_id(2);
+        h.parallel_for(sycl::nd_range<3>(global, local),[=](sycl::nd_item<3> item) {
+            const auto item_id = item.get_group(2)*item.get_local_range(2)+item.get_local_id(2);
+            if(item_id > Item_Size)
+                return;
             // 索引初始化
 			{{INDEX_INIT}}
             // 嵌入计算
@@ -135,7 +169,7 @@ const char *KERNEL_EXECUTE_Template = R"~~~(
 )~~~";
 
 std::string CodeGen_KernelExecute(std::string SplitSize,std::string AccessorInit,std::string IndexInit,std::string CalcEmbed){
-    return templateString(KERNEL_EXECUTE_Template,
+    return templateString(KERNEL_EXECUTE_Template1,
 	{
 		{"{{SPLIT_SIZE}}",    SplitSize},
 		{"{{ACCESSOR_INIT}}", AccessorInit},
@@ -190,13 +224,20 @@ std::string CodeGen_Reduction_Span(std::string SpanSize,std::string SplitSize,st
 
 const char *D2H_MEM_MOV_1_Template = R"~~~(
     // 归并结果返回
-    q.memcpy(r_{{NAME}}, d_{{NAME}}, {{SIZE}}*sizeof({{TYPE}})).wait();
-    {{NAME}}_tool.UpdateData(r_{{NAME}},{{NAME}});)~~~";
+	{{TYPE}} *d_myTensor2=malloc_device<{{TYPE}}>({{SIZE}},q);
+    {{NAME}}_tool.UpdateData(d_{{NAME}},d_myTensor2,q);
+	{{TYPE}}* res = ({{TYPE}}*)malloc({{SIZE}}*sizeof({{TYPE}}));
+	q.memcpy(res,d_myTensor2, {{SIZE}}*sizeof({{TYPE}})).wait();
+	{{NAME}}.array2Tensor(res);)~~~";
 
 const char *D2H_MEM_MOV_2_Template = R"~~~(
-    // 归约结果返回
-    q.memcpy(r_{{NAME}},d__{{NAME}}, {{SIZE}}*sizeof({{TYPE}})).wait();
-    {{NAME}}_tool.UpdateData(r_{{NAME}},{{NAME}});)~~~";
+    // 归并结果返回
+	{{TYPE}} *d_myTensor2=malloc_device<{{TYPE}}>({{SIZE}},q);
+    {{NAME}}_tool.UpdateData(d_{{NAME}},d_myTensor2,q);
+	{{TYPE}}* res = ({{TYPE}}*)malloc({{SIZE}}*sizeof({{TYPE}}));
+	q.memcpy(res,d_myTensor2, {{SIZE}}*sizeof({{TYPE}})).wait();
+	{{NAME}}.array2Tensor(res);)~~~";
+
 
 std::string CodeGen_D2HMemMov(std::string Name,std::string Type,std::string Size,bool isReduction){
     if(isReduction){
