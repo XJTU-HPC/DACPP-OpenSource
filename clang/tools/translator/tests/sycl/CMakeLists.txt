@@ -49,7 +49,10 @@ add_executable(syclBlockMatMul1 blockMatMul1.sycl.cpp)
 add_executable(syclBlockMatMul2 blockMatMul2.sycl.cpp)
 add_executable(syclBlockMatMul3 blockMatMul3.sycl.cpp)
 add_executable(syclVectorMul0 vectorMul0.sycl.cpp)
-add_executable(outputSyclBlockMatrixMultiplication blockMatrixMultiplication_sycl.cpp)
+# add_executable(outputSyclBlockMatrixMultiplication blockMatrixMultiplication_sycl.cpp)
+
+add_executable(DataReconNewTest DataReconNewTest.sycl.cpp)
+add_executable(dataReorder dataReorder.cpp)
 
 #---------------------MutipleGpuTest------------------------------------
 add_executable(MutipleGpuTest MutipleGpuTest.cpp)
@@ -137,6 +140,13 @@ set_target_properties(syclVectorMul0 PROPERTIES
 # set_target_properties(outputSyclBlockMatrixMultiplication PROPERTIES
 #     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/translator/tests
 # )
+set_target_properties(DataReconNewTest PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/translator/tests
+)
+set_target_properties(dataReorder PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/translator/tests
+)
+
 #---------------------MutipleGpuTest------------------------------------
 set_target_properties(MutipleGpuTest PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/translator/tests
@@ -168,9 +178,6 @@ target_link_libraries(mandeldac PRIVATE ${OpenCL_LIBRARY} sycl DacppLib Rewriter
 target_link_libraries(oddEvendac PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
 target_link_libraries(test PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
 target_link_libraries(MutipleGpuTest PRIVATE ${OpenCL_LIBRARY} sycl Threads::Threads)
-
-
-
 target_link_libraries(syclBlockMatMul1 PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
 target_link_libraries(syclBlockMatMul0 PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
 target_link_libraries(syclBlockMatMul2 PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)

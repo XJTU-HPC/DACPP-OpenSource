@@ -1,6 +1,7 @@
 #include <iostream>
 #include <vector>
 #include <cmath>
+#include <chrono>
 #include "ReconTensor.h"
 using namespace std;
 
@@ -39,33 +40,21 @@ void waveEq(double* cur,double* prev,double* next,sycl::accessor<int, 1, sycl::a
     next[0] = 2.F * cur[1*info_cur_acc[1]+1] - prev[0] + (c * c) * dt * dt * (u_xx + u_yy);
 }
 
-void PrintTargetInfo(queue& q) {
-    auto device = q.get_device();
-    auto max_block_size =
-        device.get_info<info::device::max_work_group_size>();
-  
-    auto max_EU_count =
-        device.get_info<info::device::max_compute_units>();
-  
-    cout<< " Running on " << device.get_info<info::device::name>()<<"\n";
-    cout<< " The Device Max Work Group Size is : "<< max_block_size<<"\n";
-    cout<< " The Device Max EUCount is : " << max_EU_count<<"\n";
-  }
+double total_memcpy = 0, total_kernel = 0;
+double tool_init_time = 0, tool_recon_and_update_time = 0;
+double swap_time = 0;
+double param_time = 0;
 // 生成函数调用
 void waveEqShell_waveEq(const dacpp::Matrix<double> & matCur, const dacpp::Matrix<double> & matPrev, dacpp::Matrix<double> & matNext) { 
     // 设备选择
-    auto devices = device::get_devices(info::device_type::gpu);
-    vector<queue> q;
-    for (const auto& dev : devices) {
-        q.emplace_back(dev);
-    }
-    int numDevices = q.size();
-    // printf("Running on %d GPU\n", numDevices);
+    auto selector = default_selector_v;
+    queue q(selector);
     //声明参数生成工具
     //ParameterGeneration<int,2> para_gene_tool;
     ParameterGeneration para_gene_tool;
     // 算子初始化
     
+    auto start = std::chrono::high_resolution_clock::now();
     // 数据信息初始化
     DataInfo info_matCur;
     info_matCur.dim = matCur.getDim();
@@ -211,7 +200,19 @@ void waveEqShell_waveEq(const dacpp::Matrix<double> & matCur, const dacpp::Matri
 	
     // 计算归约中split_length的大小
     int Reduction_Split_Length = para_gene_tool.init_reduction_split_length(Out_Ops);
+    auto end = std::chrono::high_resolution_clock::now();
+    param_time += std::chrono::duration<double>(end - start).count();
 
+    // 设备内存分配
+    
+    // 设备内存分配
+    double *d_matCur=malloc_device<double>(matCur_Size,q);
+    // 设备内存分配
+    double *d_matPrev=malloc_device<double>(matPrev_Size,q);
+    // 设备内存分配
+    double *d_matNext=malloc_device<double>(matNext_Size,q);
+    // 归约设备内存分配
+    double *reduction_matNext = malloc_device<double>(Reduction_Size,q);
     // 数据关联计算
     
     
@@ -228,8 +229,17 @@ void waveEqShell_waveEq(const dacpp::Matrix<double> & matCur, const dacpp::Matri
     sp2.setDimId(1);
     sp2.setSplitLength(8);
     matCur_ops.push_back(sp2);
+
+    start = std::chrono::high_resolution_clock::now();
     matCur_tool.init(info_matCur,matCur_ops);
+    end = std::chrono::high_resolution_clock::now();
+    tool_init_time += std::chrono::duration<double>(end - start).count();
+
+    start = std::chrono::high_resolution_clock::now();
     matCur_tool.Reconstruct(r_matCur,matCur);
+    end = std::chrono::high_resolution_clock::now();
+    tool_recon_and_update_time += std::chrono::duration<double>(end - start).count();
+
 	std::vector<int> info_partition_matCur=para_gene_tool.init_partition_data_shape(info_matCur,matCur_ops);
     sycl::buffer<int> info_partition_matCur_buffer(info_partition_matCur.data(), sycl::range<1>(info_partition_matCur.size()));
     // 数据重组
@@ -245,8 +255,17 @@ void waveEqShell_waveEq(const dacpp::Matrix<double> & matCur, const dacpp::Matri
     idx2.setDimId(1);
     idx2.setSplitLength(8);
     matPrev_ops.push_back(idx2);
+
+    start = std::chrono::high_resolution_clock::now();
     matPrev_tool.init(info_matPrev,matPrev_ops);
+    end = std::chrono::high_resolution_clock::now();
+    tool_init_time += std::chrono::duration<double>(end - start).count();
+
+    start = std::chrono::high_resolution_clock::now();
     matPrev_tool.Reconstruct(r_matPrev,matPrev);
+    end = std::chrono::high_resolution_clock::now();
+    tool_recon_and_update_time += std::chrono::duration<double>(end - start).count();
+
 	std::vector<int> info_partition_matPrev=para_gene_tool.init_partition_data_shape(info_matPrev,matPrev_ops);
     sycl::buffer<int> info_partition_matPrev_buffer(info_partition_matPrev.data(), sycl::range<1>(info_partition_matPrev.size()));
     // 数据重组
@@ -262,89 +281,89 @@ void waveEqShell_waveEq(const dacpp::Matrix<double> & matCur, const dacpp::Matri
     idx2.setDimId(1);
     idx2.setSplitLength(8);
     matNext_ops.push_back(idx2);
+
+    start = std::chrono::high_resolution_clock::now();
     matNext_tool.init(info_matNext,matNext_ops);
+    end = std::chrono::high_resolution_clock::now();
+    tool_init_time += std::chrono::duration<double>(end - start).count();
+
+    start = std::chrono::high_resolution_clock::now();
     matNext_tool.Reconstruct(r_matNext,matNext);
-	std::vector<int> info_partition_matNext=para_gene_tool.init_partition_data_shape(info_matNext,matNext_ops);
+    end = std::chrono::high_resolution_clock::now();
+    tool_recon_and_update_time += std::chrono::duration<double>(end - start).count();
+	
+    std::vector<int> info_partition_matNext=para_gene_tool.init_partition_data_shape(info_matNext,matNext_ops);
     sycl::buffer<int> info_partition_matNext_buffer(info_partition_matNext.data(), sycl::range<1>(info_partition_matNext.size()));
     
-
-    for(int numDevice = 0; numDevice < numDevices; numDevice++){
-        // PrintTargetInfo(q[numDevice]);
-        // 设备内存分配
-        double *d_matCur=malloc_device<double>(matCur_Size,q[numDevice]);
-        // 设备内存分配
-        double *d_matPrev=malloc_device<double>(matPrev_Size,q[numDevice]);
-        // 设备内存分配
-        double *d_matNext=malloc_device<double>(matNext_Size,q[numDevice]);
-        // 归约设备内存分配
-        double *reduction_matNext = malloc_device<double>(Reduction_Size,q[numDevice]);
-        // 数据移动
-        q[numDevice].memcpy(d_matCur,r_matCur,matCur_Size*sizeof(double)).wait();
-        // 数据移动
-        q[numDevice].memcpy(d_matPrev,r_matPrev,matPrev_Size*sizeof(double)).wait();
-        //工作项划分
-        sycl::range<3> local(1, 1, Item_Size/numDevices);
-        sycl::range<3> global(1, 1, Item_Size);
-        //队列提交命令组
-        q[numDevice].submit([&](handler &h) {
-            // 访问器初始化
+    start = std::chrono::high_resolution_clock::now();
+    // 数据移动
+    q.memcpy(d_matCur,r_matCur,matCur_Size*sizeof(double)).wait();
+    // 数据移动
+    q.memcpy(d_matPrev,r_matPrev,matPrev_Size*sizeof(double)).wait();
+	end = std::chrono::high_resolution_clock::now();
+    total_memcpy += std::chrono::duration<double>(end - start).count();
+    //工作项划分
+    sycl::range<3> local(1, 1, Item_Size);
+    sycl::range<3> global(1, 1, 1);
+    //队列提交命令组
+    start = std::chrono::high_resolution_clock::now();
+    q.submit([&](handler &h) {
+        // 访问器初始化
         
-            auto info_partition_matCur_accessor = info_partition_matCur_buffer.get_access<sycl::access::mode::read_write>(h);
-            auto info_partition_matPrev_accessor = info_partition_matPrev_buffer.get_access<sycl::access::mode::read_write>(h);
-            auto info_partition_matNext_accessor = info_partition_matNext_buffer.get_access<sycl::access::mode::read_write>(h);
-            h.parallel_for(sycl::nd_range<3>(global * local, local),[=](sycl::nd_item<3> item) {
-                const auto item_id = item.get_local_id(2) + numDevice * Item_Size/numDevices;
-                // 索引初始化
+        auto info_partition_matCur_accessor = info_partition_matCur_buffer.get_access<sycl::access::mode::read_write>(h);
+        auto info_partition_matPrev_accessor = info_partition_matPrev_buffer.get_access<sycl::access::mode::read_write>(h);
+        auto info_partition_matNext_accessor = info_partition_matNext_buffer.get_access<sycl::access::mode::read_write>(h);
+        h.parallel_for(sycl::nd_range<3>(global * local, local),[=](sycl::nd_item<3> item) {
+            const auto item_id = item.get_local_id(2);
+            // 索引初始化
 			
-                const auto sp1_=(item_id/sp2.split_size+(0))%sp1.split_size;
-                const auto idx1_=(item_id/sp2.split_size+(0))%idx1.split_size;
-                const auto sp2_=(item_id+(0))%sp2.split_size;
-                const auto idx2_=(item_id+(0))%idx2.split_size;
-                // 嵌入计算
+            const auto sp1_=(item_id/sp2.split_size+(0))%sp1.split_size;
+            const auto idx1_=(item_id/sp2.split_size+(0))%idx1.split_size;
+            const auto sp2_=(item_id+(0))%sp2.split_size;
+            const auto idx2_=(item_id+(0))%idx2.split_size;
+            // 嵌入计算
 			
-                waveEq(d_matCur+(sp1_*SplitLength[0][0]+sp2_*SplitLength[0][1]),d_matPrev+(idx1_*SplitLength[1][0]+idx2_*SplitLength[1][1]),d_matNext+(sp1_*SplitLength[2][0]+sp2_*SplitLength[2][1]),info_partition_matCur_accessor,info_partition_matPrev_accessor,info_partition_matNext_accessor);
-            });
-        }).wait();
+            waveEq(d_matCur+(sp1_*SplitLength[0][0]+sp2_*SplitLength[0][1]),d_matPrev+(idx1_*SplitLength[1][0]+idx2_*SplitLength[1][1]),d_matNext+(sp1_*SplitLength[2][0]+sp2_*SplitLength[2][1]),info_partition_matCur_accessor,info_partition_matPrev_accessor,info_partition_matNext_accessor);
+        });
+    }).wait();
+    end = std::chrono::high_resolution_clock::now();
+    total_kernel += std::chrono::duration<double>(end - start).count();
 
 	
-        // 归约
-        if(Reduction_Split_Size > 1)
-        {
-            for(int i=0;i<Reduction_Size;i++) {
-                q[numDevice].submit([&](handler &h) {
-    	            h.parallel_for(
-                    range<1>(Reduction_Split_Size),
-                    reduction(reduction_matNext+i, 
-                    sycl::plus<>(),
-                    property::reduction::initialize_to_identity()),
-                    [=](id<1> idx,auto &reducer) {
-                        reducer.combine(d_matNext[(i/Reduction_Split_Length)*Reduction_Split_Length*Reduction_Split_Size+i%Reduction_Split_Length+idx*Reduction_Split_Length]);
-     	            });
-            }).wait();
-            }
-            q[numDevice].memcpy(d_matNext,reduction_matNext, Reduction_Size*sizeof(double)).wait();
+    // 归约
+    if(Reduction_Split_Size > 1)
+    {
+        for(int i=0;i<Reduction_Size;i++) {
+            q.submit([&](handler &h) {
+    	        h.parallel_for(
+                range<1>(Reduction_Split_Size),
+                reduction(reduction_matNext+i, 
+                sycl::plus<>(),
+                property::reduction::initialize_to_identity()),
+                [=](id<1> idx,auto &reducer) {
+                    reducer.combine(d_matNext[(i/Reduction_Split_Length)*Reduction_Split_Length*Reduction_Split_Size+i%Reduction_Split_Length+idx*Reduction_Split_Length]);
+     	        });
+         }).wait();
         }
-        // printf("BreakTest6\n");
-
-        // 归并结果返回
-        q[numDevice].memcpy(r_matNext + numDevice * matNext_Size/numDevices, d_matNext + numDevice * matNext_Size/numDevices, matNext_Size*sizeof(double)/numDevices).wait();     
-        double* host_matNext = (double*)malloc(sizeof(double) * matNext_Size*sizeof(double)/numDevices);
-        q[numDevice].memcpy(host_matNext, d_matNext + numDevice * matNext_Size/numDevices, matNext_Size*sizeof(double)/numDevices).wait();
-        // 打印 d_matNext 的值
-        printf("The Device %d result is: ", numDevice);
-        for (int i = 0; i < matNext_Size/numDevices; i++) {
-            printf("%f ", host_matNext[i]);
-        }
-        printf("\n");
-        free(host_matNext);
-    
-        // q[numDevice].memcpy(r_matNext, d_matNext, matNext_Size*sizeof(double)).wait();     
-        // 内存释放
-        sycl::free(d_matCur, q[numDevice]);
-        sycl::free(d_matPrev, q[numDevice]);
-        sycl::free(d_matNext, q[numDevice]);
+        q.memcpy(d_matNext,reduction_matNext, Reduction_Size*sizeof(double)).wait();
     }
+
+
+	
+    // 归并结果返回
+    start = std::chrono::high_resolution_clock::now();
+    q.memcpy(r_matNext, d_matNext, matNext_Size*sizeof(double)).wait();
+    end = std::chrono::high_resolution_clock::now();
+    total_memcpy += std::chrono::duration<double>(end - start).count();
+
+    start = std::chrono::high_resolution_clock::now();
     matNext_tool.UpdateData(r_matNext,matNext);
+    tool_recon_and_update_time += std::chrono::duration<double>(end - start).count();
+    // 内存释放
+    
+    sycl::free(d_matCur, q);
+    sycl::free(d_matPrev, q);
+    sycl::free(d_matNext, q);
 }
 
 int main() {
@@ -376,9 +395,15 @@ int main() {
     dacpp::Matrix<double> u_prev_tensor({NX, NY}, u_prev);
     dacpp::Matrix<double> u_next_tensor({NX, NY}, u_next);
     dacpp::Matrix<double> u_prev_middle_tensor = u_prev_tensor[{1,7}][{1,7}];
-    for(int i = 0;i < 3; i++) {
+    double total_time = 0;
+    for(int i = 0;i < TIME_STEPS; i++) {
         dacpp::Matrix<double> u_next_middle_tensor = u_next_tensor[{1,7}][{1,7}];
+        auto start = std::chrono::high_resolution_clock::now();
         waveEqShell_waveEq(u_curr_tensor, u_prev_middle_tensor, u_next_middle_tensor);
+        auto end = std::chrono::high_resolution_clock::now();
+        total_time += std::chrono::duration<double>(end - start).count();
+
+        auto swap_start = std::chrono::high_resolution_clock::now();
         for (int i = 1; i <= NX-2; i++) {
             for(int j = 1; j <=NY-2; j++){
                 u_prev_middle_tensor[i-1][j-1]=u_curr_tensor[i][j];
@@ -400,9 +425,16 @@ int main() {
             u_curr_tensor[0][j]=0;
              // 底部边界
         }
-
-        
+        auto swap_end = std::chrono::high_resolution_clock::now();
+        swap_time += std::chrono::duration<double>(swap_end - swap_start).count();     
     }
+    std::cout<<"total memcpy time: "<<total_memcpy<<std::endl;
+    std::cout<<"total kernel time: "<<total_kernel<<std::endl;
+    std::cout<<"tool init time: "<<tool_init_time<<std::endl;
+    std::cout<<"tool recon and update: "<<tool_recon_and_update_time<<std::endl;
+    std::cout<<"swap time: "<<swap_time<<std::endl;
+    std::cout<<"param time: "<<param_time<<std::endl;
+    std::cout<<"total time: "<<total_time<<std::endl;
     u_curr_tensor.print(); 
     return 0;
 }
