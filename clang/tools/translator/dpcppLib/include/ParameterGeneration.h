@@ -210,6 +210,8 @@ class ParameterGeneration
         //     }
         //     return (in_op_product / out_op_product > 1);
         // }
+
+        //计算数据被算子作用后数据单元的形状 本质上就是存了几个数字 比如划分之后是3*3的矩阵 那么这个vector就存了3 3
         std::vector<int> init_partition_data_shape(DataInfo data_info,Dac_Ops ops) {
             std::vector<int> tmp=data_info.dimLength;
             for(int i=0;i<ops.size;i++) {
@@ -223,7 +225,7 @@ class ParameterGeneration
             return res;
         }
 
-        int init_Data_SplitNum(Dac_Ops ops,DataInfo data_info){
+                int init_Data_SplitNum(Dac_Ops ops,DataInfo data_info){
             int result = 1;//初始化结果为1 
             for(int i = 0;i < ops.size;i ++)
             {
@@ -270,6 +272,8 @@ class ParameterGeneration
             }
             return res;
         }
+
+
 };
 
 #endif

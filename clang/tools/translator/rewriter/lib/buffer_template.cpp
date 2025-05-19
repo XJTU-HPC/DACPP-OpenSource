@@ -26,8 +26,13 @@ std::string templateString(std::string templ,
 
 std::string BUFFER_ACCESSOR_LIST = "";
 std::string ACCESSOR_POINTER_LIST = "";
+//下面这个由b_name修改为r_name因为现在重组后的数据放到了r_name中
+/*
 const char *BUFFER_ACCESSOR_Template = R"~~~(
         accessor acc_{{NAME}}{b_{{NAME}}, h};)~~~";
+*/
+const char *BUFFER_ACCESSOR_Template = R"~~~(
+        accessor acc_{{NAME}}{r_{{NAME}}, h};)~~~";
 const char *ACCESSOR_POINTER_Template = R"~~~(
             auto* d_{{NAME}} = acc_{{NAME}}.get_multi_ptr<access::decorated::no>().get();)~~~";
 
@@ -148,6 +153,9 @@ std::string CodeGen_AccessorInit(std::string name) {
 	});
 }
 
+
+//buffer版本的内核执行
+//和usm不同的是增加获得访问器以及获得访问器指针的操作
 const char *KERNEL_EXECUTE_Template = R"~~~(
     sycl::device device = q.get_device();
     int max_global_size = device.get_info<sycl::info::device::max_work_item_sizes<3>>()[2];
@@ -210,13 +218,15 @@ std::string CodeGen_KernelExecute(std::string SplitSize, std::string AccessorIni
 	});
 }
 
+
+//归约中将b_name修改为了r_name，因为现在是使用r_name进行计算
 const char *REDUCTION_Template_Span = R"~~~(
     // 归约
     if({{SPLIT_SIZE}} > 1)
     {
         for(int i=0;i<{{SPAN_SIZE}};i++) {
             q.submit([&](handler &h) {
-                accessor d_{{NAME}}{b_{{NAME}}, h};
+                accessor d_{{NAME}}{r_{{NAME}}, h};
     	        h.parallel_for(
                 range<1>({{SPLIT_SIZE}}),
                 reduction(b_reduction_{{NAME}}[i], h, 
@@ -227,7 +237,7 @@ const char *REDUCTION_Template_Span = R"~~~(
          }).wait();
         }
         {
-            host_accessor b_acc{b_{{NAME}}};
+            host_accessor b_acc{r_{{NAME}}};
             for(int i = 0; i < {{SPAN_SIZE}}; i++){
                 host_accessor temp_accessor{b_reduction_{{NAME}}[i]};
                 b_acc[i] = temp_accessor[0];
@@ -249,6 +259,10 @@ std::string CodeGen_Reduction_Span(std::string SpanSize,std::string SplitSize,st
 	});
 }
 
+
+//下这个已经废弃 因为这个是将b_name中的数据返回到主机上的r_name中，然后进行数据的逆重组
+//现在r_name存的是最终的结果，要先逆重组到b_name，再返回到主机的h_name中
+//而且归并和归约模板似乎是一样的
 const char *D2H_MEM_MOV_1_Template = R"~~~(
     // 归并结果返回
     {
@@ -286,6 +300,114 @@ std::string CodeGen_D2HMemMov(std::string Name,std::string Type,std::string Size
 			{"{{SIZE}}",            Size}
 		});
 	}
+}
+
+//重写结果返回
+//先将r_name中的数据逆重组到b_name,再将b_name数据传输到h_name
+const char *RESULT_B2H_MOV_Template = R"~~~(
+    //结果返回
+    {{NAME}}_tool.UpdateData(r_{{NAME}},b_{{NAME}},q);
+    {
+        host_accessor temp_accessor{b_{{NAME}}};
+        for(int i = 0; i < {{SIZE}}; i++){
+            h_{{NAME}}[i] = temp_accessor[i];
+        }
+    }
+    {{NAME}}.array2Tensor(h_{{NAME}});
+)~~~";
+
+std::string CodeGen_Result_B2H_Mov(std::string NAME,std::string SIZE)
+{
+    return templateString(RESULT_B2H_MOV_Template,
+	{
+		{"{{NAME}}",             NAME},
+		{"{{SIZE}}",             SIZE}
+	});
+}
+
+/*
+    以下模板为数据重组服务
+*/
+
+//D2B_MOV_BUFFER_Template用于buffer版本的数据重组
+//申请主机内存并赋值，将主机端的数据移动到buffer中 buffer模拟设备端数据
+//由于命名过于混乱 这个模板不嵌套前面的buffer主机到设备传输数据
+/*
+    double* h_matPrev=(double*)malloc(matPrev.getSize()*sizeof(double));
+    matPrev.tensor2Array(h_matPrev);
+    { //Buffer主机到设备传输数据
+        host_accessor temp_accessor{b_matPrev};
+        for(int i = 0; i < matPrev_Size; i++){
+            temp_accessor[i] = h_matPrev[i];
+        }
+    }
+*/
+const char *D2B_MOV_BUFFER_Template = R"~~~(
+    // 数据移动
+    {{TYPE}}* h_{{NAME}} = ({{TYPE}}*)malloc({{NAME}}.getSize()*sizeof({{TYPE}}));
+    {{NAME}}.tensor2Array(h_{{NAME}});
+    {
+        host_accessor temp_accessor{b_{{NAME}}};
+        for(int i = 0; i < {{SIZE}}; i++){
+            temp_accessor[i] = h_{{NAME}}[i];
+        }
+    }
+)~~~";
+
+std::string CodeGen_D2B_Mov_Buffer(std::string TYPE,std::string NAME,std::string SIZE)
+{
+    return templateString(D2B_MOV_BUFFER_Template,
+	{
+        {"{{TYPE}}",        TYPE},   
+		{"{{NAME}}",        NAME},
+		{"{{SIZE}}",        SIZE}
+	});
+}
+
+
+//用于buffer模板数据重组中申请主机内存
+/*
+    double* h_matNext=(double*)malloc(matNext.getSize()*sizeof(double));
+*/
+const char *INIT_HOST_MEMORY_Template = R"~~~(
+    // 数据移动
+    {{TYPE}}* h_{{NAME}} = ({{TYPE}}*)malloc({{NAME}}.getSize()*sizeof({{TYPE}}));
+)~~~";
+std::string CodeGen_Init_Host_Memory(std::string TYPE,std::string NAME)
+{
+    return templateString(INIT_HOST_MEMORY_Template,
+	{
+        {"{{TYPE}}",        TYPE},   
+		{"{{NAME}}",        NAME}
+	});
+}
+
+
+//buffer数据初始化 看第124行
+
+
+//数据重组的buffer模板 支持在设备端完成数据重组
+//注意逻辑是h_name(主机数据)传输到b_name(设备数据)，然后b_name到r_name(重组之后的数据)
+//使用r_name进行计算
+const char *DATA_RECON_BUFFER_Template = R"~~~(
+    // 数据重组
+    DataReconstructor<{{TYPE}}> {{NAME}}_tool;
+    {{DATA_OPS_INIT}}
+    {{NAME}}_tool.init(info_{{NAME}},{{NAME}}_ops);
+    buffer<{{TYPE}}> r_{{NAME}}{{{SIZE}}};
+    {{NAME}}_tool.Reconstruct(r_{{NAME}},b_{{NAME}},q);
+	std::vector<int> info_partition_{{NAME}}=para_gene_tool.init_partition_data_shape(info_{{NAME}},{{NAME}}_ops);
+    sycl::buffer<int> info_partition_{{NAME}}_buffer(info_partition_{{NAME}}.data(), sycl::range<1>(info_partition_{{NAME}}.size()));
+)~~~";
+
+std::string CodeGen_DataReconstruct(std::string type,std::string name,std::string size,std::string dataOpsInit){
+    return templateString(DATA_RECON_BUFFER_Template,
+	{
+		{"{{TYPE}}",       type},
+		{"{{NAME}}",       name},
+		{"{{SIZE}}",       size},
+		{"{{DATA_OPS_INIT}}", dataOpsInit}
+	});
 }
 
 }

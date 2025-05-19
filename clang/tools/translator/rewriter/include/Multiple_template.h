@@ -27,6 +27,7 @@ namespace MULTIPLE_TEMPLATE {
     extern const char* Kernel_Template;
     extern const char *MEM_FREE_Template;
 
+    std::string CodeGen_DataReconstruct(std::string type,std::string name,std::string size,std::string dataOpsInit, bool isOut);
     std::string CodeGen_CalcEmbed2(std::string Name,Args args, std::vector<std::string> accessor_names,std::vector<bool> isFull);
     std::string CodeGen_DataSplit(std::string Name);
     std::string CodeGen_DataDeviceMalloc(std::string Name,bool isFull);
@@ -46,9 +47,10 @@ namespace MULTIPLE_TEMPLATE {
     std::string CodeGen_Reduction_Span(std::string SpanSize,std::string SplitSize,std::string SplitLength,std::string Name,std::string Type,std::string ReductionRule);
     std::string CodeGen_D2HMemMov(std::string Name,std::string Type,std::string Size,bool isReduction);
     std::string CodeGen_MemFree(std::string Name);
-    std::string CodeGen_D2HMemMovF(std::string Name);
+    std::string CodeGen_D2HMemMovF(std::string Name,std::string Type,std::string Size);
+    std::string CodeGen_JustAMiddle(std::string type,std::string name,std::string size);
     //整合模板
-    std::string CodeGen_Kernel(std::string Device_Mem,std::string DeviceMemAlloc,std::string H2DMemMove,std::string KernelExecute,std::string Store_Device_Mem,std::string Load_Device_Mem,std::string Reduction,std::string D2HMemMove,std::string MemFree); 
+    std::string CodeGen_Kernel(std::string Device_Mem,std::string CantFindBetterWay,std::string DeviceMemAlloc,std::string H2DMemMove,std::string KernelExecute,std::string Store_Device_Mem,std::string Load_Device_Mem,std::string Reduction,std::string D2HMemMove,std::string MemFree);
     std::string CodeGen_DAC2SYCL2(std::string dacShellName, std::string dacShellParams,std::string opInit, std::string parameter_generate, std::string deviceMemAlloc, std::string dataAssocComp);
 }
 // namespace Multiple_TEMPLATE

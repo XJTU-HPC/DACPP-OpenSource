@@ -30,7 +30,6 @@ add_executable(liuliangdac liuliang.dac_sycl.cpp)
 add_executable(liuliangStandardSycl liuliang.StandardSycl.cpp)
 add_executable(decay_chaindac decay_chain.dac_sycl.cpp)
 add_executable(decay_chainStandardSycl decay_chain.StandardSycl.cpp)
-add_executable(matMuldac matMul.dac_sycl.cpp)
 add_executable(matMulStandardSycl matMul.StandardSycl.cpp)
 add_executable(imageAdjustmentdac imageAdjustment.dac_sycl.cpp)
 add_executable(mdpdac mdp.dac_sycl.cpp)
@@ -40,7 +39,6 @@ add_executable(mandeldac mandel.dac_sycl.cpp)
 add_executable(oddEvendac oddEven.dac_sycl.cpp)
 add_executable(test test.cpp)
 add_executable(jac jac.cpp)
-add_executable(buffer_template_wave_test buffer_template_wave_test.cpp)
 
 
 
@@ -54,8 +52,8 @@ add_executable(syclVectorMul0 vectorMul0.sycl.cpp)
 add_executable(DataReconNewTest DataReconNewTest.sycl.cpp)
 add_executable(dataReorder dataReorder.cpp)
 
-#---------------------MutipleGpuTest------------------------------------
-add_executable(MutipleGpuTest MutipleGpuTest.cpp)
+
+add_executable(wave_dac_forTest wave_dac_for.cpp)
 
 set_target_properties(FOuLadac PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/translator/tests
@@ -89,9 +87,6 @@ set_target_properties(decay_chaindac PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/translator/tests
 )
 set_target_properties(decay_chainStandardSycl PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/translator/tests
-)
-set_target_properties(matMuldac PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/translator/tests
 )
 set_target_properties(matMulStandardSycl PROPERTIES
@@ -147,14 +142,10 @@ set_target_properties(dataReorder PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/translator/tests
 )
 
-#---------------------MutipleGpuTest------------------------------------
-set_target_properties(MutipleGpuTest PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/translator/tests
-)
 set_target_properties(jac PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/translator/tests
 )
-set_target_properties(buffer_template_wave_test PROPERTIES
+set_target_properties(wave_dac_forTest PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/translator/tests
 )
 target_link_libraries(FOuLadac PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
@@ -168,7 +159,6 @@ target_link_libraries(liuliangdac PRIVATE ${OpenCL_LIBRARY} sycl DacppLib Rewrit
 target_link_libraries(liuliangStandardSycl PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
 target_link_libraries(decay_chaindac PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
 target_link_libraries(decay_chainStandardSycl PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
-target_link_libraries(matMuldac PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib Threads::Threads)
 target_link_libraries(matMulStandardSycl PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
 target_link_libraries(imageAdjustmentdac PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
 target_link_libraries(mdpdac PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
@@ -177,14 +167,13 @@ target_link_libraries(DFTdac PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib
 target_link_libraries(mandeldac PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
 target_link_libraries(oddEvendac PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
 target_link_libraries(test PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
-target_link_libraries(MutipleGpuTest PRIVATE ${OpenCL_LIBRARY} sycl Threads::Threads)
+
 target_link_libraries(syclBlockMatMul1 PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
 target_link_libraries(syclBlockMatMul0 PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
 target_link_libraries(syclBlockMatMul2 PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
 target_link_libraries(syclBlockMatMul3 PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
 target_link_libraries(syclVectorMul0 PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
-target_link_libraries(outputSyclBlockMatrixMultiplication PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
-#---------------------MutipleGpuTest------------------------------------
-target_link_libraries(MutipleGpuTest PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
+# target_link_libraries(outputSyclBlockMatrixMultiplication PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
+
 target_link_libraries(jac PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
-target_link_libraries(buffer_template_wave_test PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
+target_link_libraries(wave_dac_forTest PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)

@@ -8,6 +8,7 @@ include_directories(/usr/include)
 
 set(DACPPLIB_SOURCES
   dacppLib/lib/exception.cpp
+  dacppLib/include/ReconTensor.h
 )
 set(PARSER_SOURCES
   parser/lib/ASTParse.cpp
@@ -16,17 +17,18 @@ set(PARSER_SOURCES
   parser/lib/Param.cpp
   parser/lib/Shell.cpp
   parser/lib/Split.cpp
+  parser/lib/Dacfor.cpp
 )
 set(REWRITER_SOURCES
   # rewriter/lib/dacInfo.cpp
   rewriter/lib/sub_template.cpp
   rewriter/lib/usm_template.cpp
-  rewriter/lib/Multiple_template.cpp
   rewriter/lib/Rewriter_Usm.cpp
   rewriter/lib/Rewriter_Buffer.cpp
   rewriter/lib/Rewriter_Multiple.cpp
   rewriter/lib/buffer_template.cpp
   rewriter/lib/universal_template.cpp
+  rewriter/lib/Multiple_template.cpp
 )
 
 add_library(DacppLib ${DACPPLIB_SOURCES})

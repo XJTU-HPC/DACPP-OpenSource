@@ -107,14 +107,14 @@ int main() {
     q.memcpy(u_curr.data(), d_u_curr, sizeof(double) * NX * NY).wait();
     
     std::cout << "{";
-    for(int i = 0; i < 1; i++){
-        //std::cout << "{";
+    for(int i = 0; i < NX; i++){
+        std::cout << "{";
         for(int j = 0; j < NY; j++){
             std::cout << u_curr[i * NX + j]  ;
             if (j < NY - 1) std::cout << ", ";
         }
-        //std::cout << "}";
-        //if (i < NX - 1) std::cout << ", ";
+        std::cout << "}";
+        if (i < NX - 1) std::cout << ", ";
         
     }
     std::cout << "}" << std::endl;

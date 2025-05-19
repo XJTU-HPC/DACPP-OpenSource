@@ -12,6 +12,14 @@
 
 
 namespace dacpp {
+    template <typename Func>
+    inline void dac_for(int time_steps, Func&& loop_body) {
+        loop_body(time_steps);
+    }
+    template <typename T1, typename U1>
+    void swap(const T1&, const U1&) {
+        // 什么都不做，避免真正执行
+    }
     
     template <class T, int N>
     class TensorProxy;

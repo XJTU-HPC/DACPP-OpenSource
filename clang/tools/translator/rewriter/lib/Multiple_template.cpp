@@ -84,6 +84,52 @@ namespace MULTIPLE_TEMPLATE {
     }
 
 
+    const char *DATA_RECON_Template = R"~~~(
+    // 数据重组
+    DataReconstructor<{{TYPE}}> {{NAME}}_tool;
+
+    {{DATA_OPS_INIT}}
+    {{NAME}}_tool.init(info_{{NAME}},{{NAME}}_ops);
+    {{TYPE}} recon_h_{{NAME}}[{{NAME}}_Size];
+    {{NAME}}.tensor2Array(recon_h_{{NAME}});
+    {{TYPE}} *recon_d_{{NAME}}=malloc_device<{{TYPE}}>({{NAME}}_Size,q[0]);
+    q[0].memcpy(recon_d_{{NAME}}, recon_h_{{NAME}}, {{NAME}}_Size*sizeof({{TYPE}})).wait();
+    {{TYPE}} *r_{{NAME}}=malloc_device<{{TYPE}}>({{NAME}}_Size,q[0]);
+    {{NAME}}_tool.Reconstruct(r_{{NAME}}, recon_d_{{NAME}},q[0]);
+    sycl::free(recon_d_{{NAME}}, q[0]);
+    std::vector<int> info_partition_{{NAME}}=para_gene_tool.init_partition_data_shape(info_{{NAME}},{{NAME}}_ops);
+    sycl::buffer<int> info_partition_{{NAME}}_buffer(info_partition_{{NAME}}.data(), sycl::range<1>(info_partition_{{NAME}}.size()));)~~~";
+    
+    const char *DATA_RECON_OUT_Template = R"~~~(
+    // 数据重组
+    DataReconstructor<{{TYPE}}> {{NAME}}_tool;
+    {{DATA_OPS_INIT}}
+    {{NAME}}_tool.init(info_{{NAME}},{{NAME}}_ops);
+    {{TYPE}} *r_{{NAME}}=malloc_device<{{TYPE}}>({{NAME}}_Size,q[0]);
+    q[0].memset(r_{{NAME}}, 0, {{NAME}}_Size * sizeof({{TYPE}})).wait();
+    std::vector<int> info_partition_{{NAME}}=para_gene_tool.init_partition_data_shape(info_{{NAME}},{{NAME}}_ops);
+    sycl::buffer<int> info_partition_{{NAME}}_buffer(info_partition_{{NAME}}.data(), sycl::range<1>(info_partition_{{NAME}}.size()));)~~~";
+    
+    std::string CodeGen_DataReconstruct(std::string type,std::string name,std::string size,std::string dataOpsInit, bool isOut){
+        if(isOut){
+            return templateString(DATA_RECON_OUT_Template,
+            {
+                {"{{TYPE}}",       type},
+                {"{{NAME}}",       name},
+                {"{{SIZE}}",       size},
+                {"{{DATA_OPS_INIT}}", dataOpsInit}
+            });
+        }else{
+            return templateString(DATA_RECON_Template,
+            {
+                {"{{TYPE}}",       type},
+                {"{{NAME}}",       name},
+                {"{{SIZE}}",       size},
+                {"{{DATA_OPS_INIT}}", dataOpsInit}
+            });
+        }
+    }
+
 
     const char *DEVICE_MEM_ALLOC_Template = R"~~~(
         // 设备内存分配
@@ -306,15 +352,13 @@ std::string CodeGen_Reduction_Span(std::string SpanSize,std::string SplitSize,st
 
 const char *D2H_MEM_MOV_1_Template = R"~~~(
     // 归并结果返回
-    q[numDevice].memcpy(r_{{NAME}} + {{NAME}}_HaveMalloc, d_{{NAME}}, {{SIZE}}*{{NAME}}_data_SplitSize*sizeof({{TYPE}})).wait();
-    {{NAME}}_HaveMalloc += {{SIZE}}*{{NAME}}_data_SplitSize;
-    // {{NAME}}_tool.UpdateData(r_{{NAME}},{{NAME}});)~~~";
+    q[numDevice].memcpy(d_my{{NAME}} + {{NAME}}_HaveMalloc, d_{{NAME}}, {{SIZE}}*{{NAME}}_data_SplitSize*sizeof({{TYPE}})).wait();
+    {{NAME}}_HaveMalloc += {{SIZE}}*{{NAME}}_data_SplitSize;)~~~";
 
 const char *D2H_MEM_MOV_2_Template = R"~~~(
-    // 归约结果返回
-    q[numDevice].memcpy(r_{{NAME}} + {{NAME}}_HaveMalloc, d_{{NAME}}, {{SIZE}}*{{NAME}}_data_SplitSize*sizeof({{TYPE}})).wait();
-    {{NAME}}_HaveMalloc += {{SIZE}}*{{NAME}}_data_SplitSize;
-    // {{NAME}}_tool.UpdateData(r_{{NAME}},{{NAME}});)~~~";
+    // 归并结果返回
+    q[numDevice].memcpy(d_my{{NAME}} + {{NAME}}_HaveMalloc, d_{{NAME}}, {{SIZE}}*{{NAME}}_data_SplitSize*sizeof({{TYPE}})).wait();
+    {{NAME}}_HaveMalloc += {{SIZE}}*{{NAME}}_data_SplitSize;)~~~";
 
 std::string CodeGen_D2HMemMov(std::string Name,std::string Type,std::string Size,bool isReduction){
     if(isReduction){
@@ -336,7 +380,7 @@ std::string CodeGen_D2HMemMov(std::string Name,std::string Type,std::string Size
 }
 
 const char *MEM_FREE_Template = R"~~~(
-    sycl::free(d_{{NAME}}, q[numDevice]);)~~~";
+    sycl::free({{NAME}}, q[numDevice]);)~~~";
 
 std::string CodeGen_MemFree(std::string Name){
     return templateString(MEM_FREE_Template,
@@ -347,19 +391,37 @@ std::string CodeGen_MemFree(std::string Name){
 
 const char* D2H_MEM_MOV_F_Template = R"~~~(
     // 归并结果返回
-    {{NAME}}_tool.UpdateData(r_{{NAME}},{{NAME}});)~~~";
+	{{TYPE}} *d_myTensor2=malloc_device<{{TYPE}}>({{SIZE}},q[0]);
+    {{NAME}}_tool.UpdateData(d_my{{NAME}},d_myTensor2,q[0]);
+	{{TYPE}}* res = ({{TYPE}}*)malloc({{SIZE}}*sizeof({{TYPE}}));
+	q[0].memcpy(res,d_myTensor2, {{SIZE}}*sizeof({{TYPE}})).wait();
+	{{NAME}}.array2Tensor(res);)~~~";
 
-std::string CodeGen_D2HMemMovF(std::string Name){
+std::string CodeGen_D2HMemMovF(std::string Name,std::string Type,std::string Size){
     return templateString(D2H_MEM_MOV_F_Template,
     {
-        {"{{NAME}}",            Name},
+        {"{{TYPE}}",            Type},
+		{"{{NAME}}",            Name},
+		{"{{SIZE}}",            Size}
+    });
+}
+const char *just_a_middle = R"~~~(
+    // 设备内存分配
+    {{TYPE}} *d_my{{NAME}}=malloc_device<{{TYPE}}>({{SIZE}},q[0]);)~~~";
+
+std::string CodeGen_JustAMiddle(std::string type,std::string name,std::string size){
+    return templateString(just_a_middle,
+    {
+        {"{{TYPE}}", type},
+        {"{{NAME}}", name},
+        {"{{SIZE}}", size}
     });
 }
 
 const char* Kernel_Template = R"~~~(
     std::vector<sycl::event> events;
     {{DEVICE_MEM}}
-    
+    {{CantFindBetterWay}}
     for(int numDevice = 0; numDevice < numDevices; numDevice++){
         // 设备内存分配
         {{DEVICE_MEM_ALLOC}}
@@ -381,11 +443,12 @@ const char* Kernel_Template = R"~~~(
         {{MEM_FREE}}
     })~~~";
 //整合模板
-std::string CodeGen_Kernel(std::string Device_Mem,std::string DeviceMemAlloc,std::string H2DMemMove,std::string KernelExecute,std::string Store_Device_Mem,
+std::string CodeGen_Kernel(std::string Device_Mem,std::string CantFindBetterWay,std::string DeviceMemAlloc,std::string H2DMemMove,std::string KernelExecute,std::string Store_Device_Mem,
                            std::string Load_Device_Mem,std::string Reduction,std::string D2HMemMove,std::string MemFree){
     return templateString(Kernel_Template,
     {
         {"{{DEVICE_MEM}}",        Device_Mem},
+        {"{{CantFindBetterWay}}", CantFindBetterWay},
         {"{{DEVICE_MEM_ALLOC}}",  DeviceMemAlloc},
         {"{{H2D_MEM_MOV}}",       H2DMemMove},
         {"{{KERNEL_EXECUTE}}",    KernelExecute},

@@ -5,7 +5,6 @@
 #include "Rewriter.h"
 #include "Split.h"
 #include "Param.h"
-#include "Dacfor.h"
 #include "dacInfo.h"
 #include "universal_template.h"
 #include "usm_template.h"
@@ -31,11 +30,6 @@ void dacppTranslator::Rewriter::rewriteDac_Usm() {
     
     // 添加数据关联表达式对应的划分结构和计算结构
     for(int i = 0; i < dacppFile->getNumExpression(); i++) {
-        ControlBlock* block ;
-        if(dacppFile->getBlock()){
-            block = dacppFile->getBlock();
-        }
-
         Expression* expr = dacppFile->getExpression(i);
         Shell* shell = expr->getShell();
         Calc* calc = expr->getCalc();
@@ -78,32 +72,6 @@ void dacppTranslator::Rewriter::rewriteDac_Usm() {
 
         // 计算结构
         code += "void " + calc->getName() + "(";
-        if(dacppFile->getBlock()) {
-            
-        for(int count = 0; count < calc->getNumParams(); count++) {
-            code += calc->getParam(count)->getBasicType() + "* " + calc->getParam(count)->getName() + ",";
-        }
-        for(int count = 0; count < calc->getNumParams(); count++) {
-            code += "int " + calc->getParam(count)->getName() + "_index"+",";
-
-        }
-        for(int count = 0; count < calc->getNumParams(); count++) {
-            code += " VirtualMapParams " + calc->getParam(count)->getName() + "_params"+",";
-
-        }
-        for(int count = 0; count < calc->getNumParams(); count++) {
-            code += "sycl::accessor<int, 1, sycl::access::mode::read_write> info_" + calc->getParam(count)->getName() + "_acc";
-            if(count != calc->getNumParams() - 1) {
-                code += ", ";
-            }
-        }
-        code += ") \n";
-        for(int count = 0; count < calc->getNumBody(); count++) {
-            
-            code += calc->dacfor_getBody(count) + "\n";
-        }
-    }else {
-
         for(int count = 0; count < calc->getNumParams(); count++) {
             code += calc->getParam(count)->getBasicType() + "* " + calc->getParam(count)->getName() + ",";
         }
@@ -115,10 +83,9 @@ void dacppTranslator::Rewriter::rewriteDac_Usm() {
         }
         code += ") \n";
         for(int count = 0; count < calc->getNumBody(); count++) {
+            
             code += calc->getBody(count) + "\n";
-            fflush(stdout);
         }
-    }
 
         // std::cout << code;
 
@@ -176,6 +143,7 @@ void dacppTranslator::Rewriter::rewriteDac_Usm() {
             dataOpsInit += UNIVERSAL_TEMPLATE::CodeGen_DataOpsInit2(shellParam->getName()+"_Ops",add2Op);
             add2Op = "";
         }
+
         //划分输入输出算子
         std::string add2Op_inops = "";
         std::string add2Op_outops = "";
@@ -234,7 +202,7 @@ void dacppTranslator::Rewriter::rewriteDac_Usm() {
             ShellParam* shellParam = shell->getShellParam(NumShellParam);
             if(shellParam->getRw() == 1){
                 divice_memory += UNIVERSAL_TEMPLATE::CodeGen_DeviceMemSizeGenerate(shellParam->getName()+"_Size","In_Ops","Out_Ops","info_"+shellParam->getName());
-                divice_memory += UNIVERSAL_TEMPLATE::CodeGen_DeviceMemSizeGenerate(shellParam->getName()+"Reduction_Size","info_"+shellParam->getName(),"Reduction_Ops");
+                divice_memory += UNIVERSAL_TEMPLATE::CodeGen_DeviceMemSizeGenerate("Reduction_Size","info_"+shellParam->getName(),"Reduction_Ops");
             }
             else{
                 divice_memory += UNIVERSAL_TEMPLATE::CodeGen_DeviceMemSizeGenerate(shellParam->getName()+"_Size","info_"+shellParam->getName(),shellParam->getName()+"_Ops");
@@ -290,27 +258,27 @@ void dacppTranslator::Rewriter::rewriteDac_Usm() {
         for(int NumShellParam = 0; NumShellParam < shell->getNumShellParams(); NumShellParam++){
             ShellParam* shellParam = shell->getShellParam(NumShellParam);
             if(shellParam->getRw() == 1){
-                // deviceMemAlloc += USM_TEMPLATE::CodeGen_DeviceMemAlloc(shellParam->getBasicType(),shellParam->getName(),shellParam->getName()+"_Size");
-                deviceMemAlloc += USM_TEMPLATE::CodeGen_DeviceMemAllocReduction(shellParam->getBasicType(),shellParam->getName(),shellParam->getName()+"Reduction_Size");
+                deviceMemAlloc += USM_TEMPLATE::CodeGen_DeviceMemAlloc(shellParam->getBasicType(),shellParam->getName(),shellParam->getName()+"_Size");
+                deviceMemAlloc += USM_TEMPLATE::CodeGen_DeviceMemAllocReduction(shellParam->getBasicType(),shellParam->getName(),"Reduction_Size");
             }
             else{
-                // deviceMemAlloc += USM_TEMPLATE::CodeGen_DeviceMemAlloc(shellParam->getBasicType(),shellParam->getName(),shellParam->getName()+"_Size");
+                deviceMemAlloc += USM_TEMPLATE::CodeGen_DeviceMemAlloc(shellParam->getBasicType(),shellParam->getName(),shellParam->getName()+"_Size");
             }
         }
         // std::cout << deviceMemAlloc;
 
         //主机数据移动至设备
         std::string H2DMemMove = "";
-        // for(int NumShellParam = 0; NumShellParam < shell->getNumShellParams(); NumShellParam++){
-        //     ShellParam* shellParam = shell->getShellParam(NumShellParam);
-        //     H2DMemMove += USM_TEMPLATE::CodeGen_DeviceDataInit(shellParam->getBasicType(),shellParam->getName(),shellParam->getName()+"_Size");
-        //     if(shellParam->getRw() == 0){
-        //         H2DMemMove += USM_TEMPLATE::CodeGen_H2DMemMov(shellParam->getBasicType(),shellParam->getName(),shellParam->getName()+"_Size");
-        //     }
-        // }
+        for(int NumShellParam = 0; NumShellParam < shell->getNumShellParams(); NumShellParam++){
+            ShellParam* shellParam = shell->getShellParam(NumShellParam);
+            H2DMemMove += USM_TEMPLATE::CodeGen_DeviceDataInit(shellParam->getBasicType(),shellParam->getName(),shellParam->getName()+"_Size");
+            if(shellParam->getRw() == 0){
+                H2DMemMove += USM_TEMPLATE::CodeGen_H2DMemMov(shellParam->getBasicType(),shellParam->getName(),shellParam->getName()+"_Size");
+            }
+        }
         // std::cout << H2DMemMove;
 
-
+       
         std::string BindingInit = UNIVERSAL_TEMPLATE::CodeGen_IndexInit2(ops,sets,bindoffset);
 
         // 嵌入计算
@@ -333,79 +301,17 @@ void dacppTranslator::Rewriter::rewriteDac_Usm() {
             DacData data = DacData("d_"+shellParam->getName(), 0, ops);
             args.push_back(data);
         }
-
-
         // std::string CalcEmbed = CodeGen_CalcEmbed2(calc->getName(),args);//注意调用了新的嵌入计算模板
         std::vector<std::string> accessor_names;
         for (int z = 0; z < shell->getNumParams(); z++) {
             accessor_names.push_back(shell->getParam(z)->getName());
         }
-        std::string CalcEmbed;
-        if(dacppFile->getBlock()){
-            CalcEmbed = USM_TEMPLATE::CodeGen_CalcEmbed3(calc->getName(),args, accessor_names);
-        }else{
-            CalcEmbed = UNIVERSAL_TEMPLATE::CodeGen_CalcEmbed2(calc->getName(),args,accessor_names);
-        }
+        std::string CalcEmbed = UNIVERSAL_TEMPLATE::CodeGen_CalcEmbed2(calc->getName(),args, accessor_names);
         std::string AccessorInit = "";
         for (int argCount = 0; argCount < shell->getNumShellParams(); argCount++) {
             AccessorInit += USM_TEMPLATE::CodeGen_AccessorInit(shell->getShellParam(argCount)->getName());
         }
-        std::string KernelExecute = "";
-        if(dacppFile->getBlock()){
-            std::string StartOffsetInit = "";
-            for(int i = 0; i < block->getParamControls().size(); i++) {            
-                if(block->getParamControls()[i]->getShapeA().size() != 0){
-                    StartOffsetInit += USM_TEMPLATE::CodeGen_StartOffsetInit(block->getParamControls()[i]->getParamA()->getName(),block->getParamControls()[i]->getShapeA()[0]);
-                    break;
-                }else if(block->getParamControls()[i]->getShapeB().size() != 0){
-                    StartOffsetInit += USM_TEMPLATE::CodeGen_StartOffsetInit(block->getParamControls()[i]->getParamB()->getName(),block->getParamControls()[i]->getShapeB()[0]);
-                    break;
-                }else{
-                    StartOffsetInit += USM_TEMPLATE::CodeGen_StartOffsetInit(block->getParamControls()[i]->getParamA()->getName(),"0");
-                    break;
-                }
-            }
-            std::string TimeSteps = block->getLoopBound();
-            std::string VirtualMapInit = "";
-            for (int argCount = 0; argCount < shell->getNumShellParams(); argCount++) {
-                VirtualMapInit += USM_TEMPLATE::CodeGen_VirtualMapInit(shell->getShellParam(argCount)->getName());
-            }
-            std::string SwapOperate = "";
-            for(int i = 0; i < block->getParamControls().size(); i++) {
-                SwapOperate += USM_TEMPLATE::CodeGen_SwapOperateInit(block->getParamControls()[i]->getParamA()->getName(),block->getParamControls()[i]->getParamB()->getName());
-            }
-            std::string swap_start = "";
-            for(int i = 0; i < block->getParamControls().size(); i++) {
-                SwapOperate += USM_TEMPLATE::CodeGen_SwapStartInit(block->getParamControls()[i]->getParamA()->getName(),block->getParamControls()[i]->getParamB()->getName());
-            }
-            std::string addStart = "";
-            std::string subStart = "";
-            for(int i = 0; i < block->getParamControls().size(); i++) {
-                if(block->getParamControls()[i]->getShapeA().size() != 0 && block->getParamControls()[i]->getShapeB().size() == 0){
-                    addStart += USM_TEMPLATE::CodeGen_SubStartInit(block->getParamControls()[i]->getParamA()->getName());
-                }else if(block->getParamControls()[i]->getShapeA().size() == 0 && block->getParamControls()[i]->getShapeB().size() != 0){
-                    subStart += USM_TEMPLATE::CodeGen_AddStartInit(block->getParamControls()[i]->getParamA()->getName());
-                }
-            }
-            std::string StartOffsetOperate = "";
-            StartOffsetOperate += USM_TEMPLATE::CodeGen_StartOffsetOperateInit(swap_start,addStart,subStart);
-            std::string NewDataInit = "";
-
-            for(int numshellParam = 0; numshellParam < shell->getNumShellParams(); numshellParam++){
-                ShellParam* shellParam = shell->getShellParam(numshellParam);
-                if(shellParam->getRw() == 1){
-                    NewDataInit += USM_TEMPLATE::CodeGen_NewDataInit(shellParam->getName(),shellParam->getBasicType());
-                }
-            }
-
-
-            KernelExecute = USM_TEMPLATE::CodeGen_KernelExecute(StartOffsetInit, TimeSteps,
-                AccessorInit, VirtualMapInit, BindingInit,
-                CalcEmbed, SwapOperate, StartOffsetOperate,NewDataInit);
-        }else{
-
-	        KernelExecute = USM_TEMPLATE::CodeGen_KernelExecute("Item_Size",AccessorInit,BindingInit,CalcEmbed);//注意这里面填的size的大小需要是前面算出来的大小
-        }
+	    std::string KernelExecute = USM_TEMPLATE::CodeGen_KernelExecute("Item_Size",AccessorInit,BindingInit,CalcEmbed);//注意这里面填的size的大小需要是前面算出来的大小
         // std::cout << KernelExecute;
 
         std::string Reduction;
@@ -414,8 +320,8 @@ void dacppTranslator::Rewriter::rewriteDac_Usm() {
         for(int NumShellParam = 0; NumShellParam < shell->getNumShellParams(); NumShellParam++){
             ShellParam* shellParam = shell->getShellParam(NumShellParam);
             if(shellParam->getRw() == 1){
-                Reduction += USM_TEMPLATE::CodeGen_Reduction_Span(shellParam->getName()+"Reduction_Size","Reduction_Split_Size","Reduction_Split_Length",shellParam->getName(),shellParam->getBasicType(),ReductionRule);
-	            Reduction += USM_TEMPLATE::CodeGen_D2HMemMov(shellParam->getName(),shellParam->getBasicType(),shellParam->getName()+"_Size",false);
+                Reduction = USM_TEMPLATE::CodeGen_Reduction_Span("Reduction_Size","Reduction_Split_Size","Reduction_Split_Length",shellParam->getName(),shellParam->getBasicType(),ReductionRule);
+	            D2HMemMove = USM_TEMPLATE::CodeGen_D2HMemMov(shellParam->getName(),shellParam->getBasicType(),shellParam->getName()+"_Size",false);
             }
         }
         // std::cout << Reduction;
@@ -423,24 +329,6 @@ void dacppTranslator::Rewriter::rewriteDac_Usm() {
        
        //dataRecon
        std::string dataRecon = "";
-       if(dacppFile->getBlock()){
-            std::string dataMalloc = "";
-            for(int NumShellParam = 0; NumShellParam < shell->getNumShellParams(); NumShellParam++){
-                 ShellParam* shellParam = shell->getShellParam(NumShellParam);
-                 dataMalloc += USM_TEMPLATE::CodeGen_DeviceMemAlloc(shellParam->getBasicType(), shellParam->getName(), shellParam->getName()+"_Size");
-            }
-             std::string dataMove = "";
-            for(int NumShellParam = 0; NumShellParam < shell->getNumShellParams(); NumShellParam++){
-                 ShellParam* shellParam = shell->getShellParam(NumShellParam);
-                 if(shellParam->getRw() == 1){
-                     dataMove += USM_TEMPLATE::CodeGen_H2DMemMov_Out(shellParam->getBasicType(), shellParam->getName(), shellParam->getName()+"_Size");
-                 }else{
-                     dataMove += USM_TEMPLATE::CodeGen_H2DMemMov3(shellParam->getBasicType(), shellParam->getName(), shellParam->getName()+"_Size");
-                 }
-            }
-            dataRecon += dataMalloc;
-            dataRecon += dataMove;
-        }       
        for(int NumShellParam = 0; NumShellParam < shell->getNumShellParams(); NumShellParam++){
             ShellParam* shellParam = shell->getShellParam(NumShellParam);
             std::string opPushBack = "";
@@ -450,11 +338,7 @@ void dacppTranslator::Rewriter::rewriteDac_Usm() {
                 opPushBack += UNIVERSAL_TEMPLATE::CodeGen_OpPushBack2Ops(shellParam->getName(),split->getId(),std::to_string(split->getDimIdx()));
             }
             std::string dataOpsInit = UNIVERSAL_TEMPLATE::CodeGen_DataOpsInit(shellParam->getName(),opPushBack);
-            if(dacppFile->getBlock()){
-                dataRecon += USM_TEMPLATE::CodeGen_DataReconstruct_Dacfor(shellParam->getBasicType(),shellParam->getName(),shellParam->getName()+"_Size",dataOpsInit);
-            }else{
-                dataRecon += UNIVERSAL_TEMPLATE::CodeGen_DataReconstruct(shellParam->getBasicType(),shellParam->getName(),shellParam->getName()+"_Size",dataOpsInit,shellParam->getRw()==1);
-            }
+            dataRecon += UNIVERSAL_TEMPLATE::CodeGen_DataReconstruct(shellParam->getBasicType(),shellParam->getName(),shellParam->getName()+"_Size",dataOpsInit);
        }
         // std::cout << dataRecon;
         // std::cout << "-----------------------------------------------------------------------";
@@ -480,8 +364,7 @@ void dacppTranslator::Rewriter::rewriteDac_Usm() {
         rewriter->RemoveText(calc->getCalcLoc()->getSourceRange());
         // std::cout << code;  
     }
-    // std::cout << code;
-    // printf("code size: %d\n", code.size());
+
     rewriter->InsertText(dacppFile->node->getBeginLoc(),code);
     //rewriter->InsertText(dacppFile->getMainFuncLoc()->getBeginLoc(), code);
 }

@@ -297,53 +297,6 @@ std::string CodeGen_DataAssocComp(std::string dataRecon, std::string H2DMemMove,
 }
 
 
-const char *DATA_RECON_Template = R"~~~(
-    // 数据重组
-    DataReconstructor<{{TYPE}}> {{NAME}}_tool;
-    {{TYPE}}* r_{{NAME}}=({{TYPE}}*)malloc(sizeof({{TYPE}})*{{SIZE}});
-    {{DATA_OPS_INIT}}
-    {{NAME}}_tool.init(info_{{NAME}},{{NAME}}_ops);
-    {{TYPE}} recon_h_{{NAME}}[{{NAME}}_Size];
-    {{NAME}}.tensor2Array(recon_h_{{NAME}});
-    {{TYPE}} *recon_d_{{NAME}}=malloc_device<{{TYPE}}>({{NAME}}_Size,q);
-    q.memcpy(recon_d_{{NAME}}, recon_h_{{NAME}}, {{NAME}}_Size*sizeof({{TYPE}})).wait();
-    {{TYPE}} *d_{{NAME}}=malloc_device<{{TYPE}}>({{NAME}}_Size,q);
-    {{NAME}}_tool.Reconstruct(d_{{NAME}}, recon_d_{{NAME}},q);
-	sycl::free(recon_d_{{NAME}}, q);
-	std::vector<int> info_partition_{{NAME}}=para_gene_tool.init_partition_data_shape(info_{{NAME}},{{NAME}}_ops);
-    sycl::buffer<int> info_partition_{{NAME}}_buffer(info_partition_{{NAME}}.data(), sycl::range<1>(info_partition_{{NAME}}.size()));)~~~";
-
-	const char *DATA_RECON_OUT_Template = R"~~~(
-	// 数据重组
-	DataReconstructor<{{TYPE}}> {{NAME}}_tool;
-	{{TYPE}}* r_{{NAME}}=({{TYPE}}*)malloc(sizeof({{TYPE}})*{{SIZE}});
-	{{DATA_OPS_INIT}}
-	{{NAME}}_tool.init(info_{{NAME}},{{NAME}}_ops);
-	{{TYPE}} *d_{{NAME}}=malloc_device<{{TYPE}}>({{NAME}}_Size,q);
-	q.memset(d_{{NAME}}, 0, {{NAME}}_Size * sizeof({{TYPE}})).wait();
-	std::vector<int> info_partition_{{NAME}}=para_gene_tool.init_partition_data_shape(info_{{NAME}},{{NAME}}_ops);
-	sycl::buffer<int> info_partition_{{NAME}}_buffer(info_partition_{{NAME}}.data(), sycl::range<1>(info_partition_{{NAME}}.size()));)~~~";
-
-std::string CodeGen_DataReconstruct(std::string type,std::string name,std::string size,std::string dataOpsInit, bool isOut){
-    if(isOut){
-		return templateString(DATA_RECON_OUT_Template,
-		{
-			{"{{TYPE}}",       type},
-			{"{{NAME}}",       name},
-			{"{{SIZE}}",       size},
-			{"{{DATA_OPS_INIT}}", dataOpsInit}
-		});
-	}else{
-		return templateString(DATA_RECON_Template,
-		{
-			{"{{TYPE}}",       type},
-			{"{{NAME}}",       name},
-			{"{{SIZE}}",       size},
-			{"{{DATA_OPS_INIT}}", dataOpsInit}
-		});
-	}
-}
-
 const char *DATA_RECON_Template2 = R"~~~(
     // 数据重组
     DataReconstructor<{{TYPE}}> {{NAME}}_tool;
@@ -502,31 +455,39 @@ const char *CALC_EMBED_Template = R"~~~(
             {{DAC_CALC_NAME}}{{DAC_CALC_ARGS}})~~~";
 
 std::string CodeGen_CalcEmbed2(std::string Name,Args args, std::vector<std::string> accessor_names){
-		std::string DacCalcArgs = "(";
-	int len = args.size;
-	for(int i=0;i<len;i++){
-		std::string IndexComb="(";
-		for(int j=0;j<args[i].ops.size;j++){
-			std::string opsname = args[i].ops[j].name;
-			IndexComb+= opsname + "_" + "*" + "SplitLength[" + std::to_string(i) + "][" + std::to_string(j) + "]";
-			if(j!=args[i].ops.size-1) IndexComb+="+";
+	std::string DacCalcArgs = "(";//name(参数) 中的(
+	int len = args.size;//len 表示有几组数据
+	for(int i=0;i<len;i++)
+	{
+		std::string IndexComb="(";//这个左括号代表数据在长向量中偏移量
+		for(int j=0;j<args[i].ops.size;j++)//第j组数据中算子组中包含的算子的个数
+		{
+			std::string opsname = args[i].ops[j].name;//算子是char[5]类型的，这里需要转换为string后面方便使用。得到第j个算子的名字
+			IndexComb+= opsname + "_" + "*" + "SplitLength[" + std::to_string(i) + "][" + std::to_string(j) + "]";//给算子加一个下划线 这里是为了得到算子的划分长度 具体逻辑忘了
+			if(j!=args[i].ops.size-1) IndexComb+="+";//还没有到最后一个算子，就继续添加+号
 		}
-		IndexComb+=")";
-		if(IndexComb == "()")
+		IndexComb+=")";//添加偏移量中的右括号
+		if(IndexComb == "()")//如果是空的话，就不要加IndexComb了
 		{
 			DacCalcArgs+=args[i].name;
 		}
-		else{
+		else
+		{
 			DacCalcArgs+=args[i].name + "+" + IndexComb;
 		}		
-		DacCalcArgs+=",";
+		DacCalcArgs += ",";//因为后面还有其他的参数，所以就继续添加 ,
 	}
-	for (int z = 0; z < accessor_names.size(); z++) {
-		DacCalcArgs+="info_partition_"+accessor_names[z]+"_accessor";
-		if (z == accessor_names.size() - 1) {
-			DacCalcArgs+=");";
-		} else {
-			DacCalcArgs+=",";
+	//添加数据访问器的相关参数
+	for (int z = 0; z < accessor_names.size(); z++) 
+	{
+		DacCalcArgs += "info_partition_" + accessor_names[z]+"_accessor";
+		if (z == accessor_names.size() - 1) 
+		{
+			DacCalcArgs += ");";
+		} 
+		else 
+		{
+			DacCalcArgs += ",";
 		}
 	}
 	return templateString(CALC_EMBED_Template,
@@ -535,6 +496,60 @@ std::string CodeGen_CalcEmbed2(std::string Name,Args args, std::vector<std::stri
 		{"{{DAC_CALC_ARGS}}",    DacCalcArgs}
 	});
 }
+
+const char *DATA_RECON_Template = R"~~~(
+    // 数据重组
+    DataReconstructor<{{TYPE}}> {{NAME}}_tool;
+    // {{TYPE}}* r_{{NAME}}=({{TYPE}}*)malloc(sizeof({{TYPE}})*{{SIZE}});
+    {{DATA_OPS_INIT}}
+    {{NAME}}_tool.init(info_{{NAME}},{{NAME}}_ops);
+
+    {{TYPE}} recon_h_{{NAME}}[{{NAME}}_Size];
+	{{TYPE}} *recon_d_{{NAME}}=malloc_device<{{TYPE}}>({{NAME}}_Size,q);
+	{{TYPE}} *d_{{NAME}}=malloc_device<{{TYPE}}>({{NAME}}_Size,q);
+	
+
+    {{NAME}}.tensor2Array(recon_h_{{NAME}});
+    q.memcpy(recon_d_{{NAME}}, recon_h_{{NAME}}, {{NAME}}_Size*sizeof({{TYPE}})).wait();
+    {{NAME}}_tool.Reconstruct(d_{{NAME}}, recon_d_{{NAME}},q);
+
+	sycl::free(recon_d_{{NAME}}, q);
+	std::vector<int> info_partition_{{NAME}}=para_gene_tool.init_partition_data_shape(info_{{NAME}},{{NAME}}_ops);
+    sycl::buffer<int> info_partition_{{NAME}}_buffer(info_partition_{{NAME}}.data(), sycl::range<1>(info_partition_{{NAME}}.size()));)~~~";
+
+	const char *DATA_RECON_OUT_Template = R"~~~(
+	// 数据重组
+	DataReconstructor<{{TYPE}}> {{NAME}}_tool;
+	{{DATA_OPS_INIT}}
+	{{NAME}}_tool.init(info_{{NAME}},{{NAME}}_ops);
+
+	{{TYPE}}* r_{{NAME}}=({{TYPE}}*)malloc(sizeof({{TYPE}})*{{SIZE}});
+	{{TYPE}} *d_{{NAME}}=malloc_device<{{TYPE}}>({{NAME}}_Size,q);
+	q.memset(d_{{NAME}}, 0, {{NAME}}_Size * sizeof({{TYPE}})).wait();
+	
+	std::vector<int> info_partition_{{NAME}}=para_gene_tool.init_partition_data_shape(info_{{NAME}},{{NAME}}_ops);
+	sycl::buffer<int> info_partition_{{NAME}}_buffer(info_partition_{{NAME}}.data(), sycl::range<1>(info_partition_{{NAME}}.size()));)~~~";
+
+std::string CodeGen_DataReconstruct(std::string type,std::string name,std::string size,std::string dataOpsInit, bool isOut){
+    if(isOut){
+		return templateString(DATA_RECON_OUT_Template,
+		{
+			{"{{TYPE}}",       type},
+			{"{{NAME}}",       name},
+			{"{{SIZE}}",       size},
+			{"{{DATA_OPS_INIT}}", dataOpsInit}
+		});
+	}else{
+		return templateString(DATA_RECON_Template,
+		{
+			{"{{TYPE}}",       type},
+			{"{{NAME}}",       name},
+			{"{{SIZE}}",       size},
+			{"{{DATA_OPS_INIT}}", dataOpsInit}
+		});
+	}
+}
+
 
 
 }

@@ -67,7 +67,7 @@ class DataReconstructor{
         sycl::buffer<int> grid_stride_buffer;
         sycl::buffer<int> block_shape_buffer;
         sycl::buffer<int> block_stride_buffer;
-        sycl::buffer<int> block_move_buffer;
+        sycl::buffer<int> block_move_buffer;//算子的步长
         DataReconstructor()
         : start_buffer(range<1>(1)),
           data_shape_buffer(range<1>(1)),

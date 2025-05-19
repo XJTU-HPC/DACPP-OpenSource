@@ -43,10 +43,10 @@ void calculateDecay(const std::vector<double>& lambdas, const std::vector<double
     dacpp::Vector<double> N0s_tensor(N0s);
     dacpp::Vector<double> lambdas_tensor(lambdas);
     dacpp::Vector<double> t_tensor(t);
-    dacpp::Matrix<double> A_tensor({T/dt, numIsotopes}, A);
+    dacpp::Matrix<double> A_tensor({static_cast<int>(T/dt), static_cast<int>(numIsotopes)}, A);
     
 
-    while(t_tensor[0] <= T){        
+    while(t_tensor[0] <= T){  
         DECAY(N0s_tensor, lambdas_tensor, local_A_tensor,  t_tensor) <-> decay;
         A_tensor[10*t_tensor[0]] = local_A_tensor;
         t_tensor[0] += dt;
