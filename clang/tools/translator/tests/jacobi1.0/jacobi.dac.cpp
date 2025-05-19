@@ -72,22 +72,22 @@ int main() {
     // std::vector<int> b_shape = {100};
     // std::vector<int> x_shape = {100};
     // std::vector<int> x_new_shape = {100};
-    dacpp::Matrix<float> A({100, 100}, mat_A);
+    dacpp::Matrix<float> A({N, N}, mat_A);
     dacpp::Vector<float> b(vec_b);
     dacpp::Vector<float> x(vec_x);
     dacpp::Vector<float> x_new(vec_x_new);
     
     bool converged = false;
     int iter = 0;
-    std::vector<int> nums(100);
+    std::vector<int> nums(N);
     // 使用 std::iota 填充 nums，值从 0 开始
     for(int i = 0;i < N;  i++){
         nums[i] = i;
     }
     //std::vector<int> nums_shape = {100};
     dacpp::Vector<int> tensor_nums(nums);
-    float* data = new float[1 * 100];
-    float* data2 = new float[1 * 100];
+    float* data = new float[1 * N];
+    float* data2 = new float[1 * N];
 
     while (!converged && iter < max_iter) {
         jacobiShell(A, b, x, x_new, tensor_nums) <-> jacobi;
@@ -112,8 +112,8 @@ int main() {
 
 
     // 输出结果
-    std::cout << "迭代次数: " << iter << std::endl;
-    std::cout << "解向量 x:" << std::endl;
+    //std::cout << "迭代次数: " << iter << std::endl;
+    //std::cout << "解向量 x:" << std::endl;
     for (int i = 0; i < N; ++i) {
         std::cout << data2[i] << " ";
     }

@@ -11,6 +11,7 @@
 #include "Param.h"
 #include "Shell.h"
 #include "Calc.h"
+#include "Dacfor.h"
 
 
 using namespace clang;
@@ -85,9 +86,14 @@ public:
 private:
     std::vector<HeaderFile*> headerFiles; // 头文件
     std::vector<NameSpace*> nameSpaces; // 命名空间
+    
     std::vector<Expression*> exprs; // 数据关联计算表达式
     const FunctionDecl* mainFuncLoc; // AST中主函数节点位置
     clang::TranslationUnitDecl* decl;
+    ControlBlock* block;
+    const CallExpr* FS;
+    // SourceRange forRange;
+
 
 
 public:
@@ -116,6 +122,22 @@ public:
 
     void setMainFuncLoc(const FunctionDecl* mainFuncLoc);
     const FunctionDecl* getMainFuncLoc();
+
+    void setBlock(ControlBlock* block) {
+        this->block = block;
+    }
+    ControlBlock* getBlock() {
+        return block;
+    }
+    void setForStmt(const CallExpr* FS) {
+        this->FS = FS;
+    }
+    const CallExpr* getForStmt() {
+        return FS;
+    }
+    // void setForRange(SourceRange range) { forRange = range; }
+    // SourceRange getForRange() const { return forRange; }
+
 };
 
 

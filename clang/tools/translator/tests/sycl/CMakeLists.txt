@@ -16,7 +16,7 @@ set(SYCL_PATH "/data/qinian/share/intel/oneapi2025/compiler/latest/include")
 set(OpenCL_LIBRARY "/data/qinian/share/intel/oneapi2025/compiler/latest/lib/libOpenCL.so")
 
 include_directories(${SYCL_PATH})
-
+find_package(Threads REQUIRED)
 # 添加源文件
 
 add_executable(FOuLadac FOuLa.dac_sycl.cpp)
@@ -30,7 +30,6 @@ add_executable(liuliangdac liuliang.dac_sycl.cpp)
 add_executable(liuliangStandardSycl liuliang.StandardSycl.cpp)
 add_executable(decay_chaindac decay_chain.dac_sycl.cpp)
 add_executable(decay_chainStandardSycl decay_chain.StandardSycl.cpp)
-add_executable(matMuldac matMul.dac_sycl.cpp)
 add_executable(matMulStandardSycl matMul.StandardSycl.cpp)
 add_executable(imageAdjustmentdac imageAdjustment.dac_sycl.cpp)
 add_executable(mdpdac mdp.dac_sycl.cpp)
@@ -38,13 +37,23 @@ add_executable(mdpdac mdp.dac_sycl.cpp)
 add_executable(DFTdac DFT.dac_sycl.cpp)
 add_executable(mandeldac mandel.dac_sycl.cpp)
 add_executable(oddEvendac oddEven.dac_sycl.cpp)
+add_executable(test test.cpp)
+add_executable(jac jac.cpp)
+
+
 
 add_executable(syclBlockMatMul0 blockMatMul0.sycl.cpp)
 add_executable(syclBlockMatMul1 blockMatMul1.sycl.cpp)
 add_executable(syclBlockMatMul2 blockMatMul2.sycl.cpp)
 add_executable(syclBlockMatMul3 blockMatMul3.sycl.cpp)
 add_executable(syclVectorMul0 vectorMul0.sycl.cpp)
-add_executable(outputSyclBlockMatrixMultiplication blockMatrixMultiplication_sycl.cpp)
+# add_executable(outputSyclBlockMatrixMultiplication blockMatrixMultiplication_sycl.cpp)
+
+add_executable(DataReconNewTest DataReconNewTest.sycl.cpp)
+add_executable(dataReorder dataReorder.cpp)
+
+
+add_executable(wave_dac_forTest wave_dac_for.cpp)
 
 set_target_properties(FOuLadac PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/translator/tests
@@ -80,9 +89,6 @@ set_target_properties(decay_chaindac PROPERTIES
 set_target_properties(decay_chainStandardSycl PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/translator/tests
 )
-set_target_properties(matMuldac PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/translator/tests
-)
 set_target_properties(matMulStandardSycl PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/translator/tests
 )
@@ -102,6 +108,9 @@ set_target_properties(mandeldac PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/translator/tests
 )
 set_target_properties(oddEvendac PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/translator/tests
+)
+set_target_properties(test PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/translator/tests
 )
 
@@ -126,7 +135,19 @@ set_target_properties(syclVectorMul0 PROPERTIES
 # set_target_properties(outputSyclBlockMatrixMultiplication PROPERTIES
 #     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/translator/tests
 # )
+set_target_properties(DataReconNewTest PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/translator/tests
+)
+set_target_properties(dataReorder PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/translator/tests
+)
 
+set_target_properties(jac PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/translator/tests
+)
+set_target_properties(wave_dac_forTest PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/translator/tests
+)
 target_link_libraries(FOuLadac PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
 target_link_libraries(stencildac PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
 target_link_libraries(stencilStandardSycl PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
@@ -138,7 +159,6 @@ target_link_libraries(liuliangdac PRIVATE ${OpenCL_LIBRARY} sycl DacppLib Rewrit
 target_link_libraries(liuliangStandardSycl PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
 target_link_libraries(decay_chaindac PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
 target_link_libraries(decay_chainStandardSycl PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
-target_link_libraries(matMuldac PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
 target_link_libraries(matMulStandardSycl PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
 target_link_libraries(imageAdjustmentdac PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
 target_link_libraries(mdpdac PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
@@ -146,12 +166,14 @@ target_link_libraries(mdpdac PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib
 target_link_libraries(DFTdac PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
 target_link_libraries(mandeldac PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
 target_link_libraries(oddEvendac PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
-
-
+target_link_libraries(test PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
 
 target_link_libraries(syclBlockMatMul1 PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
 target_link_libraries(syclBlockMatMul0 PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
 target_link_libraries(syclBlockMatMul2 PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
 target_link_libraries(syclBlockMatMul3 PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
 target_link_libraries(syclVectorMul0 PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
-target_link_libraries(outputSyclBlockMatrixMultiplication PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
+# target_link_libraries(outputSyclBlockMatrixMultiplication PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
+
+target_link_libraries(jac PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
+target_link_libraries(wave_dac_forTest PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)

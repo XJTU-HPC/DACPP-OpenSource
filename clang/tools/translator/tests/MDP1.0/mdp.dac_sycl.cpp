@@ -8,11 +8,9 @@
 #include <any>
 #include <queue>
 #include "ReconTensor.h"
-
 namespace dacpp {
     typedef std::vector<std::any> list;
 }
-
 // 参数设置
 const double A = 1.0;  // 吸引力系数
 const double D = 0.1;  // 扩散系数
@@ -20,7 +18,6 @@ const double dx = 0.1; // 空间步长
 const double dt = 0.01; // 时间步长
 const int N = 100;     // 空间网格点数
 const int T = 1000;    // 时间步数
-
 
 // 初始化用户偏好分布
 void initialize(std::vector<double>& p) {
@@ -32,17 +29,15 @@ void initialize(std::vector<double>& p) {
 }
 
 // 归一化函数
-void normalize(dacpp::Tensor<double, 1>& p) {
+void normalize(dacpp::Vector<double>& p) {
     double sum = 0.0;
-    for (int i = 0;i < N; i++) {
+    for (int i = 0;i < N-2; i++) {
         sum += p[i];
     }
-    for (int i = 0;i < N; i++) {
+    for (int i = 0;i < N-2; i++) {
         p[i] /= sum; // 归一化    
     }
 }
-
-
 
 
 
@@ -57,17 +52,19 @@ using namespace sycl;
 
 void mdp(double* p,double* new_p,sycl::accessor<int, 1, sycl::access::mode::read_write> info_p_acc, sycl::accessor<int, 1, sycl::access::mode::read_write> info_new_p_acc) 
 {
-    new_p[0] = p[1] + dt * (D * (p[2] - 2 * p[1] + p[0]) / (dx * dx) + (-A) * (p[2] - p[0]) / (2 * dx));
+    double diffusion = D * (p[2] - 2 * p[1] + p[0]) / (dx * dx);
+    double drift = (-A) * (p[2] - p[0]) / (2 * dx);
+    new_p[0] = p[1] + dt * (diffusion + drift);
 }
 
 
 // 生成函数调用
-void mdp_shell_mdp(const dacpp::Tensor<double, 1> & p, dacpp::Tensor<double, 1> & new_p) { 
+void mdp_shell_mdp(const dacpp::Vector<double> & p, dacpp::Vector<double> & new_p) { 
     // 设备选择
     auto selector = default_selector_v;
     queue q(selector);
     //声明参数生成工具
-    ParameterGeneration<int,2> para_gene_tool;
+    ParameterGeneration para_gene_tool;
     // 算子初始化
     
     // 数据信息初始化
@@ -189,7 +186,6 @@ void mdp_shell_mdp(const dacpp::Tensor<double, 1> & p, dacpp::Tensor<double, 1> 
     Dac_Ops p_ops;
     
     sp.setDimId(0);
-    sp.setSplitLength(8);
     p_ops.push_back(sp);
     p_tool.init(info_p,p_ops);
     p_tool.Reconstruct(r_p,p);
@@ -203,15 +199,18 @@ void mdp_shell_mdp(const dacpp::Tensor<double, 1> & p, dacpp::Tensor<double, 1> 
     Dac_Ops new_p_ops;
     
     idx.setDimId(0);
-    idx.setSplitLength(8);
     new_p_ops.push_back(idx);
     new_p_tool.init(info_new_p,new_p_ops);
     new_p_tool.Reconstruct(r_new_p,new_p);
 	std::vector<int> info_partition_new_p=para_gene_tool.init_partition_data_shape(info_new_p,new_p_ops);
     sycl::buffer<int> info_partition_new_p_buffer(info_partition_new_p.data(), sycl::range<1>(info_partition_new_p.size()));
     
+    // 设备数据初始化
+    q.memset(d_p,0,p_Size*sizeof(double)).wait();
     // 数据移动
     q.memcpy(d_p,r_p,p_Size*sizeof(double)).wait();
+    // 设备数据初始化
+    q.memset(d_new_p,0,new_p_Size*sizeof(double)).wait();
 	
     //工作项划分
     sycl::range<3> local(1, 1, Item_Size);
@@ -268,35 +267,28 @@ void mdp_shell_mdp(const dacpp::Tensor<double, 1> & p, dacpp::Tensor<double, 1> 
 
 void solveFokkerPlanck(std::vector<double>& p) {
     std::vector<double> new_p(N-2, 0.0); // 存储下一时间步的分布
-    dacpp::Tensor<double, 1> p_tensor(p);
-    dacpp::Tensor<double, 1> new_p_tensor(new_p);
-        
-
+    dacpp::Vector<double> p_tensor(p);
+    dacpp::Vector<double> new_p_tensor(new_p);
     for (int t = 0; t < T; ++t) {
-        // 对内部点进行更新，边界条件暂不考虑
-
-
-        mdp_shell_mdp(p_tensor, new_p_tensor); 
-        
+        mdp_shell_mdp(p_tensor, new_p_tensor);
+        //normalize(new_p_tensor); // 归一化分布  
         // 更新分布
         for(int i = 0; i < N-2; i++){
             p_tensor[i+1] = new_p_tensor[i];
         }
-        normalize(p_tensor); // 归一化分布
+        // 设置边界条件
+        //p_tensor[0] = 0.0;
+        //p_tensor[N - 1] = 0.0;
+        
     }
     p_tensor.print();
-
 }
 
 int main() {
-
     std::vector<double> p(N, 0.0); // 存储用户偏好分布
-
     // 初始化偏好分布
     initialize(p);
-
     // 数值求解Fokker-Planck方程
     solveFokkerPlanck(p);
-
     return 0;
 }

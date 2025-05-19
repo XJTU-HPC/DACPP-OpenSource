@@ -7,51 +7,51 @@ using namespace sycl;
 using namespace std;
 
 // 网格参数
-const int NX = 512;    // x方向网格数量
-const int NY = 512;    // y方向网格数量
-const float Lx = 10.0f; // x方向长度
-const float Ly = 10.0f; // y方向长度
-const float c = 1.0f;   // 波速
+const int NX = 8;    // x方向网格数量
+const int NY = 8;    // y方向网格数量
+const double Lx = 10.0f; // x方向长度
+const double Ly = 10.0f; // y方向长度
+const double c = 1.0f;   // 波速
 const int TIME_STEPS = 1000; // 时间步数
 
 int main() {
     // 网格步长
-    float dx = Lx / (NX - 1);
-    float dy = Ly / (NY - 1);
+    double dx = Lx / (NX - 1);
+    double dy = Ly / (NY - 1);
     
     // CFL条件
-    float dt = 0.5f * std::fmin(dx, dy) / c; // 满足稳定性条件
+    double dt = 0.5f * std::fmin(dx, dy) / c; // 满足稳定性条件
     
     // 初始化波场
-    vector<float> u_prev(NX * NY, 0.0f); // 前一步
-    vector<float> u_curr(NX * NY, 0.0f); // 当前步
-    vector<float> u_next(NX * NY, 0.0f); // 下一步
+    vector<double> u_prev(NX * NY, 0.0f); // 前一步
+    vector<double> u_curr(NX * NY, 0.0f); // 当前步
+    vector<double> u_next(NX * NY, 0.0f); // 下一步
     
     // 初始条件：例如一个高斯脉冲
     int cx = NX / 2;
     int cy = NY / 2;
-    float sigma = 0.5f;
+    double sigma = 0.5f;
     for(int i = 0; i < NX; ++i) {
         for(int j = 0; j < NY; ++j) {
-            float x = i * dx;
-            float y = j * dy;
+            double x = i * dx;
+            double y = j * dy;
             u_prev[i * NY + j] = std::exp(-((x - Lx/2)*(x - Lx/2) + (y - Ly/2)*(y - Ly/2)) / (2 * sigma * sigma));
         }
     }
     
     // SYCL队列
     queue q(gpu_selector_v);
-    cout << "Running on "
-         << q.get_device().get_info<info::device::name>() << "\n";
+    // cout << "Running on "
+    //      << q.get_device().get_info<info::device::name>() << "\n";
     
     // 分配设备内存
-    float *d_u_prev = malloc_device<float>(NX * NY, q);
-    float *d_u_curr = malloc_device<float>(NX * NY, q);
-    float *d_u_next = malloc_device<float>(NX * NY, q);
+    double *d_u_prev = malloc_device<double>(NX * NY, q);
+    double *d_u_curr = malloc_device<double>(NX * NY, q);
+    double *d_u_next = malloc_device<double>(NX * NY, q);
     
     // 将初始数据复制到设备
-    q.memcpy(d_u_prev, u_prev.data(), sizeof(float) * NX * NY).wait();
-    q.memcpy(d_u_curr, u_curr.data(), sizeof(float) * NX * NY).wait();
+    q.memcpy(d_u_prev, u_prev.data(), sizeof(double) * NX * NY).wait();
+    q.memcpy(d_u_curr, u_curr.data(), sizeof(double) * NX * NY).wait();
     
     // 主迭代循环
     for(int t = 0; t < TIME_STEPS; ++t) {
@@ -63,8 +63,8 @@ int main() {
                     int i = idx[0] + 1;
                     int j = idx[1] + 1;
                     // 二阶中心差分
-                    float u_xx = (d_u_curr[(i+1) * NY + j] - 2.0f * d_u_curr[i * NY + j] + d_u_curr[(i-1) * NY + j]) / (dx * dx);
-                    float u_yy = (d_u_curr[i * NY + (j+1)] - 2.0f * d_u_curr[i * NY + j] + d_u_curr[i * NY + (j-1)]) / (dy * dy);
+                    double u_xx = (d_u_curr[(i+1) * NY + j] - 2.0f * d_u_curr[i * NY + j] + d_u_curr[(i-1) * NY + j]) / (dx * dx);
+                    double u_yy = (d_u_curr[i * NY + (j+1)] - 2.0f * d_u_curr[i * NY + j] + d_u_curr[i * NY + (j-1)]) / (dy * dy);
                     
                     // 显式更新公式
                     d_u_next[i * NY + j] = 2.0f * d_u_curr[i * NY + j] - d_u_prev[i * NY + j] + (c * c) * (u_xx + u_yy) * dt * dt;
@@ -96,22 +96,28 @@ int main() {
         swap(d_u_curr, d_u_next);
         
         // 可选：每隔一定步数复制回主机并输出
-        if(t % 100 == 0) {
-            q.memcpy(u_curr.data(), d_u_curr, sizeof(float) * NX * NY).wait();
-            cout << "Step " << t << " completed.\n";
-            // 这里可以添加保存或可视化代码
-        }
+        // if(t % 100 == 0) {
+        //     q.memcpy(u_curr.data(), d_u_curr, sizeof(double) * NX * NY).wait();
+        //     cout << "Step " << t << " completed.\n";
+        //     // 这里可以添加保存或可视化代码
+        // }
     }
     
     // 复制结果回主机
-    q.memcpy(u_curr.data(), d_u_curr, sizeof(float) * NX * NY).wait();
+    q.memcpy(u_curr.data(), d_u_curr, sizeof(double) * NX * NY).wait();
     
-    for(int i = 0; i < 1; i++){
+    std::cout << "{";
+    for(int i = 0; i < NX; i++){
+        std::cout << "{";
         for(int j = 0; j < NY; j++){
-            std::cout << u_curr[i * NX + j] << " " ;
+            std::cout << u_curr[i * NX + j]  ;
+            if (j < NY - 1) std::cout << ", ";
         }
-        std::cout << std::endl;
+        std::cout << "}";
+        if (i < NX - 1) std::cout << ", ";
+        
     }
+    std::cout << "}" << std::endl;
 
     // 释放设备内存
     free(d_u_prev, q);
@@ -119,7 +125,7 @@ int main() {
     free(d_u_next, q);
     
     // 输出最终结果的某些值作为示例
-    cout << "Final wave state at center: " << u_curr[(NX/2)*NY + (NY/2)] << "\n";
+    //cout << u_curr[(NX/2)*NY + (NY/2)] << "\n";
     
     return 0;
 }
