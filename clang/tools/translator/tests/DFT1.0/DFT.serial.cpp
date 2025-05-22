@@ -35,20 +35,25 @@ int main() {
     }
 
     // 输出原始数据
-    cout << "原始数据（时间域）:" << endl;
-    for (const auto& val : input) {
-        cout << val << endl;
-    }
+    //cout << "原始数据（时间域）:" << endl;
+    // for (const auto& val : input) {
+    //     cout << val << endl;
+    // }
 
     // 计算离散傅里叶变换
     vector<Complex> output;
     dft(input, output);
 
     // 输出傅里叶变换后的数据（频域）
-    cout << "\n傅里叶变换后的数据（频域）:" << endl;
-    for (const auto& val : output) {
-        cout << val << endl;
+    //cout << "\n傅里叶变换后的数据（频域）:" << endl;
+    std::cout << "{";
+    for (size_t i = 0; i < output.size(); ++i) {
+        cout << "(" << output[i].real() << "," << output[i].imag() << ")";
+        if (i != output.size() - 1) {
+            cout << ", ";  // 避免最后一个元素后面多一个逗号
+        }
     }
+    std::cout << "}\n";
 
     return 0;
 }

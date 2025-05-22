@@ -85,9 +85,16 @@ public:
 
     void rewriteDac_Buffer();
 
+    void rewriteDac_Multiple();
+
     void rewriteMain() {
         for (int exprCount = 0; exprCount < dacppFile->dacExprs.size(); exprCount++) {
+            printf("dacExprCount: %d\n", exprCount);
             const BinaryOperator* dacExpr = dacppFile->dacExprs[exprCount];
+            const CallExpr* FS;
+            if(dacppFile->getBlock()){
+                FS = dacppFile->getForStmt();
+            }
             CallExpr* shellCall = dacppTranslator::getNode<CallExpr>(dacExpr->getLHS());
             DeclRefExpr* declRefExpr;
             if(isa<DeclRefExpr>(dacExpr->getRHS())) {
@@ -105,8 +112,14 @@ public:
             std::string code = rso.str();
             code.replace(code.find(shellCall->getDirectCallee()->getNameAsString()), 
             shellCall->getDirectCallee()->getNameAsString().size(), shellCall->getDirectCallee()->getNameAsString()
-            + "_" + declRefExpr->getDecl()->getNameAsString());
-            rewriter->ReplaceText(dacExpr->getSourceRange(), code);
+             + "_" + declRefExpr->getDecl()->getNameAsString());
+            //  const FunctionDecl* FS = dacppFile->getForStmt();
+            // FS->dump();
+            if(dacppFile->getBlock()){
+                rewriter->ReplaceText(FS->getSourceRange(), code);
+            }else{
+                rewriter->ReplaceText(dacExpr->getSourceRange(), code);
+            }
         }
     }
 

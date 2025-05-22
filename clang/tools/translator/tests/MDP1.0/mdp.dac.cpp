@@ -31,10 +31,10 @@ void initialize(std::vector<double>& p) {
 // 归一化函数
 void normalize(dacpp::Vector<double>& p) {
     double sum = 0.0;
-    for (int i = 0;i < N; i++) {
+    for (int i = 0;i < N-2; i++) {
         sum += p[i];
     }
-    for (int i = 0;i < N; i++) {
+    for (int i = 0;i < N-2; i++) {
         p[i] /= sum; // 归一化    
     }
 }
@@ -47,7 +47,9 @@ shell dacpp::list mdp_shell(const dacpp::Vector<double>& p, dacpp::Vector<double
 }
 
 calc void mdp(dacpp::Vector<double>& p, double* new_p){
-    new_p[0] = p[1] + dt * (D * (p[2] - 2 * p[1] + p[0]) / (dx * dx) + (-A) * (p[2] - p[0]) / (2 * dx));
+    double diffusion = D * (p[2] - 2 * p[1] + p[0]) / (dx * dx) ;
+    double drift = (-A) * (p[2] - p[0]) / (2 * dx);
+    new_p[0] = p[1] + dt * (diffusion+ drift);
 }
 
 // 数值求解Fokker-Planck方程
@@ -56,14 +58,19 @@ void solveFokkerPlanck(std::vector<double>& p) {
     dacpp::Vector<double> p_tensor(p);
     dacpp::Vector<double> new_p_tensor(new_p);
     for (int t = 0; t < T; ++t) {
-        mdp_shell(p_tensor, new_p_tensor) <->  mdp;  
+        mdp_shell(p_tensor, new_p_tensor) <->  mdp;
+        //normalize(new_p_tensor); // 归一化分布  
         // 更新分布
         for(int i = 0; i < N-2; i++){
             p_tensor[i+1] = new_p_tensor[i];
         }
-        normalize(p_tensor); // 归一化分布
+        // 设置边界条件
+        //p_tensor[0] = 0.0;
+        //p_tensor[N - 1] = 0.0;
+        
     }
-    p_tensor.print();
+    std::cout << p_tensor[2] << std::endl;
+    //p_tensor.print();
 }
 
 int main() {

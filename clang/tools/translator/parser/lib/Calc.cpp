@@ -4735,106 +4735,61 @@ void dacppTranslator::Calc::setBody(Stmt* body) {
   this->body.push_back(Msg);
 }
 
-std::string func(std::string code, std::string name) {
-    std::regex pattern(name + R"((?![\w]|\[))");
+std::string dacfor_func(const std::string& code, const std::string& name) {
+   std::string result = code;
 
-    std::string result = "";
-    size_t lastPos = 0;
+    // 替换二维访问：name[i][j]
+    std::regex pattern2D(R"(\b)" + name + R"(\s*\[\s*(\d+)\s*\]\s*\[\s*(\d+)\s*\])");
+    std::string replacement2D = "virtual_to_physical(" + name + ", " + name + "_index+$1*info_" + name + "_acc[1]+$2, " + name + "_params)";
+    result = std::regex_replace(result, pattern2D, replacement2D);
 
-    // 遍历所有匹配
-    for (std::sregex_iterator it(code.begin(), code.end(), pattern), end; it != end; ++it) {
-        std::smatch match = *it;
-        if (match.position() == 0 || !isalnum(code[match.position() - 1])) {
-          result += code.substr(lastPos, match.position() - lastPos); // 添加非匹配部分
-          result += match.str() + "[0]"; // 添加匹配部分的自定义替换
-          lastPos = match.position() + match.length(); // 更新位置
-        } else {
-          result += code.substr(lastPos, match.position() - lastPos + match.str().size());
-          lastPos = match.position() + match.length();
-        }
-    }
+    // 替换一维访问：name[i]
+    std::regex pattern1D(R"(\b)" + name + R"(\s*\[\s*(\d+)\s*\])");
+    std::string replacement1D = "virtual_to_physical(" + name + ", " + name + "_index+$1, " + name + "_params)";
+    result = std::regex_replace(result, pattern1D, replacement1D);
+    // printf("result: %s\n", result.c_str());
+    return result;
+}
 
-    // 添加最后的非匹配部分
-    result += code.substr(lastPos);
+std::string func(std::string code, const std::string& name) {
+    std::string result = code;
+    // 替换二维访问 name[i][j] -> name[i*info_name_acc[1]+j]
+    std::regex pattern2D(R"(\b)" + name + R"(\s*\[\s*(\d+)\s*\]\s*\[\s*(\d+)\s*\])");
+
+    std::string replacement2D = name + "[$1*info_" + name + "_acc[1]+$2]";
+
+    result = std::regex_replace(result, pattern2D, replacement2D);
+
     return result;
 }
 
 std::string dacppTranslator::Calc::getBody(int idx) {
+  std::string code = body[idx];
+  for (int i = 0; i < getNumParams(); i++) {
+
+    std::string name = getParam(i)->getName();
+
+    //std::regex pattern(name + R"((?![\w]|\[))");
+    //code = std::regex_replace(code, pattern, name + "[0]");
+    code = func(code, name);
+    // printf("""code: %s\n", code.c_str());
+  }
+  return code;
+}
+std::string dacppTranslator::Calc::dacfor_getBody(int idx) {
     std::string code = body[idx];
     for (int i = 0; i < getNumParams(); i++) {
       std::string name = getParam(i)->getName();
-      if (getParam(i)->getType().find("Tensor") != -1 ||
-      getParam(i)->getType().find("Vector") != -1 || 
-      getParam(i)->getType().find("Matrix") != -1) {
-        continue;
-      }
-      //std::regex pattern(name + R"((?![\w]|\[))");
-      //code = std::regex_replace(code, pattern, name + "[0]");
-      code = func(code, name);
+      // printf("name: %s\n", name.c_str());
+      // if (getParam(i)->getType().find("Tensor") != -1 ||
+      //     getParam(i)->getType().find("Vector") != -1 || 
+      //     getParam(i)->getType().find("Matrix") != -1) {
+      //   continue;
+      // }
+      
+      code = dacfor_func(code, name);
     }
-    std::string res = "";
-    size_t last_pos = 0;
-    for (int i = 0; i < getNumParams(); i++) {
-      std::string name = getParam(i)->getName();
-      if (getParam(i)->getType().find("Tensor") == -1 &&
-      getParam(i)->getType().find("Vector") == -1 && 
-      getParam(i)->getType().find("Matrix") == -1) {
-        continue;
-      }
-      std::regex pattern(name + R"((\[[^\[\]]\]){2,})");
-      std::sregex_iterator it(code.begin(), code.end(), pattern);
-      std::sregex_iterator end;
-
-      while (it != end) {
-          std::smatch match = *it; // 获取当前匹配结果
-          std::string str = match.str();
-          res += code.substr(last_pos, match.position() - last_pos);
-          int b_count = std::count(str.begin(), str.end(), '[');
-          int pos = str.find("][");
-          int count = 1;
-          std::string r_str = "";
-          while (pos != -1) {
-            for (int k = count; k < b_count; k++) {
-              r_str += "*info_" + name + "_acc[" + std::to_string(k) + "]";
-            }
-            r_str += "+";
-            str.replace(pos, 2, r_str);
-            pos = str.find("][");
-            count++;
-            r_str = "";
-          }
-          res += str;
-          last_pos = match.position() + match.length();
-          ++it; // 移动到下一个匹配结果
-      }
-    }
-    res += code.substr(last_pos);
-
-    // code = res;
-    
-    // std::string res1 = "";
-    // last_pos = 0;
-    // for (int i = 0; i < getNumParams(); i++) {
-    //   std::string name = getParam(i)->getName();
-    //   if (getParam(i)->getType().find("Tensor") != -1) {
-    //     continue;
-    //   }
-    //   std::regex pattern(name + R"((?![\w]|\[))");
-    //   std::sregex_iterator it(code.begin(), code.end(), pattern);
-    //   std::sregex_iterator end;
-
-    //   while (it != end) {
-    //       std::smatch match = *it; // 获取当前匹配结果
-    //       std::string str = match.str();
-    //       res1 += code.substr(last_pos, match.position() - last_pos);
-    //       res1 += str + "[0]";
-    //       last_pos = match.position() + match.length();
-    //       ++it; // 移动到下一个匹配结果
-    //   }
-    // }
-    // res1 += code.substr(last_pos);
-
-    return res;
+    return code;
 }
 
 int dacppTranslator::Calc::getNumBody() {

@@ -219,7 +219,7 @@ void dacppTranslator::Rewriter::rewriteDac_Buffer() {
             ShellParam* shellParam = shell->getShellParam(NumShellParam);
             if(shellParam->getRw() == 1){
                 divice_memory += UNIVERSAL_TEMPLATE::CodeGen_DeviceMemSizeGenerate(shellParam->getName()+"_Size","In_Ops","Out_Ops","info_"+shellParam->getName());
-                divice_memory += UNIVERSAL_TEMPLATE::CodeGen_DeviceMemSizeGenerate("Reduction_Size","info_"+shellParam->getName(),"Reduction_Ops");
+                divice_memory += UNIVERSAL_TEMPLATE::CodeGen_DeviceMemSizeGenerate(shellParam->getName()+"Reduction_Size","info_"+shellParam->getName(),"Reduction_Ops");
             }
             else{
                 divice_memory += UNIVERSAL_TEMPLATE::CodeGen_DeviceMemSizeGenerate(shellParam->getName()+"_Size","info_"+shellParam->getName(),shellParam->getName()+"_Ops");
@@ -276,7 +276,7 @@ void dacppTranslator::Rewriter::rewriteDac_Buffer() {
             ShellParam* shellParam = shell->getShellParam(NumShellParam);
             if(shellParam->getRw() == 1){
                 deviceMemAlloc += BUFFER_TEMPLATE::CodeGen_DeviceMemAlloc(shellParam->getBasicType(),shellParam->getName(),shellParam->getName()+"_Size");
-                deviceMemAlloc += BUFFER_TEMPLATE::CodeGen_DeviceMemAllocReduction(shellParam->getBasicType(),shellParam->getName(),"Reduction_Size");
+                deviceMemAlloc += BUFFER_TEMPLATE::CodeGen_DeviceMemAllocReduction(shellParam->getBasicType(),shellParam->getName(),shellParam->getName()+"Reduction_Size");
             }
             else{
                 deviceMemAlloc += BUFFER_TEMPLATE::CodeGen_DeviceMemAlloc(shellParam->getBasicType(),shellParam->getName(),shellParam->getName()+"_Size");
@@ -286,13 +286,13 @@ void dacppTranslator::Rewriter::rewriteDac_Buffer() {
 
         //主机数据移动至设备
         std::string H2DMemMove = "";
-        for(int NumShellParam = 0; NumShellParam < shell->getNumShellParams(); NumShellParam++){
-            ShellParam* shellParam = shell->getShellParam(NumShellParam);
-            H2DMemMove += BUFFER_TEMPLATE::CodeGen_DeviceDataInit(shellParam->getBasicType(),shellParam->getName(),shellParam->getName()+"_Size");
-            if(shellParam->getRw() == 0){
-                H2DMemMove += BUFFER_TEMPLATE::CodeGen_H2DMemMov(shellParam->getBasicType(),shellParam->getName(),shellParam->getName()+"_Size");
-            }
-        }
+        // for(int NumShellParam = 0; NumShellParam < shell->getNumShellParams(); NumShellParam++){
+        //     ShellParam* shellParam = shell->getShellParam(NumShellParam);
+        //     H2DMemMove += BUFFER_TEMPLATE::CodeGen_DeviceDataInit(shellParam->getBasicType(),shellParam->getName(),shellParam->getName()+"_Size");
+        //     if(shellParam->getRw() == 0){
+        //         H2DMemMove += BUFFER_TEMPLATE::CodeGen_H2DMemMov(shellParam->getBasicType(),shellParam->getName(),shellParam->getName()+"_Size");
+        //     }
+        // }
         // std::cout << H2DMemMove;
 
        
@@ -337,15 +337,25 @@ void dacppTranslator::Rewriter::rewriteDac_Buffer() {
         for(int NumShellParam = 0; NumShellParam < shell->getNumShellParams(); NumShellParam++){
             ShellParam* shellParam = shell->getShellParam(NumShellParam);
             if(shellParam->getRw() == 1){
-                Reduction = BUFFER_TEMPLATE::CodeGen_Reduction_Span("Reduction_Size","Reduction_Split_Size","Reduction_Split_Length",shellParam->getName(),shellParam->getBasicType(),ReductionRule);
-	            D2HMemMove = BUFFER_TEMPLATE::CodeGen_D2HMemMov(shellParam->getName(),shellParam->getBasicType(),shellParam->getName()+"_Size",false);
+                Reduction += BUFFER_TEMPLATE::CodeGen_Reduction_Span(shellParam->getName()+"Reduction_Size","Reduction_Split_Size","Reduction_Split_Length",shellParam->getName(),shellParam->getBasicType(),ReductionRule);
+	            Reduction += BUFFER_TEMPLATE::CodeGen_Result_B2H_Mov(shellParam->getName(),shellParam->getName()+"_Size");
             }
         }
         // std::cout << Reduction;
         // std::cout << D2HMemMove;
        
-       //dataRecon
-       std::string dataRecon = "";
+        std::string dataRecon = "";
+        for(int NumShellParam = 0; NumShellParam < shell->getNumShellParams(); NumShellParam++){
+            ShellParam* shellParam = shell->getShellParam(NumShellParam);
+            if(shellParam->getRw() == 1){
+                dataRecon += BUFFER_TEMPLATE::CodeGen_Init_Host_Memory(shellParam->getBasicType(),shellParam->getName());
+            }else{
+                dataRecon += BUFFER_TEMPLATE::CodeGen_D2B_Mov_Buffer(shellParam->getBasicType(),shellParam->getName(),shellParam->getName()+"_Size");
+            }
+        }
+
+        //dataRecon
+        //std::string dataRecon = "";
        for(int NumShellParam = 0; NumShellParam < shell->getNumShellParams(); NumShellParam++){
             ShellParam* shellParam = shell->getShellParam(NumShellParam);
             std::string opPushBack = "";
@@ -355,7 +365,7 @@ void dacppTranslator::Rewriter::rewriteDac_Buffer() {
                 opPushBack += UNIVERSAL_TEMPLATE::CodeGen_OpPushBack2Ops(shellParam->getName(),split->getId(),std::to_string(split->getDimIdx()));
             }
             std::string dataOpsInit = UNIVERSAL_TEMPLATE::CodeGen_DataOpsInit(shellParam->getName(),opPushBack);
-            dataRecon += UNIVERSAL_TEMPLATE::CodeGen_DataReconstruct(shellParam->getBasicType(),shellParam->getName(),shellParam->getName()+"_Size",dataOpsInit);
+            dataRecon += BUFFER_TEMPLATE::CodeGen_DataReconstruct(shellParam->getBasicType(),shellParam->getName(),shellParam->getName()+"_Size",dataOpsInit);
        }
         // std::cout << dataRecon;
         // std::cout << "-----------------------------------------------------------------------";

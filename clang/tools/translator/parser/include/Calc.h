@@ -47,6 +47,7 @@ public:
 
     void setBody(Stmt* body);
     std::string getBody(int idx);
+    std::string dacfor_getBody(int idx);
     int getNumBody();
 
     void setExpr(const BinaryOperator* dacExpr, std::vector<std::vector<int>> shapes);

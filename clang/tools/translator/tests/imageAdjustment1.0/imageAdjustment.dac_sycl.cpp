@@ -50,12 +50,12 @@ void image_1(Pixel* image_tensor,Pixel* image_tensor2,sycl::accessor<int, 1, syc
 
 
 // 生成函数调用
-void imageAdjustment_image_1(const dacpp::Tensor<Pixel, 2> & image_tensor, dacpp::Tensor<Pixel, 2> & image_tensor2) { 
+void imageAdjustment_image_1(const dacpp::Matrix<Pixel> & image_tensor, dacpp::Matrix<Pixel> & image_tensor2) { 
     // 设备选择
     auto selector = default_selector_v;
     queue q(selector);
     //声明参数生成工具
-    ParameterGeneration<int,2> para_gene_tool;
+    ParameterGeneration para_gene_tool;
     // 算子初始化
     
     // 数据信息初始化
@@ -192,10 +192,8 @@ void imageAdjustment_image_1(const dacpp::Tensor<Pixel, 2> & image_tensor, dacpp
     Dac_Ops image_tensor_ops;
     
     idx1.setDimId(0);
-    idx1.setSplitLength(8);
     image_tensor_ops.push_back(idx1);
     idx2.setDimId(1);
-    idx2.setSplitLength(8);
     image_tensor_ops.push_back(idx2);
     image_tensor_tool.init(info_image_tensor,image_tensor_ops);
     image_tensor_tool.Reconstruct(r_image_tensor,image_tensor);
@@ -209,18 +207,20 @@ void imageAdjustment_image_1(const dacpp::Tensor<Pixel, 2> & image_tensor, dacpp
     Dac_Ops image_tensor2_ops;
     
     idx1.setDimId(0);
-    idx1.setSplitLength(8);
     image_tensor2_ops.push_back(idx1);
     idx2.setDimId(1);
-    idx2.setSplitLength(8);
     image_tensor2_ops.push_back(idx2);
     image_tensor2_tool.init(info_image_tensor2,image_tensor2_ops);
     image_tensor2_tool.Reconstruct(r_image_tensor2,image_tensor2);
 	std::vector<int> info_partition_image_tensor2=para_gene_tool.init_partition_data_shape(info_image_tensor2,image_tensor2_ops);
     sycl::buffer<int> info_partition_image_tensor2_buffer(info_partition_image_tensor2.data(), sycl::range<1>(info_partition_image_tensor2.size()));
     
+    // 设备数据初始化
+    q.memset(d_image_tensor,0,image_tensor_Size*sizeof(Pixel)).wait();
     // 数据移动
     q.memcpy(d_image_tensor,r_image_tensor,image_tensor_Size*sizeof(Pixel)).wait();
+    // 设备数据初始化
+    q.memset(d_image_tensor2,0,image_tensor2_Size*sizeof(Pixel)).wait();
 	
     //工作项划分
     sycl::range<3> local(1, 1, Item_Size);
@@ -245,23 +245,23 @@ void imageAdjustment_image_1(const dacpp::Tensor<Pixel, 2> & image_tensor, dacpp
     
 
 	
-    // // 归约
-    // if(Reduction_Split_Size > 1)
-    // {
-    //     for(int i=0;i<Reduction_Size;i++) {
-    //         q.submit([&](handler &h) {
-    // 	        h.parallel_for(
-    //             range<1>(Reduction_Split_Size),
-    //             reduction(reduction_image_tensor2+i, 
-    //             sycl::plus<>(),
-    //             property::reduction::initialize_to_identity()),
-    //             [=](id<1> idx,auto &reducer) {
-    //                 reducer.combine(d_image_tensor2[(i/Reduction_Split_Length)*Reduction_Split_Length*Reduction_Split_Size+i%Reduction_Split_Length+idx*Reduction_Split_Length]);
-    //  	        });
-    //      }).wait();
-    //     }
-    //     q.memcpy(d_image_tensor2,reduction_image_tensor2, Reduction_Size*sizeof(Pixel)).wait();
-    // }
+    // 归约
+    if(Reduction_Split_Size > 1)
+    {
+        for(int i=0;i<Reduction_Size;i++) {
+            q.submit([&](handler &h) {
+    	        h.parallel_for(
+                range<1>(Reduction_Split_Size),
+                reduction(reduction_image_tensor2+i, 
+                sycl::plus<>(),
+                property::reduction::initialize_to_identity()),
+                [=](id<1> idx,auto &reducer) {
+                    reducer.combine(d_image_tensor2[(i/Reduction_Split_Length)*Reduction_Split_Length*Reduction_Split_Size+i%Reduction_Split_Length+idx*Reduction_Split_Length]);
+     	        });
+         }).wait();
+        }
+        q.memcpy(d_image_tensor2,reduction_image_tensor2, Reduction_Size*sizeof(Pixel)).wait();
+    }
 
 
 	
@@ -285,12 +285,12 @@ void image_2(Pixel* image_tensor2,Pixel* image_tensor3,sycl::accessor<int, 1, sy
 
 
 // 生成函数调用
-void imageAdjustment_image_2(const dacpp::Tensor<Pixel, 2> & image_tensor, dacpp::Tensor<Pixel, 2> & image_tensor2) { 
+void imageAdjustment_image_2(const dacpp::Matrix<Pixel> & image_tensor, dacpp::Matrix<Pixel> & image_tensor2) { 
     // 设备选择
     auto selector = default_selector_v;
     queue q(selector);
     //声明参数生成工具
-    ParameterGeneration<int,2> para_gene_tool;
+    ParameterGeneration para_gene_tool;
     // 算子初始化
     
     // 数据信息初始化
@@ -427,10 +427,8 @@ void imageAdjustment_image_2(const dacpp::Tensor<Pixel, 2> & image_tensor, dacpp
     Dac_Ops image_tensor_ops;
     
     idx1.setDimId(0);
-    idx1.setSplitLength(8);
     image_tensor_ops.push_back(idx1);
     idx2.setDimId(1);
-    idx2.setSplitLength(8);
     image_tensor_ops.push_back(idx2);
     image_tensor_tool.init(info_image_tensor,image_tensor_ops);
     image_tensor_tool.Reconstruct(r_image_tensor,image_tensor);
@@ -444,18 +442,20 @@ void imageAdjustment_image_2(const dacpp::Tensor<Pixel, 2> & image_tensor, dacpp
     Dac_Ops image_tensor2_ops;
     
     idx1.setDimId(0);
-    idx1.setSplitLength(8);
     image_tensor2_ops.push_back(idx1);
     idx2.setDimId(1);
-    idx2.setSplitLength(8);
     image_tensor2_ops.push_back(idx2);
     image_tensor2_tool.init(info_image_tensor2,image_tensor2_ops);
     image_tensor2_tool.Reconstruct(r_image_tensor2,image_tensor2);
 	std::vector<int> info_partition_image_tensor2=para_gene_tool.init_partition_data_shape(info_image_tensor2,image_tensor2_ops);
     sycl::buffer<int> info_partition_image_tensor2_buffer(info_partition_image_tensor2.data(), sycl::range<1>(info_partition_image_tensor2.size()));
     
+    // 设备数据初始化
+    q.memset(d_image_tensor,0,image_tensor_Size*sizeof(Pixel)).wait();
     // 数据移动
     q.memcpy(d_image_tensor,r_image_tensor,image_tensor_Size*sizeof(Pixel)).wait();
+    // 设备数据初始化
+    q.memset(d_image_tensor2,0,image_tensor2_Size*sizeof(Pixel)).wait();
 	
     //工作项划分
     sycl::range<3> local(1, 1, Item_Size);
@@ -480,23 +480,23 @@ void imageAdjustment_image_2(const dacpp::Tensor<Pixel, 2> & image_tensor, dacpp
     
 
 	
-    // // 归约
-    // if(Reduction_Split_Size > 1)
-    // {
-    //     for(int i=0;i<Reduction_Size;i++) {
-    //         q.submit([&](handler &h) {
-    // 	        h.parallel_for(
-    //             range<1>(Reduction_Split_Size),
-    //             reduction(reduction_image_tensor2+i, 
-    //             sycl::plus<>(),
-    //             property::reduction::initialize_to_identity()),
-    //             [=](id<1> idx,auto &reducer) {
-    //                 reducer.combine(d_image_tensor2[(i/Reduction_Split_Length)*Reduction_Split_Length*Reduction_Split_Size+i%Reduction_Split_Length+idx*Reduction_Split_Length]);
-    //  	        });
-    //      }).wait();
-    //     }
-    //     q.memcpy(d_image_tensor2,reduction_image_tensor2, Reduction_Size*sizeof(Pixel)).wait();
-    // }
+    // 归约
+    if(Reduction_Split_Size > 1)
+    {
+        for(int i=0;i<Reduction_Size;i++) {
+            q.submit([&](handler &h) {
+    	        h.parallel_for(
+                range<1>(Reduction_Split_Size),
+                reduction(reduction_image_tensor2+i, 
+                sycl::plus<>(),
+                property::reduction::initialize_to_identity()),
+                [=](id<1> idx,auto &reducer) {
+                    reducer.combine(d_image_tensor2[(i/Reduction_Split_Length)*Reduction_Split_Length*Reduction_Split_Size+i%Reduction_Split_Length+idx*Reduction_Split_Length]);
+     	        });
+         }).wait();
+        }
+        q.memcpy(d_image_tensor2,reduction_image_tensor2, Reduction_Size*sizeof(Pixel)).wait();
+    }
 
 
 	
@@ -527,8 +527,8 @@ int main() {
     std::cout << "Original Image:" << std::endl;
     //print_image(image);
 
-    dacpp::Tensor<Pixel, 2> image_tensor({height, width}, image);
-    dacpp::Tensor<Pixel, 2> image_tensor2({height, width}, image2);
+    dacpp::Matrix<Pixel> image_tensor({height, width}, image);
+    dacpp::Matrix<Pixel> image_tensor2({height, width}, image2);
 
     // 执行色彩调整操作
     imageAdjustment_image_1(image_tensor, image_tensor2);

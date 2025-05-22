@@ -6,7 +6,7 @@ if ! which icpx &> /dev/null; then
     source /data/qinian/share/intel/oneapi2025/setvars.sh intel64 &> /dev/null
 fi
 
-exec 2>/dev/null
+# exec 2>/dev/null
 
 # Delete all temporary files
 rm -rf ./tmp
@@ -27,6 +27,7 @@ examples=(
     "MDP1.0"
     "mandel1.0"
     "oddeven0.1"
+    "test"
 )
 
 

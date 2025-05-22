@@ -229,7 +229,7 @@ std::string CodeGen_DataOpsInit(std::string name,std::string opPushBack2Ops){
 const char *DATA_RECON_Template = R"~~~(
     // 数据重组
     DataReconstructor<{{TYPE}}> {{NAME}}_tool;
-    {{TYPE}}* r_{{NAME}}=({{TYPE}}*)malloc(sizeof({{TYPE}})*{{SIZE}});
+    {{TYPE}}* r_{{NAME}}=({{TYPE}}*)malloc(sizeof({{TYPE}})*{{SIZE}});//分配内存
     {{DATA_OPS_INIT}}
     {{NAME}}_tool.init(info_{{NAME}},{{NAME}}_ops);
     {{NAME}}_tool.Reconstruct(r_{{NAME}},{{NAME}});

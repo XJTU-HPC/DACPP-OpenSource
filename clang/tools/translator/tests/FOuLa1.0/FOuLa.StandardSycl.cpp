@@ -72,20 +72,35 @@ int main(){
             int i=1+idx[0];
             u_device[i*(n+1)+k+1]=r*u_device[(i-1)*(n+1)+k]
                 +(1-2*r)*u_device[i*(n+1)+k]
-                +r*u_device[(i+1)*(n+1)+k]
-                +tau*f(x_device[i],t_device[k]);
+                +r*u_device[(i+1)*(n+1)+k];
         }).wait();
     }
 
     q.memcpy(flat_u.data(),u_device,sizeof(double)*flat_u.size()).wait();
     for(int i=0;i<=m;i++)for(int j=0;j<=n;j++)u[i][j]=flat_u[i*(n+1)+j];
 	 int number=int(0.4/h);
-	 for(int k=int(0.2/tau);k<=n;k=k+int(0.2/tau)){
-	 	printf("(x,t)=(%.1f,%.1f), y=%f, exact=%f, err=%.4e.\n",x[number],t[k],u[number][k],exact(x[number],t[k]),std::fabs(u[number][k]-exact(x[number],t[k])));
-	 }
+	//  for(int k=int(0.2/tau);k<=n;k=k+int(0.2/tau)){
+	//  	printf("(x,t)=(%.1f,%.1f), y=%.2f, exact=%.3f, err=%.3e.\n",x[number],t[k],u[number][k],exact(x[number],t[k]),std::fabs(u[number][k]-exact(x[number],t[k])));
+	//  }
+
+    //  for(int k=int(0.2/tau);k<=n;k=k+int(0.2/tau)){
+    //     printf("(x,t)=(%.1f,%.1f), y=%.2f, exact=%.3f.\n",x[number],t[k],u[number][k],exact(x[number],t[k]));
+    // }
+    std::cout << "{";
+    for(int i = 1; i < 2; i++){
+        
+        for(int j = 0; j < n+1; j++){
+            std::cout  << u[i][j] ;
+            if (j < n) std::cout << ", ";
+        }
+        
+        
+    }
+    std::cout << "}" << std::endl;
+
     auto end = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double> duration_sycl = end - start;
-    std::cout << "SYCL code time: " << duration_sycl.count() << " seconds" << std::endl;
+    //std::cout << "SYCL code time: " << duration_sycl.count() << " seconds" << std::endl;
     free(u_device,q);free(x_device,q);free(t_device,q);
     return 0;
 }

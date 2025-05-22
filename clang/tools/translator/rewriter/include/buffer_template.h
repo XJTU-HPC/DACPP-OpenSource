@@ -48,6 +48,11 @@ namespace BUFFER_TEMPLATE {
     std::string CodeGen_Reduction_Span(std::string SpanSize,std::string SplitSize,std::string SplitLength,std::string Name,std::string Type,std::string ReductionRule);
 
     std::string CodeGen_D2HMemMov(std::string Name,std::string Type,std::string Size,bool isReduction);
+    
+    std::string CodeGen_Result_B2H_Mov(std::string NAME,std::string SIZE);
+    std::string CodeGen_D2B_Mov_Buffer(std::string TYPE,std::string NAME,std::string SIZE);
+    std::string CodeGen_Init_Host_Memory(std::string TYPE,std::string NAME);
+    std::string CodeGen_DataReconstruct(std::string type,std::string name,std::string size,std::string dataOpsInit);
 }
 
 #endif
