@@ -25,6 +25,8 @@ set(REWRITER_SOURCES
   rewriter/lib/Rewriter_Buffer.cpp
   rewriter/lib/buffer_template.cpp
   rewriter/lib/universal_template.cpp
+  rewriter/lib/mpi_template.cpp
+  rewriter/lib/Rewriter_MPI.cpp
 )
 
 add_library(DacppLib ${DACPPLIB_SOURCES})

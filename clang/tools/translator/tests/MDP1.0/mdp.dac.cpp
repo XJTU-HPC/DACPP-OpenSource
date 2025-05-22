@@ -42,7 +42,8 @@ void normalize(dacpp::Vector<double>& p) {
 shell dacpp::list mdp_shell(const dacpp::Vector<double>& p, dacpp::Vector<double>& new_p){
     dacpp::index idx;
     dacpp::split sp(3,1);
-    dacpp::list datalist{p[sp],new_p[idx]};
+    dacpp::list dataList{p[sp],new_p[idx]};
+    return dataList;
 }
 
 calc void mdp(dacpp::Vector<double>& p, double* new_p){

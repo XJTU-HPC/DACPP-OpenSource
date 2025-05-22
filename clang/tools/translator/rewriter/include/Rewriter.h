@@ -86,29 +86,31 @@ public:
     void rewriteDac_Buffer();
 
     void rewriteMain() {
-for (int exprCount = 0; exprCount < dacppFile->dacExprs.size(); exprCount++) {
-        const BinaryOperator* dacExpr = dacppFile->dacExprs[exprCount];
-        CallExpr* shellCall = dacppTranslator::getNode<CallExpr>(dacExpr->getLHS());
-        DeclRefExpr* declRefExpr;
-        if(isa<DeclRefExpr>(dacExpr->getRHS())) {
-            declRefExpr = dyn_cast<DeclRefExpr>(dacExpr->getRHS());
+        for (int exprCount = 0; exprCount < dacppFile->dacExprs.size(); exprCount++) {
+            const BinaryOperator* dacExpr = dacppFile->dacExprs[exprCount];
+            CallExpr* shellCall = dacppTranslator::getNode<CallExpr>(dacExpr->getLHS());
+            DeclRefExpr* declRefExpr;
+            if(isa<DeclRefExpr>(dacExpr->getRHS())) {
+                declRefExpr = dyn_cast<DeclRefExpr>(dacExpr->getRHS());
+            }
+            else {
+                declRefExpr = dacppTranslator::getNode<DeclRefExpr>(dacExpr->getRHS());
+            }
+            std::string str;
+            llvm::raw_string_ostream rso(str);
+            clang::LangOptions langOpts;
+            langOpts.CPlusPlus = true; // 启用C++选项（根据需要配置）
+            clang::PrintingPolicy policy(langOpts);
+            shellCall->printPretty(rso, nullptr, policy);
+            std::string code = rso.str();
+            code.replace(code.find(shellCall->getDirectCallee()->getNameAsString()), 
+            shellCall->getDirectCallee()->getNameAsString().size(), shellCall->getDirectCallee()->getNameAsString()
+            + "_" + declRefExpr->getDecl()->getNameAsString());
+            rewriter->ReplaceText(dacExpr->getSourceRange(), code);
         }
-        else {
-            declRefExpr = dacppTranslator::getNode<DeclRefExpr>(dacExpr->getRHS());
-        }
-        std::string str;
-        llvm::raw_string_ostream rso(str);
-        clang::LangOptions langOpts;
-        langOpts.CPlusPlus = true; // 启用C++选项（根据需要配置）
-        clang::PrintingPolicy policy(langOpts);
-        shellCall->printPretty(rso, nullptr, policy);
-        std::string code = rso.str();
-        code.replace(code.find(shellCall->getDirectCallee()->getNameAsString()), 
-        shellCall->getDirectCallee()->getNameAsString().size(), shellCall->getDirectCallee()->getNameAsString()
-         + "_" + declRefExpr->getDecl()->getNameAsString());
-        rewriter->ReplaceText(dacExpr->getSourceRange(), code);
     }
-}
+
+    void rewriteMPI();
 };
 
 // namespace dacppTranslator
