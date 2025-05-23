@@ -108,6 +108,7 @@ for dir in ${examples[@]}; do
     fi
     icpx-gpu "$sycl_file" -o "$TMP_DIR/$dir/$dir"
     # icpx-cpu "$sycl_file" -o "$TMP_DIR/$dir/$dir"
+    # mpiicpc -fsycl "$sycl_file" -o "$TMP_DIR/$dir/$dir"
     exe_file=$(find "$TMP_DIR/$dir/" -type f -name "$dir")
     if [ -z "$exe_file" ]; then
         echo "Example $dir: SYCL compilation failed"
@@ -128,6 +129,7 @@ for dir in ${examples[@]}; do
     fi
     exe_file="${exe_file#$TMP_DIR/$dir}"
     "$TMP_DIR/$dir/$exe_file" > "$TMP_DIR/$dir/$exe_file.out" 
+    # mpirun -np 2 "$TMP_DIR/$dir/$exe_file" > "$TMP_DIR/$dir/$exe_file.out" 
     std_res=$(find "$TMP_DIR/$dir/" -type f -name "*.std.out" | head -n 1)
     if diff -y --suppress-common-lines "$TMP_DIR/$dir/$exe_file.out" "$std_res"; then
         echo "Example $dir: execution test succeeded"

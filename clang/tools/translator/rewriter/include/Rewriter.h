@@ -122,6 +122,8 @@ public:
             }
         }
     }
+
+    void rewriteMPI();
 };
 
 // namespace dacppTranslator

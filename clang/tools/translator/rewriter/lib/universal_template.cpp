@@ -31,7 +31,8 @@ const char *DATA_INFO_INIT_Template = R"~~~(
     // 数据信息初始化
     DataInfo info_{{NAME}};
     info_{{NAME}}.dim = {{NAME}}.getDim();
-    for(int i = 0; i < info_{{NAME}}.dim; i++) info_{{NAME}}.dimLength.push_back({{NAME}}.getShape(i));)~~~";
+    for(int i = 0; i < info_{{NAME}}.dim; i++) info_{{NAME}}.dimLength.push_back({{NAME}}.getShape(i));
+	)~~~";
 std::string CodeGen_DataInfoInit(std::string name){
     return templateString(DATA_INFO_INIT_Template,
 	{

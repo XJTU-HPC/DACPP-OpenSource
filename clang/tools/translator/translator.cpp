@@ -308,9 +308,11 @@ public:
         // rewriter->rewriteDac_Usm();
         //rewriter->rewriteDac_Buffer();
         rewriter->rewriteDac_Multiple();
-        // printf("no main function\n");
-        rewriter->rewriteMain();
 
+        // rewriter->rewriteMPI();
+        rewriter->rewriteMain();
+        
+        
         // // this will output to screen as what you got.
         // clangRewriter->getEditBuffer(clangRewriter->getSourceMgr().getMainFileID())
         //     .write(llvm::outs());

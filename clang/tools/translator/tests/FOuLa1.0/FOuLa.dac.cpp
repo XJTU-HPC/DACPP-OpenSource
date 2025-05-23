@@ -31,7 +31,7 @@ shell dacpp::list PDE(const dacpp::Vector<double>& u_kin,
     dacpp::index i;
     dacpp::split s(3,1);
     binding(i, s);
-    dacpp::list dataList{u_kin[s][{}], u_kout[i], r[{}]};
+    dacpp::list dataList{u_kin[s], u_kout[i], r[{}]};
     return dataList;
 }
 
