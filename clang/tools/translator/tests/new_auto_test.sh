@@ -14,18 +14,18 @@ mkdir $TMP_DIR
 
 # Edit examples here
 examples=(
-    #  "matMul1.0"
-     "waveEquation1.0"
-    #  "stencil1.0"
-    #  "jacobi1.0"
-    #  "FOuLa1.0"
-    #  "decay1.0"
-    #  "DFT1.0"
-     # "imageAdjustment1.0"
-    #  "liuliang1.0"
-    #  "MDP1.0"
-    #  "mandel1.0"
-    #  "oddeven0.1"
+    "matMul1.0"
+    "waveEquation1.0"
+    "stencil1.0"
+    "jacobi1.0"
+    "FOuLa1.0"
+    "decay1.0"
+    "DFT1.0"
+    "imageAdjustment1.0"
+    "liuliang1.0"
+    "MDP1.0"
+    "mandel1.0"
+    "oddeven0.1"
     # "block_mat_mul"
 )
 
@@ -109,6 +109,7 @@ for dir in ${examples[@]}; do
     icpx-gpu "$sycl_file" -o "$TMP_DIR/$dir/$dir"
     # icpx-cpu "$sycl_file" -o "$TMP_DIR/$dir/$dir"
     # mpiicpc -fsycl "$sycl_file" -o "$TMP_DIR/$dir/$dir"
+    # mpiicpc-gpu -fsycl "$sycl_file" -o "$TMP_DIR/$dir/$dir"
     exe_file=$(find "$TMP_DIR/$dir/" -type f -name "$dir")
     if [ -z "$exe_file" ]; then
         echo "Example $dir: SYCL compilation failed"
