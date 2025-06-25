@@ -148,47 +148,49 @@ class DataReconstructor{
         /*
             将重组结果写入res长向量。
         */
-        void Reconstruct(ImplType* res, ImplType* myTensor, sycl::queue& q){
-            sycl::device device = q.get_device();
-            int max_global_size = device.get_info<sycl::info::device::max_work_item_sizes<3>>()[2];
-            if(this->posNumberList.size() < max_global_size){
-                sycl::range<3> local(1, 1, this->posNumberList.size());
-                sycl::range<3> global(1, 1, 1);
-                q.submit([&](handler &h) {
+ void Reconstruct(ImplType* res, ImplType* myTensor, sycl::queue& q) {
+    printf("Reconstructing data...\n");
+    const size_t Item_Size = this->posNumberList.size();
+    
+    try {
+        // 获取设备限制
+        sycl::device device = q.get_device();
+        auto max_work_group_size = device.get_info<sycl::info::device::max_work_group_size>();
+        auto max_work_item_sizes = device.get_info<sycl::info::device::max_work_item_sizes<3>>();
+        
+        // 工作项配置（三维到一维展开）
+        const size_t local_Z = std::min({Item_Size, 
+                                       static_cast<size_t>(max_work_item_sizes[2]),
+                                       max_work_group_size});
+        
+        const size_t global_Z = ((Item_Size + local_Z - 1) / local_Z) * local_Z;
+        
+        sycl::range<3> local_range(1, 1, local_Z);
+        sycl::range<3> global_range(1, 1, global_Z);
 
-                    auto myIdxAccessor = myIdxBuffer.get_access<sycl::access::mode::write>(h);
-                    auto range = this->myIdxBuffer.get_range();
-
-                    sycl::stream out(1024, 256, h);
-                    h.parallel_for(sycl::nd_range<3>(global * local, local),[=](sycl::nd_item<3> item) {
-                        const auto item_id = item.get_local_id(2);
+        q.submit([&](sycl::handler &h) {
+            auto myIdxAccessor = myIdxBuffer.get_access<sycl::access::mode::read>(h);
+            
+            h.parallel_for(
+                sycl::nd_range<3>(global_range, local_range),
+                [=](sycl::nd_item<3> item) {
+                    const size_t item_id = item.get_global_linear_id();
                     
-                            res[item_id]=myTensor[myIdxAccessor[item_id]];
-                    });
-                }).wait();
-            }else{
-                int have_done = 0;
-                while(have_done < this->posNumberList.size()){
-
-                    int now_size = std::min(max_global_size, (int)this->posNumberList.size()-have_done);
-                    // printf("now_size: %d\n", now_size);
-                    // printf("have_done: %d\n", have_done);
-                    // printf("this->posNumberList.size(): %d\n", this->posNumberList.size());
-                    sycl::range<3> local(1, 1, now_size);
-                    sycl::range<3> global(1, 1, 1);
-                    q.submit([&](handler &h) {
-                        auto myIdxAccessor = myIdxBuffer.get_access<sycl::access::mode::write>(h);
-                        auto range = this->myIdxBuffer.get_range();
-                        sycl::stream out(1024, 256, h);
-                        h.parallel_for(sycl::nd_range<3>(global * local, local),[=](sycl::nd_item<3> item) {
-                            const auto item_id = item.get_local_id(2);
-                            res[have_done+item_id]=myTensor[myIdxAccessor[have_done+item_id]];
-                        });
-                    }).wait();
-                    have_done += now_size;
-                }
-            }
-        }
+                    // 边界检查
+                    if (item_id < Item_Size) {
+                        // 安全检查
+                        if (myIdxAccessor[item_id] < myIdxBuffer.get_count()) {
+                            res[item_id] = myTensor[myIdxAccessor[item_id]];
+                        }
+                    }
+                });
+        }).wait();
+        
+    } catch (const sycl::exception& e) {
+        std::cerr << "SYCL Exception in Reconstruct: " << e.what() << std::endl;
+        std::terminate();
+    }
+}
         //重载Reconstruct函数支持buffer
         void Reconstruct(sycl::buffer<ImplType>& r_buf, sycl::buffer<ImplType>& b_buf, sycl::queue& q){
             // int cnt=0;

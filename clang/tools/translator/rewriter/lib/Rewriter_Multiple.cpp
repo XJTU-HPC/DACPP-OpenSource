@@ -6,7 +6,7 @@
 #include "Split.h"
 #include "Param.h"
 #include "dacInfo.h"
-#include "universal_template.h"
+// #include "MULTIPLE_template.h"
 #include "usm_template.h"
 #include "Multiple_template.h"
 
@@ -153,7 +153,7 @@ void dacppTranslator::Rewriter::rewriteDac_Multiple() {
                 //     IsBinding.insert(isBinding);     
                 // }
             }
-        }//将分配在改设备上的各个数据的划分数相乘（全映射时的任务数）
+        }//将分配在该设备上的各个数据的划分数相乘（全映射时的任务数）
 
         Calc_Size.pop_back();
         for(int NumShellParam = 0; NumShellParam < shell->getNumShellParams(); NumShellParam++){
@@ -226,7 +226,7 @@ void dacppTranslator::Rewriter::rewriteDac_Multiple() {
         std::set<std::string> HadInit;
         for(int NumShellParam = 0; NumShellParam < shell->getNumShellParams(); NumShellParam++){//遍历每个参数
             ShellParam* shellParam = shell->getShellParam(NumShellParam);
-            infoInit += UNIVERSAL_TEMPLATE::CodeGen_DataInfoInit(shellParam->getName());
+            infoInit += MULTIPLE_TEMPLATE::CodeGen_DataInfoInit(shellParam->getName());
             for(int NumSplit = 0; NumSplit < shellParam->getNumSplit(); NumSplit++){//遍历每个参数的划分
                 if(shellParam->getSplit(NumSplit)->getId() == "void") { continue;}//保形算子会被跳过
                 Split* split = shellParam->getSplit(NumSplit);
@@ -235,7 +235,7 @@ void dacppTranslator::Rewriter::rewriteDac_Multiple() {
                         continue;
                     }
                     IndexSplit* indexSplit = static_cast<IndexSplit*>(split);
-                    opInit += UNIVERSAL_TEMPLATE::CodeGen_IndexInit2(indexSplit->getId(),std::to_string(NumSplit),"info_"+shellParam->getName());//初始化降维算子
+                    opInit += MULTIPLE_TEMPLATE::CodeGen_IndexInit2(indexSplit->getId(),std::to_string(NumSplit),"info_"+shellParam->getName());//初始化降维算子
                     HadInit.insert(indexSplit->getId());
 
                 }
@@ -244,7 +244,7 @@ void dacppTranslator::Rewriter::rewriteDac_Multiple() {
                         continue;
                     }
                     RegularSplit* regularSplit = static_cast<RegularSplit*>(split);
-                    opInit += UNIVERSAL_TEMPLATE::CodeGen_RegularSliceInit2(regularSplit->getId(),std::to_string(regularSplit->getSplitSize()),
+                    opInit += MULTIPLE_TEMPLATE::CodeGen_RegularSliceInit2(regularSplit->getId(),std::to_string(regularSplit->getSplitSize()),
                     std::to_string(regularSplit->getSplitStride()),std::to_string(NumSplit),"info_"+shellParam->getName());//初始化规则分区算子
                     HadInit.insert(regularSplit->getId());
                 }
@@ -260,9 +260,9 @@ void dacppTranslator::Rewriter::rewriteDac_Multiple() {
             for(int NumSplit = 0; NumSplit < shellParam->getNumSplit(); NumSplit++){
                 if(shellParam->getSplit(NumSplit)->getId() == "void") { continue;}
                 Split* split = shellParam->getSplit(NumSplit);
-                add2Op += UNIVERSAL_TEMPLATE::CodeGen_AddOp2Ops(split->getId(),std::to_string(NumSplit),shellParam->getName()+"_Ops");//将算子添加到他作用的参数中去
+                add2Op += MULTIPLE_TEMPLATE::CodeGen_AddOp2Ops(split->getId(),std::to_string(NumSplit),shellParam->getName()+"_Ops");//将算子添加到他作用的参数中去
             }
-            dataOpsInit += UNIVERSAL_TEMPLATE::CodeGen_DataOpsInit2(shellParam->getName()+"_Ops",add2Op);
+            dataOpsInit += MULTIPLE_TEMPLATE::CodeGen_DataOpsInit2(shellParam->getName()+"_Ops",add2Op);
             add2Op = "";
         }
 
@@ -289,8 +289,8 @@ void dacppTranslator::Rewriter::rewriteDac_Multiple() {
                     if(setOut.count(set) == 1) {
                         continue;
                     }
-                    add2Op_outops += UNIVERSAL_TEMPLATE::CodeGen_AddOp2Ops(split->getId(),std::to_string(outflag),"Out_Ops");//将算子添加到输出算子组中去
-                    add2Op_reductions += UNIVERSAL_TEMPLATE::CodeGen_AddOp2Ops(split->getId(),std::to_string(outflag),shellParam->getName()+"Reduction_Ops");//将算子添加到归约算子组中去
+                    add2Op_outops += MULTIPLE_TEMPLATE::CodeGen_AddOp2Ops(split->getId(),std::to_string(outflag),"Out_Ops");//将算子添加到输出算子组中去
+                    add2Op_reductions += MULTIPLE_TEMPLATE::CodeGen_AddOp2Ops(split->getId(),std::to_string(outflag),shellParam->getName()+"Reduction_Ops");//将算子添加到归约算子组中去
                     outflag++;
                     setOut.insert(set);
                 }
@@ -302,7 +302,7 @@ void dacppTranslator::Rewriter::rewriteDac_Multiple() {
                     if(setIn.count(set) == 1) {
                         continue;
                     }
-                    add2Op_inops += UNIVERSAL_TEMPLATE::CodeGen_AddOp2Ops(split->getId(),std::to_string(inflag),"In_Ops");//将算子添加到输入算子组中去
+                    add2Op_inops += MULTIPLE_TEMPLATE::CodeGen_AddOp2Ops(split->getId(),std::to_string(inflag),"In_Ops");//将算子添加到输入算子组中去
                     Dac_Op op = Dac_Op(split->getId(),0,inflag);
                     inflag++;
                     // std::cout<<inflag<<std::endl;
@@ -311,13 +311,13 @@ void dacppTranslator::Rewriter::rewriteDac_Multiple() {
                 }
             }
         }
-        std::string dataOpsInit_inops = UNIVERSAL_TEMPLATE::CodeGen_DataOpsInit2("In_Ops",add2Op_inops);
-        std::string dataOpsInit_outops = UNIVERSAL_TEMPLATE::CodeGen_DataOpsInit2("Out_Ops",add2Op_outops);
+        std::string dataOpsInit_inops = MULTIPLE_TEMPLATE::CodeGen_DataOpsInit2("In_Ops",add2Op_inops);
+        std::string dataOpsInit_outops = MULTIPLE_TEMPLATE::CodeGen_DataOpsInit2("Out_Ops",add2Op_outops);
         std::string dataOpsInit_reductions = "";
         for(int NumShellParam = 0; NumShellParam < shell->getNumShellParams(); NumShellParam++){
             ShellParam* shellParam = shell->getShellParam(NumShellParam);
             if(shellParam->getRw() == 1){
-                dataOpsInit_reductions += UNIVERSAL_TEMPLATE::CodeGen_DataOpsInit2(shellParam->getName()+"Reduction_Ops",add2Op_reductions);
+                dataOpsInit_reductions += MULTIPLE_TEMPLATE::CodeGen_DataOpsInit2(shellParam->getName()+"Reduction_Ops",add2Op_reductions);
             }
         }
         // std::cout << dataOpsInit_inops;
@@ -329,11 +329,11 @@ void dacppTranslator::Rewriter::rewriteDac_Multiple() {
         for(int NumShellParam = 0; NumShellParam < shell->getNumShellParams(); NumShellParam++){
             ShellParam* shellParam = shell->getShellParam(NumShellParam);
             if(shellParam->getRw() == 1){
-                divice_memory += UNIVERSAL_TEMPLATE::CodeGen_DeviceMemSizeGenerate(shellParam->getName()+"_Size","In_Ops","Out_Ops","info_"+shellParam->getName());
-                divice_memory += UNIVERSAL_TEMPLATE::CodeGen_DeviceMemSizeGenerate(shellParam->getName()+"Reduction_Size","info_"+shellParam->getName(),shellParam->getName()+"Reduction_Ops");
+                divice_memory += MULTIPLE_TEMPLATE::CodeGen_DeviceMemSizeGenerate(shellParam->getName()+"_Size","In_Ops","Out_Ops","info_"+shellParam->getName());
+                divice_memory += MULTIPLE_TEMPLATE::CodeGen_DeviceMemSizeGenerate(shellParam->getName()+"Reduction_Size","info_"+shellParam->getName(),shellParam->getName()+"Reduction_Ops");
             }
             else{
-                divice_memory += UNIVERSAL_TEMPLATE::CodeGen_DeviceMemSizeGenerate(shellParam->getName()+"_Size","info_"+shellParam->getName(),shellParam->getName()+"_Ops");
+                divice_memory += MULTIPLE_TEMPLATE::CodeGen_DeviceMemSizeGenerate(shellParam->getName()+"_Size","info_"+shellParam->getName(),shellParam->getName()+"_Ops");
             }
         }
         // std::cout << divice_memory;
@@ -343,10 +343,10 @@ void dacppTranslator::Rewriter::rewriteDac_Multiple() {
         for(int NumShellParam = 0; NumShellParam < shell->getNumShellParams(); NumShellParam++){
             ShellParam* shellParam = shell->getShellParam(NumShellParam);
             if(shellParam->getRw() == 1){
-               splitLength += UNIVERSAL_TEMPLATE::CodeGen_Init_Split_Length("In_Ops",shellParam->getName()+"_Size");
+               splitLength += MULTIPLE_TEMPLATE::CodeGen_Init_Split_Length("In_Ops",shellParam->getName()+"_Size");
             }
             else{
-                splitLength += UNIVERSAL_TEMPLATE::CodeGen_Init_Split_Length(shellParam->getName()+"_Ops",shellParam->getName()+"_Size");
+                splitLength += MULTIPLE_TEMPLATE::CodeGen_Init_Split_Length(shellParam->getName()+"_Ops",shellParam->getName()+"_Size");
             }
         }
         // std::cout << splitLength;
@@ -356,30 +356,30 @@ void dacppTranslator::Rewriter::rewriteDac_Multiple() {
         for(int NumShellParam = 0; NumShellParam < shell->getNumShellParams(); NumShellParam++){
             ShellParam* shellParam = shell->getShellParam(NumShellParam);
             if(shellParam->getRw() == 1){
-                AddDacOps2Vector += UNIVERSAL_TEMPLATE::CodeGen_Add_DacOps2Vector("ops_s","In_Ops");
+                AddDacOps2Vector += MULTIPLE_TEMPLATE::CodeGen_Add_DacOps2Vector("ops_s","In_Ops");
             }
             else{
-                AddDacOps2Vector += UNIVERSAL_TEMPLATE::CodeGen_Add_DacOps2Vector("ops_s",shellParam->getName()+"_Ops");
+                AddDacOps2Vector += MULTIPLE_TEMPLATE::CodeGen_Add_DacOps2Vector("ops_s",shellParam->getName()+"_Ops");
             }
         }
-        std::string DeclareDacOpsVector = UNIVERSAL_TEMPLATE::CodeGen_Declare_DacOps_Vector("ops_s",AddDacOps2Vector);
+        std::string DeclareDacOpsVector = MULTIPLE_TEMPLATE::CodeGen_Declare_DacOps_Vector("ops_s",AddDacOps2Vector);
         // std::cout << std::to_string(shell->getNumShellParams()) << std::to_string(inflag) << std::endl;
-        std::string InitSplitLengthMatrix = UNIVERSAL_TEMPLATE::CodeGen_Init_Split_Length_Matrix(DeclareDacOpsVector,std::to_string(shell->getNumShellParams()),std::to_string(inflag),"ops_s");
+        std::string InitSplitLengthMatrix = MULTIPLE_TEMPLATE::CodeGen_Init_Split_Length_Matrix(DeclareDacOpsVector,std::to_string(shell->getNumShellParams()),std::to_string(inflag),"ops_s");
 
         //计算工作分配数量
-        std::string item_number = UNIVERSAL_TEMPLATE::CodeGen_Init_Work_Item_Number("Item_Size","In_Ops");
+        std::string item_number = MULTIPLE_TEMPLATE::CodeGen_Init_Work_Item_Number("Item_Size","In_Ops");
         // std::cout << item_number;
 
         std::string InitOPS =  dataOpsInit + dataOpsInit_inops + dataOpsInit_outops + dataOpsInit_reductions;
 
             //生成归约中Split_size中的大小
-        std::string Init_Reduction_Split_Size = UNIVERSAL_TEMPLATE::CodeGen_Init_Reduction_Split_Size("Reduction_Split_Size","In_Ops","Out_Ops");
+        std::string Init_Reduction_Split_Size = MULTIPLE_TEMPLATE::CodeGen_Init_Reduction_Split_Size("Reduction_Split_Size","In_Ops","Out_Ops");
         //std::cout << Init_Reduction_Split_Size;
 
         //生成归约中Split_length大小
-        std::string Init_Reduction_Split_Length = UNIVERSAL_TEMPLATE::CodeGen_Init_Reduction_Split_Length("Reduction_Split_Length","Out_Ops");
+        std::string Init_Reduction_Split_Length = MULTIPLE_TEMPLATE::CodeGen_Init_Reduction_Split_Length("Reduction_Split_Length","Out_Ops");
 
-        std::string ParameterGenerate = UNIVERSAL_TEMPLATE::CodeGen_ParameterGenerate(InitOPS,divice_memory,splitLength,InitSplitLengthMatrix,item_number,Init_Reduction_Split_Size,Init_Reduction_Split_Length); 
+        std::string ParameterGenerate = MULTIPLE_TEMPLATE::CodeGen_ParameterGenerate(InitOPS,divice_memory,splitLength,InitSplitLengthMatrix,item_number,Init_Reduction_Split_Size,Init_Reduction_Split_Length); 
         // std::cout << ParameterGenerate;
         std::string deviceMem = "";
         for(int NumShellParam = 0; NumShellParam < shell->getNumShellParams(); NumShellParam++){
@@ -424,7 +424,7 @@ void dacppTranslator::Rewriter::rewriteDac_Multiple() {
         // std::cout << H2DMemMove;
 
        
-        std::string BindingInit = UNIVERSAL_TEMPLATE::CodeGen_IndexInit2(ops,sets,bindoffset);
+        std::string BindingInit = MULTIPLE_TEMPLATE::CodeGen_IndexInit2(ops,sets,bindoffset);
 
         std::string data_split = "";
         for(int NumShellParam = 0; NumShellParam < shell->getNumShellParams(); NumShellParam++){
@@ -493,9 +493,9 @@ void dacppTranslator::Rewriter::rewriteDac_Multiple() {
             for(int NumSplit = 0; NumSplit < shellParam->getNumSplit(); NumSplit++){
                 if(shellParam->getSplit(NumSplit)->getId() == "void") { continue;}
                 Split* split = shellParam->getSplit(NumSplit);
-                opPushBack += UNIVERSAL_TEMPLATE::CodeGen_OpPushBack2Ops(shellParam->getName(),split->getId(),std::to_string(split->getDimIdx()));
+                opPushBack += MULTIPLE_TEMPLATE::CodeGen_OpPushBack2Ops(shellParam->getName(),split->getId(),std::to_string(split->getDimIdx()));
             }
-            std::string dataOpsInit = UNIVERSAL_TEMPLATE::CodeGen_DataOpsInit(shellParam->getName(),opPushBack);
+            std::string dataOpsInit = MULTIPLE_TEMPLATE::CodeGen_DataOpsInit(shellParam->getName(),opPushBack);
             dataRecon += MULTIPLE_TEMPLATE::CodeGen_DataReconstruct(shellParam->getBasicType(),shellParam->getName(),shellParam->getName()+"_Size",dataOpsInit,shellParam->getRw()==1); 
        }
        dataRecon += data_split;
