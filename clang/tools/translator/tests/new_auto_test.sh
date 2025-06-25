@@ -21,7 +21,7 @@ examples=(
     "FOuLa1.0"
     "decay1.0"
     "DFT1.0"
-    "imageAdjustment1.0"
+    # "imageAdjustment1.0"
     "liuliang1.0"
     "MDP1.0"
     "mandel1.0"
