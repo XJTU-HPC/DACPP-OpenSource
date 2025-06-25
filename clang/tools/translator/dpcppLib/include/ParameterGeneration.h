@@ -4,7 +4,6 @@
 #include <iostream>
 #include <string>
 #include <unordered_set>
-#include "sub_template.h"
 #include "DataReconstructor.h"
 #include "ReconTensor.h"
 
