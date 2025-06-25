@@ -306,8 +306,8 @@ public:
 
         // dacppTranslator::printDacppFileInfo(dacppFile);
         // rewriter->rewriteDac_Usm();
-        //rewriter->rewriteDac_Buffer();
-        rewriter->rewriteDac_Multiple();
+        rewriter->rewriteDac_Buffer();
+        // rewriter->rewriteDac_Multiple();
 
         // rewriter->rewriteMPI();
         rewriter->rewriteMain();

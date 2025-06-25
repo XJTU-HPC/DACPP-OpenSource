@@ -1,48 +1,33 @@
-#include <cmath>
-#include <stdlib.h>
-#include <stdio.h>
-#include <any>
 #include <iostream>
 #include <vector>
-#include <iomanip>
-#include <algorithm>
-#include <fstream>
-#include <queue>
 #include "ReconTensor.h"
 
 namespace dacpp {
     typedef std::vector<std::any> list;
 }
 
-double phi(double x) { return x*x*x+x; }
+using namespace std;
 
-double alpha(double t) { return 0.0; }
-
-double beta(double t) { return 1.0+exp(t); }
-
-double f(double x, double t) { return x*exp(t)-6*x; }
-
-double exact(double x, double t) { return x*(x*x+exp(t)); }
-
-//同样的问题，划分时，一个待计算数据和三个计算数据，一共四个数据要划分到一起
 
 
 
 
 #include <sycl/sycl.hpp>
-#include "DataReconstructor.h"
+#include "DataReconstructor1.h"
 #include "ParameterGeneration.h"
 
 using namespace sycl;
 
-void pde(double* u_kin,double* u_kout,double* r,sycl::accessor<int, 1, sycl::access::mode::read_write> info_u_kin_acc, sycl::accessor<int, 1, sycl::access::mode::read_write> info_u_kout_acc, sycl::accessor<int, 1, sycl::access::mode::read_write> info_r_acc) 
+void matrixMultiply_calc(int* vecA,int* vecB,int* dotProduct,sycl::accessor<int, 1, sycl::access::mode::read_write> info_vecA_acc, sycl::accessor<int, 1, sycl::access::mode::read_write> info_vecB_acc, sycl::accessor<int, 1, sycl::access::mode::read_write> info_dotProduct_acc) 
 {
-    u_kout[0] = r[0] * u_kin[0] + (1 - 2 * r[0]) * u_kin[1] + r[0] * u_kin[2];
+    for (int i = 0; i < 5; i++) {
+        dotProduct[0] += vecA[i] * vecB[i];
+    }
 }
 
 
 // 生成函数调用
-void PDE_pde(const dacpp::Vector<double> & u_kin, dacpp::Vector<double> & u_kout, const dacpp::Vector<double> & r) { 
+void matrixMultiply_shell_matrixMultiply_calc(const dacpp::Matrix<int> & matA, const dacpp::Matrix<int> & matB, dacpp::Matrix<int> & matC) { 
     // 设备选择
     auto selector = default_selector_v;
     queue q(selector);
@@ -51,107 +36,125 @@ void PDE_pde(const dacpp::Vector<double> & u_kin, dacpp::Vector<double> & u_kout
     // 算子初始化
     
     // 数据信息初始化
-    DataInfo info_u_kin;
-    info_u_kin.dim = u_kin.getDim();
-    for(int i = 0; i < info_u_kin.dim; i++) info_u_kin.dimLength.push_back(u_kin.getShape(i));
+    DataInfo info_matA;
+    info_matA.dim = matA.getDim();
+    for(int i = 0; i < info_matA.dim; i++) info_matA.dimLength.push_back(matA.getShape(i));
+	
     // 数据信息初始化
-    DataInfo info_u_kout;
-    info_u_kout.dim = u_kout.getDim();
-    for(int i = 0; i < info_u_kout.dim; i++) info_u_kout.dimLength.push_back(u_kout.getShape(i));
+    DataInfo info_matB;
+    info_matB.dim = matB.getDim();
+    for(int i = 0; i < info_matB.dim; i++) info_matB.dimLength.push_back(matB.getShape(i));
+	
     // 数据信息初始化
-    DataInfo info_r;
-    info_r.dim = r.getDim();
-    for(int i = 0; i < info_r.dim; i++) info_r.dimLength.push_back(r.getShape(i));
-    // 规则分区算子初始化
-    RegularSlice s = RegularSlice("s", 3, 1);
-    s.setDimId(0);
-    s.SetSplitSize(para_gene_tool.init_operetor_splitnumber(s,info_u_kin));
+    DataInfo info_matC;
+    info_matC.dim = matC.getDim();
+    for(int i = 0; i < info_matC.dim; i++) info_matC.dimLength.push_back(matC.getShape(i));
+	
+    // 降维算子初始化
+    Index idx1 = Index("idx1");
+    idx1.setDimId(0);
+    idx1.SetSplitSize(para_gene_tool.init_operetor_splitnumber(idx1,info_matA));
 
     // 降维算子初始化
-    Index i = Index("i");
-    i.setDimId(0);
-    i.SetSplitSize(para_gene_tool.init_operetor_splitnumber(i,info_u_kout));
+    Index idx2 = Index("idx2");
+    idx2.setDimId(1);
+    idx2.SetSplitSize(para_gene_tool.init_operetor_splitnumber(idx2,info_matB));
 
     //参数生成
 	
     // 参数生成 提前计算后面需要用到的参数	
 	
     // 算子组初始化
-    Dac_Ops u_kin_Ops;
+    Dac_Ops matA_Ops;
     
-    s.setDimId(0);
-    u_kin_Ops.push_back(s);
+    idx1.setDimId(0);
+    matA_Ops.push_back(idx1);
 
 
     // 算子组初始化
-    Dac_Ops u_kout_Ops;
+    Dac_Ops matB_Ops;
     
-    i.setDimId(0);
-    u_kout_Ops.push_back(i);
+    idx2.setDimId(1);
+    matB_Ops.push_back(idx2);
 
 
     // 算子组初始化
-    Dac_Ops r_Ops;
+    Dac_Ops matC_Ops;
     
+    idx1.setDimId(0);
+    matC_Ops.push_back(idx1);
+
+    idx2.setDimId(1);
+    matC_Ops.push_back(idx2);
+
 
     // 算子组初始化
     Dac_Ops In_Ops;
     
-    s.setDimId(0);
-    In_Ops.push_back(s);
+    idx1.setDimId(0);
+    In_Ops.push_back(idx1);
+
+    idx2.setDimId(1);
+    In_Ops.push_back(idx2);
 
 
     // 算子组初始化
     Dac_Ops Out_Ops;
     
-    i.setDimId(0);
-    Out_Ops.push_back(i);
+    idx1.setDimId(0);
+    Out_Ops.push_back(idx1);
+
+    idx2.setDimId(1);
+    Out_Ops.push_back(idx2);
 
 
     // 算子组初始化
     Dac_Ops Reduction_Ops;
     
-    i.setDimId(0);
-    Reduction_Ops.push_back(i);
+    idx1.setDimId(0);
+    Reduction_Ops.push_back(idx1);
+
+    idx2.setDimId(1);
+    Reduction_Ops.push_back(idx2);
 
 
 	
     //生成设备内存分配大小
-    int u_kin_Size = para_gene_tool.init_device_memory_size(info_u_kin,u_kin_Ops);
+    int matA_Size = para_gene_tool.init_device_memory_size(info_matA,matA_Ops);
 
     //生成设备内存分配大小
-    int u_kout_Size = para_gene_tool.init_device_memory_size(In_Ops,Out_Ops,info_u_kout);
+    int matB_Size = para_gene_tool.init_device_memory_size(info_matB,matB_Ops);
 
     //生成设备内存分配大小
-    int u_koutReduction_Size = para_gene_tool.init_device_memory_size(info_u_kout,Reduction_Ops);
+    int matC_Size = para_gene_tool.init_device_memory_size(In_Ops,Out_Ops,info_matC);
 
     //生成设备内存分配大小
-    int r_Size = para_gene_tool.init_device_memory_size(info_r,r_Ops);
+    int matCReduction_Size = para_gene_tool.init_device_memory_size(info_matC,Reduction_Ops);
 
 	
     // 计算算子组里面的算子的划分长度
-    para_gene_tool.init_op_split_length(u_kin_Ops,u_kin_Size);
+    para_gene_tool.init_op_split_length(matA_Ops,matA_Size);
 
     // 计算算子组里面的算子的划分长度
-    para_gene_tool.init_op_split_length(In_Ops,u_kout_Size);
+    para_gene_tool.init_op_split_length(matB_Ops,matB_Size);
 
     // 计算算子组里面的算子的划分长度
-    para_gene_tool.init_op_split_length(r_Ops,r_Size);
+    para_gene_tool.init_op_split_length(In_Ops,matC_Size);
 
 	
 	
     std::vector<Dac_Ops> ops_s;
 	
-    ops_s.push_back(u_kin_Ops);
+    ops_s.push_back(matA_Ops);
+
+    ops_s.push_back(matB_Ops);
 
     ops_s.push_back(In_Ops);
 
-    ops_s.push_back(r_Ops);
-
 
 	// 生成划分长度的二维矩阵
-    int SplitLength[3][1] = {0};
-    para_gene_tool.init_split_length_martix(3,1,&SplitLength[0][0],ops_s);
+    int SplitLength[3][2] = {0};
+    para_gene_tool.init_split_length_martix(3,2,&SplitLength[0][0],ops_s);
 
 	
     // 计算工作项的大小
@@ -168,65 +171,79 @@ void PDE_pde(const dacpp::Vector<double> & u_kin, dacpp::Vector<double> & u_kout
 
     // 设备内存分配
     
-    // 设备内存分配
-    double *d_u_kin=malloc_device<double>(u_kin_Size,q);
-    // 设备内存分配
-    double *d_u_kout=malloc_device<double>(u_kout_Size,q);
     // 归约设备内存分配
-    double *reduction_u_kout = malloc_device<double>(u_koutReduction_Size,q);
-    // 设备内存分配
-    double *d_r=malloc_device<double>(r_Size,q);
+    int *reduction_matC = malloc_device<int>(matCReduction_Size,q);
     // 数据关联计算
     
-    
-    // 数据重组
-    DataReconstructor<double> u_kin_tool;
-    double* r_u_kin=(double*)malloc(sizeof(double)*u_kin_Size);
-    
-    // 数据算子组初始化
-    Dac_Ops u_kin_ops;
-    
-    s.setDimId(0);
-    u_kin_ops.push_back(s);
-    u_kin_tool.init(info_u_kin,u_kin_ops);
-    u_kin_tool.Reconstruct(r_u_kin,u_kin);
-	std::vector<int> info_partition_u_kin=para_gene_tool.init_partition_data_shape(info_u_kin,u_kin_ops);
-    sycl::buffer<int> info_partition_u_kin_buffer(info_partition_u_kin.data(), sycl::range<1>(info_partition_u_kin.size()));
-    // 数据重组
-    DataReconstructor<double> u_kout_tool;
-    double* r_u_kout=(double*)malloc(sizeof(double)*u_kout_Size);
-    
-    // 数据算子组初始化
-    Dac_Ops u_kout_ops;
-    
-    i.setDimId(0);
-    u_kout_ops.push_back(i);
-    u_kout_tool.init(info_u_kout,u_kout_ops);
-    u_kout_tool.Reconstruct(r_u_kout,u_kout);
-	std::vector<int> info_partition_u_kout=para_gene_tool.init_partition_data_shape(info_u_kout,u_kout_ops);
-    sycl::buffer<int> info_partition_u_kout_buffer(info_partition_u_kout.data(), sycl::range<1>(info_partition_u_kout.size()));
-    // 数据重组
-    DataReconstructor<double> r_tool;
-    double* r_r=(double*)malloc(sizeof(double)*r_Size);
-    
-    // 数据算子组初始化
-    Dac_Ops r_ops;
-    
-    r_tool.init(info_r,r_ops);
-    r_tool.Reconstruct(r_r,r);
-	std::vector<int> info_partition_r=para_gene_tool.init_partition_data_shape(info_r,r_ops);
-    sycl::buffer<int> info_partition_r_buffer(info_partition_r.data(), sycl::range<1>(info_partition_r.size()));
-    
-    // 设备数据初始化
-    q.memset(d_u_kin,0,u_kin_Size*sizeof(double)).wait();
+	    
+	
+    // 设备内存分配
+    int *d_matA=malloc_device<int>(matA_Size,q);
+    // 设备内存分配
+    int *d_matB=malloc_device<int>(matB_Size,q);
+    // 设备内存分配
+    int *d_matC=malloc_device<int>(matC_Size,q);
     // 数据移动
-    q.memcpy(d_u_kin,r_u_kin,u_kin_Size*sizeof(double)).wait();
-    // 设备数据初始化
-    q.memset(d_u_kout,0,u_kout_Size*sizeof(double)).wait();
-    // 设备数据初始化
-    q.memset(d_r,0,r_Size*sizeof(double)).wait();
+	int* h_matA = (int*)malloc(matA_Size*sizeof(int));
+	matA.tensor2Array(h_matA);
+    q.memcpy(d_matA,h_matA,matA_Size*sizeof(int)).wait();
+
     // 数据移动
-    q.memcpy(d_r,r_r,r_Size*sizeof(double)).wait();
+	int* h_matB = (int*)malloc(matB_Size*sizeof(int));
+	matB.tensor2Array(h_matB);
+    q.memcpy(d_matB,h_matB,matB_Size*sizeof(int)).wait();
+
+    // 数据移动
+	int* h_matC = (int*)malloc(matC_Size*sizeof(int));
+	// matC.tensor2Array(h_matC);
+    q.memset(d_matC, 0, matC_Size*sizeof(int)).wait();
+    // 数据重组
+    DataReconstructor<int> matA_tool;
+    
+    // 数据算子组初始化
+    Dac_Ops matA_ops;
+    
+    idx1.setDimId(0);
+    matA_ops.push_back(idx1);
+
+    matA_tool.init(info_matA,matA_ops);
+	int *r_matA=malloc_device<int>(matA_Size,q);
+    matA_tool.Reconstruct(r_matA,d_matA,q);
+	std::vector<int> info_partition_matA=para_gene_tool.init_partition_data_shape(info_matA,matA_ops);
+    sycl::buffer<int> info_partition_matA_buffer(info_partition_matA.data(), sycl::range<1>(info_partition_matA.size()));
+
+    // 数据重组
+    DataReconstructor<int> matB_tool;
+    
+    // 数据算子组初始化
+    Dac_Ops matB_ops;
+    
+    idx2.setDimId(1);
+    matB_ops.push_back(idx2);
+
+    matB_tool.init(info_matB,matB_ops);
+	int *r_matB=malloc_device<int>(matB_Size,q);
+    matB_tool.Reconstruct(r_matB,d_matB,q);
+	std::vector<int> info_partition_matB=para_gene_tool.init_partition_data_shape(info_matB,matB_ops);
+    sycl::buffer<int> info_partition_matB_buffer(info_partition_matB.data(), sycl::range<1>(info_partition_matB.size()));
+
+    // 数据重组
+    DataReconstructor<int> matC_tool;
+    
+    // 数据算子组初始化
+    Dac_Ops matC_ops;
+    
+    idx1.setDimId(0);
+    matC_ops.push_back(idx1);
+    idx2.setDimId(1);
+    matC_ops.push_back(idx2);
+
+    matC_tool.init(info_matC,matC_ops);
+	int *r_matC=malloc_device<int>(matC_Size,q);
+    matC_tool.Reconstruct(r_matC,d_matC,q);
+	std::vector<int> info_partition_matC=para_gene_tool.init_partition_data_shape(info_matC,matC_ops);
+    sycl::buffer<int> info_partition_matC_buffer(info_partition_matC.data(), sycl::range<1>(info_partition_matC.size()));
+
 	
     sycl::device device = q.get_device();
     int max_global_size = device.get_info<sycl::info::device::max_work_item_sizes<3>>()[2];
@@ -238,20 +255,23 @@ void PDE_pde(const dacpp::Vector<double> & u_kin, dacpp::Vector<double> & u_kout
     q.submit([&](handler &h) {
         // 访问器初始化
         
-        auto info_partition_u_kin_accessor = info_partition_u_kin_buffer.get_access<sycl::access::mode::read_write>(h);
-        auto info_partition_u_kout_accessor = info_partition_u_kout_buffer.get_access<sycl::access::mode::read_write>(h);
-        auto info_partition_r_accessor = info_partition_r_buffer.get_access<sycl::access::mode::read_write>(h);
+        auto info_partition_matA_accessor = info_partition_matA_buffer.get_access<sycl::access::mode::read_write>(h);
+
+        auto info_partition_matB_accessor = info_partition_matB_buffer.get_access<sycl::access::mode::read_write>(h);
+
+        auto info_partition_matC_accessor = info_partition_matC_buffer.get_access<sycl::access::mode::read_write>(h);
+
         h.parallel_for(sycl::nd_range<3>(global, local),[=](sycl::nd_item<3> item) {
             const auto item_id = item.get_group(2)*item.get_local_range(2)+item.get_local_id(2);
-            if(item_id > Item_Size)
+            if(item_id >= Item_Size)
                 return;
             // 索引初始化
 			
-            const auto i_=(item_id+(0))%i.split_size;
-            const auto s_=(item_id+(0))%s.split_size;
+            const auto idx1_=(item_id/idx2.split_size+(0))%idx1.split_size;
+            const auto idx2_=(item_id+(0))%idx2.split_size;
             // 嵌入计算
 			
-            pde(d_u_kin+(s_*SplitLength[0][0]),d_u_kout+(s_*SplitLength[1][0]),d_r,info_partition_u_kin_accessor,info_partition_u_kout_accessor,info_partition_r_accessor);
+            matrixMultiply_calc(r_matA+(idx1_*SplitLength[0][0]),r_matB+(idx2_*SplitLength[1][0]),r_matC+(idx1_*SplitLength[2][0]+idx2_*SplitLength[2][1]),info_partition_matA_accessor,info_partition_matB_accessor,info_partition_matC_accessor);
         });
     }).wait();
     
@@ -260,117 +280,49 @@ void PDE_pde(const dacpp::Vector<double> & u_kin, dacpp::Vector<double> & u_kout
     // 归约
     if(Reduction_Split_Size > 1)
     {
-        for(int i=0;i<u_koutReduction_Size;i++) {
+        for(int i=0;i<matCReduction_Size;i++) {
             q.submit([&](handler &h) {
     	        h.parallel_for(
                 range<1>(Reduction_Split_Size),
-                reduction(reduction_u_kout+i, 
+                reduction(reduction_matC+i, 
                 sycl::plus<>(),
                 property::reduction::initialize_to_identity()),
                 [=](id<1> idx,auto &reducer) {
-                    reducer.combine(d_u_kout[(i/Reduction_Split_Length)*Reduction_Split_Length*Reduction_Split_Size+i%Reduction_Split_Length+idx*Reduction_Split_Length]);
+                    reducer.combine(r_matC[(i/Reduction_Split_Length)*Reduction_Split_Length*Reduction_Split_Size+i%Reduction_Split_Length+idx*Reduction_Split_Length]);
      	        });
          }).wait();
         }
-        q.memcpy(d_u_kout,reduction_u_kout, u_koutReduction_Size*sizeof(double)).wait();
+        q.memcpy(r_matC,reduction_matC, matCReduction_Size*sizeof(int)).wait();
     }
 
 
-	
     // 归并结果返回
-    q.memcpy(r_u_kout, d_u_kout, u_kout_Size*sizeof(double)).wait();
-    u_kout_tool.UpdateData(r_u_kout,u_kout);
+    matC_tool.UpdateData(r_matC,d_matC,q);
+	q.memcpy(h_matC,d_matC, matC_Size*sizeof(int)).wait();
+	matC.array2Tensor(h_matC);
+
+	
 
     // 内存释放
     
-    sycl::free(d_u_kin, q);
-    sycl::free(d_u_kout, q);
-    sycl::free(d_r, q);
+    sycl::free(d_matA, q);
+    sycl::free(d_matB, q);
+    sycl::free(d_matC, q);
 }
 
 int main() {
-    int n = 100; //时间域n等分
-    int m = 100; //空间域m等分
-    double r = 0.25;
-    double a = 1.0;
-    double h = 1.0 / m; //空间步长
-    double tau = 1.0 / n; //时间步长
-    double *x,*t,**u;
-    
-    //r=a*tau/(h*h);  //网比
-    //printf("r=%.4f.\n",r);
-    
-    x = (double*)malloc(sizeof(double)*(m+1));
-    for (int i=0;i<=m;i++) {
-        x[i]=i*h;
-    }
-    t = (double*)malloc(sizeof(double)*(n+1));
-    for (int i = 0; i <= n; i++) {
-        t[i]=i*tau;
-    }
-    u = (double**)malloc(sizeof(double*)*(m+1));
-    for (int i=0;i<=m;i++) {
-        u[i]=(double*)malloc(sizeof(double)*(n+1));
-    }
-    for (int i = 0; i <= m; i++)
-        u[i][0]=phi(x[i]);
-    for (int i = 1; i <= n; i++) {
-        u[0][i]=alpha(t[i]);
-        u[m][i]=beta(t[i]);
-    }
-    
-    // Flatten the 2D u array into a 1D vector for Tensor creation
-    std::vector<double> u_flat;
-    for (int i = 0; i <= m; ++i) {
-        for (int j = 0; j <= n; ++j) {
-            u_flat.push_back(static_cast<double>(u[i][j]));  // Cast if needed
-        }
-    }
+    // 初始化两个矩阵 A 和 B
+    std::vector<int> dataA{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20};
+    dacpp::Matrix<int> matA({4, 5}, dataA);
 
-    dacpp::Matrix<double> u_tensor({m+1, n+1}, u_flat);
+    std::vector<int> dataB{1, 5, 9, 13, 17, 2, 6, 10, 14, 18, 3, 7, 11, 15, 19, 4, 8, 12, 16, 20};
+    dacpp::Matrix<int> matB({5, 4}, dataB);
 
-    for (int k = 0; k < n; k++) {
-        dacpp::Vector<double> middle_tensor = u_tensor[{1,m}][k+1];
-        std::vector<double> r_data;
-        r_data.push_back(r);
-        dacpp::Vector<double> R(r_data);
-        dacpp::Vector<double> u_test1 = u_tensor[{}][k];
-        PDE_pde(u_test1, middle_tensor, R);
-        
-        //计算完毕后，替换第1到4个点
-        for (int i = 1; i <= m-1; i++) {
-            u_tensor[i][k+1] = middle_tensor[i-1];
-        }
+    std::vector<int> dataC{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16};
+    dacpp::Matrix<int> matC({4, 4}, dataC);
 
-    }
-
-    // 每个位置需要下，左下，右下，三个位置的元素，串行中从下往上，从左往右遍历计算
-    // 那么每一行的元素计算是互不相关的，可以并行执行，所有的行从下往上串行执行
-    u_tensor[1].print();
-    // double* data = new double[6 * 101];
-    // u_tensor.tensor2Array(data);
-
-    // // 将一维数组转换为二维 vector
-    // std::vector<std::vector<double>> vec2D;
-    // vec2D.resize(6, std::vector<double>(101));
-
-    // // 将一维数组的数据填充到二维数组中
-    // for (int i = 0; i < 6; ++i) {
-    //     for (int j = 0; j < 101; ++j) {
-    //         vec2D[i][j] = data[i * 101 + j];
-    //     }
-    // }
-
-
-    // int j = int(0.2 / tau);
-    // int number = int(0.4 / h);
-    // for (int k = j; k <= n; k = k + j) {
-    //     printf("(x,t)=(%.1f,%.1f), y=%.2f, exact=%.3f, err=%.3e.\n",x[number],t[k],vec2D[number][k],exact(x[number],t[k]),std::fabs(vec2D[number][k]-exact(x[number],t[k])));
-    // }
-    // for (int k = j; k <= n; k = k + j) {
-    //     printf("(x,t)=(%.1f,%.1f), y=%.2f, exact=%.3f.\n",x[number],t[k],vec2D[number][k],exact(x[number],t[k]));
-    // }
-
+    matrixMultiply_shell_matrixMultiply_calc(matA, matB, matC);
+    matC.print();
 
     return 0;
 }
