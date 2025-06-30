@@ -148,47 +148,72 @@ class DataReconstructor{
         /*
             将重组结果写入res长向量。
         */
-        void Reconstruct(ImplType* res, ImplType* myTensor, sycl::queue& q){
+        // void Reconstruct(ImplType* res, ImplType* myTensor, sycl::queue& q){
+        //     sycl::device device = q.get_device();
+        //     int max_global_size = device.get_info<sycl::info::device::max_work_item_sizes<3>>()[2];
+        //     if(this->posNumberList.size() < max_global_size){
+        //         sycl::range<3> local(1, 1, this->posNumberList.size());
+        //         sycl::range<3> global(1, 1, 1);
+        //         q.submit([&](handler &h) {
+
+        //             auto myIdxAccessor = myIdxBuffer.get_access<sycl::access::mode::write>(h);
+        //             auto range = this->myIdxBuffer.get_range();
+
+        //             sycl::stream out(1024, 256, h);
+        //             h.parallel_for(sycl::nd_range<3>(global * local, local),[=](sycl::nd_item<3> item) {
+        //                 const auto item_id = item.get_local_id(2);
+                    
+        //                     res[item_id]=myTensor[myIdxAccessor[item_id]];
+        //             });
+        //         }).wait();
+        //     }else{
+        //         int have_done = 0;
+        //         while(have_done < this->posNumberList.size()){
+
+        //             int now_size = std::min(max_global_size, (int)this->posNumberList.size()-have_done);
+        //             // printf("now_size: %d\n", now_size);
+        //             // printf("have_done: %d\n", have_done);
+        //             // printf("this->posNumberList.size(): %d\n", this->posNumberList.size());
+        //             sycl::range<3> local(1, 1, now_size);
+        //             sycl::range<3> global(1, 1, 1);
+        //             q.submit([&](handler &h) {
+        //                 auto myIdxAccessor = myIdxBuffer.get_access<sycl::access::mode::write>(h);
+        //                 auto range = this->myIdxBuffer.get_range();
+        //                 sycl::stream out(1024, 256, h);
+        //                 h.parallel_for(sycl::nd_range<3>(global * local, local),[=](sycl::nd_item<3> item) {
+        //                     const auto item_id = item.get_local_id(2);
+        //                     res[have_done+item_id]=myTensor[myIdxAccessor[have_done+item_id]];
+        //                 });
+        //             }).wait();
+        //             have_done += now_size;
+        //         }
+        //     }
+        // }
+
+        //重写Reconstruct函数支持USM 之前的可能有问题因为多卡过不了
+        void Reconstruct(ImplType* res, ImplType* myTensor, sycl::queue& q)
+        {
+            // int cnt=0;
+            // for (int i=0; i<this->posNumberList.size(); i++) {
+            //     this->WriteRes(cnt, res,this->posNumberList[i].pos,myTensor);
+            // }
+            int Item_Size = this->posNumberList.size();
             sycl::device device = q.get_device();
             int max_global_size = device.get_info<sycl::info::device::max_work_item_sizes<3>>()[2];
-            if(this->posNumberList.size() < max_global_size){
-                sycl::range<3> local(1, 1, this->posNumberList.size());
-                sycl::range<3> global(1, 1, 1);
-                q.submit([&](handler &h) {
-
-                    auto myIdxAccessor = myIdxBuffer.get_access<sycl::access::mode::write>(h);
-                    auto range = this->myIdxBuffer.get_range();
-
-                    sycl::stream out(1024, 256, h);
-                    h.parallel_for(sycl::nd_range<3>(global * local, local),[=](sycl::nd_item<3> item) {
-                        const auto item_id = item.get_local_id(2);
-                    
-                            res[item_id]=myTensor[myIdxAccessor[item_id]];
-                    });
-                }).wait();
-            }else{
-                int have_done = 0;
-                while(have_done < this->posNumberList.size()){
-
-                    int now_size = std::min(max_global_size, (int)this->posNumberList.size()-have_done);
-                    // printf("now_size: %d\n", now_size);
-                    // printf("have_done: %d\n", have_done);
-                    // printf("this->posNumberList.size(): %d\n", this->posNumberList.size());
-                    sycl::range<3> local(1, 1, now_size);
-                    sycl::range<3> global(1, 1, 1);
-                    q.submit([&](handler &h) {
-                        auto myIdxAccessor = myIdxBuffer.get_access<sycl::access::mode::write>(h);
-                        auto range = this->myIdxBuffer.get_range();
-                        sycl::stream out(1024, 256, h);
-                        h.parallel_for(sycl::nd_range<3>(global * local, local),[=](sycl::nd_item<3> item) {
-                            const auto item_id = item.get_local_id(2);
-                            res[have_done+item_id]=myTensor[myIdxAccessor[have_done+item_id]];
-                        });
-                    }).wait();
-                    have_done += now_size;
-                }
-            }
+            int work_group_size = (Item_Size + max_global_size - 1) / max_global_size;  // 计算所需的工作组数量
+            sycl::range<3> local(1, 1, std::min(Item_Size, max_global_size));
+            sycl::range<3> global(1, 1, (Item_Size <= max_global_size) ? Item_Size : work_group_size * max_global_size);
+            q.submit([&](handler &h) {
+                auto myIdxAccessor = myIdxBuffer.get_access<sycl::access::mode::write>(h);
+                h.parallel_for(sycl::nd_range<3>(global, local),[=](sycl::nd_item<3> item) {
+                    const auto item_id = item.get_group(2)*item.get_local_range(2)+item.get_local_id(2);
+                    if(item_id >= Item_Size)
+                        return;
+                    res[item_id]=myTensor[myIdxAccessor[item_id]];
+                });
+            }).wait();
         }
+
         //重载Reconstruct函数支持buffer
         void Reconstruct(sycl::buffer<ImplType>& r_buf, sycl::buffer<ImplType>& b_buf, sycl::queue& q){
             // int cnt=0;
@@ -205,7 +230,7 @@ class DataReconstructor{
                 auto myIdxAccessor = myIdxBuffer.get_access<sycl::access::mode::write>(h);
                 auto res = r_buf.template get_access<sycl::access::mode::read_write>(h);
                 auto myTensor = b_buf.template get_access<sycl::access::mode::read_write>(h);
-                h.parallel_for(sycl::nd_range<3>(global * local, local),[=](sycl::nd_item<3> item) {
+                h.parallel_for(sycl::nd_range<3>(global, local),[=](sycl::nd_item<3> item) {
                     const auto item_id = item.get_group(2)*item.get_local_range(2)+item.get_local_id(2);
                     if(item_id >= Item_Size)
                         return;
@@ -217,45 +242,69 @@ class DataReconstructor{
         /*
             用重组结果更新原数据
         */
-        void UpdateData(ImplType* res, ImplType* myTensor, sycl::queue& q){
+        // void UpdateData(ImplType* res, ImplType* myTensor, sycl::queue& q){
+        //     // int cnt=0;
+        //     // for (int i=0; i<this->posNumberList.size(); i++) {
+        //     //     this->WriteData(cnt,res,this->posNumberList[i].pos,myTensor);
+        //     // }
+        //     sycl::device device = q.get_device();
+        //     int max_global_size = device.get_info<sycl::info::device::max_work_item_sizes<3>>()[2];
+        //     if(this->posNumberList.size() < max_global_size){
+        //         sycl::range<3> local(1, 1, this->posNumberList.size());
+        //         sycl::range<3> global(1, 1, 1);
+        //         q.submit([&](handler &h) {
+        //             auto myIdxAccessor = myIdxBuffer.get_access<sycl::access::mode::write>(h);
+        //             h.parallel_for(sycl::nd_range<3>(global * local, local),[=](sycl::nd_item<3> item) {
+        //                 const auto item_id = item.get_local_id(2);
+        //                 myTensor[myIdxAccessor[item_id]] = res[item_id];
+        //             });
+        //         }).wait();
+        //     }else{
+        //         int have_done = 0;
+        //         while(have_done < this->posNumberList.size()){
+        //             int now_size = std::min(max_global_size, (int)this->posNumberList.size()-have_done);
+        //             // printf("now_size: %d\n", now_size);
+        //             // printf("have_done: %d\n", have_done);
+        //             // printf("this->posNumberList.size(): %d\n", this->posNumberList.size());
+        //             sycl::range<3> local(1, 1, now_size);
+        //             sycl::range<3> global(1, 1, 1);
+        //             q.submit([&](handler &h) {
+        //                 auto myIdxAccessor = myIdxBuffer.get_access<sycl::access::mode::write>(h);
+        //                 h.parallel_for(sycl::nd_range<3>(global * local, local),[=](sycl::nd_item<3> item) {
+        //                     const auto item_id = item.get_local_id(2);
+        //                     myTensor[myIdxAccessor[have_done+item_id]] = res[have_done+item_id];
+        //                 });
+        //             }).wait();
+        //             have_done += now_size;
+        //         }
+        //     }
+        // }
+        
+        //USM版本的数据逆重组
+        void UpdateData(ImplType* res, ImplType* myTensor, sycl::queue& q)
+        {
             // int cnt=0;
             // for (int i=0; i<this->posNumberList.size(); i++) {
             //     this->WriteData(cnt,res,this->posNumberList[i].pos,myTensor);
             // }
+            int Item_Size = this->posNumberList.size();
             sycl::device device = q.get_device();
             int max_global_size = device.get_info<sycl::info::device::max_work_item_sizes<3>>()[2];
-            if(this->posNumberList.size() < max_global_size){
-                sycl::range<3> local(1, 1, this->posNumberList.size());
-                sycl::range<3> global(1, 1, 1);
-                q.submit([&](handler &h) {
-                    auto myIdxAccessor = myIdxBuffer.get_access<sycl::access::mode::write>(h);
-                    h.parallel_for(sycl::nd_range<3>(global * local, local),[=](sycl::nd_item<3> item) {
-                        const auto item_id = item.get_local_id(2);
-                        myTensor[myIdxAccessor[item_id]] = res[item_id];
-                    });
-                }).wait();
-            }else{
-                int have_done = 0;
-                while(have_done < this->posNumberList.size()){
-                    int now_size = std::min(max_global_size, (int)this->posNumberList.size()-have_done);
-                    // printf("now_size: %d\n", now_size);
-                    // printf("have_done: %d\n", have_done);
-                    // printf("this->posNumberList.size(): %d\n", this->posNumberList.size());
-                    sycl::range<3> local(1, 1, now_size);
-                    sycl::range<3> global(1, 1, 1);
-                    q.submit([&](handler &h) {
-                        auto myIdxAccessor = myIdxBuffer.get_access<sycl::access::mode::write>(h);
-                        h.parallel_for(sycl::nd_range<3>(global * local, local),[=](sycl::nd_item<3> item) {
-                            const auto item_id = item.get_local_id(2);
-                            myTensor[myIdxAccessor[have_done+item_id]] = res[have_done+item_id];
-                        });
-                    }).wait();
-                    have_done += now_size;
-                }
-            }
+            int work_group_size = (Item_Size + max_global_size - 1) / max_global_size;  // 计算所需的工作组数量
+            sycl::range<3> local(1, 1, std::min(Item_Size, max_global_size));
+            sycl::range<3> global(1, 1, (Item_Size <= max_global_size) ? Item_Size : work_group_size * max_global_size);
+            q.submit([&](handler &h) {
+                auto myIdxAccessor = myIdxBuffer.get_access<sycl::access::mode::write>(h);
+                h.parallel_for(sycl::nd_range<3>(global, local),[=](sycl::nd_item<3> item) {
+                    const auto item_id = item.get_group(2)*item.get_local_range(2)+item.get_local_id(2);
+                    if(item_id >= Item_Size)
+                        return;
+                    myTensor[myIdxAccessor[item_id]] = res[item_id];
+                });
+            }).wait();
         }
         
-        
+        //Buffer版本的数据逆重组
         void UpdateData(sycl::buffer<ImplType>& r_buf, sycl::buffer<ImplType>& b_buf, sycl::queue& q){
             // int cnt=0;
             // for (int i=0; i<this->posNumberList.size(); i++) {
@@ -272,7 +321,7 @@ class DataReconstructor{
                 auto res = r_buf.template get_access<sycl::access::mode::read_write>(h);
                 auto myTensor = b_buf.template get_access<sycl::access::mode::read_write>(h);
 
-                h.parallel_for(sycl::nd_range<3>(global * local, local),[=](sycl::nd_item<3> item) {
+                h.parallel_for(sycl::nd_range<3>(global, local),[=](sycl::nd_item<3> item) {
                     const auto item_id = item.get_group(2)*item.get_local_range(2)+item.get_local_id(2);
                     if(item_id >= Item_Size)
                         return;
