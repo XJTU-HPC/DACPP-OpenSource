@@ -422,7 +422,7 @@ std::string CodeGen_OpPushBack2Ops(std::string name, std::string opName, std::st
 
     {{DATA_OPS_INIT}}
     {{NAME}}_tool.init(info_{{NAME}},{{NAME}}_ops);
-    {{TYPE}} recon_h_{{NAME}}[{{NAME}}_Size];
+    {{TYPE}} *recon_h_{{NAME}} = ({{TYPE}}*)malloc({{NAME}}_Size*sizeof({{TYPE}}));
     {{NAME}}.tensor2Array(recon_h_{{NAME}});
     {{TYPE}} *recon_d_{{NAME}}=malloc_device<{{TYPE}}>({{NAME}}_Size,q[0]);
     q[0].memcpy(recon_d_{{NAME}}, recon_h_{{NAME}}, {{NAME}}_Size*sizeof({{TYPE}})).wait();
