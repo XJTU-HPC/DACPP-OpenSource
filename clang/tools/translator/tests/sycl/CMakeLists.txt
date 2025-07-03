@@ -52,7 +52,7 @@ add_executable(syclVectorMul0 vectorMul0.sycl.cpp)
 
 add_executable(DataReconNewTest DataReconNewTest.sycl.cpp)
 add_executable(dataReorder dataReorder.cpp)
-
+add_executable(testUsm testUsm.cpp)
 
 add_executable(wave_dac_forTest wave_dac_for.cpp)
 
@@ -151,6 +151,9 @@ set_target_properties(jac PROPERTIES
 set_target_properties(wave_dac_forTest PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/translator/tests
 )
+set_target_properties(testUsm PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/translator/tests
+)
 target_link_libraries(FOuLadac PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
 target_link_libraries(stencildac PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
 target_link_libraries(stencilStandardSycl PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
@@ -180,3 +183,4 @@ target_link_libraries(syclVectorMul0 PRIVATE ${OpenCL_LIBRARY} sycl DacppLib Rew
 
 target_link_libraries(jac PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
 target_link_libraries(wave_dac_forTest PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
+target_link_libraries(testUsm PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
