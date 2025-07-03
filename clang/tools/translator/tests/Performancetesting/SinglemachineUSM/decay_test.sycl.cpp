@@ -12,7 +12,7 @@ namespace dacpp {
 
 const double dt = 0.1;       // 时间步长
 const double T = 5.0;       // 总时间
-const size_t numIsotopes = 10; // 设定大量同位素（例如，10000个）
+const size_t numIsotopes = 10000; // 设定大量同位素（例如，10000个）
 
 
 // 计算每种同位素在时间 t 的数量
@@ -32,10 +32,16 @@ void decay(double* N0s,double* lambdas,double* local_A,double* t,sycl::accessor<
 void DECAY_decay(const dacpp::Vector<double> & N0s, const dacpp::Vector<double> & lambdas, dacpp::Vector<double> & local_A, const dacpp::Vector<double> & t) { 
     // 设备选择
     auto selector = default_selector_v;
-    queue q(selector);
+    queue q(selector,{property::queue::enable_profiling()});
     //声明参数生成工具
+
     ParameterGeneration para_gene_tool;
     // 算子初始化
+
+    double total_ParameterGeneration = 0, total_kernel = 0, total_memcpy = 0,total_DataReconstruct = 0;
+    event e;
+
+    auto ParameterGeneration_start = std::chrono::high_resolution_clock::now();
     
     // 数据信息初始化
     DataInfo info_N0s;
@@ -162,7 +168,7 @@ void DECAY_decay(const dacpp::Vector<double> & N0s, const dacpp::Vector<double> 
     // 计算工作项的大小
     int Item_Size = para_gene_tool.init_work_item_size(In_Ops);
 
-    std::cout << Item_Size << endl;
+    //std::cout << Item_Size << std::endl;
 
 	
     // 计算归约中split_size的大小
@@ -189,6 +195,14 @@ void DECAY_decay(const dacpp::Vector<double> & N0s, const dacpp::Vector<double> 
     double *d_local_A=malloc_device<double>(local_A_Size,q);
     // 设备内存分配
     double *d_t=malloc_device<double>(t_Size,q);
+
+    auto ParameterGeneration_end = std::chrono::high_resolution_clock::now();
+    total_ParameterGeneration += std::chrono::duration<double>(ParameterGeneration_end - ParameterGeneration_start).count();
+    std::cout << "ParameterGenerationTime: " << total_ParameterGeneration << "s" << std::endl;
+
+
+    auto memcpy_start = std::chrono::high_resolution_clock::now();
+
     // 数据移动
 	double* h_N0s = (double*)malloc(N0s_Size*sizeof(double));
 	N0s.tensor2Array(h_N0s);
@@ -208,6 +222,12 @@ void DECAY_decay(const dacpp::Vector<double> & N0s, const dacpp::Vector<double> 
 	t.tensor2Array(h_t);
     q.memcpy(d_t,h_t,t_Size*sizeof(double)).wait();
 
+    auto memcpy_end = std::chrono::high_resolution_clock::now();
+    total_memcpy += std::chrono::duration<double>(memcpy_end - memcpy_start).count();
+    std::cout << "MemcpyTime: " << total_memcpy << "s" << std::endl;
+
+
+    auto DataReconstruct_start = std::chrono::high_resolution_clock::now();
     // 数据重组
     DataReconstructor<double> N0s_tool;
     
@@ -266,6 +286,10 @@ void DECAY_decay(const dacpp::Vector<double> & N0s, const dacpp::Vector<double> 
 	std::vector<int> info_partition_t=para_gene_tool.init_partition_data_shape(info_t,t_ops);
     sycl::buffer<int> info_partition_t_buffer(info_partition_t.data(), sycl::range<1>(info_partition_t.size()));
 
+    auto DataReconstruct_end = std::chrono::high_resolution_clock::now();
+    total_DataReconstruct += std::chrono::duration<double>(DataReconstruct_end - DataReconstruct_start).count();
+    std::cout << "DataReconstructTime: " << total_DataReconstruct << "s" << std::endl;
+
 	
     sycl::device device = q.get_device();
     int max_global_size = device.get_info<sycl::info::device::max_work_item_sizes<3>>()[2];
@@ -274,7 +298,7 @@ void DECAY_decay(const dacpp::Vector<double> & N0s, const dacpp::Vector<double> 
     sycl::range<3> local(1, 1, std::min(Item_Size, max_global_size)); 
     sycl::range<3> global(1, 1, (Item_Size <= max_global_size) ? Item_Size : work_group_size * max_global_size);
     //队列提交命令组
-    q.submit([&](handler &h) {
+    e = q.submit([&](handler &h) {
         // 访问器初始化
         
         auto info_partition_N0s_accessor = info_partition_N0s_buffer.get_access<sycl::access::mode::read_write>(h);
@@ -296,7 +320,12 @@ void DECAY_decay(const dacpp::Vector<double> & N0s, const dacpp::Vector<double> 
 			
             decay(r_N0s+(i_*SplitLength[0][0]),r_lambdas+(i_*SplitLength[1][0]),r_local_A+(i_*SplitLength[2][0]),r_t,info_partition_N0s_accessor,info_partition_lambdas_accessor,info_partition_local_A_accessor,info_partition_t_accessor);
         });
-    }).wait();
+    });
+    e.wait();
+    auto start_kernel = e.get_profiling_info<info::event_profiling::command_start>();
+    auto end_kernel = e.get_profiling_info<info::event_profiling::command_end>();
+    total_kernel += (end_kernel - start_kernel) / 1e9;
+    std::cout << "total_kernel: " << total_kernel << "s" << std::endl;
     
 
 	
@@ -359,7 +388,10 @@ void calculateDecay(const std::vector<double>& lambdas, const std::vector<double
 }
 
 int main() {
-    
+
+    double total_program = 0;
+    auto program_start = std::chrono::high_resolution_clock::now();
+
     // 随机生成衰变常数和初始数量
     std::vector<double> lambdas(numIsotopes);
     std::vector<double> N0s(numIsotopes, 1000.0);  // 初始数量为1000
@@ -373,6 +405,10 @@ int main() {
     //size_t numOutputSteps = 10; // 输出的时间步数量
 
     calculateDecay(lambdas, N0s, dt, T);
+
+    auto program_end = std::chrono::high_resolution_clock::now();
+    total_program += std::chrono::duration<double>(program_end - program_start).count();
+    std::cout << "total_program: " << total_program << "s" << std::endl;
 
     return 0;
 }

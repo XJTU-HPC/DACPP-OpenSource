@@ -20,10 +20,15 @@ find_package(Threads REQUIRED)
 # 添加源文件
 
 add_executable(decay_s_u decay_test.sycl.cpp)
+add_executable(decay_s_u_st decay_standard_test.cpp)
 
 
 set_target_properties(decay_s_u PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/translator/tests/Performancetesting/SinglemachineUSM
 )
+set_target_properties(decay_s_u_st PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/translator/tests/Performancetesting/SinglemachineUSM
+)
 
 target_link_libraries(decay_s_u PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
+target_link_libraries(decay_s_u_st PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
