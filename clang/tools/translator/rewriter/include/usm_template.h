@@ -52,6 +52,7 @@ namespace USM_TEMPLATE {
     extern const char *SUB_START_INIT_Template;
     extern const char *NEW_DATA_INIT_Template;
     extern const char *REDUCTION_Template_Span;
+    extern const char *REDUCTION_Template_Span1;
     extern const char *D2H_MEM_MOV_3_Template;
     extern const char *D2H_MEM_MOV_4_Template;
     extern const char *MEM_FREE_Template;
@@ -101,6 +102,7 @@ namespace USM_TEMPLATE {
     std::string CodeGen_SubStartInit(std::string name);
     std::string CodeGen_NewDataInit(std::string name, std::string type);
     std::string CodeGen_Reduction_Span(std::string SpanSize, std::string SplitSize, std::string SplitLength, std::string Name, std::string Type, std::string ReductionRule);
+    std::string CodeGen_Reduction_Span1(std::string SpanSize, std::string SplitSize, std::string SplitLength, std::string Name, std::string Type, std::string ReductionRule);
     std::string CodeGen_D2HMemMov(std::string Name, std::string Type, std::string Size, bool isReduction);
     std::string CodeGen_MemFree(std::string Name);
     std::string CodeGen_DeviceDataInit(std::string type, std::string name, std::string size);
