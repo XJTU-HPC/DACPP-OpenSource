@@ -1047,7 +1047,6 @@ const char *D2H_MEM_MOV_3_Template = R"~~~(
 
 const char *D2H_MEM_MOV_4_Template = R"~~~(
     // 归并结果返回
-    {{NAME}}_tool.UpdateData(r_{{NAME}},d_{{NAME}},q);
 	q.memcpy(h_{{NAME}},d_{{NAME}}, {{SIZE}}*sizeof({{TYPE}})).wait();
 	{{NAME}}.array2Tensor(h_{{NAME}});
 )~~~";
