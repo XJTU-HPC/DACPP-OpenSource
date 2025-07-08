@@ -330,8 +330,13 @@ void dacppTranslator::Rewriter::rewriteDac_Usm() {
                     ops.push_back(Inops[Countin]);
                 }
             }
-            DacData data = DacData("r_"+shellParam->getName(), 0, ops);
-            args.push_back(data);
+            if(dacppFile->getBlock()){
+                DacData data = DacData("d_"+shellParam->getName(), 0, ops);
+                args.push_back(data);
+            }else{
+                DacData data = DacData("r_"+shellParam->getName(), 0, ops);
+                args.push_back(data);
+            }
         }
 
 
@@ -415,7 +420,7 @@ void dacppTranslator::Rewriter::rewriteDac_Usm() {
             ShellParam* shellParam = shell->getShellParam(NumShellParam);
             if(shellParam->getRw() == 1){
                 Reduction += USM_TEMPLATE::CodeGen_Reduction_Span(shellParam->getName()+"Reduction_Size","Reduction_Split_Size","Reduction_Split_Length",shellParam->getName(),shellParam->getBasicType(),ReductionRule);
-	            Reduction += USM_TEMPLATE::CodeGen_D2HMemMov(shellParam->getName(),shellParam->getBasicType(),shellParam->getName()+"_Size",false);
+	            Reduction += USM_TEMPLATE::CodeGen_D2HMemMov(shellParam->getName(),shellParam->getBasicType(),shellParam->getName()+"_Size",dacppFile->getBlock());
             }
         }
         // std::cout << Reduction;
