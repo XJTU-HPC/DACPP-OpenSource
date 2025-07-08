@@ -1002,38 +1002,39 @@ std::string CodeGen_Reduction_Span(std::string SpanSize,std::string SplitSize,st
 }
 
 //和上面的区别是这里的是d_name 现在内核中计算使用的是r_name
-// const char *REDUCTION_Template_Span = R"~~~(
-//     // 归约
-//     if({{SPLIT_SIZE}} > 1)
-//     {
-//         for(int i=0;i<{{SPAN_SIZE}};i++) {
-//             q.submit([&](handler &h) {
-//     	        h.parallel_for(
-//                 range<1>({{SPLIT_SIZE}}),
-//                 reduction(reduction_{{NAME}}+i, 
-//                 {{REDUCTION_RULE}},
-//                 property::reduction::initialize_to_identity()),
-//                 [=](id<1> idx,auto &reducer) {
-//                     reducer.combine(d_{{NAME}}[(i/{{SPLIT_LENGTH}})*{{SPLIT_LENGTH}}*{{SPLIT_SIZE}}+i%{{SPLIT_LENGTH}}+idx*{{SPLIT_LENGTH}}]);
-//      	        });
-//          }).wait();
-//         }
-//         q.memcpy(d_{{NAME}},reduction_{{NAME}}, {{SPAN_SIZE}}*sizeof({{TYPE}})).wait();
-//     }
+//dac_for使用这个
+const char *REDUCTION_Template_Span1 = R"~~~(
+    // 归约
+    if({{SPLIT_SIZE}} > 1)
+    {
+        for(int i=0;i<{{SPAN_SIZE}};i++) {
+            q.submit([&](handler &h) {
+    	        h.parallel_for(
+                range<1>({{SPLIT_SIZE}}),
+                reduction(reduction_{{NAME}}+i, 
+                {{REDUCTION_RULE}},
+                property::reduction::initialize_to_identity()),
+                [=](id<1> idx,auto &reducer) {
+                    reducer.combine(d_{{NAME}}[(i/{{SPLIT_LENGTH}})*{{SPLIT_LENGTH}}*{{SPLIT_SIZE}}+i%{{SPLIT_LENGTH}}+idx*{{SPLIT_LENGTH}}]);
+     	        });
+         }).wait();
+        }
+        q.memcpy(d_{{NAME}},reduction_{{NAME}}, {{SPAN_SIZE}}*sizeof({{TYPE}})).wait();
+    }
 
-// )~~~";
+)~~~";
 
-// std::string CodeGen_Reduction_Span(std::string SpanSize,std::string SplitSize,std::string SplitLength,std::string Name,std::string Type,std::string ReductionRule) {
-//     return templateString(REDUCTION_Template_Span,
-// 	{
-//         {"{{SPAN_SIZE}}",        SpanSize},   
-// 		{"{{SPLIT_SIZE}}",       SplitSize},
-// 		{"{{SPLIT_LENGTH}}",     SplitLength},
-// 		{"{{TYPE}}",             Type},
-// 		{"{{NAME}}",             Name},
-// 		{"{{REDUCTION_RULE}}",   ReductionRule}
-// 	});
-// }
+std::string CodeGen_Reduction_Span1(std::string SpanSize,std::string SplitSize,std::string SplitLength,std::string Name,std::string Type,std::string ReductionRule) {
+    return templateString(REDUCTION_Template_Span1,
+	{
+        {"{{SPAN_SIZE}}",        SpanSize},   
+		{"{{SPLIT_SIZE}}",       SplitSize},
+		{"{{SPLIT_LENGTH}}",     SplitLength},
+		{"{{TYPE}}",             Type},
+		{"{{NAME}}",             Name},
+		{"{{REDUCTION_RULE}}",   ReductionRule}
+	});
+}
 
 //设备数据传回主机
 //{{D2H_MEM_MOV}}
