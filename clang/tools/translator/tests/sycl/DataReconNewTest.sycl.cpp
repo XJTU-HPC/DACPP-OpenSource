@@ -9,8 +9,8 @@ namespace dacpp {
     typedef std::vector<std::any> list;
 }
 // 网格参数
-const int NX = 8;    // x方向网格数量
-const int NY = 8;    // y方向网格数量
+const int NX = 32;    // x方向网格数量
+const int NY = 32;    // y方向网格数量
 const double Lx = 10.0f; // x方向长度
 const double Ly = 10.0f; // y方向长度
 const double c = 1.0f;   // 波速
@@ -542,8 +542,8 @@ int main() {
     dacpp::Matrix<double> u_curr_tensor({NX, NY}, u_curr);
     dacpp::Matrix<double> u_prev_tensor({NX, NY}, u_prev);
     dacpp::Matrix<double> u_next_tensor({NX, NY}, u_next);
-    dacpp::Matrix<double> u_prev_middle_tensor = u_prev_tensor[{1,7}][{1,7}];
-    dacpp::Matrix<double> u_next_middle_tensor = u_next_tensor[{1,7}][{1,7}];
+    dacpp::Matrix<double> u_prev_middle_tensor = u_prev_tensor[{1,31}][{1,31}];
+    dacpp::Matrix<double> u_next_middle_tensor = u_next_tensor[{1,31}][{1,31}];
 
     double total_time=0;
     auto start = std::chrono::high_resolution_clock::now();

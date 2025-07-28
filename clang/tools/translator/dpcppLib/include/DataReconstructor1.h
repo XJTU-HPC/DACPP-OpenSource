@@ -37,6 +37,12 @@ struct PosNumber
 /*
     数据重组器类，用于数据重组。
 */
+
+template <typename T> struct ReconstructUSMKernel;//​​不完整声明（前向声明） 告诉编译器存在这样一个结构体 但不包含任何的成员 这是为了解决命名内核冲突的问题
+template <typename T> struct ReconstructBufferKernel;
+template <typename T> struct UpdateDataUSMKernel;
+template <typename T> struct UpdateDataBufferKernel;
+
 template<typename ImplType>
 class DataReconstructor{
     private:
@@ -205,7 +211,8 @@ class DataReconstructor{
             sycl::range<3> global(1, 1, (Item_Size <= max_global_size) ? Item_Size : work_group_size * max_global_size);
             q.submit([&](handler &h) {
                 auto myIdxAccessor = myIdxBuffer.get_access<sycl::access::mode::write>(h);
-                h.parallel_for(sycl::nd_range<3>(global, local),[=](sycl::nd_item<3> item) {
+                //h.parallel_for<class MyKernel1>(sycl::nd_range<3>(global, local),[=](sycl::nd_item<3> item) {
+                h.parallel_for<ReconstructUSMKernel<ImplType>>(sycl::nd_range<3>(global, local),[=](sycl::nd_item<3> item) {
                     const auto item_id = item.get_group(2)*item.get_local_range(2)+item.get_local_id(2);
                     if(item_id >= Item_Size)
                         return;
@@ -230,7 +237,8 @@ class DataReconstructor{
                 auto myIdxAccessor = myIdxBuffer.get_access<sycl::access::mode::write>(h);
                 auto res = r_buf.template get_access<sycl::access::mode::read_write>(h);
                 auto myTensor = b_buf.template get_access<sycl::access::mode::read_write>(h);
-                h.parallel_for(sycl::nd_range<3>(global, local),[=](sycl::nd_item<3> item) {
+                //h.parallel_for<class MyKernel2>(sycl::nd_range<3>(global, local),[=](sycl::nd_item<3> item) {
+                h.parallel_for<ReconstructBufferKernel<ImplType>>(sycl::nd_range<3>(global, local),[=](sycl::nd_item<3> item) {
                     const auto item_id = item.get_group(2)*item.get_local_range(2)+item.get_local_id(2);
                     if(item_id >= Item_Size)
                         return;
@@ -295,7 +303,8 @@ class DataReconstructor{
             sycl::range<3> global(1, 1, (Item_Size <= max_global_size) ? Item_Size : work_group_size * max_global_size);
             q.submit([&](handler &h) {
                 auto myIdxAccessor = myIdxBuffer.get_access<sycl::access::mode::write>(h);
-                h.parallel_for(sycl::nd_range<3>(global, local),[=](sycl::nd_item<3> item) {
+                //h.parallel_for<class MyKernel3>(sycl::nd_range<3>(global, local),[=](sycl::nd_item<3> item) {
+                h.parallel_for<UpdateDataUSMKernel<ImplType>>(sycl::nd_range<3>(global, local),[=](sycl::nd_item<3> item) {
                     const auto item_id = item.get_group(2)*item.get_local_range(2)+item.get_local_id(2);
                     if(item_id >= Item_Size)
                         return;
@@ -321,7 +330,8 @@ class DataReconstructor{
                 auto res = r_buf.template get_access<sycl::access::mode::read_write>(h);
                 auto myTensor = b_buf.template get_access<sycl::access::mode::read_write>(h);
 
-                h.parallel_for(sycl::nd_range<3>(global, local),[=](sycl::nd_item<3> item) {
+                //h.parallel_for<class MyKernel4>(sycl::nd_range<3>(global, local),[=](sycl::nd_item<3> item) {
+                h.parallel_for<UpdateDataBufferKernel<ImplType>>(sycl::nd_range<3>(global, local),[=](sycl::nd_item<3> item) {
                     const auto item_id = item.get_group(2)*item.get_local_range(2)+item.get_local_id(2);
                     if(item_id >= Item_Size)
                         return;

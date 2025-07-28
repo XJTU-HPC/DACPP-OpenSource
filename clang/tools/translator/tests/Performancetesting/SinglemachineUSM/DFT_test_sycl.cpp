@@ -10,7 +10,7 @@ namespace dacpp {
 
 using namespace std;
 using Complex = std::complex<double>;  // 复数类型别名
-const int N = 8;
+const int N = 16384;
 
 
 
@@ -19,7 +19,7 @@ const int N = 8;
 
 // 离散傅里叶变换（DFT）
 #include <sycl/sycl.hpp>
-#include "DataReconstructor.h"
+#include "DataReconstructor1.h"
 #include "ParameterGeneration.h"
 
 using namespace sycl;
@@ -40,23 +40,31 @@ void dft(std::complex<double>* input,std::complex<double>* output,int* vec,sycl:
 void DFT_dft(const dacpp::Vector<std::complex<double> > & input, dacpp::Vector<std::complex<double> > & output, const dacpp::Vector<int> & vec) { 
     // 设备选择
     auto selector = default_selector_v;
-    queue q(selector);
+    queue q(selector,{property::queue::enable_profiling()});
     //声明参数生成工具
     ParameterGeneration para_gene_tool;
+
+    double total_ParameterGeneration = 0, total_kernel = 0, total_memcpy = 0,total_DataReconstruct = 0;
+    event e;
+
+    auto ParameterGeneration_start = std::chrono::high_resolution_clock::now();
     // 算子初始化
     
     // 数据信息初始化
     DataInfo info_input;
     info_input.dim = input.getDim();
     for(int i = 0; i < info_input.dim; i++) info_input.dimLength.push_back(input.getShape(i));
+	
     // 数据信息初始化
     DataInfo info_output;
     info_output.dim = output.getDim();
     for(int i = 0; i < info_output.dim; i++) info_output.dimLength.push_back(output.getShape(i));
+	
     // 数据信息初始化
     DataInfo info_vec;
     info_vec.dim = vec.getDim();
     for(int i = 0; i < info_vec.dim; i++) info_vec.dimLength.push_back(vec.getShape(i));
+	
     // 降维算子初始化
     Index i = Index("i");
     i.setDimId(0);
@@ -113,7 +121,7 @@ void DFT_dft(const dacpp::Vector<std::complex<double> > & input, dacpp::Vector<s
     int output_Size = para_gene_tool.init_device_memory_size(In_Ops,Out_Ops,info_output);
 
     //生成设备内存分配大小
-    int Reduction_Size = para_gene_tool.init_device_memory_size(info_output,Reduction_Ops);
+    int outputReduction_Size = para_gene_tool.init_device_memory_size(info_output,Reduction_Ops);
 
     //生成设备内存分配大小
     int vec_Size = para_gene_tool.init_device_memory_size(info_vec,vec_Ops);
@@ -158,112 +166,149 @@ void DFT_dft(const dacpp::Vector<std::complex<double> > & input, dacpp::Vector<s
 
     // 设备内存分配
     
+    // 归约设备内存分配
+    std::complex<double> *reduction_output = malloc_device<std::complex<double>>(outputReduction_Size,q);
+    // 数据关联计算
+    
+	    
+	
     // 设备内存分配
     std::complex<double> *d_input=malloc_device<std::complex<double>>(input_Size,q);
     // 设备内存分配
     std::complex<double> *d_output=malloc_device<std::complex<double>>(output_Size,q);
-    // 归约设备内存分配
-    std::complex<double> *reduction_output = malloc_device<std::complex<double>>(Reduction_Size,q);
     // 设备内存分配
     int *d_vec=malloc_device<int>(vec_Size,q);
-    // 数据关联计算
-    
-    
+
+    auto ParameterGeneration_end = std::chrono::high_resolution_clock::now();
+    total_ParameterGeneration += std::chrono::duration<double>(ParameterGeneration_end - ParameterGeneration_start).count();
+    std::cout << "ParameterGenerationTime: " << total_ParameterGeneration << "s" << std::endl;
+
+    auto memcpy_start = std::chrono::high_resolution_clock::now();
+
+    // 数据移动
+	std::complex<double>* h_input = (std::complex<double>*)malloc(input_Size*sizeof(std::complex<double>));
+	input.tensor2Array(h_input);
+    q.memcpy(d_input,h_input,input_Size*sizeof(std::complex<double>)).wait();
+
+    // 数据移动
+	std::complex<double>* h_output = (std::complex<double>*)malloc(output_Size*sizeof(std::complex<double>));
+	// output.tensor2Array(h_output);
+    q.memset(d_output, 0, output_Size*sizeof(std::complex<double>)).wait();
+    // 数据移动
+	int* h_vec = (int*)malloc(vec_Size*sizeof(int));
+	vec.tensor2Array(h_vec);
+    q.memcpy(d_vec,h_vec,vec_Size*sizeof(int)).wait();
+
+    auto memcpy_end = std::chrono::high_resolution_clock::now();
+    total_memcpy += std::chrono::duration<double>(memcpy_end - memcpy_start).count();
+    std::cout << "MemcpyTime: " << total_memcpy << "s" << std::endl;
+
+    auto DataReconstruct_start = std::chrono::high_resolution_clock::now();
     // 数据重组
     DataReconstructor<std::complex<double>> input_tool;
-    std::complex<double>* r_input=(std::complex<double>*)malloc(sizeof(std::complex<double>)*input_Size);
     
     // 数据算子组初始化
     Dac_Ops input_ops;
     
+
     input_tool.init(info_input,input_ops);
-    input_tool.Reconstruct(r_input,input);
+	std::complex<double> *r_input=malloc_device<std::complex<double>>(input_Size,q);
+    input_tool.Reconstruct(r_input,d_input,q);
 	std::vector<int> info_partition_input=para_gene_tool.init_partition_data_shape(info_input,input_ops);
     sycl::buffer<int> info_partition_input_buffer(info_partition_input.data(), sycl::range<1>(info_partition_input.size()));
+
     // 数据重组
     DataReconstructor<std::complex<double>> output_tool;
-    std::complex<double>* r_output=(std::complex<double>*)malloc(sizeof(std::complex<double>)*output_Size);
     
     // 数据算子组初始化
     Dac_Ops output_ops;
     
     i.setDimId(0);
     output_ops.push_back(i);
+
     output_tool.init(info_output,output_ops);
-    output_tool.Reconstruct(r_output,output);
+	std::complex<double> *r_output=malloc_device<std::complex<double>>(output_Size,q);
+    output_tool.Reconstruct(r_output,d_output,q);
 	std::vector<int> info_partition_output=para_gene_tool.init_partition_data_shape(info_output,output_ops);
     sycl::buffer<int> info_partition_output_buffer(info_partition_output.data(), sycl::range<1>(info_partition_output.size()));
+
     // 数据重组
     DataReconstructor<int> vec_tool;
-    int* r_vec=(int*)malloc(sizeof(int)*vec_Size);
     
     // 数据算子组初始化
     Dac_Ops vec_ops;
     
     i.setDimId(0);
     vec_ops.push_back(i);
+
     vec_tool.init(info_vec,vec_ops);
-    vec_tool.Reconstruct(r_vec,vec);
+	int *r_vec=malloc_device<int>(vec_Size,q);
+    vec_tool.Reconstruct(r_vec,d_vec,q);
 	std::vector<int> info_partition_vec=para_gene_tool.init_partition_data_shape(info_vec,vec_ops);
     sycl::buffer<int> info_partition_vec_buffer(info_partition_vec.data(), sycl::range<1>(info_partition_vec.size()));
-    
-    // 设备数据初始化
-    q.memset(d_input,0,input_Size*sizeof(std::complex<double>)).wait();
-    // 数据移动
-    q.memcpy(d_input,r_input,input_Size*sizeof(std::complex<double>)).wait();
-    // 设备数据初始化
-    q.memset(d_output,0,output_Size*sizeof(std::complex<double>)).wait();
-    // 设备数据初始化
-    q.memset(d_vec,0,vec_Size*sizeof(int)).wait();
-    // 数据移动
-    q.memcpy(d_vec,r_vec,vec_Size*sizeof(int)).wait();
-	
+
+    auto DataReconstruct_end = std::chrono::high_resolution_clock::now();
+    total_DataReconstruct += std::chrono::duration<double>(DataReconstruct_end - DataReconstruct_start).count();
+    std::cout << "DataReconstructTime: " << total_DataReconstruct << "s" << std::endl;
+	sycl::device device = q.get_device();
     //工作项划分
-    sycl::range<3> local(1, 1, Item_Size);
-    sycl::range<3> global(1, 1, 1);
+    int work_group_size = (Item_Size + 256 - 1) / 256;
+    sycl::range<3> local(1, 1, 256);
+    sycl::range<3> global(1, 1, (Item_Size <= 256) ? 256 : work_group_size * 256);
     //队列提交命令组
-    q.submit([&](handler &h) {
+    e = q.submit([&](handler &h) {
         // 访问器初始化
         
         auto info_partition_input_accessor = info_partition_input_buffer.get_access<sycl::access::mode::read_write>(h);
+
         auto info_partition_output_accessor = info_partition_output_buffer.get_access<sycl::access::mode::read_write>(h);
+
         auto info_partition_vec_accessor = info_partition_vec_buffer.get_access<sycl::access::mode::read_write>(h);
-        h.parallel_for<class myKernel>(sycl::nd_range<3>(global * local, local),[=](sycl::nd_item<3> item) {
-            const auto item_id = item.get_local_id(2);
+
+        h.parallel_for(sycl::nd_range<3>(global, local),[=](sycl::nd_item<3> item) {
+            const auto item_id = item.get_group(2)*item.get_local_range(2)+item.get_local_id(2);
+            if(item_id >= Item_Size)
+                return;
             // 索引初始化
 			
             const auto i_=(item_id+(0))%i.split_size;
             // 嵌入计算
 			
-            dft(d_input,d_output+(i_*SplitLength[1][0]),d_vec+(i_*SplitLength[2][0]),info_partition_input_accessor,info_partition_output_accessor,info_partition_vec_accessor);
+            dft(r_input,r_output+(i_*SplitLength[1][0]),r_vec+(i_*SplitLength[2][0]),info_partition_input_accessor,info_partition_output_accessor,info_partition_vec_accessor);
         });
-    }).wait();
-    
+    });
+    e.wait();
+    auto start_kernel = e.get_profiling_info<info::event_profiling::command_start>();
+    auto end_kernel = e.get_profiling_info<info::event_profiling::command_end>();
+    total_kernel += (end_kernel - start_kernel) / 1e9;
+    std::cout << "total_kernel: " << total_kernel << "s" << std::endl;
 
 	
     // 归约
-    // if(Reduction_Split_Size > 1)
-    // {
-    //     for(int i=0;i<Reduction_Size;i++) {
-    //         q.submit([&](handler &h) {
-    // 	        h.parallel_for(
-    //             range<1>(Reduction_Split_Size),
-    //             reduction(reduction_output+i, 
-    //             sycl::plus<>(),
-    //             property::reduction::initialize_to_identity()),
-    //             [=](id<1> idx,auto &reducer) {
-    //                 reducer.combine(d_output[(i/Reduction_Split_Length)*Reduction_Split_Length*Reduction_Split_Size+i%Reduction_Split_Length+idx*Reduction_Split_Length]);
-    //  	        });
-    //      }).wait();
-    //     }
-    //     q.memcpy(d_output,reduction_output, Reduction_Size*sizeof(std::complex<double>)).wait();
-    // }
+    if(Reduction_Split_Size > 1)
+    {
+        for(int i=0;i<outputReduction_Size;i++) {
+            q.submit([&](handler &h) {
+    	        h.parallel_for(
+                range<1>(Reduction_Split_Size),
+                reduction(reduction_output+i, 
+                sycl::plus<>(),
+                property::reduction::initialize_to_identity()),
+                [=](id<1> idx,auto &reducer) {
+                    reducer.combine(r_output[(i/Reduction_Split_Length)*Reduction_Split_Length*Reduction_Split_Size+i%Reduction_Split_Length+idx*Reduction_Split_Length]);
+     	        });
+         }).wait();
+        }
+        q.memcpy(r_output,reduction_output, outputReduction_Size*sizeof(std::complex<double>)).wait();
+    }
 
+
+    // 归并结果返回
+    output_tool.UpdateData(r_output,d_output,q);
+	q.memcpy(h_output,d_output, output_Size*sizeof(std::complex<double>)).wait();
+	output.array2Tensor(h_output);
 
 	
-    // 归并结果返回
-    q.memcpy(r_output, d_output, output_Size*sizeof(std::complex<double>)).wait();
-    output_tool.UpdateData(r_output,output);
 
     // 内存释放
     
@@ -293,6 +338,8 @@ void dftfunc(const vector<std::complex<double>>& input, vector<std::complex<doub
 
 int main() {
     // 定义一个输入信号（长度为8的复数序列）
+    double total_program = 0;
+    auto program_start = std::chrono::high_resolution_clock::now();
 
     vector<std::complex<double>> input(N);
     
@@ -316,6 +363,10 @@ int main() {
     // for (const auto& val : output) {
     //     cout << val << endl;
     // }
+
+    auto program_end = std::chrono::high_resolution_clock::now();
+    total_program += std::chrono::duration<double>(program_end - program_start).count();
+    std::cout << "total_program: " << total_program << "s" << std::endl;
 
     return 0;
 }

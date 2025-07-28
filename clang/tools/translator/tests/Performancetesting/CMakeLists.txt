@@ -5,4 +5,4 @@ cmake_minimum_required(VERSION 3.14)
 project(PerformanceTest)
 
 add_subdirectory(SinglemachineUSM)
-# add_subdirectory(SinglemachineBuffer)
+add_subdirectory(SinglemachineBuffer)

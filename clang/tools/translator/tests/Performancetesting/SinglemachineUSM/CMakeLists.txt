@@ -21,6 +21,11 @@ find_package(Threads REQUIRED)
 
 add_executable(decay_s_u decay_test.sycl.cpp)
 add_executable(decay_s_u_st decay_standard_test.cpp)
+add_executable(waveEquation_s_u waveEquation_test_sycl.cpp)
+add_executable(waveEquation_s_u_st waveEquation_standard_test.cpp)
+add_executable(waveEquation_s_u_dacfor waveEquation_dacfor_test_sycl.cpp)
+add_executable(DFT_s_u DFT_test_sycl.cpp)
+add_executable(DFT_s_u_st DFT_standard_test.cpp)
 
 
 set_target_properties(decay_s_u PROPERTIES
@@ -29,6 +34,26 @@ set_target_properties(decay_s_u PROPERTIES
 set_target_properties(decay_s_u_st PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/translator/tests/Performancetesting/SinglemachineUSM
 )
+set_target_properties(waveEquation_s_u PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/translator/tests/Performancetesting/SinglemachineUSM
+)
+set_target_properties(waveEquation_s_u_st PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/translator/tests/Performancetesting/SinglemachineUSM
+)
+set_target_properties(waveEquation_s_u_dacfor PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/translator/tests/Performancetesting/SinglemachineUSM
+)
+set_target_properties(DFT_s_u PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/translator/tests/Performancetesting/SinglemachineUSM
+)
+set_target_properties(DFT_s_u_st PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/translator/tests/Performancetesting/SinglemachineUSM
+)
 
 target_link_libraries(decay_s_u PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
 target_link_libraries(decay_s_u_st PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
+target_link_libraries(waveEquation_s_u PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
+target_link_libraries(waveEquation_s_u_st PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
+target_link_libraries(waveEquation_s_u_dacfor PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
+target_link_libraries(DFT_s_u PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
+target_link_libraries(DFT_s_u_st PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
