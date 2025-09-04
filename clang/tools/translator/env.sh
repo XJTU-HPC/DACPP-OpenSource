@@ -3,7 +3,7 @@
 # Check icpx availability
 if ! which icpx &> /dev/null; then
     echo "Loading Intel oneAPI environment..."
-    source /data/qinian/share/intel/oneapi/setvars.sh intel64 &> /dev/null
+    source /home/tools/intel/oneapi/setvars.sh &> /dev/null
 fi
 
 # Get the directory of this script
@@ -63,7 +63,7 @@ icpx-gpu() {
 
     "$ICPX" -fsycl \
     -fsycl-targets=nvptx64-nvidia-cuda \
-    --cuda-path=/data/cuda/cuda-11.8 \
+    --cuda-path=/home/tools/cuda/cuda-12.2 \
      "$@" \
     "${INCLUDE_DIRS[@]/#/-I}"
     
@@ -82,7 +82,7 @@ mpicxx-gpu() {
 
     "$MPICXX" -fsycl \
     -fsycl-targets=nvptx64-nvidia-cuda \
-    --cuda-path=/data/cuda/cuda-11.8 \
+    --cuda-path=/home/tools/cuda/cuda-12.2 \
      "$@" \
     "${INCLUDE_DIRS[@]/#/-I}"
     
@@ -99,7 +99,7 @@ mpiicpc-gpu() {
 
     "$MPIICPC" -fsycl \
     -fsycl-targets=nvptx64-nvidia-cuda \
-    --cuda-path=/data/cuda/cuda-11.8 \
+    --cuda-path=/home/tools/cuda/cuda-12.2 \
      "$@" \
     "${INCLUDE_DIRS[@]/#/-I}"
     
