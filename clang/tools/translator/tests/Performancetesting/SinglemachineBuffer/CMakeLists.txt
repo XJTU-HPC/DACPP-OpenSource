@@ -20,17 +20,13 @@ find_package(Threads REQUIRED)
 # 添加源文件
 
 add_executable(DFT_s_b DFT_test.sycl.cpp)
-add_executable(FOula1.0_s_b FOula1.0_test_sycl.cpp)
 
 
 
 set_target_properties(DFT_s_b PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/translator/tests/Performancetesting/SinglemachineBuffer
 )
-set_target_properties(FOula1.0_s_b PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/translator/tests/Performancetesting/SinglemachineBuffer
-)
+
 
 
 target_link_libraries(DFT_s_b PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
-target_link_libraries(FOula1.0_s_b PRIVATE ${OpenCL_LIBRARY} sycl DacppLib RewriterLib)
