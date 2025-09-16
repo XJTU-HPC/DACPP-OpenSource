@@ -2,6 +2,16 @@
 
 exec 2>/dev/null
 
+# 参数解析
+MODE="usm"
+for arg in "$@"; do
+  case $arg in
+    --usm) MODE="usm";;
+    --buffer) MODE="buffer";;
+  esac
+done
+
+
 # Get the directory of this script
 SCRIPT_PATH=$(realpath "${BASH_SOURCE[0]}")
 TEST_DIR=$(dirname "$SCRIPT_PATH")
@@ -51,8 +61,11 @@ for dir in ${examples[@]}; do
     mkdir -p "$TMP_DIR/$dir"
     cp "$dacpp_file" "$TMP_DIR/$dir"
     new_dacpp_file=$(find "$TMP_DIR/$dir/" -type f -name "*.dac.cpp" | head -n 1)
-    dacpp "$new_dacpp_file" >/dev/null
-    sycl_file=$(find "$TMP_DIR/$dir" -type f -name "*.dac_sycl*.cpp")
+#    dacpp "$new_dacpp_file" >/dev/null
+#    sycl_file=$(find "$TMP_DIR/$dir" -type f -name "*.dac_sycl.cpp")
+
+    dacpp "$new_dacpp_file" --mode=$MODE >/dev/null
+    sycl_file=$(find "$TMP_DIR/$dir" -type f -name "*_sycl_${MODE}.cpp")
     if [ -z "$sycl_file" ]; then
         echo "Example $dir: DACPP to SYCL transpilation failed"
     else
@@ -102,7 +115,8 @@ echo
 
 # Generated SYCL files compilation test
 for dir in ${examples[@]}; do
-    sycl_file=$(find "$TMP_DIR/$dir" -type f -name "*.dac_sycl*.cpp")
+#    sycl_file=$(find "$TMP_DIR/$dir" -type f -name "*.dac_sycl.cpp")
+    sycl_file=$(find "$TMP_DIR/$dir" -type f -name "*_sycl_${MODE}.cpp")
     if [ -z "$sycl_file" ]; then
         continue
     fi

@@ -22,6 +22,19 @@
 #include "ASTParse.h"
 #include "Dacfor.h"
 
+#include "llvm/Support/CommandLine.h"
+// LLVM 命令行选项
+static llvm::cl::opt<std::string> ModeOpt(
+    "mode",
+    llvm::cl::desc("Choose backend mode: usm or buffer"),
+    llvm::cl::init("usm")
+);
+
+static llvm::cl::alias UsmMode("usm", llvm::cl::desc("Alias for --mode=usm"), llvm::cl::aliasopt(ModeOpt));
+static llvm::cl::alias BufferMode("buffer", llvm::cl::desc("Alias for --mode=buffer"), llvm::cl::aliasopt(ModeOpt));
+
+
+
 using namespace clang;
 using namespace clang::ast_matchers;
 using namespace clang::driver;
@@ -305,12 +318,31 @@ public:
         rewriter->setDacppFile(dacppFile);
 
         // dacppTranslator::printDacppFileInfo(dacppFile);
+
+
+if (ModeOpt == "usm") {
+    rewriter->rewriteDac_Usm();
+} else if (ModeOpt == "buffer") {
+    rewriter->rewriteDac_Buffer();
+} else {
+    // 意外情况 fallback
+    rewriter->rewriteDac_Usm();
+}
+rewriter->rewriteMain();
+
+std::error_code error_code;
+std::string file = getCurrentFile().str();
+size_t pos = file.find(".cpp");
+if (pos != std::string::npos) {
+    file.replace(pos, 4, "_sycl_" + ModeOpt + ".cpp");
+}
+
         //rewriter->rewriteDac_Usm();
-        rewriter->rewriteDac_Buffer();
+        //rewriter->rewriteDac_Buffer();
         // rewriter->rewriteDac_Multiple();
 
         // rewriter->rewriteMPI();
-        rewriter->rewriteMain();
+        //rewriter->rewriteMain();
         
         
         // // this will output to screen as what you got.
@@ -318,9 +350,10 @@ public:
         //     .write(llvm::outs());
         
         // 生成 SYCL 文件
-        std::error_code error_code;
-        std::string file = getCurrentFile().str();
-        file.replace(file.find(".cpp"), 4, "_sycl.cpp");
+        //std::error_code error_code;
+        //std::string file = getCurrentFile().str();
+        //file.replace(file.find(".cpp"), 4, "_sycl.cpp");
+
         llvm::raw_fd_ostream outFile(file, error_code, llvm::sys::fs::OF_None);
         // this will write the result to outFile
         clangRewriter->getEditBuffer(clangRewriter->getSourceMgr().getMainFileID()).write(outFile);
@@ -334,8 +367,10 @@ static llvm::cl::OptionCategory translator("translator options");
 
 int main(int argc, const char **argv) {
     // 所有命令行 Clang 工具通用的选项解析器
+    // auto ExpectedParser =
+    //     CommonOptionsParser::create(argc, argv, translator);
     auto ExpectedParser =
-        CommonOptionsParser::create(argc, argv, translator);
+        CommonOptionsParser::create(argc, argv, llvm::cl::getGeneralCategory());
     if (!ExpectedParser) {
       llvm::errs() << ExpectedParser.takeError();
       return 1;
