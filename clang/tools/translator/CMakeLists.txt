@@ -22,8 +22,10 @@ set(PARSER_SOURCES
 set(REWRITER_SOURCES
   # rewriter/lib/dacInfo.cpp
   # rewriter/lib/sub_template.cpp
+  rewriter/lib/usm_time_template.cpp
   rewriter/lib/usm_template.cpp
   rewriter/lib/Rewriter_Usm.cpp
+  rewriter/lib/Rewriter_Usm_time.cpp
   rewriter/lib/Rewriter_Buffer.cpp
   rewriter/lib/Rewriter_Multiple.cpp
   rewriter/lib/buffer_template.cpp
@@ -41,9 +43,11 @@ add_clang_executable(translator
   translator.cpp
 )
 
+
 set_target_properties(translator PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/translator
 )
+
 
 clang_target_link_libraries(translator
   PRIVATE

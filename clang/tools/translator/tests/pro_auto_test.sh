@@ -8,6 +8,7 @@ for arg in "$@"; do
   case $arg in
     --usm) MODE="usm";;
     --buffer) MODE="buffer";;
+    --usm_time)MODE="usm_time";;
   esac
 done
 
@@ -31,7 +32,7 @@ examples=(
     "FOuLa1.0"
     "decay1.0"
     "DFT1.0"
-    # "imageAdjustment1.0"
+    #"imageAdjustment1.0"
     "liuliang1.0"
     "MDP1.0"
     "mandel1.0"
@@ -76,9 +77,9 @@ done
 echo "------------------------------------------------------------------------------------------"
 echo "Compile standard sycl files"
 echo
-
+if [ "$MODE" != "usm_time" ]; then
 # Compile standard sycl files
-for dir in ${examples[@]}; do
+  for dir in ${examples[@]}; do
     std_sycl_file=$(find "$TEST_DIR/$dir/" -type f -name "*.StandardSycl.cpp" | head -n 1)
     if [ -z "$std_sycl_file" ]; then
         std_file=$(find "$TEST_DIR/$dir/" -type f -name "*.serial.cpp" | head -n 1)
@@ -105,9 +106,10 @@ for dir in ${examples[@]}; do
             exe_file="${exe_file#$TMP_DIR/$dir}"
             "$TMP_DIR/$dir/$exe_file" > "$TMP_DIR/$dir/$exe_file.std.out"
         fi
-    fi
-    
+    fi 
 done
+else  echo "Skip standard SYCL compilation in usm_time mode"
+fi
 
 echo "------------------------------------------------------------------------------------------"
 echo "Generated SYCL files compilation test"
@@ -143,16 +145,28 @@ for dir in ${examples[@]}; do
         continue
     fi
     exe_file="${exe_file#$TMP_DIR/$dir}"
-    "$TMP_DIR/$dir/$exe_file" > "$TMP_DIR/$dir/$exe_file.out" 
-    # mpirun -np 2 "$TMP_DIR/$dir/$exe_file" > "$TMP_DIR/$dir/$exe_file.out" 
-    std_res=$(find "$TMP_DIR/$dir/" -type f -name "*.std.out" | head -n 1)
-    if diff -y --suppress-common-lines "$TMP_DIR/$dir/$exe_file.out" "$std_res"; then
-        echo "Example $dir: execution test succeeded"
+
+    # 运行并保存结果
+    "$TMP_DIR/$dir/$exe_file" > "$TMP_DIR/$dir/$exe_file.out"
+    # mpirun -np 2 "$TMP_DIR/$dir/$exe_file" > "$TMP_DIR/$dir/$exe_file.out"
+
+    if [ "$MODE" = "usm_time" ]; then
+        # usm_time 模式：只保存结果
+        echo "Example $dir: execution finished, result saved to $TMP_DIR/$dir/$exe_file.out"
     else
-        echo
-        echo "Example $dir: execution test failed with some different lines listed above"
+        # usm / buffer 模式：保存结果 + diff 对比
+        std_res=$(find "$TMP_DIR/$dir/" -type f -name "*.std.out" | head -n 1)
+        if [ -z "$std_res" ]; then
+            echo "Example $dir: no standard result found for diff"
+        elif diff -y --suppress-common-lines "$TMP_DIR/$dir/$exe_file.out" "$std_res"; then
+            echo "Example $dir: execution test succeeded"
+        else
+            echo
+            echo "Example $dir: execution test failed with some different lines listed above"
+        fi
     fi
 done
+
 
 echo "------------------------------------------------------------------------------------------"
 

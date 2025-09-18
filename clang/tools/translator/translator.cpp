@@ -26,12 +26,13 @@
 // LLVM 命令行选项
 static llvm::cl::opt<std::string> ModeOpt(
     "mode",
-    llvm::cl::desc("Choose backend mode: usm or buffer"),
+    llvm::cl::desc("Choose backend mode: usm or buffer or usm_time"),
     llvm::cl::init("usm")
 );
 
 static llvm::cl::alias UsmMode("usm", llvm::cl::desc("Alias for --mode=usm"), llvm::cl::aliasopt(ModeOpt));
 static llvm::cl::alias BufferMode("buffer", llvm::cl::desc("Alias for --mode=buffer"), llvm::cl::aliasopt(ModeOpt));
+static llvm::cl::alias Usm_timeMode("usm_time", llvm::cl::desc("Alias for --mode=usm_time"), llvm::cl::aliasopt(ModeOpt));
 
 
 
@@ -324,7 +325,9 @@ if (ModeOpt == "usm") {
     rewriter->rewriteDac_Usm();
 } else if (ModeOpt == "buffer") {
     rewriter->rewriteDac_Buffer();
-} else {
+} else if(ModeOpt == "usm_time"){
+    rewriter->rewriteDac_Usm_time();
+}else {
     // 意外情况 fallback
     rewriter->rewriteDac_Usm();
 }
