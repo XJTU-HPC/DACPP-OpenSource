@@ -10,8 +10,8 @@ namespace dacpp {
 using namespace std;
 
 // 全局变量定义
-const int row_count = 256,col_count = 256, max_iterations = 1000;
-vector<complex<double>> complex_points;  // 一维向量表示复数点
+const int row_count = 16, col_count = 16, max_iterations = 1000;
+vector<complex<float>> complex_points;  // 一维向量表示复数点
 vector<int> mandelbrot_flags;           // 一维数组表示是否属于 Mandelbrot 集
 int total_points = 0;                   // 总点数
 int mandelbrot_count = 0;               // 属于 Mandelbrot 集的点数量
@@ -24,25 +24,25 @@ void InitializeComplexPoints() {
     for (int i = 0; i < row_count; ++i) {
         for (int j = 0; j < col_count; ++j) {
             int index = i * col_count + j;  // 一维向量索引
-            double real = -1.5 + (i * (2.0 / row_count));  // 将行索引映射到实部
-            double imag = -1.0 + (j * (2.0 / col_count));  // 将列索引映射到虚部
-            complex_points[index] = complex<double>(real, imag);
+            float real = -1.5f + (i * (2.0f / row_count));  // 将行索引映射到实部
+            float imag = -1.0f + (j * (2.0f / col_count));  // 将列索引映射到虚部
+            complex_points[index] = complex<float>(real, imag);
         }
     }
 }
 
 
-shell dacpp::list MANDEL(const dacpp::Vector<complex<double>>& complex_points,
+shell dacpp::list MANDEL(const dacpp::Vector<complex<float>>& complex_points,
                         dacpp::Vector<int>& mandelbrot_flags) {
     dacpp::index i;
     dacpp::list dataList{complex_points[i], mandelbrot_flags[i]};
     return dataList;
 }
 
-calc void mandel(complex<double>* complex_points,
+calc void mandel(complex<float>* complex_points,
                 int* mandelbrot_flags) {
-    const complex<double>& c = complex_points[0];
-    complex<double> z = 0;
+    const complex<float>& c = complex_points[0];
+    complex<float> z = 0;
     int iterations = 0;
     for (int i = 0; i < max_iterations; ++i) {
 
@@ -66,7 +66,7 @@ calc void mandel(complex<double>* complex_points,
 void ComputeMandelbrot() {
     mandelbrot_flags.resize(total_points, 0);  // 初始化一维数组为 0
 
-    dacpp::Vector<complex<double>> complex_points_tensor(complex_points);
+    dacpp::Vector<complex<float>> complex_points_tensor(complex_points);
     dacpp::Vector<int> mandelbrot_flags_tensor(mandelbrot_flags);
 
 

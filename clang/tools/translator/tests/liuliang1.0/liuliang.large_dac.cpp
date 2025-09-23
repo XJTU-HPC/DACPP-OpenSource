@@ -11,8 +11,8 @@ namespace dacpp {
     typedef std::vector<std::any> list;
 }
 
-const int WIDTH = 10000;       // 路段长度
-const double TIME_STEPS = 2000;  // 时间步数
+const int WIDTH = 250;       // 路段长度
+const double TIME_STEPS = 500;  // 时间步数
 const double DELTA_T = 0.01; // 时间步长
 const double DELTA_X = 1.0;  // 空间步长
 
