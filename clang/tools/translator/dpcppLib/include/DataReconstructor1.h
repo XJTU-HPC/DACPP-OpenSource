@@ -51,76 +51,7 @@ class DataReconstructor{
         Dac_Ops ops;                           // 作用于数据的算子组
         std::vector<PosNumber> posNumberList;  // 数据索引与物理位置的映射
         std::vector<int> myIdx;
-        sycl::buffer<int> myIdxBuffer;         // 用于在SYCL中传递 myIdx   
-        void GetPos(std::vector<int> &pos, Dac_Ops &ops, int now) {
-            if (now == this->myDataInfo.dim) {
-                GetPosNumber(pos, ops);
-                return;
-            }
-            for (int i = 0; i < this->myDataInfo.dimLength[now]; i++) {
-                pos.push_back(i);
-                GetPos(pos, ops, now + 1);
-                pos.pop_back();
-            }
-        }
-        void GetPosNumber(std::vector<int> &pos, Dac_Ops &ops) {
-            int dimNum = this->myDataInfo.dim;
-            std::vector<Range> region;
-            for (int i = 0; i < dimNum; i++) {
-                Range r;
-                r.start = 0;
-                r.end = this->myDataInfo.dimLength[i];
-                region.push_back(r);
-            }
-            
-            std::vector<int> number;   // 存数据索引的中间变量
-            RecursiveTraversal(number, pos, region, 0);
-        }
-        /*
-            递归得到物理位置 pos 在当前算子组作用下应该映射的数据索引，以及划分好的数据单元的数据区域。
-        */
-        void RecursiveTraversal(std::vector<int> &number,std::vector<int> &pos, std::vector<Range> &region, int now) {
-            if (now == ops.size) {
-                PosNumber posNum;
-                posNum.number = number;
-                posNum.pos = pos;
-                posNum.region = region;
-                this->posNumberList.push_back(posNum);
-                return;
-            }
-            Dac_Op op = ops[now];
-            int id = pos[op.dimId]-region[op.dimId].start;
-            int l;
-            if (id-op.size<0) l=0;
-            else l = ((id-op.size+1)%op.stride==0) ? (id-op.size+1)/op.stride : ((id-op.size+1+op.stride)&(-op.stride))/op.stride;
-            int r = (region[op.dimId].start+(id&(-op.stride))+op.size<region[op.dimId].end) ? (id&(-op.stride))/op.stride : (region[op.dimId].end-op.size-region[op.dimId].start)/op.stride;
-            for(int i = l; i <= r; i++) {
-                int now_start = region[op.dimId].start;
-                int now_end = region[op.dimId].end;
-                number.push_back(i);
-                region[op.dimId].start = now_start + i * op.stride;
-                region[op.dimId].end = now_start + i * op.stride +  op.size;
-                RecursiveTraversal(number, pos, region, now + 1);
-                region[op.dimId].end = now_end;
-                region[op.dimId].start = now_start;
-                number.pop_back();
-            }
-        }
-        
-        // /*
-        //     将特定位置元素写入res长向量。
-        // */
-        // void WriteRes(int &cnt, ImplType* res, std::vector<int> pos, const dacpp::TensorBase<ImplType> &myTensor) {
-        //     res[cnt++]=myTensor.getElement(pos);
-        // }
-
-        // /*
-        //     将更新结果写入 myTensor
-        // */
-        // void WriteData(int &cnt, ImplType* res, std::vector<int> pos, dacpp::TensorBase<ImplType> &myTensor) {
-        //     myTensor.reviseValue(res[cnt++],pos);
-        // }
-        
+        sycl::buffer<int> myIdxBuffer;         // 用于在SYCL中传递 myIdx  
     public:
         DataReconstructor() : myIdxBuffer(nullptr, sycl::range<1>(0)) {
         // 初始化为空 buffer，稍后可以在 init 函数中重新分配
@@ -129,96 +60,188 @@ class DataReconstructor{
         /*
             通过 数据形状，作用于数据的算子，初始化数据重组器
         */
-        void init(DataInfo dataInfo, Dac_Ops ops){
-            this->myDataInfo=dataInfo;
-            this->ops=ops;
-            std::vector<int> pos; // 存位置的中间变量
-            GetPos(pos, ops, 0);
-            
-            std::sort(this->posNumberList.begin(),this->posNumberList.end(),[](PosNumber a,PosNumber b){return (a.number==b.number)?a.pos<b.pos:a.number<b.number;});
-            for(int i=0;i<this->posNumberList.size();i++) this->myIdx.push_back(0);
-            for(int i=0;i<this->posNumberList.size();i++){
-                int stride = 1;
-                for(int j=0;j<this->myDataInfo.dim;j++) stride*=this->myDataInfo.dimLength[j];
-                int idx = 0;
-                for(int j=0;j<this->myDataInfo.dim;j++) {
-                    stride/=this->myDataInfo.dimLength[j];
-                    idx+=this->posNumberList[i].pos[j]*stride;
-                }
-                this->myIdx[i]=idx;
+        // 计算张量的 strides（行优先存储情况下的步幅数组）
+        static inline std::vector<int> compute_strides(const DataInfo &info) {
+            int d = info.dim;                       // 维度数
+            std::vector<int> strides(d);            // 存储每一维的 stride
+            int s = 1;                              // 累积乘积（从最后一维开始）
+            for (int i = d - 1; i >= 0; --i) {      // 从最后一维往前推
+                strides[i] = s;                     // 当前维度 stride = 后续所有维度长度的乘积
+                s *= info.dimLength[i];             // 更新累积值
             }
-
-            this->myIdxBuffer = sycl::buffer<int>(this->myIdx.data(), sycl::range<1>(this->myIdx.size()));
+            return strides;                         // 返回 stride 数组
         }
 
-        /*
-            将重组结果写入res长向量。
-        */
-        // void Reconstruct(ImplType* res, ImplType* myTensor, sycl::queue& q){
-        //     sycl::device device = q.get_device();
-        //     int max_global_size = device.get_info<sycl::info::device::max_work_item_sizes<3>>()[2];
-        //     if(this->posNumberList.size() < max_global_size){
-        //         sycl::range<3> local(1, 1, this->posNumberList.size());
-        //         sycl::range<3> global(1, 1, 1);
-        //         q.submit([&](handler &h) {
-
-        //             auto myIdxAccessor = myIdxBuffer.get_access<sycl::access::mode::write>(h);
-        //             auto range = this->myIdxBuffer.get_range();
-
-        //             sycl::stream out(1024, 256, h);
-        //             h.parallel_for(sycl::nd_range<3>(global * local, local),[=](sycl::nd_item<3> item) {
-        //                 const auto item_id = item.get_local_id(2);
-                    
-        //                     res[item_id]=myTensor[myIdxAccessor[item_id]];
-        //             });
-        //         }).wait();
-        //     }else{
-        //         int have_done = 0;
-        //         while(have_done < this->posNumberList.size()){
-
-        //             int now_size = std::min(max_global_size, (int)this->posNumberList.size()-have_done);
-        //             // printf("now_size: %d\n", now_size);
-        //             // printf("have_done: %d\n", have_done);
-        //             // printf("this->posNumberList.size(): %d\n", this->posNumberList.size());
-        //             sycl::range<3> local(1, 1, now_size);
-        //             sycl::range<3> global(1, 1, 1);
-        //             q.submit([&](handler &h) {
-        //                 auto myIdxAccessor = myIdxBuffer.get_access<sycl::access::mode::write>(h);
-        //                 auto range = this->myIdxBuffer.get_range();
-        //                 sycl::stream out(1024, 256, h);
-        //                 h.parallel_for(sycl::nd_range<3>(global * local, local),[=](sycl::nd_item<3> item) {
-        //                     const auto item_id = item.get_local_id(2);
-        //                     res[have_done+item_id]=myTensor[myIdxAccessor[have_done+item_id]];
-        //                 });
-        //             }).wait();
-        //             have_done += now_size;
-        //         }
-        //     }
-        // }
-
-        //重写Reconstruct函数支持USM 之前的可能有问题因为多卡过不了
-        void Reconstruct(ImplType* res, ImplType* myTensor, sycl::queue& q)
-        {
-            // int cnt=0;
+        void init(DataInfo dataInfo, Dac_Ops ops) {
+            this->myDataInfo = dataInfo;            // 保存张量信息
+            this->ops = ops;                        // 保存操作集合
+        
+            const int dim = this->myDataInfo.dim;   // 维度数
+            // 计算张量总元素个数
+            int total = 1;
+            for (int i = 0; i < dim; ++i) total *= this->myDataInfo.dimLength[i];
+        
+            // 如果没有元素，直接返回空
+            if (total == 0) {
+                this->myIdx.clear();
+                this->myIdxBuffer = sycl::buffer<int>(nullptr, sycl::range<1>(0));
+                return;
+            }
+        
+            // 预计算 stride，用于多维坐标 → 线性索引的转换
+            std::vector<int> stride_src = compute_strides(this->myDataInfo);
+        
+            // 对每个操作计算它能在对应维度产生多少个 block
+            int K = (int)this->ops.size;            // 操作数
+            std::vector<int> blockCount(K);
+            for (int oi = 0; oi < K; ++oi) {
+                const Dac_Op &op = this->ops[oi];
+                int dimlen = this->myDataInfo.dimLength[op.dimId];
+                if (op.size > dimlen) {
+                    blockCount[oi] = 0;             // 如果操作区域大于维度长度，则该维度不能生成 block
+                } else {
+                    // block 数量 = ((总长度 - 区块大小) / 步幅) + 1
+                    blockCount[oi] = ((dimlen - op.size) / op.stride) + 1;
+                }
+            }
+        
+            // 计算所有操作组合下，总的 block 数量
+            int totalBlocks = 1;
+            for (int oi = 0; oi < K; ++oi) totalBlocks *= std::max(1, blockCount[oi]);
+        
+            // 预分配索引数组空间
+            this->myIdx.clear();
+            this->myIdx.reserve((size_t)total);
+        
+            // 定义区域和 block 索引
+            std::vector<Range> region(dim);         // 每个维度的范围 [start, end)
+            std::vector<int> blockIdx(K, 0);        // 当前 block 组合的索引
+        
+            auto t0 = std::chrono::high_resolution_clock::now();
+        
+            // 遍历所有 block 组合
+            for (int b = 0; b < totalBlocks; ++b) {
+                // 初始时 region 覆盖整个张量
+                for (int d = 0; d < dim; ++d) {
+                    region[d].start = 0;
+                    region[d].end = this->myDataInfo.dimLength[d];
+                }
+            
+                // 按操作调整 region，得到当前子区块
+                for (int oi = 0; oi < K; ++oi) {
+                    const Dac_Op &op = this->ops[oi];
+                    int dimId = op.dimId;           // 操作作用的维度
+                    int bid = blockIdx[oi];         // 当前 block 在该维度的索引
+                    if (blockCount[oi] <= 0) {
+                        // 不存在 block
+                        region[dimId].start = 0;
+                        region[dimId].end = 0;
+                    } else {
+                        // 按 stride 和 size 计算子区域范围
+                        int now_start = region[dimId].start;
+                        int new_start = now_start + bid * op.stride;
+                        int new_end = new_start + op.size;
+                        if (new_start < 0) new_start = 0;
+                        if (new_end > this->myDataInfo.dimLength[dimId]) 
+                            new_end = this->myDataInfo.dimLength[dimId];
+                        region[dimId].start = new_start;
+                        region[dimId].end = new_end;
+                    }
+                }
+            
+                // 计算子区域的大小
+                std::vector<int> localPos(dim);     // 当前点的位置
+                std::vector<int> localSize(dim);    // 子区域在每个维度的大小
+                int regionElems = 1;
+                for (int d = 0; d < dim; ++d) {
+                    localPos[d] = region[d].start;
+                    localSize[d] = region[d].end - region[d].start;
+                    regionElems *= std::max(0, localSize[d]);
+                }
+            
+                // 如果区域为空，跳过
+                if (regionElems == 0) {
+                    // block 索引进位，寻找下一个组合
+                    for (int t = K - 1; t >= 0; --t) {
+                        blockIdx[t]++;
+                        if (blockIdx[t] < std::max(1, blockCount[t])) break;
+                        blockIdx[t] = 0;
+                    }
+                    continue;
+                }
+            
+                // 枚举区域内的所有点
+                for (int e = 0; e < regionElems; ++e) {
+                    // 计算点的线性索引
+                    int src_linear = 0;
+                    for (int d = 0; d < dim; ++d) {
+                        src_linear += localPos[d] * stride_src[d];
+                    }
+                    this->myIdx.push_back(src_linear);
+                
+                    // 更新 localPos，相当于多维坐标进位
+                    for (int d = dim - 1; d >= 0; --d) {
+                        localPos[d]++;
+                        if (localPos[d] < region[d].end) break;
+                        localPos[d] = region[d].start;
+                    }
+                }
+            
+                // block 索引进位，枚举下一个 block 组合
+                for (int t = K - 1; t >= 0; --t) {
+                    blockIdx[t]++;
+                    if (blockIdx[t] < std::max(1, blockCount[t])) break;
+                    blockIdx[t] = 0;
+                }
+            }
+        
+            auto t1 = std::chrono::high_resolution_clock::now();
+            double gen_ms = std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count() * 1e-3;
+            // std::cout << "Block-driven mapping time: " << gen_ms << " ms, produced entries: " << this->myIdx.size() << "\n";
+        
+            // 验证索引数量是否与总元素数一致
+            if ((int)this->myIdx.size() != total) {
+                std::cerr << "Warning: generated myIdx entries != total elements (" 
+                          << this->myIdx.size() << " vs " << total << ")\n";
+            }
+        
+            // 将索引写入 SYCL buffer，供设备端使用
+            this->myIdxBuffer = sycl::buffer<int>(this->myIdx.begin(), this->myIdx.end());
+        
+            // 调试打印（注释掉了）
+            // {
+            //     sycl::host_accessor acc(this->myIdxBuffer, sycl::read_only);
+            //     std::cout << "myIdxBuffer contents: ";
+            //     for(size_t i = 0; i < acc.size(); i++) {
+            //         std::cout << acc[i] << " ";
+            //     }
+            //     std::cout << std::endl;
+            // }
+            }
+            //重写Reconstruct函数支持USM 之前的可能有问题因为多卡过不了
+            void Reconstruct(ImplType* res, ImplType* myTensor, sycl::queue& q){
+                    // int cnt=0;
             // for (int i=0; i<this->posNumberList.size(); i++) {
             //     this->WriteRes(cnt, res,this->posNumberList[i].pos,myTensor);
             // }
-            int Item_Size = this->posNumberList.size();
+
+            int Item_Size = this->myIdx.size();
             sycl::device device = q.get_device();
-            int max_global_size = device.get_info<sycl::info::device::max_work_item_sizes<3>>()[2];
+            int max_global_size = 256;/*device.get_info<sycl::info::device::max_work_item_sizes<3>>()[2];*/
             int work_group_size = (Item_Size + max_global_size - 1) / max_global_size;  // 计算所需的工作组数量
             sycl::range<3> local(1, 1, std::min(Item_Size, max_global_size));
             sycl::range<3> global(1, 1, (Item_Size <= max_global_size) ? Item_Size : work_group_size * max_global_size);
             q.submit([&](handler &h) {
-                auto myIdxAccessor = myIdxBuffer.get_access<sycl::access::mode::write>(h);
-                //h.parallel_for<class MyKernel1>(sycl::nd_range<3>(global, local),[=](sycl::nd_item<3> item) {
-                h.parallel_for<ReconstructUSMKernel<ImplType>>(sycl::nd_range<3>(global, local),[=](sycl::nd_item<3> item) {
+                auto myIdxAccessor = myIdxBuffer.get_access<sycl::access::mode::read>(h);
+                h.parallel_for(sycl::nd_range<3>(global, local),[=](sycl::nd_item<3> item) {
                     const auto item_id = item.get_group(2)*item.get_local_range(2)+item.get_local_id(2);
                     if(item_id >= Item_Size)
                         return;
                     res[item_id]=myTensor[myIdxAccessor[item_id]];
+                    // res[item_id] = 7562;
                 });
             }).wait();
+            // std::cout<<"Reconstruct finished!"<<std::endl;
         }
 
         //重载Reconstruct函数支持buffer
@@ -227,7 +250,7 @@ class DataReconstructor{
             // for (int i=0; i<this->posNumberList.size(); i++) {
             //     this->WriteRes(cnt, res,this->posNumberList[i].pos,myTensor);
             // }
-            int Item_Size = this->posNumberList.size();
+            int Item_Size = this->myIdx.size();
             sycl::device device = q.get_device();
             int max_global_size = device.get_info<sycl::info::device::max_work_item_sizes<3>>()[2];
             int work_group_size = (Item_Size + max_global_size - 1) / max_global_size;  // 计算所需的工作组数量
@@ -247,46 +270,6 @@ class DataReconstructor{
             }).wait();
         }
 
-        /*
-            用重组结果更新原数据
-        */
-        // void UpdateData(ImplType* res, ImplType* myTensor, sycl::queue& q){
-        //     // int cnt=0;
-        //     // for (int i=0; i<this->posNumberList.size(); i++) {
-        //     //     this->WriteData(cnt,res,this->posNumberList[i].pos,myTensor);
-        //     // }
-        //     sycl::device device = q.get_device();
-        //     int max_global_size = device.get_info<sycl::info::device::max_work_item_sizes<3>>()[2];
-        //     if(this->posNumberList.size() < max_global_size){
-        //         sycl::range<3> local(1, 1, this->posNumberList.size());
-        //         sycl::range<3> global(1, 1, 1);
-        //         q.submit([&](handler &h) {
-        //             auto myIdxAccessor = myIdxBuffer.get_access<sycl::access::mode::write>(h);
-        //             h.parallel_for(sycl::nd_range<3>(global * local, local),[=](sycl::nd_item<3> item) {
-        //                 const auto item_id = item.get_local_id(2);
-        //                 myTensor[myIdxAccessor[item_id]] = res[item_id];
-        //             });
-        //         }).wait();
-        //     }else{
-        //         int have_done = 0;
-        //         while(have_done < this->posNumberList.size()){
-        //             int now_size = std::min(max_global_size, (int)this->posNumberList.size()-have_done);
-        //             // printf("now_size: %d\n", now_size);
-        //             // printf("have_done: %d\n", have_done);
-        //             // printf("this->posNumberList.size(): %d\n", this->posNumberList.size());
-        //             sycl::range<3> local(1, 1, now_size);
-        //             sycl::range<3> global(1, 1, 1);
-        //             q.submit([&](handler &h) {
-        //                 auto myIdxAccessor = myIdxBuffer.get_access<sycl::access::mode::write>(h);
-        //                 h.parallel_for(sycl::nd_range<3>(global * local, local),[=](sycl::nd_item<3> item) {
-        //                     const auto item_id = item.get_local_id(2);
-        //                     myTensor[myIdxAccessor[have_done+item_id]] = res[have_done+item_id];
-        //                 });
-        //             }).wait();
-        //             have_done += now_size;
-        //         }
-        //     }
-        // }
         
         //USM版本的数据逆重组
         void UpdateData(ImplType* res, ImplType* myTensor, sycl::queue& q)
@@ -295,9 +278,9 @@ class DataReconstructor{
             // for (int i=0; i<this->posNumberList.size(); i++) {
             //     this->WriteData(cnt,res,this->posNumberList[i].pos,myTensor);
             // }
-            int Item_Size = this->posNumberList.size();
+            int Item_Size = this->myIdx.size();
             sycl::device device = q.get_device();
-            int max_global_size = device.get_info<sycl::info::device::max_work_item_sizes<3>>()[2];
+            int max_global_size = 256;/*device.get_info<sycl::info::device::max_work_item_sizes<3>>()[2];*/
             int work_group_size = (Item_Size + max_global_size - 1) / max_global_size;  // 计算所需的工作组数量
             sycl::range<3> local(1, 1, std::min(Item_Size, max_global_size));
             sycl::range<3> global(1, 1, (Item_Size <= max_global_size) ? Item_Size : work_group_size * max_global_size);
@@ -319,7 +302,7 @@ class DataReconstructor{
             // for (int i=0; i<this->posNumberList.size(); i++) {
             //     this->WriteData(cnt,res,this->posNumberList[i].pos,myTensor);
             // }
-            int Item_Size = this->posNumberList.size();
+            int Item_Size = this->myIdx.size();
             sycl::device device = q.get_device();
             int max_global_size = device.get_info<sycl::info::device::max_work_item_sizes<3>>()[2];
             int work_group_size = (Item_Size + max_global_size - 1) / max_global_size;  // 计算所需的工作组数量
@@ -343,28 +326,22 @@ class DataReconstructor{
         /*
             增加一个算子
         */
-        void push_back(Dac_Op op) {
-            this->ops.push_back(op);
-            this->posNumberList.clear();
-            std::vector<int> pos; // 存位置的中间变量
-            GetPos(pos, this->ops, 0);
-            std::sort(this->posNumberList.begin(),this->posNumberList.end(),[](PosNumber a,PosNumber b){return (a.number==b.number)?a.pos<b.pos:a.number<b.number;});
-        }
-        void push_back(Dac_Ops ops) {
-            for(int i = 0; i < ops.size; i++) {
-                this->ops.push_back(ops[i]);
-            }
-        }
-        /*
-            减少一个算子
-        */
-       void pop_back() {
-            this->ops.pop_back();
-            this->posNumberList.clear();
-            std::vector<int> pos; // 存位置的中间变量
-            GetPos(pos, this->ops, 0);
-            std::sort(this->posNumberList.begin(),this->posNumberList.end(),[](PosNumber a,PosNumber b){return (a.number==b.number)?a.pos<b.pos:a.number<b.number;});
-       }
+    //     void push_back(Dac_Op op) {
+    //         this->ops.push_back(op);
+    //         this->posNumberList.clear();
+    //     }
+    //     void push_back(Dac_Ops ops) {
+    //         for(int i = 0; i < ops.size; i++) {
+    //             this->ops.push_back(ops[i]);
+    //         }
+    //     }
+    //     /*
+    //         减少一个算子
+    //     */
+    //    void pop_back() {
+    //         this->ops.pop_back();
+    //         this->posNumberList.clear();
+    //    }
 };
 
 #endif
