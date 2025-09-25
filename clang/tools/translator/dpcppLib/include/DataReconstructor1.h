@@ -227,7 +227,7 @@ class DataReconstructor{
 
             int Item_Size = this->myIdx.size();
             sycl::device device = q.get_device();
-            int max_global_size = 256;/*device.get_info<sycl::info::device::max_work_item_sizes<3>>()[2];*/
+            int max_global_size = device.get_info<sycl::info::device::max_work_item_sizes<3>>()[2];
             int work_group_size = (Item_Size + max_global_size - 1) / max_global_size;  // 计算所需的工作组数量
             sycl::range<3> local(1, 1, std::min(Item_Size, max_global_size));
             sycl::range<3> global(1, 1, (Item_Size <= max_global_size) ? Item_Size : work_group_size * max_global_size);
@@ -280,7 +280,7 @@ class DataReconstructor{
             // }
             int Item_Size = this->myIdx.size();
             sycl::device device = q.get_device();
-            int max_global_size = 256;/*device.get_info<sycl::info::device::max_work_item_sizes<3>>()[2];*/
+            int max_global_size = device.get_info<sycl::info::device::max_work_item_sizes<3>>()[2];
             int work_group_size = (Item_Size + max_global_size - 1) / max_global_size;  // 计算所需的工作组数量
             sycl::range<3> local(1, 1, std::min(Item_Size, max_global_size));
             sycl::range<3> global(1, 1, (Item_Size <= max_global_size) ? Item_Size : work_group_size * max_global_size);
