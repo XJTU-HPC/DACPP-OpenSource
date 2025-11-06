@@ -203,7 +203,7 @@ void dacppTranslator::Rewriter::rewriteDac_Buffer() {
             ShellParam* shellParam = shell->getShellParam(NumShellParam);
             if(shellParam->getRw() == 1){
                 divice_memory += BUFFER_TEMPLATE::CodeGen_DeviceMemSizeGenerate(shellParam->getName()+"_Size","In_Ops","Out_Ops","info_"+shellParam->getName());
-                // divice_memory += BUFFER_TEMPLATE::CodeGen_DeviceMemSizeGenerate(shellParam->getName()+"Reduction_Size","info_"+shellParam->getName(),"Reduction_Ops");
+                divice_memory += BUFFER_TEMPLATE::CodeGen_DeviceMemSizeGenerate(shellParam->getName()+"Reduction_Size","info_"+shellParam->getName(),"Reduction_Ops");
             }
             else{
                 divice_memory += BUFFER_TEMPLATE::CodeGen_DeviceMemSizeGenerate(shellParam->getName()+"_Size","info_"+shellParam->getName(),shellParam->getName()+"_Ops");
@@ -245,14 +245,14 @@ void dacppTranslator::Rewriter::rewriteDac_Buffer() {
 
         std::string InitOPS =  dataOpsInit + dataOpsInit_inops + dataOpsInit_outops + dataOpsInit_reductions;
 
-        //生成归约中Split_size中的大小
-        // std::string Init_Reduction_Split_Size = BUFFER_TEMPLATE::CodeGen_Init_Reduction_Split_Size("Reduction_Split_Size","In_Ops","Out_Ops");
+            //生成归约中Split_size中的大小
+        std::string Init_Reduction_Split_Size = BUFFER_TEMPLATE::CodeGen_Init_Reduction_Split_Size("Reduction_Split_Size","In_Ops","Out_Ops");
         //std::cout << Init_Reduction_Split_Size;
 
         //生成归约中Split_length大小
-        // std::string Init_Reduction_Split_Length = BUFFER_TEMPLATE::CodeGen_Init_Reduction_Split_Length("Reduction_Split_Length","Out_Ops");
+        std::string Init_Reduction_Split_Length = BUFFER_TEMPLATE::CodeGen_Init_Reduction_Split_Length("Reduction_Split_Length","Out_Ops");
 
-        std::string ParameterGenerate = BUFFER_TEMPLATE::CodeGen_ParameterGenerate(InitOPS,divice_memory,splitLength,InitSplitLengthMatrix,item_number); 
+        std::string ParameterGenerate = BUFFER_TEMPLATE::CodeGen_ParameterGenerate(InitOPS,divice_memory,splitLength,InitSplitLengthMatrix,item_number,Init_Reduction_Split_Size,Init_Reduction_Split_Length); 
         // std::cout << ParameterGenerate;
         //设置内存分配
         std::string deviceMemAlloc = "";
@@ -260,11 +260,11 @@ void dacppTranslator::Rewriter::rewriteDac_Buffer() {
             ShellParam* shellParam = shell->getShellParam(NumShellParam);
             if(shellParam->getRw() == 1){
                 deviceMemAlloc += BUFFER_TEMPLATE::CodeGen_DeviceMemAlloc(shellParam->getBasicType(),shellParam->getName(),shellParam->getName()+"_Size");
-                // deviceMemAlloc += BUFFER_TEMPLATE::CodeGen_DeviceMemAllocReduction(shellParam->getBasicType(),shellParam->getName(),shellParam->getName()+"Reduction_Size");
+                deviceMemAlloc += BUFFER_TEMPLATE::CodeGen_DeviceMemAllocReduction(shellParam->getBasicType(),shellParam->getName(),shellParam->getName()+"Reduction_Size");
             }
-            // else{
-            //     deviceMemAlloc += BUFFER_TEMPLATE::CodeGen_DeviceMemAlloc(shellParam->getBasicType(),shellParam->getName(),shellParam->getName()+"_Size");
-            // }
+            else{
+                deviceMemAlloc += BUFFER_TEMPLATE::CodeGen_DeviceMemAlloc(shellParam->getBasicType(),shellParam->getName(),shellParam->getName()+"_Size");
+            }
         }
         // std::cout << deviceMemAlloc;
 
@@ -312,15 +312,7 @@ void dacppTranslator::Rewriter::rewriteDac_Buffer() {
         for (int argCount = 0; argCount < shell->getNumShellParams(); argCount++) {
             AccessorInit += BUFFER_TEMPLATE::CodeGen_AccessorInit(shell->getShellParam(argCount)->getName());
         }
-        std::string Accessor_List = "";
-        for (int argCount = 0; argCount < shell->getNumShellParams(); argCount++) {
-            Accessor_List += BUFFER_TEMPLATE::CodeGen_AccessorInit0(shell->getShellParam(argCount)->getName());
-        }
-        std::string Accessor_Pointer_List = "";
-        for (int argCount = 0; argCount < shell->getNumShellParams(); argCount++) {
-            Accessor_Pointer_List += BUFFER_TEMPLATE::CodeGen_AccessorInit1(shell->getShellParam(argCount)->getName());
-        }
-	    std::string KernelExecute = BUFFER_TEMPLATE::CodeGen_KernelExecute("Item_Size",AccessorInit,BindingInit,Accessor_List,Accessor_Pointer_List,CalcEmbed);//注意这里面填的size的大小需要是前面算出来的大小
+	    std::string KernelExecute = BUFFER_TEMPLATE::CodeGen_KernelExecute("Item_Size",AccessorInit,BindingInit,CalcEmbed);//注意这里面填的size的大小需要是前面算出来的大小
         // std::cout << KernelExecute;
 
         std::string Reduction;
@@ -329,7 +321,7 @@ void dacppTranslator::Rewriter::rewriteDac_Buffer() {
         for(int NumShellParam = 0; NumShellParam < shell->getNumShellParams(); NumShellParam++){
             ShellParam* shellParam = shell->getShellParam(NumShellParam);
             if(shellParam->getRw() == 1){
-                // Reduction += BUFFER_TEMPLATE::CodeGen_Reduction_Span(shellParam->getName()+"Reduction_Size","Reduction_Split_Size","Reduction_Split_Length",shellParam->getName(),shellParam->getBasicType(),ReductionRule);
+                Reduction += BUFFER_TEMPLATE::CodeGen_Reduction_Span(shellParam->getName()+"Reduction_Size","Reduction_Split_Size","Reduction_Split_Length",shellParam->getName(),shellParam->getBasicType(),ReductionRule);
 	            Reduction += BUFFER_TEMPLATE::CodeGen_Result_B2H_Mov(shellParam->getName(),shellParam->getName()+"_Size");
             }
         }
@@ -357,13 +349,7 @@ void dacppTranslator::Rewriter::rewriteDac_Buffer() {
                 opPushBack += BUFFER_TEMPLATE::CodeGen_OpPushBack2Ops(shellParam->getName(),split->getId(),std::to_string(split->getDimIdx()));
             }
             std::string dataOpsInit = BUFFER_TEMPLATE::CodeGen_DataOpsInit(shellParam->getName(),opPushBack);
-            // dataRecon += BUFFER_TEMPLATE::CodeGen_DataReconstruct(shellParam->getBasicType(),shellParam->getName(),shellParam->getName()+"_Size",dataOpsInit);
-            if(shellParam->getRw() == 1){
-                dataRecon += BUFFER_TEMPLATE::CodeGen_DataReconstruct1(shellParam->getBasicType(),shellParam->getName(),shellParam->getName()+"_Size",dataOpsInit);
-            }
-            else{
-                dataRecon += BUFFER_TEMPLATE::CodeGen_DataReconstruct(shellParam->getBasicType(),shellParam->getName(),shellParam->getName()+"_Size",dataOpsInit);
-            }
+            dataRecon += BUFFER_TEMPLATE::CodeGen_DataReconstruct(shellParam->getBasicType(),shellParam->getName(),shellParam->getName()+"_Size",dataOpsInit);
        }
         // std::cout << dataRecon;
         // std::cout << "-----------------------------------------------------------------------";

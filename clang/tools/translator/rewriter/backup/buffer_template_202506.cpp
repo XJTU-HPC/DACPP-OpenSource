@@ -132,17 +132,6 @@ std::string CodeGen_IndexInit2(std::string opName,std::string dim_id,std::string
 
 
 //参数生成的总模板  {{ParameterGenerate}}
-// const char *PARA_GENE_Template = R"~~~(
-//     // 参数生成 提前计算后面需要用到的参数	
-// 	{{InitOPS}}
-// 	{{InitDeviceMemorySize}}
-// 	{{InitSplitLength}}
-// 	{{InitSpilitLengthMatrix}}
-// 	{{ItemNumber}}
-// 	{{InitReductionSplitSize}}
-// 	{{InitReductionSplitLength}}
-// )~~~";
-//由于规约功能暂时没用，因此去掉{{InitReductionSplitSize}}和{{InitReductionSplitLength}}：
 const char *PARA_GENE_Template = R"~~~(
     // 参数生成 提前计算后面需要用到的参数	
 	{{InitOPS}}
@@ -150,22 +139,11 @@ const char *PARA_GENE_Template = R"~~~(
 	{{InitSplitLength}}
 	{{InitSpilitLengthMatrix}}
 	{{ItemNumber}}
+	{{InitReductionSplitSize}}
+	{{InitReductionSplitLength}}
 )~~~";
 
-// std::string CodeGen_ParameterGenerate(std::string InitOPS,std::string InitDeviceMemorySize,std::string InitSplitLength,std::string InitSpilitLengthMatrix,std::string ItemNumber,std::string InitReductionSplitSize,std::string InitReductionSplitLength){
-//     return templateString(PARA_GENE_Template,
-// 	{
-// 		{"{{InitOPS}}", InitOPS},
-// 		{"{{InitDeviceMemorySize}}", InitDeviceMemorySize},//设备内存的分配大小计算
-// 		{"{{InitSplitLength}}",InitSplitLength},
-// 		{"{{InitSpilitLengthMatrix}}",InitSpilitLengthMatrix},
-// 		{"{{ItemNumber}}",ItemNumber},
-// 		{"{{InitReductionSplitSize}}",InitReductionSplitSize},
-// 		{"{{InitReductionSplitLength}}",InitReductionSplitLength}
-// 	});
-// }
-//由于规约功能暂时没用，因此去掉{{InitReductionSplitSize}}和{{InitReductionSplitLength}}：
-std::string CodeGen_ParameterGenerate(std::string InitOPS,std::string InitDeviceMemorySize,std::string InitSplitLength,std::string InitSpilitLengthMatrix,std::string ItemNumber){
+std::string CodeGen_ParameterGenerate(std::string InitOPS,std::string InitDeviceMemorySize,std::string InitSplitLength,std::string InitSpilitLengthMatrix,std::string ItemNumber,std::string InitReductionSplitSize,std::string InitReductionSplitLength){
     return templateString(PARA_GENE_Template,
 	{
 		{"{{InitOPS}}", InitOPS},
@@ -173,6 +151,8 @@ std::string CodeGen_ParameterGenerate(std::string InitOPS,std::string InitDevice
 		{"{{InitSplitLength}}",InitSplitLength},
 		{"{{InitSpilitLengthMatrix}}",InitSpilitLengthMatrix},
 		{"{{ItemNumber}}",ItemNumber},
+		{"{{InitReductionSplitSize}}",InitReductionSplitSize},
+		{"{{InitReductionSplitLength}}",InitReductionSplitLength}
 	});
 }
 
@@ -333,35 +313,35 @@ std::string CodeGen_Init_Work_Item_Number(std::string NAME,std::string OPS_NAME)
 }
 
 //{{InitReductionSplitSize}}
-//计算归约中split_size的大小，由于规约功能暂时没用，因此注释掉
-// const char *INIT_REDUCTION_SPLIT_SIZE_Template = R"~~~(
-//     // 计算归约中split_size的大小
-//     int {{NAME}} = para_gene_tool.init_reduction_split_size({{OPS_IN}},{{OPS_OUT}});
-// )~~~";
+//计算归约中split_size的大小
+const char *INIT_REDUCTION_SPLIT_SIZE_Template = R"~~~(
+    // 计算归约中split_size的大小
+    int {{NAME}} = para_gene_tool.init_reduction_split_size({{OPS_IN}},{{OPS_OUT}});
+)~~~";
 
-// std::string CodeGen_Init_Reduction_Split_Size(std::string NAME,std::string OPS_IN,std::string OPS_OUT){
-//     return templateString(INIT_REDUCTION_SPLIT_SIZE_Template,
-// 	{
-// 		{"{{NAME}}",           NAME},//归约中spilitsize的名字
-// 		{"{{OPS_IN}}",       OPS_IN},//输入算子组的名字
-// 		{"{{OPS_OUT}}",     OPS_OUT}//输出算子组的名字
-// 	});
-// }
+std::string CodeGen_Init_Reduction_Split_Size(std::string NAME,std::string OPS_IN,std::string OPS_OUT){
+    return templateString(INIT_REDUCTION_SPLIT_SIZE_Template,
+	{
+		{"{{NAME}}",           NAME},//归约中spilitsize的名字
+		{"{{OPS_IN}}",       OPS_IN},//输入算子组的名字
+		{"{{OPS_OUT}}",     OPS_OUT}//输出算子组的名字
+	});
+}
 
 //{{InitReductionSplitLength}}
-//计算归约中split_length的大小，由于规约功能暂时没用，因此注释掉
-// const char *INIT_REDUCTION_SPLIT_LENGTH_Template = R"~~~(
-//     // 计算归约中split_length的大小
-//     int {{NAME}} = para_gene_tool.init_reduction_split_length({{OPS_NAME}});
-// )~~~";
+//计算归约中split_length的大小
+const char *INIT_REDUCTION_SPLIT_LENGTH_Template = R"~~~(
+    // 计算归约中split_length的大小
+    int {{NAME}} = para_gene_tool.init_reduction_split_length({{OPS_NAME}});
+)~~~";
 
-// std::string CodeGen_Init_Reduction_Split_Length(std::string NAME,std::string OPS_NAME){
-//     return templateString(INIT_REDUCTION_SPLIT_LENGTH_Template,
-// 	{
-// 		{"{{NAME}}",           NAME},//归约中spilitsize的名字
-// 		{"{{OPS_NAME}}",   OPS_NAME} //算子组的名字
-// 	});
-// }
+std::string CodeGen_Init_Reduction_Split_Length(std::string NAME,std::string OPS_NAME){
+    return templateString(INIT_REDUCTION_SPLIT_LENGTH_Template,
+	{
+		{"{{NAME}}",           NAME},//归约中spilitsize的名字
+		{"{{OPS_NAME}}",   OPS_NAME} //算子组的名字
+	});
+}
 
 
 
@@ -382,31 +362,29 @@ std::string CodeGen_DeviceMemAlloc(std::string type,std::string name,std::string
     ACCESSOR_POINTER_LIST += templateString(ACCESSOR_POINTER_Template,{
         {"{{NAME}}", name}
     });
-	string s = templateString(DEVICE_MEM_ALLOC_Template,{
+    return templateString(DEVICE_MEM_ALLOC_Template,{
 		{"{{TYPE}}", type},
 		{"{{NAME}}", name},
-		{"{{SIZE}}", size}});
-
-	ACCESSOR_POINTER_LIST = " ";
-    return s;
+		{"{{SIZE}}", size}
+	});
 }
 
 //目前归约还未使用
-// const char *DEVICE_MEM_ALLOC_REDUCTION_Template = R"~~~(
-//     // 规约Buffer设备内存分配
-//     std::vector<sycl::buffer<{{TYPE}}, 1>> b_reduction_{{NAME}}({{SIZE}}, buffer<{{TYPE}}, 1>{1});
-//     for(int i = 0; i < {{SIZE}}; i++){
-//         host_accessor temp_accessor{b_reduction_{{NAME}}[i]};
-//         temp_accessor[0] = 0;
-//     })~~~";
+const char *DEVICE_MEM_ALLOC_REDUCTION_Template = R"~~~(
+    // 规约Buffer设备内存分配
+    std::vector<sycl::buffer<{{TYPE}}, 1>> b_reduction_{{NAME}}({{SIZE}}, buffer<{{TYPE}}, 1>{1});
+    for(int i = 0; i < {{SIZE}}; i++){
+        host_accessor temp_accessor{b_reduction_{{NAME}}[i]};
+        temp_accessor[0] = 0;
+    })~~~";
 //由于规约时不能用偏移量指示buffer,所以需要定义一个vector存结果
-// std::string CodeGen_DeviceMemAllocReduction(std::string type,std::string name,std::string size){
-//     return templateString(DEVICE_MEM_ALLOC_REDUCTION_Template,{
-// 		{"{{TYPE}}", type},
-// 		{"{{NAME}}", name},
-// 		{"{{SIZE}}", size}
-// 	});
-// }
+std::string CodeGen_DeviceMemAllocReduction(std::string type,std::string name,std::string size){
+    return templateString(DEVICE_MEM_ALLOC_REDUCTION_Template,{
+		{"{{TYPE}}", type},
+		{"{{NAME}}", name},
+		{"{{SIZE}}", size}
+	});
+}
 
 
 
@@ -434,23 +412,49 @@ std::string CodeGen_DataAssocComp(std::string H2DMemMove, std::string dataRecon,
 
 //数据移动
 //{{H2D_MEM_MOV}}
-// const char *D2B_MOV_BUFFER_Template = R"~~~(
-//     // 数据移动
-//     {{TYPE}}* h_{{NAME}} = ({{TYPE}}*)malloc({{NAME}}.getSize()*sizeof({{TYPE}}));
-//     {{NAME}}.tensor2Array(h_{{NAME}});
-//     {
+
+//原始版本 疑似弃用
+// const char *H2D_MEM_MOV_Template = R"~~~(
+//     { //Buffer主机到设备传输数据
 //         host_accessor temp_accessor{b_{{NAME}}};
 //         for(int i = 0; i < {{SIZE}}; i++){
-//             temp_accessor[i] = h_{{NAME}}[i];
+//             temp_accessor[i] = r_{{NAME}}[i];
 //         }
 //     }
 // )~~~";
 
+// std::string CodeGen_H2DMemMov(std::string type,std::string name,std::string size){
+//     return templateString(H2D_MEM_MOV_Template,
+// 	{
+// 		{"{{TYPE}}", type},
+// 		{"{{NAME}}", name},
+// 		{"{{SIZE}}", size}
+// 	});
+// }
+
+//D2B_MOV_BUFFER_Template用于buffer版本的数据重组
+//申请主机内存并赋值，将主机端的数据移动到buffer中 buffer模拟设备端数据
+//由于命名过于混乱 这个模板不嵌套前面的buffer主机到设备传输数据
+/*
+    double* h_matPrev=(double*)malloc(matPrev.getSize()*sizeof(double));
+    matPrev.tensor2Array(h_matPrev);
+    { //Buffer主机到设备传输数据
+        host_accessor temp_accessor{b_matPrev};
+        for(int i = 0; i < matPrev_Size; i++){
+            temp_accessor[i] = h_matPrev[i];
+        }
+    }
+*/
 const char *D2B_MOV_BUFFER_Template = R"~~~(
     // 数据移动
-    {{TYPE}}* h_{{NAME}} = ({{TYPE}}*)malloc({{NAME}}_Size*sizeof({{TYPE}}));
+    {{TYPE}}* h_{{NAME}} = ({{TYPE}}*)malloc({{NAME}}.getSize()*sizeof({{TYPE}}));
     {{NAME}}.tensor2Array(h_{{NAME}});
-	buffer<{{TYPE}}, 1> b_{{NAME}}(h_{{NAME}}, range<1>({{NAME}}_Size));
+    {
+        host_accessor temp_accessor{b_{{NAME}}};
+        for(int i = 0; i < {{SIZE}}; i++){
+            temp_accessor[i] = h_{{NAME}}[i];
+        }
+    }
 )~~~";
 
 std::string CodeGen_D2B_Mov_Buffer(std::string TYPE,std::string NAME,std::string SIZE)
@@ -508,7 +512,7 @@ const char *DATA_RECON_BUFFER_Template = R"~~~(
     // 数据重组
     DataReconstructor<{{TYPE}}> {{NAME}}_tool;
     {{DATA_OPS_INIT}}
-    {{NAME}}_tool.init(info_{{NAME}},{{NAME}}_ops,q);
+    {{NAME}}_tool.init(info_{{NAME}},{{NAME}}_ops);
     buffer<{{TYPE}}> r_{{NAME}}{{{SIZE}}};
     {{NAME}}_tool.Reconstruct(r_{{NAME}},b_{{NAME}},q);
 	std::vector<int> info_partition_{{NAME}}=para_gene_tool.init_partition_data_shape(info_{{NAME}},{{NAME}}_ops);
@@ -517,29 +521,6 @@ const char *DATA_RECON_BUFFER_Template = R"~~~(
 
 std::string CodeGen_DataReconstruct(std::string type,std::string name,std::string size,std::string dataOpsInit){
     return templateString(DATA_RECON_BUFFER_Template,
-	{
-		{"{{TYPE}}",       type},
-		{"{{NAME}}",       name},
-		{"{{SIZE}}",       size},
-		{"{{DATA_OPS_INIT}}", dataOpsInit}
-	});
-}
-
-const char *DATA_RECON_BUFFER_Template1 = R"~~~(
-    // 数据重组
-    DataReconstructor<{{TYPE}}> {{NAME}}_tool;
-    {{DATA_OPS_INIT}}
-
-    // buffer<{{TYPE}}> r_{{NAME}}{{{SIZE}}};
-    std::vector<{{TYPE}}> init({{SIZE}}, 0);
-    sycl::buffer<{{TYPE}}> r_{{NAME}}(init.data(), sycl::range<1>({{SIZE}}));
-
-	std::vector<int> info_partition_{{NAME}}=para_gene_tool.init_partition_data_shape(info_{{NAME}},{{NAME}}_ops);
-    sycl::buffer<int> info_partition_{{NAME}}_buffer(info_partition_{{NAME}}.data(), sycl::range<1>(info_partition_{{NAME}}.size()));
-)~~~";
-
-std::string CodeGen_DataReconstruct1(std::string type,std::string name,std::string size,std::string dataOpsInit){
-    return templateString(DATA_RECON_BUFFER_Template1,
 	{
 		{"{{TYPE}}",       type},
 		{"{{NAME}}",       name},
@@ -581,66 +562,22 @@ std::string CodeGen_OpPushBack2Ops(std::string name, std::string opName, std::st
 
 //内核执行
 //{{KERNEL_EXECUTE}}
-//一维划分的Buffer内核执行模板
+//buffer版本的内核执行
 //和usm不同的是增加获得访问器以及获得访问器指针的操作
-// const char *KERNEL_EXECUTE_Template = R"~~~(
-//     sycl::device device = q.get_device();
-//     int max_global_size = device.get_info<sycl::info::device::max_work_item_sizes<3>>()[2];
-// 	//工作项划分
-//     int work_group_size = (Item_Size + max_global_size - 1) / max_global_size;  // 计算所需的工作组数量
-//     sycl::range<3> local(1, 1, std::min(Item_Size, max_global_size)); 
-//     sycl::range<3> global(1, 1, (Item_Size <= max_global_size) ? Item_Size : work_group_size * max_global_size);
-
-//     //队列提交命令组
-//     q.submit([&](handler &h) {
-//     {{ACCESSOR_LIST}}
-//     {{ACCESSOR_INIT}}
-//         h.parallel_for(sycl::nd_range<3>(global, local),[=](sycl::nd_item<3> item) {
-//             const auto item_id = item.get_group(2)*item.get_local_range(2)+item.get_local_id(2);
-//             if(item_id >= Item_Size)
-//                 return;
-//             // 索引初始化
-// 			{{INDEX_INIT}}
-//             // 获得accessor指针
-//             {{ACCESSOR_POINTER_LIST}}
-//             // 嵌入计算
-// 			{{CALC_EMBED}}
-//         });
-//     }).wait();
-    
-// )~~~";
-
-//二维划分的Buffer内核执行模板
 const char *KERNEL_EXECUTE_Template = R"~~~(
     sycl::device device = q.get_device();
-    auto max_sizes = device.get_info<sycl::info::device::max_work_item_sizes<3>>();
-    int max_global_size_x = max_sizes[0];
-    int max_global_size_y = max_sizes[1];
-    int max_global_size_z = max_sizes[2];
-
-	// 二维划分（可测试三维拓展）
-    int dim_x = (int)sycl::ceil(sycl::sqrt((float)Item_Size));
-    int dim_y = (int)sycl::ceil((float)Item_Size / dim_x);
-
-    // 固定 local 为 16×16，但受设备上限约束
-    int local_x = std::min(16, max_global_size_x);
-    int local_y = std::min(16, max_global_size_y);
-
-    // 对齐 global 到 local 的整数倍（防止越界）
-    int global_x = ((dim_x + local_x - 1) / local_x) * local_x;
-    int global_y = ((dim_y + local_y - 1) / local_y) * local_y;
-
-    sycl::range<2> local(local_x, local_y);
-    sycl::range<2> global(global_x, global_y);
+    int max_global_size = device.get_info<sycl::info::device::max_work_item_sizes<3>>()[2];
+	//工作项划分
+    int work_group_size = (Item_Size + max_global_size - 1) / max_global_size;  // 计算所需的工作组数量
+    sycl::range<3> local(1, 1, std::min(Item_Size, max_global_size)); 
+    sycl::range<3> global(1, 1, (Item_Size <= max_global_size) ? Item_Size : work_group_size * max_global_size);
 
     //队列提交命令组
     q.submit([&](handler &h) {
     {{ACCESSOR_LIST}}
     {{ACCESSOR_INIT}}
-        h.parallel_for(sycl::nd_range<2>(global, local), [=](sycl::nd_item<2> item) {
-            int gx = item.get_global_id(0);
-            int gy = item.get_global_id(1);
-            int item_id = gx * global[1] + gy;
+        h.parallel_for(sycl::nd_range<3>(global, local),[=](sycl::nd_item<3> item) {
+            const auto item_id = item.get_group(2)*item.get_local_range(2)+item.get_local_id(2);
             if(item_id >= Item_Size)
                 return;
             // 索引初始化
@@ -653,35 +590,42 @@ const char *KERNEL_EXECUTE_Template = R"~~~(
     }).wait();
     
 )~~~";
-//内核执行中的{{ACCESSOR_LIST}}，需要把A、B、C都传入，以免受到Rewriter_Buffer.cpp中第204行的判断读写的逻辑的干扰
-const char* ACCESSOR_LIST_K =  R"~~~(
-        accessor acc_{{NAME}}{r_{{NAME}}, h};)~~~";
-std::string CodeGen_AccessorInit0(std::string name){
-	return templateString(ACCESSOR_LIST_K,{
-		{"{{NAME}}", name}
-	});
-}
-//内核执行中的{{ACCESSOR_POINTER_LIST}}，需要把A、B、C都传入，以免受到Rewriter_Buffer.cpp中第204行的判断读写的逻辑的干扰
-const char* ACCESSOR_POINTER_LIST_K =  R"~~~(
-            auto* d_{{NAME}} = acc_{{NAME}}.get_multi_ptr<access::decorated::no>().get();)~~~";
-std::string CodeGen_AccessorInit1(std::string name){
-	return templateString(ACCESSOR_POINTER_LIST_K,{
-		{"{{NAME}}", name}
-	});
-}
 
-std::string CodeGen_KernelExecute(std::string SplitSize, std::string AccessorInit, std::string IndexInit,std::string ACCESSOR_LIST1, std::string ACCESSOR_LIST2, std::string CalcEmbed){
+std::string CodeGen_KernelExecute(std::string SplitSize, std::string AccessorInit, std::string IndexInit, std::string CalcEmbed){
     return templateString(KERNEL_EXECUTE_Template,
 	{
 		{"{{SPLIT_SIZE}}",    SplitSize},
 		{"{{INDEX_INIT}}",    IndexInit},
 		{"{{CALC_EMBED}}",    CalcEmbed},
         {"{{ACCESSOR_INIT}}", AccessorInit},
-        // {"{{ACCESSOR_LIST}}",   BUFFER_ACCESSOR_LIST},
-		{"{{ACCESSOR_LIST}}",  ACCESSOR_LIST1},
-        {"{{ACCESSOR_POINTER_LIST}}",   ACCESSOR_LIST2}
+        {"{{ACCESSOR_LIST}}",   BUFFER_ACCESSOR_LIST},
+        {"{{ACCESSOR_POINTER_LIST}}",   ACCESSOR_POINTER_LIST}
 	});
 }
+
+//疑似弃用
+// string CodeGen_KernelExecute_ArrayList(string SplitSize, std::string AccessorInit, string IndexInit, string CalcEmbed, std::initializer_list<string> values){
+    
+//     std::string USE_ACCESSOR_List="";
+//     std::string USE_ACCESSOR_POINTER_LIST="";
+//     for(string value : values){
+//         USE_ACCESSOR_List += templateString(BUFFER_ACCESSOR_Template,{
+//             {"{{NAME}}", value}
+//         });
+//         USE_ACCESSOR_POINTER_LIST += templateString(ACCESSOR_POINTER_Template,{
+//             {"{{NAME}}", value}
+//         });
+//     }    
+//     return templateString(KERNEL_EXECUTE_Template,
+//     {
+//         {"{{SPLIT_SIZE}}",    SplitSize},
+//         {"{{INDEX_INIT}}",    IndexInit},
+//         {"{{CALC_EMBED}}",    CalcEmbed},
+//         {"{{ACCESSOR_INIT}}", AccessorInit},
+//         {"{{ACCESSOR_LIST}}",   USE_ACCESSOR_List},
+//         {"{{ACCESSOR_POINTER_LIST}}",   USE_ACCESSOR_POINTER_LIST}
+//     });
+// }
 
 // 访问器初始化
 // {{ACCESSOR_INIT}}
@@ -846,12 +790,55 @@ std::string CodeGen_Reduction_Span(std::string SpanSize,std::string SplitSize,st
 	});
 }
 
+
+//下这个已经废弃 因为这个是将b_name中的数据返回到主机上的r_name中，然后进行数据的逆重组
+//现在r_name存的是最终的结果，要先逆重组到b_name，再返回到主机的h_name中
+//而且归并和归约模板似乎是一样的
+// const char *D2H_MEM_MOV_1_Template = R"~~~(
+//     // 归并结果返回
+//     {
+//         host_accessor temp_accessor{b_{{NAME}}};
+//         for(int i = 0; i < {{SIZE}}; i++){
+//             r_{{NAME}}[i] = temp_accessor[i];
+//         }
+//     }
+//     {{NAME}}_tool.UpdateData(r_{{NAME}},{{NAME}});)~~~";
+
+// const char *D2H_MEM_MOV_2_Template = R"~~~(
+//     // 归约结果返回
+//     {
+//         host_accessor temp_accessor{b_{{NAME}}};
+//         for(int i = 0; i < {{SIZE}}; i++){
+//             r_{{NAME}}[i] = temp_accessor[i];
+//         }
+//     }
+//     {{NAME}}_tool.UpdateData(r_{{NAME}},{{NAME}});)~~~";
+
+// std::string CodeGen_D2HMemMov(std::string Name,std::string Type,std::string Size,bool isReduction){
+//     if(isReduction){
+// 		return templateString(D2H_MEM_MOV_2_Template,
+// 		{
+// 			{"{{TYPE}}",            Type},
+// 			{"{{NAME}}",            Name},
+// 			{"{{SIZE}}",            Size}
+// 		});
+// 	}
+// 	else{
+// 		return templateString(D2H_MEM_MOV_1_Template,
+// 		{
+// 			{"{{TYPE}}",            Type},
+// 			{"{{NAME}}",            Name},
+// 			{"{{SIZE}}",            Size}
+// 		});
+// 	}
+// }
+
 //结果返回
 //{{D2H_MEM_MOV}}
 //先将r_name中的数据逆重组到b_name,再将b_name数据传输到h_name
 const char *RESULT_B2H_MOV_Template = R"~~~(
     //结果返回
-    {{NAME}}_tool.UpdateData(r_{{NAME}},b_{{NAME}},q,{{NAME}}_Size);
+    {{NAME}}_tool.UpdateData(r_{{NAME}},b_{{NAME}},q);
     {
         host_accessor temp_accessor{b_{{NAME}}};
         for(int i = 0; i < {{SIZE}}; i++){
