@@ -1,3 +1,4 @@
+//lsj优化后的Tensor 优化数据传输与初始化 通过大规模buffer模型测试
 #ifndef RECONTENSOR_H
 #define RECONTENSOR_H
 
@@ -8,7 +9,11 @@
 #include <memory>
 #include "Slice.h"
 #include "FuncTensor.hpp"
-
+#include <cstring>
+#include <vector>
+#include <type_traits>
+#include <iomanip> // 记得包含这个头文件
+#include <chrono>     // for std::chrono
 
 
 namespace dacpp {
@@ -20,12 +25,12 @@ namespace dacpp {
     void swap(const T1&, const U1&) {
         // 什么都不做，避免真正执行
     }
-    
+     
     template <class T, int N>
     class TensorProxy;
     template <class T>
     class TensorProxy <T, 1>;
-
+  
     template<class ImplType>
     class TensorBase{
     public:
@@ -33,7 +38,7 @@ namespace dacpp {
             return FuncTensor<ImplType>(this->data_, this->offset_, this->dim_, this->shape_, this->stride_);
         };
         std::shared_ptr<ImplType> getDataPtr() const;
-        int getOffset() const;
+         int getOffset() const;
         int getDim() const;
         std::shared_ptr<int> getShapePtr() const;
         std::shared_ptr<int> getStridePtr() const;
@@ -61,6 +66,7 @@ namespace dacpp {
         std::shared_ptr<int> shape_;
         std::shared_ptr<int> stride_;
         int current_dim = 0;
+        std::vector<ImplType> tmp_data;
     };
     template <class ImplType>
     int TensorBase<ImplType> :: getStride(int dimIdx) const {return this->stride_.get()[dimIdx];}
@@ -76,7 +82,7 @@ namespace dacpp {
     int TensorBase<ImplType> :: getOffset() const {return this->offset_;}
     template <class ImplType>
     int TensorBase<ImplType> :: getDim() const {return this->dim_;}
-
+ 
     template<class ImplType>
     int TensorBase<ImplType> :: getSize() const {
         int size = 1;
@@ -86,19 +92,180 @@ namespace dacpp {
         return size;
     }
     template<class ImplType>
-    void TensorBase<ImplType> :: tensor2Array(ImplType* data) const {int idx = 0;recursiveTake(data, idx, 0);}
-    template<class ImplType>
-    void TensorBase<ImplType> :: tensor2Array(std::vector <ImplType>& data) const {
-        int Element = 1;
-        for(int i = 0; i < this->dim_; i++)    Element *= this->shape_.get()[i];
-        data.resize(Element);
-        int idx = 0;
-        recursiveTake(data, idx, 0);
+    void TensorBase<ImplType> :: tensor2Array(ImplType* data) const { 
+    const int total_size = getSize();
+    const ImplType* src = this->data_.get();
+    const int offset = this->offset_;
+    const int* stride = this->stride_.get();
+    const int* shape  = this->shape_.get();
+    const int dim = this->dim_;
+
+    // 判断是否连续存储
+    bool is_contiguous = true;
+    int expected_stride = 1;
+    for (int i = dim - 1; i >= 0; --i) {
+        if (stride[i] != expected_stride) {
+            is_contiguous = false;
+            break;
+        }
+        expected_stride *= shape[i];
     }
+
+    // 连续存储：直接 memcpy
+    if (is_contiguous) {
+        std::memcpy(data, src + offset, sizeof(ImplType) * total_size);
+        return;
+    }
+
+    // 非连续存储：线性访问转换
+    std::vector<int> idx(dim, 0);
+    for (int linear = 0; linear < total_size; ++linear) {
+        int real_index = offset;
+        for (int d = 0; d < dim; ++d) {
+            real_index += idx[d] * stride[d];
+        }
+        data[linear] = src[real_index];
+
+        // 增加多维坐标
+        for (int d = dim - 1; d >= 0; --d) {
+            idx[d]++;
+            if (idx[d] < shape[d]) break;
+            idx[d] = 0;
+        }
+    }
+}
     template<class ImplType>
-    void TensorBase<ImplType> :: array2Tensor(ImplType* data) {int idx = 0;recursiveBring(data, idx, 0);}
+    void TensorBase<ImplType>::tensor2Array(std::vector<ImplType>& data) const {
+    const int total_size = getSize();
+    data.resize(total_size); // 调整输出 vector 大小
+
+    ImplType* dst = data.data();                // 输出指针
+    const ImplType* src = this->data_.get();    // 源指针
+    const int offset = this->offset_;
+    const int* stride = this->stride_.get();
+    const int* shape  = this->shape_.get();
+    const int dim = this->dim_;
+
+    // 判断是否连续存储
+    bool is_contiguous = true;
+    int expected_stride = 1;
+    for (int i = dim - 1; i >= 0; --i) {
+        if (stride[i] != expected_stride) {
+            is_contiguous = false;
+            break;
+        }
+        expected_stride *= shape[i];
+    }
+
+    // 连续存储：直接 memcpy
+    if (is_contiguous) {
+        std::memcpy(dst, src + offset, sizeof(ImplType) * total_size);
+    } else {
+        // 非连续存储：线性访问转换
+        std::vector<int> idx(dim, 0);
+        for (int linear = 0; linear < total_size; ++linear) {
+            int real_index = offset;
+            for (int d = 0; d < dim; ++d) {
+                real_index += idx[d] * stride[d];
+            }
+            dst[linear] = src[real_index];
+
+            // 多维索引递增
+            for (int d = dim - 1; d >= 0; --d) {
+                idx[d]++;
+                if (idx[d] < shape[d]) break;
+                idx[d] = 0;
+            }
+        }
+    }
+}
     template<class ImplType>
-    void TensorBase<ImplType> :: array2Tensor(std::vector <ImplType> data) {int idx = 0;recursiveBring(data, idx, 0);}
+    void TensorBase<ImplType> :: array2Tensor(ImplType* data) {
+    const int total_size = getSize();
+    ImplType* dst = this->data_.get();
+    const int offset = this->offset_;
+    const int* stride = this->stride_.get();
+    const int* shape  = this->shape_.get();
+    const int dim = this->dim_;
+
+    // 判断是否连续存储
+    bool is_contiguous = true;
+    int expected_stride = 1;
+    for (int i = dim - 1; i >= 0; --i) {
+        if (stride[i] != expected_stride) {
+            is_contiguous = false;
+            break;
+        }
+        expected_stride *= shape[i];
+    }
+
+    // 连续存储：直接 memcpy
+    if (is_contiguous) {
+        std::memcpy(dst + offset, data, sizeof(ImplType) * total_size);
+        return;
+    }
+ 
+    // 非连续存储：线性访问转换
+    std::vector<int> idx(dim, 0);
+    for (int linear = 0; linear < total_size; ++linear) {
+        int real_index = offset;
+        for (int d = 0; d < dim; ++d) {
+            real_index += idx[d] * stride[d];
+        }
+        dst[real_index] = data[linear];
+
+        // 增加多维坐标
+        for (int d = dim - 1; d >= 0; --d) {
+            idx[d]++;
+            if (idx[d] < shape[d]) break;
+            idx[d] = 0;
+        }
+    }
+}
+    template<class ImplType>
+    void TensorBase<ImplType>::array2Tensor(std::vector<ImplType> data) {
+
+    const int total_size = getSize();
+    ImplType* dst = this->data_.get();   // Tensor 内存指针
+    const int offset = this->offset_;
+    const int* stride = this->stride_.get();
+    const int* shape  = this->shape_.get();
+    const int dim = this->dim_;
+
+    // 判断是否连续存储
+    bool is_contiguous = true;
+    int expected_stride = 1;
+    for (int i = dim - 1; i >= 0; --i) {
+        if (stride[i] != expected_stride) {
+            is_contiguous = false;
+            break;
+        }
+        expected_stride *= shape[i];
+    }
+
+    // 连续存储：直接 memcpy
+    if (is_contiguous) {
+        std::memcpy(dst + offset, data.data(), sizeof(ImplType) * total_size);
+    } else {
+        // 非连续存储：线性访问转换
+        std::vector<int> idx(dim, 0);
+        for (int linear = 0; linear < total_size; ++linear) {
+            int real_index = offset;
+            for (int d = 0; d < dim; ++d) {
+                real_index += idx[d] * stride[d];
+            }
+            dst[real_index] = data[linear];
+
+            // 多维索引递增
+            for (int d = dim - 1; d >= 0; --d) {
+                idx[d]++;
+                if (idx[d] < shape[d]) break;
+                idx[d] = 0;
+            }
+        }
+    }
+
+}
     template<class ImplType>
     void TensorBase<ImplType> :: print() const {
         recursivePrint(0);
@@ -112,7 +279,7 @@ namespace dacpp {
     void TensorBase<ImplType> :: NextDim(){
         this->current_dim ++;
     }
-    template<class ImplType>
+     template<class ImplType>
     void TensorBase<ImplType> :: recursiveTake(ImplType* data, int &idx, int dimIdx) const {
         static std::vector<int> indices;
         if(dimIdx == this->dim_) {
@@ -127,7 +294,7 @@ namespace dacpp {
             recursiveTake(data, idx, dimIdx + 1);
             indices.pop_back();
         }
-    }
+    } 
     template<class ImplType>
     void TensorBase<ImplType> :: recursiveTake(std::vector <ImplType>& data, int &idx, int dimIdx) const {
         static std::vector<int> indices;
@@ -219,6 +386,17 @@ namespace dacpp {
         friend class dacpp::TensorProxy<ImplType, N>;
         friend class dacpp::TensorProxy<ImplType, 1>;
     public:
+    /***************************************************************** */
+        void takeOwnership(int*& ptr) {
+            this->data_.reset(ptr);
+            ptr = nullptr;
+        }
+
+        void takeOwnership( std::vector<ImplType>& vec) {
+            this->tmp_data = std::move(vec);
+            this->data_.reset(this->tmp_data.data(), [](ImplType*){ /* 不删除数据 */ });
+        }
+    /************************************************************************************ */
         Tensor(){
             this->dim_ = N;
             this->shape_.reset(new int[N]);
@@ -227,8 +405,8 @@ namespace dacpp {
         Tensor(const TensorProxy<ImplType, N> &x);
         Tensor(const TensorProxy<ImplType, N> &&x);
         Tensor(const Tensor<ImplType, N> &x);
-        Tensor(const std::vector<int> values, const ImplType* data);
-        Tensor(const std::vector<int> values, const std::vector<ImplType> data);
+        Tensor(const std::vector<int> values, ImplType*& data);
+        Tensor(const std::vector<int> values, std::vector<ImplType>& data);
         Tensor(const std::vector<int> values, ImplType data = 0);
         Tensor(std::shared_ptr<ImplType> data, int offset, int dim, std::shared_ptr<int> shape, std::shared_ptr<int> stride);
         Tensor(std::shared_ptr<ImplType> data, int offset, int dim, std::shared_ptr<int> shape, std::shared_ptr<int> stride, int currentdim);
@@ -329,15 +507,15 @@ namespace dacpp {
         }
         for(int i = 0; i < data.size(); i++)
             this->data_.get()[i] = data[i];
-    }//Shape可以直接=过来,但是offset=0之后stride需要重算
+    }
     template<class ImplType, int N>
-    Tensor<ImplType, N> :: Tensor(const std::vector<int> values, const ImplType* data){
+    Tensor<ImplType, N> :: Tensor(const std::vector<int> values, ImplType*& data){
         int ElementSize = 1;
         for(auto value : values)    ElementSize *= value;
         this->data_ = std::shared_ptr<ImplType>
             (new ImplType[ElementSize], std::default_delete<ImplType[]>());
-        for(int i = 0; i < ElementSize; i++)
-            this->data_.get()[i] = data[i];
+        // std::cout<<"新版本已调用1"<<std::endl;
+        takeOwnership(data);
         this->offset_ = 0;
         this->dim_ = values.size();
         this->shape_ = std::shared_ptr<int>(new int[this->dim_], std::default_delete<int[]>());
@@ -354,15 +532,17 @@ namespace dacpp {
         }
     }
     template<class ImplType, int N>
-    Tensor<ImplType, N> :: Tensor(const std::vector<int> values, const std::vector<ImplType> data){
+    Tensor<ImplType, N> :: Tensor(const std::vector<int> values, std::vector<ImplType>& data){
         int ElementSize = 1;
         for(auto value : values)    ElementSize *= value;
         if(ElementSize != data.size())  
             throw std::runtime_error("The number of elements in the vector does not correspond to the Shape.");
-        this->data_ = std::shared_ptr<ImplType>
-            (new ImplType[data.size()], std::default_delete<ImplType[]>());
-        for(size_t i = 0; i < data.size(); i++)
-            this->data_.get()[i] = data[i];
+        // this->data_ = std::shared_ptr<ImplType>
+        //     (new ImplType[data.size()], std::default_delete<ImplType[]>());
+        // for(size_t i = 0; i < data.size(); i++)
+        //     this->data_.get()[i] = data[i];
+        // std::cout<<"新版本已调用2"<<std::endl;
+        takeOwnership( data);
         this->offset_ = 0;
         this->dim_ = values.size();
         this->shape_ = std::shared_ptr<int>(new int[this->dim_], std::default_delete<int[]>());
