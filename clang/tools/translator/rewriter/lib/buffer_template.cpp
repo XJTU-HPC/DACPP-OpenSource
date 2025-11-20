@@ -622,7 +622,7 @@ const char *KERNEL_EXECUTE_Template = R"~~~(
     int dim_x = (int)sycl::ceil(sycl::sqrt((float)Item_Size));
     int dim_y = (int)sycl::ceil((float)Item_Size / dim_x);
 
-    // 固定 local 为 16×16，但受设备上限约束
+    // 固定 local 为 16*16,但受设备上限约束
     int local_x = std::min(16, max_global_size_x);
     int local_y = std::min(16, max_global_size_y);
 

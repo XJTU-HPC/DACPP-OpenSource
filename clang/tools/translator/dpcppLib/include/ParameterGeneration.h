@@ -143,6 +143,9 @@ class ParameterGeneration
 
         //计算数据被算子作用后数据单元的形状 本质上就是存了几个数字 比如划分之后是3*3的矩阵 那么这个vector就存了3 3
         //可以用一个矩阵来理解一下
+        //对于mat[idx][] mat[][idx]期望是二维的1 N、N 1   mat[idx][idx]期望得到 1 1
+        // array[index]期望是1
+        // array[]期望是N
         std::vector<int> init_partition_data_shape(DataInfo data_info,Dac_Ops ops) {
             std::vector<int> tmp=data_info.dimLength;//tmp就是数据每个维度的个数
             for(int i=0;i<ops.size;i++) {
@@ -150,11 +153,11 @@ class ParameterGeneration
             }
             std::vector<int> res;//存结果的数值
             for(int i=0;i<tmp.size();i++) {
-                if(tmp[i]==1) continue;//如果说这一维是1就忽略不计
+                //if(tmp[i]==1) continue;//原来的数据是几维的 划分后的数据就是几维的 1维的不能忽略
                 res.push_back(tmp[i]);
             }
             return res;//返回最终的结果
-        }
+        }   
 
         int init_Data_SplitNum(Dac_Ops ops,DataInfo data_info){
             int result = 1;//初始化结果为1 
