@@ -67,7 +67,8 @@ namespace USM_TEMPLATE {
     std::string CodeGen_DataInfoInit(std::string name);
     std::string CodeGen_RegularSliceInit2(std::string opName, std::string size, std::string stride, std::string dim_id, std::string DATA_INFO_NAME);
     std::string CodeGen_IndexInit2(std::string opName, std::string dim_id, std::string DATA_INFO_NAME);
-    std::string CodeGen_ParameterGenerate(std::string InitOPS, std::string InitDeviceMemorySize, std::string InitSplitLength, std::string InitSpilitLengthMatrix, std::string ItemNumber, std::string InitReductionSplitSize, std::string InitReductionSplitLength);
+    // std::string CodeGen_ParameterGenerate(std::string InitOPS, std::string InitDeviceMemorySize, std::string InitSplitLength, std::string InitSpilitLengthMatrix, std::string ItemNumber, std::string InitReductionSplitSize, std::string InitReductionSplitLength);
+    std::string CodeGen_ParameterGenerate(std::string InitOPS, std::string InitDeviceMemorySize, std::string InitSplitLength, std::string InitSpilitLengthMatrix, std::string ItemNumber);
     std::string CodeGen_DataOpsInit2(std::string OPS_NAME, std::string ADD_OP2OPS);
     std::string CodeGen_AddOp2Ops(std::string OP_NAME, std::string DIM_ID, std::string OPS_NAME);
     std::string CodeGen_DeviceMemSizeGenerate(std::string NAME, std::string DATA_INFO_NAME, std::string DACOPS_NAME);
@@ -78,8 +79,8 @@ namespace USM_TEMPLATE {
     std::string CodeGen_Declare_DacOps_Vector(std::string OPSS_NAME, std::string PUSH_BACK_DAC_OPS);
     std::string CodeGen_Add_DacOps2Vector(std::string OPSS_NAME, std::string OPS_NAME);
     std::string CodeGen_Init_Work_Item_Number(std::string NAME, std::string OPS_NAME);
-    std::string CodeGen_Init_Reduction_Split_Size(std::string NAME, std::string OPS_IN, std::string OPS_OUT);
-    std::string CodeGen_Init_Reduction_Split_Length(std::string NAME, std::string OPS_NAME);
+    // std::string CodeGen_Init_Reduction_Split_Size(std::string NAME, std::string OPS_IN, std::string OPS_OUT);
+    // std::string CodeGen_Init_Reduction_Split_Length(std::string NAME, std::string OPS_NAME);
     std::string CodeGen_DeviceMemAlloc(std::string type, std::string name, std::string size);
     std::string CodeGen_DeviceMemAllocReduction(std::string type, std::string name, std::string size);
     std::string CodeGen_DataAssocComp(std::string H2DMemMove, std::string dataRecon, std::string kernelExecute, std::string reduction, std::string D2HMemMove);

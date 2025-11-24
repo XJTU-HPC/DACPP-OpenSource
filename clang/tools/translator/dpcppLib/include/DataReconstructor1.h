@@ -606,73 +606,166 @@ class DataReconstructor{
         }
 
         
-        //USM版本的数据逆重组
-        void UpdateData(ImplType* res, ImplType* myTensor, sycl::queue& q)
+        //USM版本的数据逆重组，老版，已废弃不用
+        // void UpdateData(ImplType* res, ImplType* myTensor, sycl::queue& q)
+        // {
+        //     int Item_Size = this->myIdxSize;
+        //     sycl::device device = q.get_device();
+        //     int max_global_size = device.get_info<sycl::info::device::max_work_item_sizes<3>>()[2];
+        //     int work_group_size = (Item_Size + max_global_size - 1) / max_global_size;  // 计算所需的工作组数量
+        //     sycl::range<3> local(1, 1, std::min(Item_Size, max_global_size));
+        //     sycl::range<3> global(1, 1, (Item_Size <= max_global_size) ? Item_Size : work_group_size * max_global_size);
+        //     q.submit([&](handler &h) {
+        //         int *myIdx_d = this->myIdx;
+        //         // auto myIdxAccessor = myIdxBuffer.get_access<sycl::access::mode::write>(h);
+        //         h.parallel_for(sycl::nd_range<3>(global, local),[=](sycl::nd_item<3> item) {
+        //             const auto item_id = item.get_group(2)*item.get_local_range(2)+item.get_local_id(2);
+        //             if(item_id >= Item_Size)
+        //                 return;
+        //             myTensor[myIdx_d[item_id]] = res[item_id];
+        //         });
+        //     }).wait();
+        // }
+        
+        //USM版本的数据逆重组（一维划分）
+        // void UpdateData(ImplType* res, ImplType* myTensor, sycl::queue& q,int Item_Size1)
+        // {
+        //     int Item_Size = Item_Size1;
+        //     sycl::device device = q.get_device();
+        //     int max_global_size = device.get_info<sycl::info::device::max_work_item_sizes<3>>()[2];
+        //     int work_group_size = (Item_Size + max_global_size - 1) / max_global_size;  // 计算所需的工作组数量
+        //     sycl::range<3> local(1, 1, std::min(Item_Size, max_global_size));
+        //     sycl::range<3> global(1, 1, (Item_Size <= max_global_size) ? Item_Size : work_group_size * max_global_size);
+        //     q.submit([&](handler &h) {
+        //         h.parallel_for<class MyKernel4>(sycl::nd_range<3>(global, local),[=](sycl::nd_item<3> item) {
+        //             const auto item_id = item.get_group(2)*item.get_local_range(2)+item.get_local_id(2);
+        //             if(item_id >= Item_Size)
+        //                 return;
+        //             myTensor[item_id] = res[item_id];
+        //         });
+        //     }).wait();
+        // }
+
+        //USM版本的数据逆重组（二维划分）
+        void UpdateData(ImplType* res, ImplType* myTensor, sycl::queue& q,int Item_Size1)
         {
-            int Item_Size = this->myIdxSize;
+            int Item_Size = Item_Size1;
             sycl::device device = q.get_device();
-            int max_global_size = device.get_info<sycl::info::device::max_work_item_sizes<3>>()[2];
-            int work_group_size = (Item_Size + max_global_size - 1) / max_global_size;  // 计算所需的工作组数量
-            sycl::range<3> local(1, 1, std::min(Item_Size, max_global_size));
-            sycl::range<3> global(1, 1, (Item_Size <= max_global_size) ? Item_Size : work_group_size * max_global_size);
+            auto max_sizes = device.get_info<sycl::info::device::max_work_item_sizes<3>>();
+            int max_global_size_x = max_sizes[0];
+            int max_global_size_y = max_sizes[1];
+            int max_global_size_z = max_sizes[2];
+
+	        // 二维划分（可测试三维拓展）
+            int dim_x = (int)sycl::ceil(sycl::sqrt((float)Item_Size));
+            int dim_y = (int)sycl::ceil((float)Item_Size / dim_x);
+
+            // 固定 local 为 16×16，但受设备上限约束
+            int local_x = std::min(16, max_global_size_x);
+            int local_y = std::min(16, max_global_size_y);
+
+            // 对齐 global 到 local 的整数倍（防止越界）
+            int global_x = ((dim_x + local_x - 1) / local_x) * local_x;
+            int global_y = ((dim_y + local_y - 1) / local_y) * local_y;
+            
+            sycl::range<2> local(local_x, local_y);
+            sycl::range<2> global(global_x, global_y);
             q.submit([&](handler &h) {
-                int *myIdx_d = this->myIdx;
-                // auto myIdxAccessor = myIdxBuffer.get_access<sycl::access::mode::write>(h);
-                h.parallel_for(sycl::nd_range<3>(global, local),[=](sycl::nd_item<3> item) {
-                    const auto item_id = item.get_group(2)*item.get_local_range(2)+item.get_local_id(2);
+                h.parallel_for<class MyKernel4>(sycl::nd_range<2>(global, local),[=](sycl::nd_item<2> item) {
+                    int gx = item.get_global_id(0);
+                    int gy = item.get_global_id(1);
+                    int item_id = gx * global[1] + gy;
                     if(item_id >= Item_Size)
                         return;
-                    myTensor[myIdx_d[item_id]] = res[item_id];
-                });
-            }).wait();
-        }
-        
-        //Buffer版本的数据逆重组
-        void UpdateData(sycl::buffer<ImplType, 1> &resBuffer,sycl::buffer<ImplType, 1> &myTensorBuffer,sycl::queue &q)
-        {
-            int Item_Size = this->myIdxSize;
-            sycl::device device = q.get_device();
-            int max_global_size = device.get_info<sycl::info::device::max_work_item_sizes<3>>()[2];
-            int work_group_size = (Item_Size + max_global_size - 1) / max_global_size;
-
-            sycl::range<3> local(1, 1, std::min(Item_Size, max_global_size));
-            sycl::range<3> global(1, 1, (Item_Size <= max_global_size)
-                                            ? Item_Size
-                                            : work_group_size * max_global_size);
-            q.submit([&](sycl::handler &h) {
-                // 访问三个 buffer
-                auto myIdx_acc = this->myIdxBuffer.template get_access<sycl::access::mode::read>(h);
-                auto res_acc = resBuffer.template get_access<sycl::access::mode::read>(h);
-                auto myTensor_acc = myTensorBuffer.template get_access<sycl::access::mode::write>(h);
-                h.parallel_for(sycl::nd_range<3>(global, local),[=](sycl::nd_item<3> item) {
-                    const auto item_id = item.get_group(2) * item.get_local_range(2) + item.get_local_id(2);
-                    if (item_id >= Item_Size)
-                        return;
-                    // 数据逆重组
-                    myTensor_acc[myIdx_acc[item_id]] = res_acc[item_id];
+                    myTensor[item_id] = res[item_id];
                 });
             }).wait();
         }
 
-        //数据逆重组
+        //Buffer版本的数据逆重组，旧版，已废弃不用
+        // void UpdateData(sycl::buffer<ImplType, 1> &resBuffer,sycl::buffer<ImplType, 1> &myTensorBuffer,sycl::queue &q)
+        // {
+        //     int Item_Size = this->myIdxSize;
+        //     sycl::device device = q.get_device();
+        //     int max_global_size = device.get_info<sycl::info::device::max_work_item_sizes<3>>()[2];
+        //     int work_group_size = (Item_Size + max_global_size - 1) / max_global_size;
+
+        //     sycl::range<3> local(1, 1, std::min(Item_Size, max_global_size));
+        //     sycl::range<3> global(1, 1, (Item_Size <= max_global_size)
+        //                                     ? Item_Size
+        //                                     : work_group_size * max_global_size);
+        //     q.submit([&](sycl::handler &h) {
+        //         // 访问三个 buffer
+        //         auto myIdx_acc = this->myIdxBuffer.template get_access<sycl::access::mode::read>(h);
+        //         auto res_acc = resBuffer.template get_access<sycl::access::mode::read>(h);
+        //         auto myTensor_acc = myTensorBuffer.template get_access<sycl::access::mode::write>(h);
+        //         h.parallel_for(sycl::nd_range<3>(global, local),[=](sycl::nd_item<3> item) {
+        //             const auto item_id = item.get_group(2) * item.get_local_range(2) + item.get_local_id(2);
+        //             if (item_id >= Item_Size)
+        //                 return;
+        //             // 数据逆重组
+        //             myTensor_acc[myIdx_acc[item_id]] = res_acc[item_id];
+        //         });
+        //     }).wait();
+        // }
+
+        //Buffer版本数据逆重组，一维划分
+        // void UpdateData(sycl::buffer<ImplType>& r_buf, sycl::buffer<ImplType>& b_buf, sycl::queue& q,int Item_Size1)
+        // {
+        //     int Item_Size = Item_Size1;
+        //     sycl::device device = q.get_device();
+        //     int max_global_size = device.get_info<sycl::info::device::max_work_item_sizes<3>>()[2];
+        //     int work_group_size = (Item_Size + max_global_size - 1) / max_global_size;  // 计算所需的工作组数量
+        //     sycl::range<3> local(1, 1, std::min(Item_Size, max_global_size));
+        //     sycl::range<3> global(1, 1, (Item_Size <= max_global_size) ? Item_Size : work_group_size * max_global_size);
+        //     q.submit([&](handler &h) {
+        //         // auto myIdxAccessor = myIdxBuffer.get_access<sycl::access::mode::write>(h);
+        //         auto res = r_buf.template get_access<sycl::access::mode::read_write>(h);
+        //         auto myTensor = b_buf.template get_access<sycl::access::mode::read_write>(h);
+        //         h.parallel_for<class MyKernel4>(sycl::nd_range<3>(global, local),[=](sycl::nd_item<3> item) {
+        //         //h.parallel_for<UpdateDataBufferKernel<ImplType>>(sycl::nd_range<3>(global, local),[=](sycl::nd_item<3> item) {
+        //             const auto item_id = item.get_group(2)*item.get_local_range(2)+item.get_local_id(2);
+        //             if(item_id >= Item_Size)
+        //                 return;
+        //             // myTensor[myIdxAccessor[item_id]] = res[item_id];
+        //             myTensor[item_id] = res[item_id];
+        //         });
+        //     }).wait();
+        // }
+
+        //Buffer版本数据逆重组，二维划分
         void UpdateData(sycl::buffer<ImplType>& r_buf, sycl::buffer<ImplType>& b_buf, sycl::queue& q,int Item_Size1)
         {
             int Item_Size = Item_Size1;
             sycl::device device = q.get_device();
-            int max_global_size = device.get_info<sycl::info::device::max_work_item_sizes<3>>()[2];
-            int work_group_size = (Item_Size + max_global_size - 1) / max_global_size;  // 计算所需的工作组数量
-            sycl::range<3> local(1, 1, std::min(Item_Size, max_global_size));
-            sycl::range<3> global(1, 1, (Item_Size <= max_global_size) ? Item_Size : work_group_size * max_global_size);
+            auto max_sizes = device.get_info<sycl::info::device::max_work_item_sizes<3>>();
+            int max_global_size_x = max_sizes[0];
+            int max_global_size_y = max_sizes[1];
+            int max_global_size_z = max_sizes[2];
+
+	        // 二维划分（可测试三维拓展）
+            int dim_x = (int)sycl::ceil(sycl::sqrt((float)Item_Size));
+            int dim_y = (int)sycl::ceil((float)Item_Size / dim_x);
+
+            // 固定 local 为 16×16，但受设备上限约束
+            int local_x = std::min(16, max_global_size_x);
+            int local_y = std::min(16, max_global_size_y);
+
+            // 对齐 global 到 local 的整数倍（防止越界）
+            int global_x = ((dim_x + local_x - 1) / local_x) * local_x;
+            int global_y = ((dim_y + local_y - 1) / local_y) * local_y;
+            
+            sycl::range<2> local(local_x, local_y);
+            sycl::range<2> global(global_x, global_y);
             q.submit([&](handler &h) {
-                // auto myIdxAccessor = myIdxBuffer.get_access<sycl::access::mode::write>(h);
                 auto res = r_buf.template get_access<sycl::access::mode::read_write>(h);
                 auto myTensor = b_buf.template get_access<sycl::access::mode::read_write>(h);
-                h.parallel_for<class MyKernel4>(sycl::nd_range<3>(global, local),[=](sycl::nd_item<3> item) {
-                //h.parallel_for<UpdateDataBufferKernel<ImplType>>(sycl::nd_range<3>(global, local),[=](sycl::nd_item<3> item) {
-                    const auto item_id = item.get_group(2)*item.get_local_range(2)+item.get_local_id(2);
+                h.parallel_for<class MyKernel4>(sycl::nd_range<2>(global, local),[=](sycl::nd_item<2> item) {
+                    int gx = item.get_global_id(0);
+                    int gy = item.get_global_id(1);
+                    int item_id = gx * global[1] + gy;
                     if(item_id >= Item_Size)
                         return;
-                    // myTensor[myIdxAccessor[item_id]] = res[item_id];
                     myTensor[item_id] = res[item_id];
                 });
             }).wait();

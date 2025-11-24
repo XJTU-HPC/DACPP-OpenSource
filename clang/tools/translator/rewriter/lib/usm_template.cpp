@@ -127,6 +127,17 @@ std::string CodeGen_IndexInit2(std::string opName,std::string dim_id,std::string
 
 
 //参数生成的总模板  {{ParameterGenerate}}
+// const char *PARA_GENE_Template = R"~~~(
+//     // 参数生成 提前计算后面需要用到的参数	
+// 	{{InitOPS}}
+// 	{{InitDeviceMemorySize}}
+// 	{{InitSplitLength}}
+// 	{{InitSpilitLengthMatrix}}
+// 	{{ItemNumber}}
+// 	{{InitReductionSplitSize}}
+// 	{{InitReductionSplitLength}}
+// )~~~";
+//由于规约功能暂时没用，因此去掉{{InitReductionSplitSize}}和{{InitReductionSplitLength}}：
 const char *PARA_GENE_Template = R"~~~(
     // 参数生成 提前计算后面需要用到的参数	
 	{{InitOPS}}
@@ -134,11 +145,22 @@ const char *PARA_GENE_Template = R"~~~(
 	{{InitSplitLength}}
 	{{InitSpilitLengthMatrix}}
 	{{ItemNumber}}
-	{{InitReductionSplitSize}}
-	{{InitReductionSplitLength}}
 )~~~";
 
-std::string CodeGen_ParameterGenerate(std::string InitOPS,std::string InitDeviceMemorySize,std::string InitSplitLength,std::string InitSpilitLengthMatrix,std::string ItemNumber,std::string InitReductionSplitSize,std::string InitReductionSplitLength){
+// std::string CodeGen_ParameterGenerate(std::string InitOPS,std::string InitDeviceMemorySize,std::string InitSplitLength,std::string InitSpilitLengthMatrix,std::string ItemNumber,std::string InitReductionSplitSize,std::string InitReductionSplitLength){
+//     return templateString(PARA_GENE_Template,
+// 	{
+// 		{"{{InitOPS}}", InitOPS},
+// 		{"{{InitDeviceMemorySize}}", InitDeviceMemorySize},//设备内存的分配大小计算
+// 		{"{{InitSplitLength}}",InitSplitLength},
+// 		{"{{InitSpilitLengthMatrix}}",InitSpilitLengthMatrix},
+// 		{"{{ItemNumber}}",ItemNumber},
+// 		{"{{InitReductionSplitSize}}",InitReductionSplitSize},
+// 		{"{{InitReductionSplitLength}}",InitReductionSplitLength}
+// 	});
+// }
+//由于规约功能暂时没用，因此去掉{{InitReductionSplitSize}}和{{InitReductionSplitLength}}：
+std::string CodeGen_ParameterGenerate(std::string InitOPS,std::string InitDeviceMemorySize,std::string InitSplitLength,std::string InitSpilitLengthMatrix,std::string ItemNumber){
     return templateString(PARA_GENE_Template,
 	{
 		{"{{InitOPS}}", InitOPS},
@@ -146,8 +168,6 @@ std::string CodeGen_ParameterGenerate(std::string InitOPS,std::string InitDevice
 		{"{{InitSplitLength}}",InitSplitLength},
 		{"{{InitSpilitLengthMatrix}}",InitSpilitLengthMatrix},
 		{"{{ItemNumber}}",ItemNumber},
-		{"{{InitReductionSplitSize}}",InitReductionSplitSize},
-		{"{{InitReductionSplitLength}}",InitReductionSplitLength}
 	});
 }
 
@@ -308,35 +328,35 @@ std::string CodeGen_Init_Work_Item_Number(std::string NAME,std::string OPS_NAME)
 }
 
 //{{InitReductionSplitSize}}
-//计算归约中split_size的大小
-const char *INIT_REDUCTION_SPLIT_SIZE_Template = R"~~~(
-    // 计算归约中split_size的大小
-    int {{NAME}} = para_gene_tool.init_reduction_split_size({{OPS_IN}},{{OPS_OUT}});
-)~~~";
+//计算归约中split_size的大小，由于规约功能暂时没用，因此注释掉
+// const char *INIT_REDUCTION_SPLIT_SIZE_Template = R"~~~(
+//     // 计算归约中split_size的大小
+//     int {{NAME}} = para_gene_tool.init_reduction_split_size({{OPS_IN}},{{OPS_OUT}});
+// )~~~";
 
-std::string CodeGen_Init_Reduction_Split_Size(std::string NAME,std::string OPS_IN,std::string OPS_OUT){
-    return templateString(INIT_REDUCTION_SPLIT_SIZE_Template,
-	{
-		{"{{NAME}}",           NAME},//归约中spilitsize的名字
-		{"{{OPS_IN}}",       OPS_IN},//输入算子组的名字
-		{"{{OPS_OUT}}",     OPS_OUT}//输出算子组的名字
-	});
-}
+// std::string CodeGen_Init_Reduction_Split_Size(std::string NAME,std::string OPS_IN,std::string OPS_OUT){
+//     return templateString(INIT_REDUCTION_SPLIT_SIZE_Template,
+// 	{
+// 		{"{{NAME}}",           NAME},//归约中spilitsize的名字
+// 		{"{{OPS_IN}}",       OPS_IN},//输入算子组的名字
+// 		{"{{OPS_OUT}}",     OPS_OUT}//输出算子组的名字
+// 	});
+// }
 
 //{{InitReductionSplitLength}}
-//计算归约中split_length的大小
-const char *INIT_REDUCTION_SPLIT_LENGTH_Template = R"~~~(
-    // 计算归约中split_length的大小
-    int {{NAME}} = para_gene_tool.init_reduction_split_length({{OPS_NAME}});
-)~~~";
+//计算归约中split_length的大小，由于规约功能暂时没用，因此注释掉
+// const char *INIT_REDUCTION_SPLIT_LENGTH_Template = R"~~~(
+//     // 计算归约中split_length的大小
+//     int {{NAME}} = para_gene_tool.init_reduction_split_length({{OPS_NAME}});
+// )~~~";
 
-std::string CodeGen_Init_Reduction_Split_Length(std::string NAME,std::string OPS_NAME){
-    return templateString(INIT_REDUCTION_SPLIT_LENGTH_Template,
-	{
-		{"{{NAME}}",           NAME},//归约中spilitsize的名字
-		{"{{OPS_NAME}}",   OPS_NAME} //算子组的名字
-	});
-}
+// std::string CodeGen_Init_Reduction_Split_Length(std::string NAME,std::string OPS_NAME){
+//     return templateString(INIT_REDUCTION_SPLIT_LENGTH_Template,
+// 	{
+// 		{"{{NAME}}",           NAME},//归约中spilitsize的名字
+// 		{"{{OPS_NAME}}",   OPS_NAME} //算子组的名字
+// 	});
+// }
 
 
 
@@ -356,18 +376,19 @@ std::string CodeGen_DeviceMemAlloc(std::string type,std::string name,std::string
 	});
 }
 
-const char *DEVICE_MEM_ALLOC_REDUCTION_Template = R"~~~(
-    // 归约设备内存分配
-    {{TYPE}} *reduction_{{NAME}} = malloc_device<{{TYPE}}>({{SIZE}},q);)~~~";
+//目前归约还未使用
+// const char *DEVICE_MEM_ALLOC_REDUCTION_Template = R"~~~(
+//     // 归约设备内存分配
+//     {{TYPE}} *reduction_{{NAME}} = malloc_device<{{TYPE}}>({{SIZE}},q);)~~~";
 
-std::string CodeGen_DeviceMemAllocReduction(std::string  type,std::string name,std::string size){
-	return templateString(DEVICE_MEM_ALLOC_REDUCTION_Template,
-	{
-		{"{{TYPE}}", type},
-		{"{{NAME}}", name},
-		{"{{SIZE}}", size}
-	});
-}
+// std::string CodeGen_DeviceMemAllocReduction(std::string  type,std::string name,std::string size){
+// 	return templateString(DEVICE_MEM_ALLOC_REDUCTION_Template,
+// 	{
+// 		{"{{TYPE}}", type},
+// 		{"{{NAME}}", name},
+// 		{"{{SIZE}}", size}
+// 	});
+// }
 
 
 
@@ -448,7 +469,7 @@ const char *DATA_RECON_Template2 = R"~~~(
     // 数据重组
     DataReconstructor<{{TYPE}}> {{NAME}}_tool;
     {{DATA_OPS_INIT}}
-    {{NAME}}_tool.init(info_{{NAME}},{{NAME}}_ops);
+    {{NAME}}_tool.init(info_{{NAME}},{{NAME}}_ops,q);
 	{{TYPE}} *r_{{NAME}}=malloc_device<{{TYPE}}>({{NAME}}_Size,q);
     {{NAME}}_tool.Reconstruct(r_{{NAME}},d_{{NAME}},q);
 	std::vector<int> info_partition_{{NAME}}=para_gene_tool.init_partition_data_shape(info_{{NAME}},{{NAME}}_ops);
@@ -517,74 +538,64 @@ std::string CodeGen_OpPushBack2Ops(std::string name, std::string opName, std::st
 	});
 }
 
-//下面这个疑似弃用 作用和上面那个一模一样
-// const char *OP_PUSH_BACK2TOOL_Template = R"~~~(
-//     {{OP_NAME}}.setDimId({{DIM_ID}});
-//     {{NAME}}_tool.push_back({{OP_NAME}});)~~~";
-
-// std::string CodeGen_OpPushBack2Tool(std::string name, std::string opName, std::string dimId){
-//     return templateString(OP_PUSH_BACK2TOOL_Template,
-// 	{
-// 		{"{{OP_NAME}}",    opName},
-// 		{"{{NAME}}",       name},
-// 		{"{{DIM_ID}}",     dimId}
-// 	});
-// }
-
-//下面这个疑似弃用
-// const char *DATA_RECON_OP_PUSH_Template = R"~~~(
-//     // 数据重组
-//     {{OP_PUSH_BACK2TOOL}}
-//     {{NAME}}_tool.Reconstruct(r_{{NAME}},{{NAME}});)~~~";
-
-// std::string CodeGen_DataReconstructOpPush(std::string name,std::string opPushBack2Tool){
-//     return templateString(DATA_RECON_OP_PUSH_Template,
-// 	{
-// 		{"{{NAME}}",       name},
-// 		{"{{OP_PUSH_BACK2TOOL}}", opPushBack2Tool}
-// 	});
-// }
-
-//下面这个疑似从来没有用过
-// const char *OP_POP_FROM_TOOL_Template = R"~~~(
-//     {{NAME}}_tool.pop_back();)~~~";
-// std::string CodeGen_OpPopFromTool(std::string name){
-//     return templateString(OP_POP_FROM_TOOL_Template,
-// 	{
-// 		{"{{NAME}}", name}
-// 	});
-// }
-
-//下面这个疑似从来没有用过
-// const char *DATA_RECON_OP_POP_Template = R"~~~(
-//     // 数据重组
-//     {{OP_POP_FROM_TOOL}}
-//     {{NAME}}_tool.Reconstruct(r_{{NAME}},{{NAME}});)~~~";
-
-// std::string CodeGen_DataReconstructOpPop(std::string name,std::string opPopFromTool){
-//     return templateString(DATA_RECON_OP_POP_Template,
-// 	{
-// 		{"{{NAME}}",       name},
-// 		{"{{OP_POP_FROM_TOOL}}", opPopFromTool}
-// 	});
-// }
 
 //内核执行
 //{{KERNEL_EXECUTE}}
-//通用的USM 非dac_for
+//一维划分的USM内核执行模板
+// const char *KERNEL_EXECUTE_Template1 = R"~~~(
+//     sycl::device device = q.get_device();
+//     int max_global_size = device.get_info<sycl::info::device::max_work_item_sizes<3>>()[2];
+// 	//工作项划分
+//     int work_group_size = (Item_Size + max_global_size - 1) / max_global_size;  // 计算所需的工作组数量
+//     sycl::range<3> local(1, 1, std::min(Item_Size, max_global_size)); 
+//     sycl::range<3> global(1, 1, (Item_Size <= max_global_size) ? Item_Size : work_group_size * max_global_size);
+//     //队列提交命令组
+//     q.submit([&](handler &h) {
+//         // 访问器初始化
+//         {{ACCESSOR_INIT}}
+//         h.parallel_for(sycl::nd_range<3>(global, local),[=](sycl::nd_item<3> item) {
+//             const auto item_id = item.get_group(2)*item.get_local_range(2)+item.get_local_id(2);
+//             if(item_id >= Item_Size)
+//                 return;
+//             // 索引初始化
+// 			{{INDEX_INIT}}
+//             // 嵌入计算
+// 			{{CALC_EMBED}}
+//         });
+//     }).wait();
+    
+// )~~~";
+
+//二维划分的USM内核执行模板
 const char *KERNEL_EXECUTE_Template1 = R"~~~(
     sycl::device device = q.get_device();
-    int max_global_size = device.get_info<sycl::info::device::max_work_item_sizes<3>>()[2];
-	//工作项划分
-    int work_group_size = (Item_Size + max_global_size - 1) / max_global_size;  // 计算所需的工作组数量
-    sycl::range<3> local(1, 1, std::min(Item_Size, max_global_size)); 
-    sycl::range<3> global(1, 1, (Item_Size <= max_global_size) ? Item_Size : work_group_size * max_global_size);
+    auto max_sizes = device.get_info<sycl::info::device::max_work_item_sizes<3>>();
+    int max_global_size_x = max_sizes[0];
+    int max_global_size_y = max_sizes[1];
+    int max_global_size_z = max_sizes[2];
+
+	// 二维划分（可测试三维拓展）
+    int dim_x = (int)sycl::ceil(sycl::sqrt((float)Item_Size));
+    int dim_y = (int)sycl::ceil((float)Item_Size / dim_x);
+
+    // 固定 local 为 16×16，但受设备上限约束
+    int local_x = std::min(16, max_global_size_x);
+    int local_y = std::min(16, max_global_size_y);
+
+    // 对齐 global 到 local 的整数倍（防止越界）
+    int global_x = ((dim_x + local_x - 1) / local_x) * local_x;
+    int global_y = ((dim_y + local_y - 1) / local_y) * local_y;
+
+    sycl::range<2> local(local_x, local_y);
+    sycl::range<2> global(global_x, global_y);
     //队列提交命令组
     q.submit([&](handler &h) {
         // 访问器初始化
         {{ACCESSOR_INIT}}
-        h.parallel_for(sycl::nd_range<3>(global, local),[=](sycl::nd_item<3> item) {
-            const auto item_id = item.get_group(2)*item.get_local_range(2)+item.get_local_id(2);
+		h.parallel_for(sycl::nd_range<2>(global, local), [=](sycl::nd_item<2> item) {
+            int gx = item.get_global_id(0);
+            int gy = item.get_global_id(1);
+            int item_id = gx * global[1] + gy;
             if(item_id >= Item_Size)
                 return;
             // 索引初始化
@@ -968,38 +979,38 @@ std::string CodeGen_NewDataInit(std::string name,std::string type) {
 //归约模板
 //{{REDUCTION}}
 //现在的应用似乎都无需用到归约
-const char *REDUCTION_Template_Span = R"~~~(
-    // 归约
-    if({{SPLIT_SIZE}} > 1)
-    {
-        for(int i=0;i<{{SPAN_SIZE}};i++) {
-            q.submit([&](handler &h) {
-    	        h.parallel_for(
-                range<1>({{SPLIT_SIZE}}),
-                reduction(reduction_{{NAME}}+i, 
-                {{REDUCTION_RULE}},
-                property::reduction::initialize_to_identity()),
-                [=](id<1> idx,auto &reducer) {
-                    reducer.combine(r_{{NAME}}[(i/{{SPLIT_LENGTH}})*{{SPLIT_LENGTH}}*{{SPLIT_SIZE}}+i%{{SPLIT_LENGTH}}+idx*{{SPLIT_LENGTH}}]);
-     	        });
-         }).wait();
-        }
-        q.memcpy(r_{{NAME}},reduction_{{NAME}}, {{SPAN_SIZE}}*sizeof({{TYPE}})).wait();
-    }
+// const char *REDUCTION_Template_Span = R"~~~(
+//     // 归约
+//     if({{SPLIT_SIZE}} > 1)
+//     {
+//         for(int i=0;i<{{SPAN_SIZE}};i++) {
+//             q.submit([&](handler &h) {
+//     	        h.parallel_for(
+//                 range<1>({{SPLIT_SIZE}}),
+//                 reduction(reduction_{{NAME}}+i, 
+//                 {{REDUCTION_RULE}},
+//                 property::reduction::initialize_to_identity()),
+//                 [=](id<1> idx,auto &reducer) {
+//                     reducer.combine(r_{{NAME}}[(i/{{SPLIT_LENGTH}})*{{SPLIT_LENGTH}}*{{SPLIT_SIZE}}+i%{{SPLIT_LENGTH}}+idx*{{SPLIT_LENGTH}}]);
+//      	        });
+//          }).wait();
+//         }
+//         q.memcpy(r_{{NAME}},reduction_{{NAME}}, {{SPAN_SIZE}}*sizeof({{TYPE}})).wait();
+//     }
 
-)~~~";
+// )~~~";
 
-std::string CodeGen_Reduction_Span(std::string SpanSize,std::string SplitSize,std::string SplitLength,std::string Name,std::string Type,std::string ReductionRule) {
-    return templateString(REDUCTION_Template_Span,
-	{
-        {"{{SPAN_SIZE}}",        SpanSize},   
-		{"{{SPLIT_SIZE}}",       SplitSize},
-		{"{{SPLIT_LENGTH}}",     SplitLength},
-		{"{{TYPE}}",             Type},
-		{"{{NAME}}",             Name},
-		{"{{REDUCTION_RULE}}",   ReductionRule}
-	});
-}
+// std::string CodeGen_Reduction_Span(std::string SpanSize,std::string SplitSize,std::string SplitLength,std::string Name,std::string Type,std::string ReductionRule) {
+//     return templateString(REDUCTION_Template_Span,
+// 	{
+//         {"{{SPAN_SIZE}}",        SpanSize},   
+// 		{"{{SPLIT_SIZE}}",       SplitSize},
+// 		{"{{SPLIT_LENGTH}}",     SplitLength},
+// 		{"{{TYPE}}",             Type},
+// 		{"{{NAME}}",             Name},
+// 		{"{{REDUCTION_RULE}}",   ReductionRule}
+// 	});
+// }
 
 //和上面的区别是这里的是d_name 现在内核中计算使用的是r_name
 //dac_for使用这个
@@ -1040,7 +1051,7 @@ std::string CodeGen_Reduction_Span1(std::string SpanSize,std::string SplitSize,s
 //{{D2H_MEM_MOV}}
 const char *D2H_MEM_MOV_3_Template = R"~~~(
     // 归并结果返回
-    {{NAME}}_tool.UpdateData(r_{{NAME}},d_{{NAME}},q);
+    {{NAME}}_tool.UpdateData(r_{{NAME}},d_{{NAME}},q,{{NAME}}_Size);
 	q.memcpy(h_{{NAME}},d_{{NAME}}, {{SIZE}}*sizeof({{TYPE}})).wait();
 	{{NAME}}.array2Tensor(h_{{NAME}});
 )~~~";

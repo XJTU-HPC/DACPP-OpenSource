@@ -234,7 +234,7 @@ void dacppTranslator::Rewriter::rewriteDac_Usm() {
             ShellParam* shellParam = shell->getShellParam(NumShellParam);
             if(shellParam->getRw() == 1){
                 divice_memory += USM_TEMPLATE::CodeGen_DeviceMemSizeGenerate(shellParam->getName()+"_Size","In_Ops","Out_Ops","info_"+shellParam->getName());
-                divice_memory += USM_TEMPLATE::CodeGen_DeviceMemSizeGenerate(shellParam->getName()+"Reduction_Size","info_"+shellParam->getName(),"Reduction_Ops");
+                // divice_memory += USM_TEMPLATE::CodeGen_DeviceMemSizeGenerate(shellParam->getName()+"Reduction_Size","info_"+shellParam->getName(),"Reduction_Ops");
             }
             else{
                 divice_memory += USM_TEMPLATE::CodeGen_DeviceMemSizeGenerate(shellParam->getName()+"_Size","info_"+shellParam->getName(),shellParam->getName()+"_Ops");
@@ -277,13 +277,14 @@ void dacppTranslator::Rewriter::rewriteDac_Usm() {
         std::string InitOPS =  dataOpsInit + dataOpsInit_inops + dataOpsInit_outops + dataOpsInit_reductions;
 
             //生成归约中Split_size中的大小
-        std::string Init_Reduction_Split_Size = USM_TEMPLATE::CodeGen_Init_Reduction_Split_Size("Reduction_Split_Size","In_Ops","Out_Ops");
+        // std::string Init_Reduction_Split_Size = USM_TEMPLATE::CodeGen_Init_Reduction_Split_Size("Reduction_Split_Size","In_Ops","Out_Ops");
         //std::cout << Init_Reduction_Split_Size;
 
         //生成归约中Split_length大小
-        std::string Init_Reduction_Split_Length = USM_TEMPLATE::CodeGen_Init_Reduction_Split_Length("Reduction_Split_Length","Out_Ops");
+        // std::string Init_Reduction_Split_Length = USM_TEMPLATE::CodeGen_Init_Reduction_Split_Length("Reduction_Split_Length","Out_Ops");
 
-        std::string ParameterGenerate = USM_TEMPLATE::CodeGen_ParameterGenerate(InitOPS,divice_memory,splitLength,InitSplitLengthMatrix,item_number,Init_Reduction_Split_Size,Init_Reduction_Split_Length); 
+        // std::string ParameterGenerate = USM_TEMPLATE::CodeGen_ParameterGenerate(InitOPS,divice_memory,splitLength,InitSplitLengthMatrix,item_number,Init_Reduction_Split_Size,Init_Reduction_Split_Length); 
+        std::string ParameterGenerate = USM_TEMPLATE::CodeGen_ParameterGenerate(InitOPS,divice_memory,splitLength,InitSplitLengthMatrix,item_number); 
         // std::cout << ParameterGenerate;
         //设置内存分配
         std::string deviceMemAlloc = "";
@@ -291,7 +292,7 @@ void dacppTranslator::Rewriter::rewriteDac_Usm() {
             ShellParam* shellParam = shell->getShellParam(NumShellParam);
             if(shellParam->getRw() == 1){
                 // deviceMemAlloc += USM_TEMPLATE::CodeGen_DeviceMemAlloc(shellParam->getBasicType(),shellParam->getName(),shellParam->getName()+"_Size");
-                deviceMemAlloc += USM_TEMPLATE::CodeGen_DeviceMemAllocReduction(shellParam->getBasicType(),shellParam->getName(),shellParam->getName()+"Reduction_Size");
+                // deviceMemAlloc += USM_TEMPLATE::CodeGen_DeviceMemAllocReduction(shellParam->getBasicType(),shellParam->getName(),shellParam->getName()+"Reduction_Size");
             }
             else{
                 // deviceMemAlloc += USM_TEMPLATE::CodeGen_DeviceMemAlloc(shellParam->getBasicType(),shellParam->getName(),shellParam->getName()+"_Size");
@@ -420,9 +421,9 @@ void dacppTranslator::Rewriter::rewriteDac_Usm() {
             ShellParam* shellParam = shell->getShellParam(NumShellParam);
             if(shellParam->getRw() == 1){
                 if(dacppFile->getBlock()){
-                    Reduction += USM_TEMPLATE::CodeGen_Reduction_Span1(shellParam->getName()+"Reduction_Size","Reduction_Split_Size","Reduction_Split_Length",shellParam->getName(),shellParam->getBasicType(),ReductionRule);
+                    // Reduction += USM_TEMPLATE::CodeGen_Reduction_Span1(shellParam->getName()+"Reduction_Size","Reduction_Split_Size","Reduction_Split_Length",shellParam->getName(),shellParam->getBasicType(),ReductionRule);
                 }else{
-                    Reduction += USM_TEMPLATE::CodeGen_Reduction_Span(shellParam->getName()+"Reduction_Size","Reduction_Split_Size","Reduction_Split_Length",shellParam->getName(),shellParam->getBasicType(),ReductionRule);
+                    // Reduction += USM_TEMPLATE::CodeGen_Reduction_Span(shellParam->getName()+"Reduction_Size","Reduction_Split_Size","Reduction_Split_Length",shellParam->getName(),shellParam->getBasicType(),ReductionRule);
                 }
 	            Reduction += USM_TEMPLATE::CodeGen_D2HMemMov(shellParam->getName(),shellParam->getBasicType(),shellParam->getName()+"_Size",dacppFile->getBlock());
             }
