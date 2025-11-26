@@ -46,6 +46,7 @@ public:
     int getNumParams();
 
     void setBody(Stmt* body);
+    std::string getBody(int idx,std::vector<int>& dim);
     std::string getBody(int idx);
     std::string dacfor_getBody(int idx);
     int getNumBody();

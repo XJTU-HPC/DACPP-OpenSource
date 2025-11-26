@@ -18,6 +18,7 @@ private:
     bool rw; // 读写属性
     std::string name; // 参数名
     std::vector<int> shape; // 参数形状
+    int dimension;
 
 public:
     Param();
@@ -37,10 +38,10 @@ public:
     void __attribute__(( unused, deprecated )) setShape(int idx, int size);
     int __attribute__(( unused, deprecated )) getShape(int idx);
     int __attribute__(( unused, deprecated )) getDim();
-
     /* 维度：通过tensor的第二个模版参数获取。  */
     int dim;
-
+    void setDimension(int id);
+    int getDimension();
     /* 参数类型、参数基本类型。  */
     clang::QualType newType, BasicType;
 };

@@ -4763,12 +4763,72 @@ std::string func(std::string code, const std::string& name) {
     return result;
 }
 
+// std::string funcnew(std::string code,const std::string& name,int dim){
+//      std::string result = code;
+//      std::regex pattern2D("\\b" + name +"\\s*\\[\\s*([^\\]]+)\\s*\\]\\s*\\[\\s*([^\\]]+)\\s*\\]");
+
+//       std::string replacement2D = name + "[(($1 / info_" +name + "_acc[1] + " +name +"_0)*" + name + "_1_shape + ($2 % info_" + name + "_acc[1] + " + name + "_1)]";
+
+//       result = std::regex_replace(result, pattern2D, replacement2D);
+     
+//       std::regex pattern1D(R"(\b)" + name + R"(\s*\[\s*([^\]]+)\s*\])");
+//       std::string replacement1D;
+//       if(dim == 1){
+//          replacement1D = name + "[$1+" + name + "_0]";
+//       }
+//       else if(dim == 2){
+//        replacement1D = name + "[(($1 / info_" +name + "_acc[1]) + " + name +"_0) * " + name + "_1_shape + ($1 % info_" +name +"_acc[1] + " + name + "_1)]";
+//       }
+//       result = std::regex_replace(result, pattern1D, replacement1D);
+//       return result;
+
+// }
+
+
+
+
+std::string funcnew2(std::string code,const std::string& name,int dim){ 
+  std::string result = code; 
+  std::regex pattern2D("\\b" + name +"\\s*\\[\\s*([^\\]]+)\\s*\\]\\s*\\[\\s*([^\\]]+)\\s*\\]"); 
+  std::smatch m2D;
+  if(std::regex_search(result,m2D,pattern2D)){
+     std::string replacement2D = name + "[(($1 / info_" +name + "_acc[1] + " +name +"_0)*" + name + "_1_shape + ($2 % info_" + name + "_acc[1] + " + name + "_1)]"; 
+      result = std::regex_replace(result, pattern2D, replacement2D);  
+      return result;
+  }
+  std::regex pattern1D(R"(\b)" + name + R"(\s*\[\s*([^\]]+)\s*\])"); 
+  std::string replacement1D = name + "[(($1 / info_" +name + "_acc[1]) + " + name +"_0) * " + name + "_1_shape + ($1 % info_" +name +"_acc[1] + " + name + "_1)]"; 
+  result = std::regex_replace(result, pattern1D, replacement1D); 
+  return result;
+  }
+
+std::string funcnew1(std::string code,const std::string& name,int dim){
+   std::string result= code;
+   std::regex pattern1D(R"(\b)" + name + R"(\s*\[\s*([^\]]+)\s*\])"); 
+    std::string replacement1D = name + "[$1+" + name + "_0]"; 
+    result = std::regex_replace(result, pattern1D, replacement1D); 
+    return result;
+}
+
+
+std::string dacppTranslator::Calc::getBody(int idx,std::vector<int>& dim) {
+  std::string code = body[idx];
+  for (int i = 0; i < getNumParams(); i++) {
+    int dim0= dim[i];
+    std::string name = getParam(i)->getName();
+    if(dim0==2)
+     code = funcnew2(code,name,dim0);
+    if(dim0==1)
+    code = funcnew1(code,name,dim0);
+  }
+  return code;
+}
 std::string dacppTranslator::Calc::getBody(int idx) {
   std::string code = body[idx];
   for (int i = 0; i < getNumParams(); i++) {
-
+    
     std::string name = getParam(i)->getName();
-
+     //code = funcnew(code,name,dim0);
     //std::regex pattern(name + R"((?![\w]|\[))");
     //code = std::regex_replace(code, pattern, name + "[0]");
     code = func(code, name);

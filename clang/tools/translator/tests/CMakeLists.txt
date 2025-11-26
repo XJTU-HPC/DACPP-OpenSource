@@ -4,7 +4,5 @@ cmake_minimum_required(VERSION 3.14)
 # 设置工程名称
 project(Dac2SyclTest)
 
-add_subdirectory(src)
-add_subdirectory(sycl)
+
 # add_subdirectory(examples)
-add_subdirectory(Performancetesting)

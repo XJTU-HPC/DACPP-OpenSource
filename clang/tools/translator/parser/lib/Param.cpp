@@ -176,7 +176,13 @@ int dacppTranslator::Param::getShape(int idx) {
 }
 
 int dacppTranslator::Param::getDim() {
-    return shape.size(); 
+    return shape.size();
+}
+void dacppTranslator::Param::setDimension(int id){
+  this->dimension=id;
+}
+int dacppTranslator::Param::getDimension() {
+    return dimension;
 }
 
 /*

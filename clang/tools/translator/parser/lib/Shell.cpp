@@ -9,6 +9,7 @@
 #include "DacppStructure.h"
 #include "Param.h"
 #include "Shell.h"
+#include <vector>
 
 
 typedef struct ArcNode
@@ -17,7 +18,7 @@ typedef struct ArcNode
     struct ArcNode *nextarc; /* 指向下一条弧的指针 */
     char *offset;
 }ArcNode; /* 表结点 */
-
+std::vector <int> v_dim;
 struct VNode {
     int id;
     clang::ValueDecl *D;
@@ -257,7 +258,22 @@ bool Visitor::VisitCallExpr(CallExpr *Call) {
   }
   return true;
 }
-
+int countBrackInExpr(clang::Expr *expr){
+   if(!expr) return 0;
+   int count=0;
+   if(auto *op = llvm::dyn_cast<CXXOperatorCallExpr>(expr)){
+    auto kind =op->getOperator();
+    if(kind == clang::OO_Subscript){
+      count++;
+    }
+   }
+   for(auto *child :expr->children()){
+    if(auto *childexpr = llvm::dyn_cast<Expr>(child)){
+      count+=countBrackInExpr(childexpr);
+    }
+   }
+   return count;
+}
 bool Visitor::VisitVarDecl (VarDecl *D)
 {
   VarDecl *curVarDecl = D;
@@ -327,7 +343,11 @@ bool Visitor::VisitVarDecl (VarDecl *D)
     InitListExpr *ILE =
         dacppTranslator::getNode<InitListExpr>(curVarDecl->getInit());
     for (unsigned int i = 0; i < ILE->getNumInits(); i++) {
+      Expr* childExpr = ILE->getInit(i);
+      int bracketCount = countBrackInExpr(childExpr);
+      v_dim.push_back(bracketCount);
       dacppTranslator::ShellParam *shellParam = new dacppTranslator::ShellParam();
+      shellParam->setDimension(bracketCount);
       Expr *curExpr = ILE->getInit(i);
       std::vector<Expr *> astExprs;
 
@@ -532,7 +552,7 @@ void dacppTranslator::Shell::parseShell(const BinaryOperator* dacExpr, std::vect
     for (unsigned int i = 0; i < shapes[paramsCount].size(); i++) {
       param->setShape(shapes[paramsCount][i]);
     }
-
+    //param->setDimension(v_dim[paramsCount]);
     setParam(param);
     }
 

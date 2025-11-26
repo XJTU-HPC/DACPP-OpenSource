@@ -9,8 +9,8 @@
 // #include "BUFFER_template.h"
 #include "buffer_template.h"
 #include "usm_template.h"
-
-
+#include <vector>
+std::vector<int> dim;
 
 void dacppTranslator::Rewriter::rewriteDac_Buffer() {
     std::cout << "软编码BUFFER版本翻译" << std::endl;
@@ -76,19 +76,28 @@ void dacppTranslator::Rewriter::rewriteDac_Buffer() {
         for(int count = 0; count < calc->getNumParams(); count++) {
             code += calc->getParam(count)->getBasicType() + "* " + calc->getParam(count)->getName() + ",";
         }
+          for(int count = 0;count < shell->getNumShellParams(); count ++){
+            for(int i = 0;i < shell->getShellParam(count)->getDimension();i++){
+               code += "int " + calc->getParam(count)->getName()+"_"+std::to_string(i)+",";
+               code += "int " + calc->getParam(count)->getName()+"_"+std::to_string(i)+"_shape,";
+            }
+        }
         for(int count = 0; count < calc->getNumParams(); count++) {
             code += "sycl::accessor<int, 1, sycl::access::mode::read_write> info_" + calc->getParam(count)->getName() + "_acc";
             if(count != calc->getNumParams() - 1) {
                 code += ", ";
             }
         }
-        code += ") \n";
+        code += ") ";
+        for(int i=0;i<shell->getNumShellParams();i++){
+            dim.push_back(shell->getShellParam(i)->getDimension());
+        }
         for(int count = 0; count < calc->getNumBody(); count++) {
             
-            code += calc->getBody(count) + "\n";
+            code += calc->getBody(count,dim) + "\n";
         }
 
-        // std::cout << code;
+        std::cout << code;
 
         std::string dacShellName = shell->getName() + "_" + calc->getName();
         std::string dacShellParams = "";
