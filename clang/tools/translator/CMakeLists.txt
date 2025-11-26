@@ -26,9 +26,11 @@ set(REWRITER_SOURCES
   rewriter/lib/usm_template.cpp
   rewriter/lib/Rewriter_Usm.cpp
   rewriter/lib/Rewriter_Usm_time.cpp
-  rewriter/lib/Rewriter_Buffer.cpp
+  # rewriter/lib/Rewriter_Buffer.cpp
+  rewriter/lib/Rewriter_Buffer_new.cpp
   rewriter/lib/Rewriter_Multiple.cpp
-  rewriter/lib/buffer_template.cpp
+  # rewriter/lib/buffer_template.cpp
+  rewriter/lib/buffer_template_new.cpp
   rewriter/lib/universal_template.cpp
   rewriter/lib/mpi_template.cpp
   rewriter/lib/Rewriter_MPI.cpp

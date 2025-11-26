@@ -4792,7 +4792,7 @@ std::string funcnew2(std::string code,const std::string& name,int dim){
   std::regex pattern2D("\\b" + name +"\\s*\\[\\s*([^\\]]+)\\s*\\]\\s*\\[\\s*([^\\]]+)\\s*\\]"); 
   std::smatch m2D;
   if(std::regex_search(result,m2D,pattern2D)){
-     std::string replacement2D = name + "[(($1 / info_" +name + "_acc[1] + " +name +"_0)*" + name + "_1_shape + ($2 % info_" + name + "_acc[1] + " + name + "_1)]"; 
+     std::string replacement2D = name + "[(($1 *info_"+name+"_acc[1]+$2)/info_"+name+"_acc[1]+"+name+"_0)*" +name +"_1_shape+(($1*info_"+name+"_acc[1]+$2)%info_"+name +"_acc[1]+"+name+"_1)]";
       result = std::regex_replace(result, pattern2D, replacement2D);  
       return result;
   }
