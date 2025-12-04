@@ -75,7 +75,8 @@ void dacppTranslator::Rewriter::rewriteDac_Buffer() {
         // 计算结构
         code += "void " + calc->getName() + "(";
         for(int count = 0; count < calc->getNumParams(); count++) {
-            code += calc->getParam(count)->getBasicType() + "* " + calc->getParam(count)->getName() + ",";
+            if(shell->getShellParam(count)->getRw()==1)code += calc->getParam(count)->getBasicType() + "* " + calc->getParam(count)->getName() + ",";
+            else code += "const " + calc->getParam(count)->getBasicType() + "* " + calc->getParam(count)->getName() + ",";
         }
           for(int count = 0;count < shell->getNumShellParams(); count ++){
             for(int i = 0;i < shell->getShellParam(count)->getDimension();i++){
@@ -88,7 +89,7 @@ void dacppTranslator::Rewriter::rewriteDac_Buffer() {
             }
         }
         for(int count = 0; count < calc->getNumParams(); count++) {
-            code += "sycl::accessor<int, 1, sycl::access::mode::read_write> info_" + calc->getParam(count)->getName() + "_acc";
+            code += "sycl::accessor<int, 1, sycl::access::mode::read> info_" + calc->getParam(count)->getName() + "_acc";
             if(count != calc->getNumParams() - 1) {
                 code += ", ";
             }
