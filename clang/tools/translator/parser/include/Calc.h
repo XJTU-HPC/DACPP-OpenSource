@@ -15,6 +15,13 @@ using namespace clang;
 
 
 namespace dacppTranslator {
+struct clacparam{
+    std::string name;
+    int dimesion;//数据自身维度
+    std::vector<int> dimid;//算子作用维度；
+    std::vector<int> flag; //用来标记是否是降维算子；
+};
+
 
 
 class Expression;
@@ -48,6 +55,7 @@ public:
     void setBody(Stmt* body);
     std::string getBody(int idx,std::vector<int>& dim);
     std::string getBody(int idx);
+    std::string getBody(int idx,std::vector<dacppTranslator::clacparam>& dim);
     std::string dacfor_getBody(int idx);
     int getNumBody();
 

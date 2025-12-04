@@ -4787,22 +4787,189 @@ std::string func(std::string code, const std::string& name) {
 
 
 
-std::string funcnew2(std::string code,const std::string& name,int dim){ 
-  std::string result = code; 
-  std::regex pattern2D("\\b" + name +"\\s*\\[\\s*([^\\]]+)\\s*\\]\\s*\\[\\s*([^\\]]+)\\s*\\]"); 
-  std::smatch m2D;
-  if(std::regex_search(result,m2D,pattern2D)){
-     std::string replacement2D = name + "[(($1 *info_"+name+"_acc[1]+$2)/info_"+name+"_acc[1]+"+name+"_0)*" +name +"_1_shape+(($1*info_"+name+"_acc[1]+$2)%info_"+name +"_acc[1]+"+name+"_1)]";
-      result = std::regex_replace(result, pattern2D, replacement2D);  
-      return result;
-  }
-  std::regex pattern1D(R"(\b)" + name + R"(\s*\[\s*([^\]]+)\s*\])"); 
-  std::string replacement1D = name + "[(($1 / info_" +name + "_acc[1]) + " + name +"_0) * " + name + "_1_shape + ($1 % info_" +name +"_acc[1] + " + name + "_1)]"; 
-  result = std::regex_replace(result, pattern1D, replacement1D); 
-  return result;
-  }
+// std::string funcnew2(std::string code,const std::string& name,dacppTranslator::clacparam temp){ 
+//   std::string result = code; 
+//   std::regex pattern2D("\\b" + name +"\\s*\\[\\s*([^\\]]+)\\s*\\]\\s*\\[\\s*([^\\]]+)\\s*\\]"); 
+//   std::smatch m2D;
+//   if(std::regex_search(result,m2D,pattern2D)){
+//      std::string replacement2D = name + "[($1 + " +name +"_0)*" + name + "_1_shape + ($2 "+ " + " + name + "_1)]"; 
+//       result = std::regex_replace(result, pattern2D, replacement2D);  
+//       return result;
+//   }
+//   std::regex pattern1D(R"(\b)" + name + R"(\s*\[\s*([^\]]+)\s*\])"); 
+//     std::string replacement1D;
+//     if(temp.flag[0]==1&&temp.flag[1]==1){
+//       replacement1D = name + "[($1 " + "+ " + name +"_0) * " + name + "_1_shape + ($1 + " + name + "_1)]"; 
+//             result = std::regex_replace(result, pattern1D, replacement1D); 
+//             return result;
+//     }
+//     else{
+//       for(int i=0;i<temp.flag.size();i++){
+//       if(temp.flag[i]==1){
+//         if(temp.dimid[i]==0){
+//           replacement1D = name + "[(0 " + "+ " + name +"_0) * " + name + "_1_shape + ($1 + " + name + "_1)]"; 
+//             result = std::regex_replace(result, pattern1D, replacement1D); 
+//             return result;
+//         }
+//         else if(temp.dimid[i]==1){
+//           replacement1D = name + "[($1 " + "+ " + name +"_0) * " + name + "_1_shape + (0 + " + name + "_1)]"; 
+//            result = std::regex_replace(result, pattern1D, replacement1D); 
+//            return result;
+//         }
+//       }
+//     }
+//   }
+// }
+// std::string funcnew2(std::string code, const std::string& name, dacppTranslator::clacparam temp) {
+//     std::string result = code;
 
-std::string funcnew1(std::string code,const std::string& name,int dim){
+//     // ================ 先处理 2D a[x][y]（保持原始正则） ================
+//     std::regex pattern2D("\\b" + name + "\\s*\\[\\s*([^\\]]+)\\s*\\]\\s*\\[\\s*([^\\]]+)\\s*\\]");
+//     std::smatch m2D;
+//     if (std::regex_search(result, m2D, pattern2D)) {
+//         std::string replacement2D = name + "[($1 + " + name + "_0) * " +
+//                                     name + "_1_shape + ($2 + " + name + "_1)]";
+//         result = std::regex_replace(result, pattern2D, replacement2D);
+//         return result;
+//     }
+
+//     // ================ 处理 1D（允许嵌套） a[...] =================
+//     // 匹配： name[
+//     std::regex startPattern("\\b" + name + "\\s*\\[");
+//     std::smatch match;
+//     if (!std::regex_search(result, match, startPattern)) {
+//         return result; // 没找到 1D
+//     }
+
+//     size_t startPos = match.position(0) + match.length(0); // '[' 之后
+//     size_t scan = startPos;
+//     int bracket = 1;
+
+//     // 手动扫描找对应的 ']'
+//     while (scan < result.size() && bracket > 0) {
+//         if (result[scan] == '[') bracket++;
+//         else if (result[scan] == ']') bracket--;
+//         scan++;
+//     }
+
+//     size_t endPos = scan - 1; // 结束的 ']'
+
+//     // 中间内容 (支持嵌套)
+//     std::string inside = result.substr(startPos, endPos - startPos);
+
+//     // ================ 根据 flag/dimid 构造 replacement =================
+//     std::string replacement;
+
+//     // flag0 和 flag1 同时为 1
+//     if (temp.flag[0] == 1 && temp.flag[1] == 1) {
+//         replacement = name + "[(" + inside + " + " + name + "_0) * " +
+//                       name + "_1_shape + (" + inside + " + " + name + "_1)]";
+//     } else {
+//         for (int i = 0; i < temp.flag.size(); i++) {
+//             if (temp.flag[i] == 1) {
+//                 if (temp.dimid[i] == 0) {
+//                     replacement = name + "[(0 + " + name + "_0) * " +
+//                                   name + "_1_shape + (" + inside + " + " + name + "_1)]";
+//                 } else if (temp.dimid[i] == 1) {
+//                     replacement = name + "[(" + inside + " + " + name + "_0) * " +
+//                                   name + "_1_shape + (0 + " + name + "_1)]";
+//                 }
+//                 break;
+//             }
+//         }
+//     }
+//     result.replace(match.position(0), endPos - match.position(0) + 1, replacement);
+//     return result;
+// }
+
+
+
+
+std::string funcnew2(std::string code, const std::string& name,
+                     dacppTranslator::clacparam temp)
+{
+    std::string result = code;
+
+    // 1) 一次性替换所有 2D： name[x][y]
+    {
+        std::regex pattern2D("\\b" + name + "\\s*\\[\\s*([^\\]]+)\\s*\\]\\s*\\[\\s*([^\\]]+)\\s*\\]");
+        std::string replacement2D =
+            name + "[($1 + " + name + "_0) * " + name + "_1_shape + ($2 + " + name + "_1)]";
+        result = std::regex_replace(result, pattern2D, replacement2D);
+    }
+
+    // 2) 逐个替换 1D：用 substr(tail) + smatch 避免迭代器 match 类型问题
+    std::regex start(name + "\\s*\\[");
+    size_t searchPos = 0;
+
+    while (searchPos < result.size()) {
+        // tail 为从 searchPos 开始的子串
+        std::string tail = result.substr(searchPos);
+        std::smatch m; // 用 smatch 匹配整个字符串 tail
+
+        if (!std::regex_search(tail, m, start)) break; // no more matches
+
+        // m.position(0) 是在 tail 中的位置，换算回 result 的绝对位置
+        size_t matchPos = searchPos + static_cast<size_t>(m.position(0));
+        size_t idx = matchPos + static_cast<size_t>(m.length(0)); // '[' 后第一个字符位置 in result
+
+        // 手动配对方括号，支持嵌套
+        int depth = 1;
+        size_t p = idx;
+        while (p < result.size() && depth > 0) {
+            if (result[p] == '[') depth++;
+            else if (result[p] == ']') depth--;
+            p++;
+        }
+        if (depth != 0) {
+            // 没找到配对的 ]：停止处理以避免死循环 / 错误
+            break;
+        }
+
+        size_t endBracket = p - 1; // ']' 位置
+        std::string inside = result.substr(idx, endBracket - idx);
+
+        // 构造替换串（按你的 flag/dimid 逻辑）
+        std::string replacement;
+        bool applied = false;
+
+        if (temp.flag.size() >= 2 && temp.flag[0] && temp.flag[1]) {
+            replacement = name + "[(" + inside + " + " + name + "_0) * " +
+                          name + "_1_shape + (" + inside + " + " + name + "_1)]";
+            applied = true;
+        } else {
+            for (size_t i = 0; i < temp.flag.size(); ++i) {
+                if (!temp.flag[i]) continue;
+                if (temp.dimid[i] == 0) {
+                    replacement = name + "[(0 + " + name + "_0) * " +
+                                  name + "_1_shape + (" + inside + " + " + name + "_1)]";
+                } else {
+                    replacement = name + "[(" + inside + " + " + name + "_0) * " +
+                                  name + "_1_shape + (0 + " + name + "_1)]";
+                }
+                applied = true;
+                break;
+            }
+        }
+
+        if (!applied) {
+            // 不替换：必须前进 searchPos 到 endBracket + 1 否则会死循环
+            searchPos = endBracket + 1;
+            continue;
+        }
+
+        // 执行替换（替换从 matchPos 开始到 endBracket 包含 ']' 的整段）
+        result.replace(matchPos, endBracket - matchPos + 1, replacement);
+
+        // 替换后 searchPos 移至 replacement 之后，避免再次匹配刚替换的文本
+        searchPos = matchPos + replacement.length();
+    }
+
+    return result;
+}
+
+
+std::string funcnew1(std::string code,const std::string& name){
    std::string result= code;
    std::regex pattern1D(R"(\b)" + name + R"(\s*\[\s*([^\]]+)\s*\])"); 
     std::string replacement1D = name + "[$1+" + name + "_0]"; 
@@ -4811,18 +4978,35 @@ std::string funcnew1(std::string code,const std::string& name,int dim){
 }
 
 
-std::string dacppTranslator::Calc::getBody(int idx,std::vector<int>& dim) {
+std::string dacppTranslator::Calc::getBody(int idx,std::vector<dacppTranslator::clacparam>& dim) {
   std::string code = body[idx];
   for (int i = 0; i < getNumParams(); i++) {
-    int dim0= dim[i];
-    std::string name = getParam(i)->getName();
+     dacppTranslator::clacparam temp;
+    temp=dim[i];
+    int dim0=temp.dimesion;
+    std::string name = temp.name;
     if(dim0==2)
-     code = funcnew2(code,name,dim0);
+     code = funcnew2(code,name,temp);
     if(dim0==1)
-    code = funcnew1(code,name,dim0);
+    code = funcnew1(code,name);
   }
   return code;
 }
+std::string dacppTranslator::Calc::getBody(int idx,std::vector<int>& dim) {
+  std::string name="name";
+  return name;
+}
+//   std::string code = body[idx];
+//   for (int i = 0; i < getNumParams(); i++) {
+//     int dim0= dim[i];
+//     std::string name = getParam(i)->getName();
+//     if(dim0==2)
+//      code = funcnew2(code,name,dim0);
+//     if(dim0==1)
+//     code = funcnew1(code,name,dim0);
+//   }
+//   return code;
+// }
 std::string dacppTranslator::Calc::getBody(int idx) {
   std::string code = body[idx];
   for (int i = 0; i < getNumParams(); i++) {
