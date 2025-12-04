@@ -88,7 +88,9 @@ namespace BUFFER_TEMPLATE {
     // std::string CodeGen_KernelExecute(std::string SplitSize, std::string AccessorInit, std::string IndexInit,std::string ACCESSOR_LIST1, std::string ACCESSOR_LIST2, std::string CalcEmbed);
     std::string CodeGen_KernelExecute(std::string SplitSize, std::string AccessorInit, std::string IndexInit, std::string getpos, std::string ACCESSOR_LIST1, std::string ACCESSOR_LIST2, std::string CalcEmbed);
     std::string CodeGen_AccessorInit(std::string name);
-    std::string CodeGen_AccessorInit0(std::string name);
+    // std::string CodeGen_AccessorInit0(std::string name);
+    std::string CodeGen_AccessorInit0_read(std::string name);
+    std::string CodeGen_AccessorInit0_write(std::string name);
     std::string CodeGen_AccessorInit1(std::string name);
     std::string CodeGen_IndexInit2(Dac_Ops ops, std::vector<std::string> sets, std::vector<std::string> offsets);
     // std::string CodeGen_CalcEmbed2(std::string Name, Args args, std::vector<std::string> accessor_names);

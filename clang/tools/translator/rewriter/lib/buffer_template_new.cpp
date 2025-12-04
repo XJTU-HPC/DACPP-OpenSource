@@ -569,12 +569,23 @@ std::string CodeGen_DataReconstruct(std::string type,std::string name,std::strin
 //     sycl::buffer<int> info_partition_{{NAME}}_buffer(info_partition_{{NAME}}.data(), sycl::range<1>(info_partition_{{NAME}}.size()));
 // )~~~";
 
+// const char *DATA_RECON_BUFFER_Template1 = R"~~~(
+//     // 数据重组
+//     {{DATA_OPS_INIT}}
+
+//     std::vector<{{TYPE}}> {{NAME}}_init({{NAME}}.getSize(), 0);
+//     sycl::buffer<{{TYPE}}> r_{{NAME}}({{NAME}}_init.data(), sycl::range<1>({{NAME}}.getSize()));
+
+// 	std::vector<int> info_partition_{{NAME}}=para_gene_tool.init_partition_data_shape(info_{{NAME}},{{NAME}}_ops);
+//     sycl::buffer<int> info_partition_{{NAME}}_buffer(info_partition_{{NAME}}.data(), sycl::range<1>(info_partition_{{NAME}}.size()));
+// )~~~";
+
 const char *DATA_RECON_BUFFER_Template1 = R"~~~(
     // 数据重组
     {{DATA_OPS_INIT}}
 
-    std::vector<{{TYPE}}> {{NAME}}_init({{NAME}}.getSize(), 0);
-    sycl::buffer<{{TYPE}}> r_{{NAME}}({{NAME}}_init.data(), sycl::range<1>({{NAME}}.getSize()));
+    auto r_{{NAME}} = std::make_unique<sycl::buffer<{{TYPE}}, 1>>(sycl::range<1>({{NAME}}.getSize()));
+    r_{{NAME}}->set_final_data(h_{{NAME}});
 
 	std::vector<int> info_partition_{{NAME}}=para_gene_tool.init_partition_data_shape(info_{{NAME}},{{NAME}}_ops);
     sycl::buffer<int> info_partition_{{NAME}}_buffer(info_partition_{{NAME}}.data(), sycl::range<1>(info_partition_{{NAME}}.size()));
@@ -698,10 +709,27 @@ const char *KERNEL_EXECUTE_Template = R"~~~(
     
 )~~~";
 //内核执行中的{{ACCESSOR_LIST}}，需要把A、B、C都传入，以免受到Rewriter_Buffer.cpp中第204行的判断读写的逻辑的干扰
-const char* ACCESSOR_LIST_K =  R"~~~(
-        accessor acc_{{NAME}}{r_{{NAME}}, h};)~~~";
-std::string CodeGen_AccessorInit0(std::string name){
-	return templateString(ACCESSOR_LIST_K,{
+// const char* ACCESSOR_LIST_K =  R"~~~(
+//         accessor acc_{{NAME}}{r_{{NAME}}, h};)~~~";
+// std::string CodeGen_AccessorInit0(std::string name){
+// 	return templateString(ACCESSOR_LIST_K,{
+// 		{"{{NAME}}", name}
+// 	});
+// }
+//2025.12.4修改：对于只读的数据，将buffer的访问模式修改为只读 然后禁止数据写回操作。对于只写的数据，访问模式设置为覆盖写 同时注意 写成这样*r_matC。
+const char* ACCESSOR_LIST_K_read =  R"~~~(
+        accessor<{{TYPE}}, 1, access::mode::read> acc_{{NAME}}(r_{{NAME}}, h);
+        r_{{NAME}}.set_final_data(nullptr);
+        )~~~";
+const char* ACCESSOR_LIST_K_write =  R"~~~(
+        accessor<{{TYPE}}, 1, sycl::access::mode::discard_write> acc_{{NAME}}(*r_{{NAME}}, h);)~~~";
+std::string CodeGen_AccessorInit0_read(std::string name){
+	return templateString(ACCESSOR_LIST_K_read,{
+		{"{{NAME}}", name}
+	});
+}
+std::string CodeGen_AccessorInit0_write(std::string name){
+	return templateString(ACCESSOR_LIST_K_write,{
 		{"{{NAME}}", name}
 	});
 }
@@ -764,8 +792,17 @@ std::string CodeGen_KernelExecute(std::string SplitSize, std::string AccessorIni
 
 // 访问器初始化
 // {{ACCESSOR_INIT}}
+// const char *ACCESSOR_INIT_Template = R"~~~(
+//         auto info_partition_{{NAME}}_accessor = info_partition_{{NAME}}_buffer.get_access<sycl::access::mode::read_write>(h);)~~~";
+// std::string CodeGen_AccessorInit(std::string name) {
+// 	return templateString(ACCESSOR_INIT_Template,
+// 	{
+// 		{"{{NAME}}",    name}
+// 	});
+// }
+//2025.12.4修改：对于数据单元形状的访问器，将模式从读写模式修改为只读模式
 const char *ACCESSOR_INIT_Template = R"~~~(
-        auto info_partition_{{NAME}}_accessor = info_partition_{{NAME}}_buffer.get_access<sycl::access::mode::read_write>(h);)~~~";
+        auto info_partition_{{NAME}}_accessor = info_partition_{{NAME}}_buffer.get_access<sycl::access::mode::read>(h);)~~~";
 std::string CodeGen_AccessorInit(std::string name) {
 	return templateString(ACCESSOR_INIT_Template,
 	{
@@ -980,15 +1017,21 @@ std::string CodeGen_Reduction_Span(std::string SpanSize,std::string SplitSize,st
 //     {{NAME}}.array2Tensor(h_{{NAME}});
 // )~~~";
 
-const char *RESULT_B2H_MOV_Template = R"~~~(
-    //结果返回
+// const char *RESULT_B2H_MOV_Template = R"~~~(
+//     //结果返回
     
-    {
-        host_accessor temp_accessor{r_{{NAME}}};
-        for(int i = 0; i < {{NAME}}.getSize(); i++){
-            h_{{NAME}}[i] = temp_accessor[i];
-        }
-    }
+//     {
+//         host_accessor temp_accessor{r_{{NAME}}};
+//         for(int i = 0; i < {{NAME}}.getSize(); i++){
+//             h_{{NAME}}[i] = temp_accessor[i];
+//         }
+//     }
+//     {{NAME}}.array2Tensor(h_{{NAME}});
+// )~~~";
+
+const char *RESULT_B2H_MOV_Template = R"~~~(
+    //结果返回语句改为析构语句
+    r_{{NAME}}.reset();
     {{NAME}}.array2Tensor(h_{{NAME}});
 )~~~";
 

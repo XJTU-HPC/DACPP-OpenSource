@@ -357,8 +357,19 @@ void dacppTranslator::Rewriter::rewriteDac_Buffer() {
             AccessorInit += BUFFER_TEMPLATE::CodeGen_AccessorInit(shell->getShellParam(argCount)->getName());
         }
         std::string Accessor_List = "";
+        // for (int argCount = 0; argCount < shell->getNumShellParams(); argCount++) {
+        //     Accessor_List += BUFFER_TEMPLATE::CodeGen_AccessorInit0(shell->getShellParam(argCount)->getName());
+        // }
+        //2025.12.4：这里要进行一个小判断：对于只读的数据，将buffer的访问模式修改为只读 然后禁止数据写回操作
+        //2025.12.4：对于只写的数据，访问模式设置为覆盖写 同时注意 写成这样*r_matC
         for (int argCount = 0; argCount < shell->getNumShellParams(); argCount++) {
-            Accessor_List += BUFFER_TEMPLATE::CodeGen_AccessorInit0(shell->getShellParam(argCount)->getName());
+            ShellParam* shellParam = shell->getShellParam(argCount);
+            if(shellParam->getRw() == 0){
+                Accessor_List += BUFFER_TEMPLATE::CodeGen_AccessorInit0_read(shell->getShellParam(argCount)->getName());
+            }
+            else {
+                Accessor_List += BUFFER_TEMPLATE::CodeGen_AccessorInit0_write(shell->getShellParam(argCount)->getName());
+            }
         }
         std::string Accessor_Pointer_List = "";
         for (int argCount = 0; argCount < shell->getNumShellParams(); argCount++) {
