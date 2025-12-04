@@ -89,7 +89,7 @@ void dacppTranslator::Rewriter::rewriteDac_Buffer() {
             }
         }
         for(int count = 0; count < calc->getNumParams(); count++) {
-            code += "sycl::accessor<int, 1, sycl::access::mode::read_write> info_" + calc->getParam(count)->getName() + "_acc";
+            code += "sycl::accessor<int, 1, sycl::access::mode::read> info_" + calc->getParam(count)->getName() + "_acc";
             if(count != calc->getNumParams() - 1) {
                 code += ", ";
             }
