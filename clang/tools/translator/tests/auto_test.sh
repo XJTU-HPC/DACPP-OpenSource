@@ -32,14 +32,13 @@ mkdir $TMP_DIR
 
 # Edit examples here
 examples=(
-     "matMul1.0"
+    "matMul1.0"
     "waveEquation1.0"
-     "stencil1.0"
+    "stencil1.0"
     "jacobi1.0"
     "FOuLa1.0"
     "decay1.0"
     "DFT1.0"
-    
     "liuliang1.0"
     "MDP1.0"
     "mandel1.0"

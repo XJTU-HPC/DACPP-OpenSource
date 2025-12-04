@@ -723,14 +723,16 @@ const char* ACCESSOR_LIST_K_read =  R"~~~(
         )~~~";
 const char* ACCESSOR_LIST_K_write =  R"~~~(
         accessor<{{TYPE}}, 1, sycl::access::mode::discard_write> acc_{{NAME}}(*r_{{NAME}}, h);)~~~";
-std::string CodeGen_AccessorInit0_read(std::string name){
+std::string CodeGen_AccessorInit0_read(std::string name, std::string type){
 	return templateString(ACCESSOR_LIST_K_read,{
-		{"{{NAME}}", name}
+		{"{{NAME}}", name},
+        {"{{TYPE}}", type}
 	});
 }
-std::string CodeGen_AccessorInit0_write(std::string name){
+std::string CodeGen_AccessorInit0_write(std::string name, std::string type){
 	return templateString(ACCESSOR_LIST_K_write,{
-		{"{{NAME}}", name}
+		{"{{NAME}}", name},
+        {"{{TYPE}}", type}
 	});
 }
 //内核执行中的{{ACCESSOR_POINTER_LIST}}，需要把A、B、C都传入，以免受到Rewriter_Buffer.cpp中第204行的判断读写的逻辑的干扰
