@@ -43,8 +43,8 @@ calc void lwr(dacpp::Vector<double> & rho, double* new_rho) {
     //new_rho += 0.1 * (rho[0] + new_rho - 2 * rho[1]);
 }
 
-shell dacpp::list LWR_shell([[clang::annotate("read_write")]] dacpp::Vector<double> & rho, 
-                            [[clang::annotate("read_write")]]dacpp::Vector<double> & new_rho) {
+shell dacpp::list LWR_shell( dacpp::Vector<double> & rho READ_WRITE, 
+                            dacpp::Vector<double> & new_rho READ_WRITE) {
     dacpp::index idx1;
     dacpp::split S1(2, 1);
     binding(idx1, S1);

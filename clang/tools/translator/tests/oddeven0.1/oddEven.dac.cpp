@@ -3,7 +3,7 @@
 #include <cstdlib>
 #include <ctime>
 #include "ReconTensor.h"
-#define DACPP_TRANSLATE_MODE 1;
+#define DACPP_TRANSLATE_MODE 1
 
 namespace dacpp {
     typedef std::vector<std::any> list;
@@ -80,7 +80,7 @@ int main() {
     //     array[i] = rand() % 10;  // 随机生成0到1000之间的整数
     // }
     for (int i = 0; i < N; i++) {
-        array1[i] = N - i;  // 初始化为递减的数组
+        array[i] = N - i;  // 初始化为递减的数组
     }
 
     // 打印排序前的数组（前10个）
@@ -91,28 +91,8 @@ int main() {
     //std::cout << std::endl;
 
     // 执行奇偶归并排序
-    // oddEvenMergeSort(array, N);
-        dacpp::Tensor<int, 1> array_tensor(array);
-    vector<int> array_out(N);
-    dacpp::Tensor<int, 1> array_out_tensor(array_out);
+    oddEvenMergeSort(array, N);
 
-    // 每一轮排序进行多次比较
-    for (int phase = 0; phase < N; phase++) {
-        // 奇数阶段：比较相邻的奇数索引
-        //array_tensor.print();
-        ODDEVEN(array_tensor,array_out_tensor) <-> oddeven;
-        dacpp::Tensor<int, 1> array2_tensor = array_out_tensor[{1,N-1}];
-        vector<int> array_out2(N-2, 0);
-        dacpp::Tensor<int, 1> array_out2_tensor(array_out2);
-        //array2_tensor.print();
-        ODDEVEN(array2_tensor,array_out2_tensor) <-> oddeven;
-        for(int i = 1;i < N-1; i++){
-            array_tensor[i] = array_out2_tensor[i-1];
-        }
-        array_tensor[0] = array_out_tensor[0];
-        array_tensor[N-1] = array_out_tensor[N-1];
-    }
-    array_tensor.print();
 
     return 0;
 }

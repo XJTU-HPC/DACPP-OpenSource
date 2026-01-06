@@ -24,8 +24,8 @@ const double dy = Ly / (NY - 1);
 const double dt_stability = (dx * dx * dy * dy) / (2.0f * alpha * (dx * dx + dy * dy));
 const double delta_t = 0.4f * dt_stability; // 选择一个更严格的时间步长以确保稳定性
 
-shell dacpp::list stencilShell([[clang::annotate("read_write")]] dacpp::Matrix<double>& matIn, 
-                                [[clang::annotate("read_write")]] dacpp::Matrix<double>& matOut) {
+shell dacpp::list stencilShell( dacpp::Matrix<double>& matIn READ_WRITE, 
+                                dacpp::Matrix<double>& matOut READ_WRITE) {
     dacpp::split sp1(3, 1), sp2(3, 1);
     dacpp::index idx1, idx2;
     binding(sp1, idx1);

@@ -14,6 +14,11 @@
 #include <type_traits>
 #include <iomanip> // 记得包含这个头文件
 #include <chrono>     // for std::chrono
+#pragma once
+
+#define READ       [[clang::annotate("read")]]
+#define WRITE      [[clang::annotate("write")]]
+#define READ_WRITE [[clang::annotate("read_write")]]
 
 
 namespace dacpp {

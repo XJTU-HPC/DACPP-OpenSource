@@ -39,7 +39,7 @@ void normalize(dacpp::Vector<double>& p) {
     }
 }
 
-shell dacpp::list mdp_shell([[clang::annotate("read_write")]] dacpp::Vector<double>& p, [[clang::annotate("read_write")]]dacpp::Vector<double>& new_p){
+shell dacpp::list mdp_shell( dacpp::Vector<double>& p READ_WRITE, dacpp::Vector<double>& new_p READ_WRITE){
     dacpp::index idx;
     dacpp::split sp(3,1);
     binding(idx, sp);

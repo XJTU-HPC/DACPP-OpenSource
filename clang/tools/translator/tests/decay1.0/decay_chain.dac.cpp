@@ -3,7 +3,6 @@
 #include <cmath>
 #include <cstdlib>
 #include "ReconTensor.h"
-
 namespace dacpp {
     typedef std::vector<std::any> list;
 }

@@ -21,9 +21,9 @@ const double dy = Ly / (NY - 1);
 // CFL条件
 const double dt = 0.5f * std::fmin(dx, dy) / c; // 满足稳定性条件
 
-shell dacpp::list waveEqShell([[clang::annotate("write")]] dacpp::Matrix<double>& matCur, 
-                             [[clang::annotate("read_write")]] dacpp::Matrix<double>& matPrev, 
-                            [[clang::annotate("write")]] dacpp::Matrix<double>& matNext){
+shell dacpp::list waveEqShell( dacpp::Matrix<double>& matCur WRITE, 
+                               dacpp::Matrix<double>& matPrev READ_WRITE, 
+                               dacpp::Matrix<double>& matNext WRITE){
     dacpp::split sp1(3, 1), sp2(3, 1);
     dacpp::index idx1, idx2;
     binding(sp1, idx1);

@@ -8,9 +8,9 @@ namespace dacpp {
 
 using namespace std;
 
-shell dacpp::list matrixMultiply_shell( [[clang::annotate("read")]] dacpp::Matrix<int>& matA,
-                                        [[clang::annotate("read")]] dacpp::Matrix<int>& matB,
-                                        [[clang::annotate("write")]] dacpp::Matrix<int>& matC) {
+shell dacpp::list matrixMultiply_shell( const dacpp::Matrix<int>& matA,
+                                        const dacpp::Matrix<int>& matB,
+                                        dacpp::Matrix<int>& matC) {
     dacpp::index idx1, idx2;
     //dacpp::split s(3,1);
     //binding(i, s);
