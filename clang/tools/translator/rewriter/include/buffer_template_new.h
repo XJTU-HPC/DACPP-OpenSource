@@ -10,6 +10,7 @@
 #include"dacInfo.h"
 #include<unordered_map>
 #include<set>
+#include "DacppStructure.h"
 
 using std::string;
 
@@ -87,6 +88,7 @@ namespace BUFFER_TEMPLATE {
     // std::string CodeGen_KernelExecute(std::string SplitSize, std::string AccessorInit, std::string IndexInit, std::string CalcEmbed);
     // std::string CodeGen_KernelExecute(std::string SplitSize, std::string AccessorInit, std::string IndexInit,std::string ACCESSOR_LIST1, std::string ACCESSOR_LIST2, std::string CalcEmbed);
     std::string CodeGen_KernelExecute(std::string SplitSize, std::string AccessorInit, std::string IndexInit, std::string getpos, std::string ACCESSOR_LIST1, std::string ACCESSOR_LIST2, std::string CalcEmbed);
+    std::string CodeGen_KernelExecute2(std::string SplitSize, std::string AccessorInit, std::string IndexInit,std::string getpos,std::string ACCESSOR_LIST1, std::string ACCESSOR_LIST2, std::string CalcEmbed,dacppTranslator::DacppFile* dacppFile);
     std::string CodeGen_AccessorInit(std::string name);
     // std::string CodeGen_AccessorInit0(std::string name);
     std::string CodeGen_AccessorInit0_read(std::string name, std::string type);
@@ -99,6 +101,8 @@ namespace BUFFER_TEMPLATE {
     std::string CodeGen_Result_B2H_Mov(std::string NAME, std::string SIZE);
     std::string CodeGen_getpos1(std::string name, std::string opsname, std::string idx);
     std::string CodeGen_getpos0(std::string name, std::string idx);
+    std::string CodeGen_D2B_Mov_Buffer_read_write(std::string TYPE, std::string NAME, std::string SIZE);
+    std::string CodeGen_AccessorInit0_read_write(std::string name, std::string type);
 }
 
 #endif

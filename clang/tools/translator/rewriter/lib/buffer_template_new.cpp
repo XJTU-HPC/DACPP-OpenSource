@@ -3,8 +3,219 @@
 #include <fstream>
 #include <vector>
 #include "buffer_template_new.h"
+#include "clang/AST/AST.h"
+#include "clang/AST/RecursiveASTVisitor.h"
+#include "clang/Basic/SourceManager.h"
+#include "clang/Basic/LangOptions.h"
+#include "clang/Lex/Lexer.h"
+#include "clang/Rewrite/Core/Rewriter.h"  
+#include "llvm/Support/raw_ostream.h"
+#include "DacppStructure.h"
+#include <regex>
+#include "dac_Reduction.h"
+#include <set>
+#include <sstream>
+#include "Rewriter.h"
+#include "Split.h"
+#include "Param.h"
+#include "dacInfo.h"
+#include "usm_template.h"
+#include "Calc.h"
+#include "ASTParse.h"
 
 namespace BUFFER_TEMPLATE {
+// -------------------- max_generate --------------------
+bool max_generate(std::string& reductionText, std::string original,
+                  dacppTranslator::DacppFile dacFile) {
+
+    std::string accText = "";
+    // 1. 提取 expr 子串
+    std::size_t start = original.find("reduction_max");
+    if (start == std::string::npos) return false;
+    start += std::string("reduction_max(").length();
+
+    int paren_depth = 0;
+    std::size_t expr_end = start;
+    for (std::size_t pos = start; pos < original.size(); ++pos) {
+        if (original[pos] == '(') paren_depth++;
+        else if (original[pos] == ')') paren_depth--;
+        else if (original[pos] == ',' && paren_depth == 0) {
+            expr_end = pos;
+            break;
+        }
+    }
+    std::string expr = original.substr(start, expr_end - start);
+
+    // 2. 提取剩余三个参数
+    std::vector<std::size_t> comma_pos;
+    paren_depth = 0;
+    for (std::size_t pos = start; pos < original.size(); ++pos) {
+        if (original[pos] == '(') paren_depth++;
+        else if (original[pos] == ')') paren_depth--;
+        else if (original[pos] == ',' && paren_depth == 0) comma_pos.push_back(pos);
+        if (comma_pos.size() >= 3) break;
+    }
+
+    std::string var_i = original.substr(comma_pos[0] + 1, comma_pos[1] - comma_pos[0] - 1);
+    std::string initial_value_name = original.substr(comma_pos[1] + 1, comma_pos[2] - comma_pos[1] - 1);
+    std::string N_name = original.substr(comma_pos[2] + 1);
+    N_name = N_name.substr(0, N_name.find(')'));
+
+    auto trim = [](std::string &s){
+        size_t first = s.find_first_not_of(" \t\n");
+        size_t last  = s.find_last_not_of(" \t\n");
+        if(first == std::string::npos) s="";
+        else s = s.substr(first,last-first+1);
+    };
+    trim(var_i); trim(initial_value_name); trim(N_name);
+
+    // 3. 识别 expr 中使用的 forStatementVars
+    std::vector<std::string> name;
+    for (const auto& var_pair : dacFile.getForStatementVars()) {
+        std::cout<<"Checking variable: "<<var_pair.first<<std::endl;
+        const std::string& var = var_pair.first;
+        std::size_t pos = expr.find(var);
+        while (pos != std::string::npos) {
+            bool left_ok = (pos == 0) || (!std::isalnum(expr[pos-1]) && expr[pos-1] != '_');
+            bool right_ok = (pos + var.length() == expr.size()) ||
+                             (!std::isalnum(expr[pos + var.length()]) && expr[pos + var.length()] != '_');
+            if (left_ok && right_ok) {
+                name.push_back(var);
+                break;
+            }
+            pos = expr.find(var, pos + 1);
+        }
+    }
+
+    // 4. 生成 q.submit 代码
+    reductionText += " q.submit([&](sycl::handler &h) {\n";
+
+    // 4.1 accessors
+// 4.1 accessors
+
+for (const auto &var : name) {
+    int i=0;
+    dacppTranslator::Expression* expr = dacFile.getExpression(i);
+    dacppTranslator::Shell* shell = expr->getShell();
+    dacppTranslator::Calc* calc = expr->getCalc();
+    bool flag = false;  //flag 用于标记是否找到写权限
+    bool found = false;
+    for(int count = 0; count < shell->getNumParams(); count++) { 
+        dacppTranslator::Param* param = shell->getParam(count);
+        if (param->getName() == var) {
+            found = true;
+            if (param->getRw()!= dacppTranslator::IOTYPE::READ) {
+                flag = true;
+                break;
+            }
+        }
+    }
+    if (!flag && found) {
+        reductionText +=
+            "    auto acc_" + var +
+            " = r_" + var +
+            ".get_access<sycl::access::mode::read>(h);\n";
+    } else if(found&&flag){
+        reductionText +=
+            "    auto acc_" + var +
+            " = r_" + var +
+            "->get_access<sycl::access::mode::read_write>(h);\n";
+
+    }
+    else{
+        reductionText +=
+            "    auto acc_" + var +
+            " = r_" + var +
+            ".get_access<sycl::access::mode::read_write>(h);\n";
+    }
+}
+
+
+
+
+    // 4.2 d_指针
+    for (const auto &var : name) {
+        reductionText += "  //      auto d_" + var + " = acc_" + var + ".get_pointer();\n";
+    }
+
+
+    // 4.3 parallel_for
+    std::string max_buf = "r_max_error"; // 假设已定义
+    reductionText += "        h.parallel_for(\n";
+    reductionText += "            sycl::range<1>(" + N_name + "),\n";
+    reductionText += "            sycl::reduction(" + max_buf + ", h, sycl::maximum<float>(), sycl::property::reduction::initialize_to_identity()),\n";
+    reductionText += "            [=](sycl::id<1> idx, auto &reducer) {\n";
+    std::string val_expr = expr;
+for (const auto &var : name) {
+    size_t pos = 0;
+    while ((pos = val_expr.find(var, pos)) != std::string::npos) {
+
+        // 必须是独立标识符
+        bool left_ok = (pos == 0) || (!std::isalnum(val_expr[pos-1]) && val_expr[pos-1] != '_');
+        bool right_ok = (pos + var.length() < val_expr.size()) &&
+                        val_expr[pos + var.length()] == '[';
+
+        if (!left_ok || !right_ok) {
+            pos += var.length();
+            continue;
+        }
+
+        // 找匹配的 ]
+        size_t lbracket = pos + var.length();
+        size_t rbracket = lbracket;
+        int depth = 0;
+        for (; rbracket < val_expr.size(); ++rbracket) {
+            if (val_expr[rbracket] == '[') depth++;
+            else if (val_expr[rbracket] == ']') {
+                depth--;
+                if (depth == 0) break;
+            }
+        }
+        if (rbracket >= val_expr.size()) break;
+
+        // 替换整个 x[...]
+        val_expr.replace(pos, rbracket - pos + 1,
+                         "acc_" + var + "[idx]");
+        pos += var.length() + 6; // acc_ + [idx]
+    }
+}
+
+
+    reductionText += "                float val = " + val_expr + ";\n";
+    reductionText += "                reducer.combine(val);\n";
+    reductionText += "            }\n";
+    reductionText += "        );\n";
+    reductionText += "    }).wait();\n";
+    // std::cout<<"Generated reductionText:\n"<<reductionText<<std::endl;
+    return true;
+}
+
+// -------------------- replaceReductionMax --------------------
+bool replaceReductionMax(std::string& fortext, std::string& reductionText,
+                         dacppTranslator::DacppFile dacFile) {
+
+    const std::string key = "reduction_max";
+    std::string original;
+
+    std::size_t pos = fortext.find(key);
+    if (pos == std::string::npos) return false;
+
+    std::size_t stmt_begin = fortext.rfind(';', pos);
+    if (stmt_begin == std::string::npos) stmt_begin = 0;
+    else ++stmt_begin;
+
+    std::size_t stmt_end = fortext.find(';', pos);
+    if (stmt_end == std::string::npos) return false;
+    ++stmt_end;
+
+    original = fortext.substr(stmt_begin, stmt_end - stmt_begin);
+
+    max_generate(reductionText, original, dacFile);
+
+    fortext.replace(stmt_begin, stmt_end - stmt_begin, reductionText);
+
+    return true;
+}
 
 void replaceTextInString(std::string& text, 
     const std::string &find, 
@@ -70,6 +281,588 @@ std::string CodeGen_DAC2SYCL2(std::string dacShellName, std::string dacShellPara
 	});
 }
 
+// 判断 FS 的 body 中是否包含另一个 for 循环（用于判定是否做 2D 并行化）
+bool containsNestedFor(const clang::ForStmt* FS) {
+    using namespace clang;
+    if (!FS) return false;
+
+    class NestedForVisitor : public RecursiveASTVisitor<NestedForVisitor> {
+    public:
+        bool foundNested = false;
+        const ForStmt* outer;
+
+        NestedForVisitor(const ForStmt* outer) : outer(outer) {}
+
+        bool VisitForStmt(ForStmt* innerFS) {
+            if (innerFS != outer) {
+                foundNested = true;
+            }
+            return true;
+        }
+    };
+
+    NestedForVisitor v(FS);
+    v.TraverseStmt(const_cast<clang::ForStmt*>(FS));
+    return v.foundNested;
+}
+
+// 判断一个 for 是否“包含” <-> 表达式对应的 BinaryOperator（防御性用）
+static bool forContainsDacExpr(
+    const clang::ForStmt* FS,
+    const clang::BinaryOperator* dacExpr,
+    const clang::ASTContext* Context)
+{
+    if (!FS || !dacExpr || !Context) return false;
+    const auto &SM = Context->getSourceManager();
+    clang::SourceRange fsRange  = FS->getSourceRange();
+    clang::SourceRange dacRange = dacExpr->getSourceRange();
+
+    auto leq = [&](clang::SourceLocation A, clang::SourceLocation B){
+        return A == B || SM.isBeforeInTranslationUnit(A, B);
+    };
+
+    bool beginOK = leq(fsRange.getBegin(), dacRange.getBegin());
+    bool endOK   = leq(dacRange.getEnd(), fsRange.getEnd());
+    return beginOK && endOK;
+}
+// ================================================
+// 将 d_A[i][j] 形式转换为 d_A[i * stride + j]
+// ================================================
+static std::string linearize2D(
+    const std::string& body,
+    const std::vector<std::string>& dvars,
+    const std::vector<std::string>& strideExpr,
+    bool& star
+){
+std::string out = body;
+int i = 0;
+
+for (const auto& v : dvars) {
+
+    // ---------- 1. 二维 -> 一维 ----------
+    {
+        std::regex pat("\\b" + v + "\\s*\\[([^\\]]+)\\]\\s*\\[([^\\]]+)\\]");
+        std::string rep = v + "[($1) * (" + strideExpr[i] + ") + ($2)]";
+        out = std::regex_replace(out, pat, rep);
+    }
+
+    // ---------- 2. device pointer 标量解引用 ----------
+    // 匹配“裸 v”，但排除：
+    //   v[   *v   &v   v.   v->
+    {
+        std::regex scalarPat(
+            "\\b" + v + "\\b"
+            "(?!\\s*\\[)"     // not v[
+            "(?!\\s*->)"     // not v->
+            "(?!\\s*\\.)"    // not v.
+        );
+
+        // 为避免重复加 *，先排除 *v
+        std::regex alreadyDeref("\\*\\s*" + v);
+
+        if (!std::regex_search(out, alreadyDeref)) {
+            out = std::regex_replace(out, scalarPat, "*" + v);
+        }
+    }
+
+    i++;
+}
+
+return out;
+
+}
+
+// 二维自动并行化：for(i){ for(j){ body } } → 2D parallel_for
+std::string parallelizeNestedFor(
+    const clang::ForStmt* outerFS,
+    const clang::ASTContext* Context,
+    dacppTranslator::DacppFile* dacFile   // ✔ 你刚加的参数
+){
+    using namespace clang;
+    const LangOptions& LO = Context->getLangOpts();
+    const SourceManager& SM = Context->getSourceManager();
+
+    // ====== 解析 i 循环 ======
+    std::string iVar="i", iL="0", iR="0";
+    if (auto* DS = dyn_cast<const DeclStmt>(outerFS->getInit())) {
+        if (auto* VD = dyn_cast<VarDecl>(DS->getSingleDecl())) {
+            iVar = VD->getNameAsString();
+            if (VD->getInit())
+                iL = Lexer::getSourceText(
+                    CharSourceRange::getTokenRange(VD->getInit()->getSourceRange()),
+                    SM, LO).str();
+        }
+    }
+    if (auto* C = dyn_cast<BinaryOperator>(outerFS->getCond())) {
+        iR = Lexer::getSourceText(
+            CharSourceRange::getTokenRange(C->getRHS()->getSourceRange()),
+            SM, LO).str();
+    }
+
+    // ====== 获取内层 j 循环 ======
+    const ForStmt* innerFS = nullptr;
+    if (auto* CS = dyn_cast<CompoundStmt>(outerFS->getBody())) {
+        for (auto* child : CS->body()) {
+            if (auto* fs = dyn_cast<ForStmt>(child)) {
+                innerFS = fs;
+                break;
+            }
+        }
+    }
+    if (!innerFS)
+        return ""; // 不是二维循环，返回空让外层走 1D
+
+    // ====== 解析 j 循环 ======
+    std::string jVar="j", jL="0", jR="0";
+    if (auto* DS = dyn_cast<const DeclStmt>(innerFS->getInit())) {
+        if (auto* VD = dyn_cast<VarDecl>(DS->getSingleDecl())) {
+            jVar = VD->getNameAsString();
+            if (VD->getInit())
+                jL = Lexer::getSourceText(
+                    CharSourceRange::getTokenRange(VD->getInit()->getSourceRange()),
+                    SM, LO).str();
+        }
+    }
+    if (auto* C = dyn_cast<BinaryOperator>(innerFS->getCond())) {
+        jR = Lexer::getSourceText(
+            CharSourceRange::getTokenRange(C->getRHS()->getSourceRange()),
+            SM, LO).str();
+    }
+
+    // ====== 获取 body ======
+    std::string bodyText = Lexer::getSourceText(
+        CharSourceRange::getTokenRange(innerFS->getBody()->getSourceRange()),
+        SM, LO).str();
+
+
+    // ================================================================
+    // ★ 第一步：读取所有外部变量（你之前 collectVarsFromForStatement 已经收集）
+    // ================================================================
+    auto vars = dacFile->getForStatementVars();
+
+
+    // ================================================================
+    // ★ 第二步：为所有变量生成 accessor + d_ptr，并准备替换 body
+    // ================================================================
+    std::string accessorDecl;
+    std::string ptrDecl;
+    std::string replacedBody = bodyText;
+
+
+    for (auto &p : vars) {
+    const std::string& name = p.first;
+    const std::string& type = p.second;
+
+    // 检查该变量是否真的出现在 body 中
+    std::regex wordExpr("\\b" + name + "\\b");
+    if (!std::regex_search(replacedBody, wordExpr)) {
+        continue;   // 不在 body 中 → 完全忽略
+    }
+
+    // 判断是否为 const 类型
+    bool isConst = (type.find("const") != std::string::npos);
+
+    // =========================================================
+    // 1) const 类型：不生成 accessor & d_ptr，不替换成 d_xxx
+    // =========================================================
+    if (isConst) {
+        // const 保持原名，不修改 replacedBody
+        replacedBody = std::regex_replace(replacedBody, wordExpr, name);
+        continue;
+    }
+
+    // =========================================================
+    // 2) 非 const 类型：生成 accessor & d_ptr 并替换为 d_xxx
+    // =========================================================
+
+    // accessor（注意 r_name：表示 buffer 名）
+    // accessorDecl +=
+    //     "    auto acc_" + name +
+    //     " = r_" + name +
+    //     ".get_access<sycl::access::mode::read_write>(h);\n";
+    bool flag = false;//flag 用于标记是否找到写权限
+    int i=0;
+    bool found = false;
+    dacppTranslator::Expression* expr = dacFile->getExpression(i);
+    dacppTranslator::Shell* shell = expr->getShell();
+    for(int count = 0; count < shell->getNumParams(); count++) { 
+        dacppTranslator::Param* param = shell->getParam(count);
+        if (param->getName() == name) { 
+            found = true;
+            if (param->getRw() != dacppTranslator::IOTYPE::READ){
+                flag = true;
+                break;
+            }
+        }
+    }
+if (!flag && found){ 
+    // 不write的变量：把 . 换成 ->
+    accessorDecl +=
+        "    auto acc_" + name +
+        " = r_" + name +
+        ".get_access<sycl::access::mode::read>(h);\n";
+} else if(found&&flag){
+    // === 非 const 变量：把 . 换成 -> ===
+    accessorDecl +=
+        "    auto acc_" + name +
+        " = r_" + name +
+        "->get_access<sycl::access::mode::read_write>(h);\n";
+}else{
+    accessorDecl +=
+        "    auto acc_" + name +
+        " = r_" + name +
+        ".get_access<sycl::access::mode::read_write>(h);\n";
+}
+    // 设备指针（注意 template 关键字）
+    ptrDecl +=
+        "      auto* d_" + name +
+        " = acc_" + name +
+        ".template get_multi_ptr<sycl::access::decorated::no>().get();\n";
+
+    // 替换 body 中出现的变量为 d_xxx
+    replacedBody = std::regex_replace(
+        replacedBody,
+        wordExpr,
+        "d_" + name
+    );
+}
+
+    // ================================================================
+    // ★ 第 X 步：二维下标线性化
+    // ================================================================
+
+    std::vector<std::string> stride ;
+
+    // 收集所有 d_XXX
+    std::vector<std::string> dvars;
+    for (auto &p : vars) {
+
+        const std::string& name = p.first;
+        const std::string& type = p.second;
+        bool isConst = (type.find("const") != std::string::npos);
+        if (isConst) continue;
+        stride.push_back("info_" + name+"_Shape[0]");
+        // 之前生成了 d_name，因此这里加入 d_name
+        std::string dname = "d_" + name;
+
+        // 只有 body 中出现才需要加入
+        std::regex w("\\b" + dname + "\\b");
+        if (std::regex_search(replacedBody, w))
+            dvars.push_back(dname);
+    }
+    bool star = false;
+    // 进行二维访问替换
+    replacedBody = linearize2D(replacedBody, dvars, stride , star);
+
+
+    // ================================================================
+    // ★ 第三步：生成完整的 2D kernel（和你原来的几乎相同，只是加了 accessor）
+    // ================================================================
+    std::string code;
+    code += "{\n";
+    code += "    int __iL = (" + iL + ");\n";
+    code += "    int __iR = (" + iR + ");\n";
+    code += "    int __iN = __iR - __iL +1;\n";
+    code += "    int __jL = (" + jL + ");\n";
+    code += "    int __jR = (" + jR + ");\n";
+    code += "    int __jN = __jR - __jL + 1;\n";
+
+    code += "    q.submit([&](sycl::handler& h){\n";
+
+    // ★ 插入 accessor
+    code += accessorDecl;
+
+    code += "    h.parallel_for(sycl::range<2>(__iN, __jN), [=](sycl::id<2> idx){\n";
+
+    // ★ 插入 d_ptr
+    code += ptrDecl;
+
+    code += "      int " + iVar + " = __iL + idx[0];\n";
+    code += "      int " + jVar + " = __jL + idx[1];\n";
+
+    // ★ 使用替换后的 body
+    code += "      " + replacedBody + "\n";
+
+    code += "    });\n";
+    code += "  });\n";
+    code += "}\n";
+
+    return code;
+}
+
+std::string parallelizeSingleFor(const clang::ForStmt* FS,clang::ASTContext* Context,dacppTranslator::DacppFile* dacFile)
+{
+    using namespace clang;
+
+    if (containsNestedFor(FS)) {
+        std::string nested = parallelizeNestedFor(FS, Context, dacFile); // ★ 修改
+        if (!nested.empty())
+            return nested;
+    }
+
+    const SourceManager& SM = Context->getSourceManager();
+    const LangOptions& LO = Context->getLangOpts();
+
+    std::string loopVar="i";
+    std::string L="0", R="0";
+
+    if (auto* DS = dyn_cast<const DeclStmt>(FS->getInit())) {
+        if (auto* VD = dyn_cast<VarDecl>(DS->getSingleDecl())) {
+            loopVar = VD->getNameAsString();
+            if (VD->getInit())
+                L = Lexer::getSourceText(
+                    CharSourceRange::getTokenRange(VD->getInit()->getSourceRange()),
+                    SM, LO);
+        }
+    }
+
+    if (auto* C = dyn_cast<BinaryOperator>(FS->getCond())) {
+        R = Lexer::getSourceText(
+            CharSourceRange::getTokenRange(C->getRHS()->getSourceRange()),
+            SM, LO);
+    }
+
+    std::string bodyText = Lexer::getSourceText(
+        CharSourceRange::getTokenRange(FS->getBody()->getSourceRange()),
+        SM, LO).str();
+
+    // ★★★ 最关键：从 dacFile 取 forStatementVars
+    auto vars = dacFile->getForStatementVars();
+
+    std::string accessorDecl;
+    std::string ptrDecl;
+    std::string replacedBody = bodyText;
+    // ====== 根据 body 实际使用的变量，生成 accessor 和设备指针 ======
+
+    for (auto &p : vars) {
+    const std::string& name = p.first;
+    const std::string& type = p.second;
+
+    // 检查该变量是否真的出现在 body 中
+    std::regex wordExpr("\\b" + name + "\\b");
+    if (!std::regex_search(replacedBody, wordExpr)) {
+        continue;   // 不在 body 中 → 完全忽略
+    }
+
+    bool flag = true;
+    bool found = false;
+    // 查询 shellVars 中的类型是否包含 write,目前默认只有一个表达式
+        int i=0;
+        dacppTranslator::Expression* expr = dacFile->getExpression(i);
+        dacppTranslator::Shell* shell = expr->getShell();
+
+        for(int count = 0; count < shell->getNumParams(); count++) {
+            if (shell->getParam(count)->getName() == name) {
+                found = true;
+                if (shell->getParam(count)->getRw() == dacppTranslator::IOTYPE::READ){
+                    flag = false;
+                    break;
+                }
+            }
+        }
+    if (!flag && found) {
+    // 不进行写的情况下，翻译成.
+    accessorDecl +=
+        "    auto acc_" + name +
+        " = r_" + name +
+        ".get_access<sycl::access::mode::read>(h);\n";
+    } else if(found&&flag){
+    // 进行写的情况下翻译成->
+    accessorDecl +=
+        "    auto acc_" + name +
+        " = r_" + name +
+        "->get_access<sycl::access::mode::read_write>(h);\n";
+    }
+    else{
+    accessorDecl +=
+        "    auto acc_" + name +
+        " = r_" + name +
+        ".get_access<sycl::access::mode::read_write>(h);\n";
+    }
+
+
+    // 设备指针（注意 template 关键字）
+    ptrDecl +=
+        "      auto* d_" + name +
+        " = acc_" + name +
+        ".template get_multi_ptr<sycl::access::decorated::no>().get();\n";
+
+    // 替换 body 中出现的变量为 d_xxx
+    replacedBody = std::regex_replace(
+        replacedBody,
+        wordExpr,
+        "d_" + name
+    );
+    }
+
+
+// ================================================================
+// ★ 第 X 步：二维下标线性化（用于一维 parallel_for 场景）
+// ================================================================
+
+    // 尝试推断 stride，例如从 for(j=0;j<NY;j++) 得到 stride = __N 或者某 const 变量
+    // 此处采用最简单稳定策略：stride = __N
+    std::vector<std::string> stride ;
+
+    // 找出所有 d_xxx
+    std::vector<std::string> dvars;
+    for (auto &p : vars) {
+        const std::string& name = p.first;
+        const std::string& type = p.second;
+        bool isConst = (type.find("const") != std::string::npos);
+        if (isConst) continue;
+        stride.push_back("info_" + name+"_Shape[0]");
+        std::string dname = "d_" + name;
+        std::regex w("\\b" + dname + "\\b");
+        if (std::regex_search(replacedBody, w))
+            dvars.push_back(dname);
+    }
+    bool star = false;
+    replacedBody = linearize2D(replacedBody, dvars, stride,star);
+
+
+
+    std::string code;
+    code += "{\n";
+    code += "  int __L = (" + L + ");\n";
+    code += "  int __R = (" + R + ");\n";
+    code += "  int __N = __R - __L +1;\n";
+
+    code += "  q.submit([&](sycl::handler& h){\n";
+    code += accessorDecl;
+    code += "    h.parallel_for(sycl::range<1>(__N), [=](sycl::id<1> idx){\n";
+    code += ptrDecl;
+    code += "      int " + loopVar + " = __L + idx[0];\n";
+    code += "      " + replacedBody + "\n";
+    code += "    });\n";
+    code += "  });\n";
+    code += "}\n";
+
+    return code;
+}
+
+// 辅助：在 outerFor 的 body 里 DFS，收集需要并行化的 for
+// 规则：
+//  - 跳过 outerFor 自己；
+//  - 跳过内部仍然包含 <-> 的 for；
+//  - 对于嵌套结构 for(i){ for(j){...} }：只把最外层的 i 加入 result，j 不再单独加入。
+static void dfsCollectFors(
+    const clang::Stmt* S,
+    const clang::ForStmt* outerFor,
+    const clang::BinaryOperator* dacExpr,
+    clang::ASTContext* Context,
+    const clang::ForStmt* currentTop,   // 当前所在的“顶层 for(i)”，如果为 nullptr 表示还没进入任何 for
+    std::vector<const clang::ForStmt*>& result
+) {
+    using namespace clang;
+    if (!S) return;
+
+    if (const auto* FS = llvm::dyn_cast<ForStmt>(S)) {
+        // 跳过最外层含 <-> 的那个 for
+        if (FS == outerFor) {
+            // 继续遍历它的 body
+            dfsCollectFors(FS->getBody(), outerFor, dacExpr, Context, nullptr, result);
+            return;
+        }
+
+        // 如果这个 for 自己包含 <->，也跳过（防御性）
+        if (dacExpr && forContainsDacExpr(FS, dacExpr, Context)) {
+            // 但它的子树里可能还有别的 for，可以继续往下找
+            dfsCollectFors(FS->getBody(), outerFor, dacExpr, Context, currentTop, result);
+            return;
+        }
+
+        if (currentTop == nullptr) {
+            // 这是 outerFor 里面的一个新的顶层 for(i)
+            result.push_back(FS);
+            // 以它为当前“顶层 for”，继续往里找，但不再把内层 j 单独加入
+            dfsCollectFors(FS->getBody(), outerFor, dacExpr, Context, FS, result);
+        } else {
+            // 这是嵌套在某个顶层 for(i) 里的 j 循环，不单独加入 result
+            // 但它的 body 里可能还有更深的结构，继续往下
+            dfsCollectFors(FS->getBody(), outerFor, dacExpr, Context, currentTop, result);
+        }
+        return;
+    }
+
+    // 如果是 CompoundStmt，就遍历其中每个子语句
+    if (const auto* CS = llvm::dyn_cast<CompoundStmt>(S)) {
+        for (const Stmt* child : CS->body()) {
+            dfsCollectFors(child, outerFor, dacExpr, Context, currentTop, result);
+        }
+        return;
+    }
+
+    // 普通语句：遍历它的子节点
+    for (const Stmt* child : S->children()) {
+        dfsCollectFors(child, outerFor, dacExpr, Context, currentTop, result);
+    }
+}
+
+// 收集 outerFor 体内的 “需要并行化的 for”
+// 关键点：遇到 for(i){ for(j){...} } 时，只收集外层 i，不单独收集 j。
+std::vector<const clang::ForStmt*> collectInnerForsExceptDacpp(
+    const clang::ForStmt* outerFor,
+    const clang::BinaryOperator* dacExpr,
+    clang::ASTContext* Context
+){
+    using namespace clang;
+    std::vector<const ForStmt*> result;
+    if (!outerFor || !Context) return result;
+
+    const Stmt* body = outerFor->getBody();
+    if (!body) return result;
+
+    dfsCollectFors(body, outerFor, dacExpr, Context, nullptr, result);
+    return result;
+}
+
+
+// 用 parallelizeSingleFor 替换掉 inner for；现在只会在嵌套的最外层做 2D
+// 重写兄弟 for 为 parallel_for
+std::string rewriteSiblingForsToParallel(
+    const std::string& originalForText,
+    const clang::ForStmt* outerFor,
+    const clang::BinaryOperator* dacExpr,
+    clang::ASTContext* Context,
+    dacppTranslator::DacppFile* dacFile   // ★ 新增
+){
+    std::string newText = originalForText;
+
+    // 收集 outerFor 内部的“可并行化的外层 for”
+    auto targets = collectInnerForsExceptDacpp(outerFor, dacExpr, Context);
+
+    // 为避免干扰文本位置，从靠后位置开始替换
+    std::sort(
+        targets.begin(), targets.end(),
+        [&](auto* A, auto* B){
+            const auto &SM = Context->getSourceManager();
+            return SM.isBeforeInTranslationUnit(B->getBeginLoc(), A->getBeginLoc());
+        }
+    );
+
+    for (auto* FS : targets) {
+
+        // 旧 for 的源码
+        std::string oldFS = clang::Lexer::getSourceText(
+            clang::CharSourceRange::getTokenRange(FS->getSourceRange()),
+            Context->getSourceManager(),
+            Context->getLangOpts()
+        ).str();
+
+        // ★★★ 使用带 dacFile 的 parallelizeSingleFor
+        std::string newFS = parallelizeSingleFor(FS, Context, dacFile);
+
+        // 在文本中替换
+        size_t pos = newText.find(oldFS);
+        if (pos != std::string::npos) {
+            newText.replace(pos, oldFS.size(), newFS);
+        }
+    }
+
+    return newText;
+}
+
 
 
 
@@ -94,6 +887,225 @@ std::string CodeGen_DataInfoInit(std::string name, std::string dim){
 	});
 }
 
+std::string generateBufferCode(dacppTranslator::DacppFile* dacppFile) {
+    std::string code;
+
+    if (!dacppFile) return code;
+
+    // 假设 dacppFile 提供获取 forStatementVars 的接口
+    // 每个元素是 pair<type, name>
+    std::vector<std::pair<std::string, std::string>> forStatementVars = dacppFile->getForStatementVars();
+
+for (const auto& var : forStatementVars) {
+    const std::string &name = var.first;
+    const std::string &type = var.second;
+
+    // 1. 检查是否已在 shellVars 中
+    bool inShellVars = false;
+    for (const auto &shellVar : dacppFile->shellVars) {
+        if (shellVar.first == name) {
+            inShellVars = true;
+            break;
+        }
+    }
+
+    // 2. 如果在 shellVars 中，跳过
+    if (inShellVars) {
+        continue;
+    }
+
+    // 3. 正常生成 buffer
+    std::string bufferName = "r_" + name;
+    code += "    sycl::buffer<" + type + ", 1> "
+          + bufferName
+          + "(&" + name + ", sycl::range<1>(1));\n";
+}
+
+
+    return code;
+}
+//2025.12.18新增，把if转换成single task交给gpu做
+// std::string translateAllIfsToSingleTask(dacppTranslator::DacppFile* dacppFile, const std::string& codeStr) {
+//     if (!dacppFile || !dacppFile->forStatement) return codeStr;
+//     const ForStmt* forStmt = dacppFile->forStatement;
+//     ASTContext* context = dacppFile->Context;
+//     if (!context) return codeStr;
+
+//     std::string newCode = codeStr;
+
+//     for (const Stmt* s : forStmt->children()) {
+//         if (!s) continue;
+
+//         const IfStmt* targetIf = dyn_cast<IfStmt>(s);
+//         if (!targetIf) continue;
+
+//         Expr* cond = targetIf->getCond();
+//         if (!cond) continue;
+//         SourceRange condRange = cond->getSourceRange();
+//         if (condRange.isInvalid()) continue;
+
+//         std::string condText = Lexer::getSourceText(CharSourceRange::getTokenRange(condRange),
+//                                                     context->getSourceManager(),
+//                                                     context->getLangOpts()).str();
+//         if (condText.empty()) continue;
+
+//         // 获取 then 块赋值变量
+//         std::vector<std::string> assignVars;
+//         const Stmt* thenStmt = targetIf->getThen();
+//         if (!thenStmt) continue;
+
+//         if (const CompoundStmt* cs = dyn_cast<CompoundStmt>(thenStmt)) {
+//             for (const Stmt* inner : cs->body()) {
+//                 if (!inner) continue;
+//                 if (const BinaryOperator* bo = dyn_cast<BinaryOperator>(inner)) {
+//                     if (bo->isAssignmentOp()) {
+//                         if (const DeclRefExpr* lhs = dyn_cast<DeclRefExpr>(bo->getLHS())) {
+//                             assignVars.push_back(lhs->getNameInfo().getAsString());
+//                         }
+//                     }
+//                 }
+//             }
+//         }
+
+//         if (assignVars.empty()) continue;
+
+//         // 用 string 拼接生成 GPU single_task 代码
+//         std::string replacement;
+
+//         for (auto& varPair : dacppFile->forStatementVars) {
+//             std::string name = varPair.first;
+//             replacement += "auto acc_" + name + " = r_" + name +
+//                            ".get_access<cl::sycl::access::mode::read_write>(h);\n";
+//             replacement += "auto d_" + name + " = acc_" + name + ".get_pointer();\n";
+//         }
+
+//         replacement += "h.single_task([=]() {\n";
+//         replacement += "    if (" + condText + ") {\n";
+//         for (auto& var : assignVars) {
+//             replacement += "        *d_" + var + " = true;\n";
+//         }
+//         replacement += "    }\n";
+//         replacement += "});\n";
+
+//         // 替换原 if 语句
+//         SourceRange ifRange = targetIf->getSourceRange();
+//         std::string ifText = Lexer::getSourceText(CharSourceRange::getTokenRange(ifRange),
+//                                                   context->getSourceManager(),
+//                                                   context->getLangOpts()).str();
+//         size_t pos = newCode.find(ifText);
+//         if (pos != std::string::npos) {
+//             newCode.replace(pos, ifText.size(), replacement);
+//         }
+//     }
+
+//     return newCode;
+// }
+
+//2025.12.2新增，提取并替换 for 循环中的 DACPP 表达式为 {{SUBMIT}}
+// 2025.12.2 新版：可并行化 + 保留原逻辑 + 保证替换顺序正确
+// 2025.12.2 新版：可并行化 + 保留原逻辑 + 保证替换顺序正确
+std::string extractAndReplaceSubmitCodeGeneric(
+    const clang::ForStmt* forStatement,
+    clang::ASTContext* Context,
+    dacppTranslator::DacppFile* dacFile   // ★ 已修改
+) {
+    using namespace clang;
+    if (!forStatement || !Context || !dacFile) return "";
+
+    SourceManager &SM           = Context->getSourceManager();
+    const LangOptions &LangOpts = Context->getLangOpts();
+
+    // ======= Part 1：找到包含 <-> 的 BinaryOperator =======
+    class FindDacppOpVisitor : public RecursiveASTVisitor<FindDacppOpVisitor> {
+    public:
+        ASTContext *Ctx;
+        std::vector<const BinaryOperator*> targets;
+
+        FindDacppOpVisitor(ASTContext *ctx) : Ctx(ctx) {}
+
+        bool VisitBinaryOperator(BinaryOperator *op) {
+            if (!op || !Ctx) return true;
+
+            std::string opText = Lexer::getSourceText(
+                CharSourceRange::getTokenRange(op->getSourceRange()),
+                Ctx->getSourceManager(),
+                Ctx->getLangOpts()
+            ).str();
+
+            if (opText.find("<->") != std::string::npos)
+                targets.push_back(op);
+
+            return true;
+        }
+    };
+
+    FindDacppOpVisitor visitor(Context);
+    visitor.TraverseStmt(const_cast<clang::ForStmt*>(forStatement));
+
+    if (visitor.targets.empty()) {
+        llvm::errs() << "[extractAndReplaceSubmitCodeGeneric] 未找到包含 <-> 的 DACPP 表达式\n";
+        return "";
+    }
+
+    // ======= Part 2：提取 for 语句源代码 =======
+    std::string forText = Lexer::getSourceText(
+        CharSourceRange::getTokenRange(forStatement->getSourceRange()),
+        SM, LangOpts
+    ).str();
+    forText = generateBufferCode(dacFile) + forText;
+    
+    // ======= Part 2.5：重写规约代码 =======
+    std::string reductionText="";
+    // max_generate(reductionText,forText,*dacFile);
+    std::cout<<"reductionText:"<<reductionText<<std::endl;
+    replaceReductionMax(forText, reductionText,*dacFile);
+    std::cout<<"finished "<<std::endl;
+    // translateAllIfsToSingleTask(dacFile,forText);
+    // ======= Part 3：重写兄弟 for → parallel_for =======
+    forText = rewriteSiblingForsToParallel(
+        forText,
+        forStatement,
+        visitor.targets[0],
+        Context,
+        dacFile       // ★ 必须传入
+    );
+
+    // ======= Part 4：将 <-> 替换为 {{SUBMIT}} =======
+    for (auto *op : visitor.targets) {
+        std::string opText = Lexer::getSourceText(
+            CharSourceRange::getTokenRange(op->getSourceRange()),
+            SM, LangOpts
+        ).str();
+
+        size_t pos = forText.find(opText);
+        if (pos != std::string::npos)
+            forText.replace(pos, opText.length(), "{{SUBMIT}}");
+        else
+            llvm::errs() << "[extractAndReplaceSubmitCodeGeneric] 警告：在 forText 中未找到某个 <-> 表达式文本\n";
+    }
+
+    // ======= Part 5：替换变量：普通变量 → closure.varName =======
+    // auto externalVars = dacFile->getForStatementVars();
+
+    // for (auto &p : externalVars) {
+    //     const std::string &varName  = p.first;
+    //     const std::string &typeName = p.second;
+
+    //     if (typeName.find("const") != std::string::npos)
+    //         continue;
+
+    //     bool isTensor = (typeName.find("Tensor") != std::string::npos);
+    //     bool isMatrix = (typeName.find("Matrix") != std::string::npos);
+
+    //     if (isTensor || isMatrix)
+    //         continue;
+
+    //     std::regex wordExpr("\\b" + varName + "\\b");
+    //     forText = std::regex_replace(forText, wordExpr, "closure." + varName);
+    // }
+
+    return forText;
+}
 
 
 
@@ -467,6 +1479,24 @@ std::string CodeGen_DataAssocComp(std::string H2DMemMove, std::string dataRecon,
 //     {{NAME}}.tensor2Array(h_{{NAME}});
 // 	buffer<{{TYPE}}, 1> b_{{NAME}}(h_{{NAME}}, range<1>({{NAME}}_Size));
 // )~~~";
+const char *D2B_MOV_BUFFER_Template_READ_WRITE = R"~~~(
+    // 数据移动
+    {{TYPE}}* h_{{NAME}} = ({{TYPE}}*)malloc({{NAME}}.getSize()*sizeof({{TYPE}}));
+    {{NAME}}.tensor2Array(h_{{NAME}});
+)~~~";
+std::string CodeGen_D2B_Mov_Buffer_read_write(std::string TYPE,std::string NAME,std::string SIZE)
+{
+    return templateString(D2B_MOV_BUFFER_Template_READ_WRITE,
+	{
+        {"{{TYPE}}",        TYPE},   
+		{"{{NAME}}",        NAME},
+		{"{{SIZE}}",        SIZE}
+	});
+}
+
+
+
+
 
 const char *D2B_MOV_BUFFER_Template = R"~~~(
     // 数据移动
@@ -584,7 +1614,7 @@ const char *DATA_RECON_BUFFER_Template1 = R"~~~(
     // 数据重组
     {{DATA_OPS_INIT}}
 
-    auto r_{{NAME}} = std::make_unique<sycl::buffer<{{TYPE}}, 1>>(sycl::range<1>({{NAME}}.getSize()));
+    auto r_{{NAME}} = std::make_unique<sycl::buffer<{{TYPE}}, 1>>(h_{{NAME}},sycl::range<1>({{NAME}}.getSize()));
     r_{{NAME}}->set_final_data(h_{{NAME}});
 
 	std::vector<int> info_partition_{{NAME}}=para_gene_tool.init_partition_data_shape(info_{{NAME}},{{NAME}}_ops);
@@ -708,6 +1738,79 @@ const char *KERNEL_EXECUTE_Template = R"~~~(
     }).wait();
     
 )~~~";
+
+const char *KERNEL_EXECUTE_Template1 = R"~~~(
+	    //队列提交命令组
+    q.submit([&](handler &h) {
+    {{ACCESSOR_LIST}}
+    {{ACCESSOR_INIT}}
+        h.parallel_for(sycl::nd_range<2>(global, local), [=](sycl::nd_item<2> item) {
+            int gx = item.get_global_id(0);
+            int gy = item.get_global_id(1);
+            int item_id = gx * global[1] + gy;
+            if(item_id >= Item_Size)
+                return;
+            // 索引初始化
+			{{INDEX_INIT}}			
+            // 获得划分数据单元左上角（第一个元素）的位置
+			{{GETPOS}}
+            // 获得accessor指针
+            {{ACCESSOR_POINTER_LIST}}
+            // 嵌入计算
+			{{CALC_EMBED}}
+        });
+    }).wait();
+)~~~";
+
+
+const char *submitCode = R"~~~(
+    q.submit([&](handler &h) {
+    {{ACCESSOR_LIST}}
+    {{ACCESSOR_INIT}}
+        h.parallel_for(sycl::nd_range<2>(global, local), [=](sycl::nd_item<2> item) {
+            int gx = item.get_global_id(0);
+            int gy = item.get_global_id(1);
+            int item_id = gx * global[1] + gy;
+            if(item_id >= Item_Size)
+                return;
+            // 索引初始化
+			{{INDEX_INIT}}            
+            // 获得划分数据单元左上角（第一个元素）的位置
+			{{GETPOS}}
+            // 获得accessor指针
+            {{ACCESSOR_POINTER_LIST}}
+            // 嵌入计算
+			{{CALC_EMBED}}
+        });
+    }).wait();
+    
+)~~~";
+//for循环包含内核函数的情况下的二维划分的Buffer内核执行模板
+const char *KERNEL_EXECUTE_Template2 = R"~~~(
+    sycl::device device = q.get_device();
+    auto max_sizes = device.get_info<sycl::info::device::max_work_item_sizes<3>>();
+    int max_global_size_x = max_sizes[0];
+    int max_global_size_y = max_sizes[1];
+    int max_global_size_z = max_sizes[2];
+
+	// 二维划分（可测试三维拓展）
+    int dim_x = (int)sycl::ceil(sycl::sqrt((float)Item_Size));
+    int dim_y = (int)sycl::ceil((float)Item_Size / dim_x);
+
+    // 固定 local 为 16*16,但受设备上限约束
+    int local_x = std::min(16, max_global_size_x);
+    int local_y = std::min(16, max_global_size_y);
+
+    // 对齐 global 到 local 的整数倍（防止越界）
+    int global_x = ((dim_x + local_x - 1) / local_x) * local_x;
+    int global_y = ((dim_y + local_y - 1) / local_y) * local_y;
+
+    sycl::range<2> local(local_x, local_y);
+    sycl::range<2> global(global_x, global_y);
+
+    {{KERNEL}}
+    
+)~~~";
 //内核执行中的{{ACCESSOR_LIST}}，需要把A、B、C都传入，以免受到Rewriter_Buffer.cpp中第204行的判断读写的逻辑的干扰
 // const char* ACCESSOR_LIST_K =  R"~~~(
 //         accessor acc_{{NAME}}{r_{{NAME}}, h};)~~~";
@@ -723,6 +1826,8 @@ const char* ACCESSOR_LIST_K_read =  R"~~~(
         )~~~";
 const char* ACCESSOR_LIST_K_write =  R"~~~(
         accessor<{{TYPE}}, 1, sycl::access::mode::discard_write> acc_{{NAME}}(*r_{{NAME}}, h);)~~~";
+const char* ACCESSOR_LIST_K_read_write =  R"~~~(
+        accessor<{{TYPE}}, 1, sycl::access::mode::read_write> acc_{{NAME}}(*r_{{NAME}}, h);)~~~";
 std::string CodeGen_AccessorInit0_read(std::string name, std::string type){
 	return templateString(ACCESSOR_LIST_K_read,{
 		{"{{NAME}}", name},
@@ -743,7 +1848,12 @@ std::string CodeGen_AccessorInit1(std::string name){
 		{"{{NAME}}", name}
 	});
 }
-
+std::string CodeGen_AccessorInit0_read_write(std::string name, std::string type){
+	return templateString(ACCESSOR_LIST_K_read_write,{
+		{"{{NAME}}", name},
+        {"{{TYPE}}", type}
+	});
+}
 const char* GETPOS_1 =  R"~~~(
 			const auto {{NAME}}_{{idx}} = {{splitname}}_ * {{splitname}}.stride;)~~~";
 
@@ -789,6 +1899,23 @@ std::string CodeGen_KernelExecute(std::string SplitSize, std::string AccessorIni
 		{"{{ACCESSOR_LIST}}",  ACCESSOR_LIST1},
         {"{{ACCESSOR_POINTER_LIST}}",   ACCESSOR_LIST2},
 		{"{{GETPOS}}",    getpos}
+	});
+}
+//当匹配到包含内核的for循环时，我们采用这个函数来重写内核提交
+std::string CodeGen_KernelExecute2(std::string SplitSize, std::string AccessorInit, std::string IndexInit, std::string getpos, std::string ACCESSOR_LIST1, std::string ACCESSOR_LIST2, std::string CalcEmbed, dacppTranslator::DacppFile* dacppFile){
+
+    std::string forBodyTemplate=extractAndReplaceSubmitCodeGeneric(dacppFile->forStatement,dacppFile->Context,dacppFile);//得到对应for循环的源代码，并将for循环中的表达式替换成{{SUBMIT}},还能够把子for循环替换成parallel_for
+	std::string KERNEL_EXECUTE=templateString(forBodyTemplate,{{"{{SUBMIT}}",submitCode}});//将{{SUBMIT}}替换成内核提交代码模板
+	std::string KERNEL_TEMPLATE=templateString(KERNEL_EXECUTE_Template2,{{"{{KERNEL}}",KERNEL_EXECUTE}});//将内核执行模板中的{{KERNEL}}替换成for循环的内核提交代码，然后下一行返回最终生成的代码
+	return templateString(KERNEL_TEMPLATE,
+	{
+		{"{{SPLIT_SIZE}}",    SplitSize},
+		{"{{INDEX_INIT}}",    IndexInit},
+		{"{{CALC_EMBED}}",    CalcEmbed},
+        {"{{ACCESSOR_INIT}}", AccessorInit},
+		{"{{ACCESSOR_LIST}}",  ACCESSOR_LIST1},
+        {"{{ACCESSOR_POINTER_LIST}}",   ACCESSOR_LIST2},
+        {"{{GETPOS}}",    getpos}
 	});
 }
 

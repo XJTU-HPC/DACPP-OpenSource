@@ -6,6 +6,7 @@
 
 #include "clang/AST/AST.h"
 
+
 #include "Param.h"
 
 using namespace clang;
@@ -51,7 +52,7 @@ void getSplitExpr(Expr* curExpr, std::string& name, std::vector<Expr*>& splits);
 std::string stmt2String(Stmt *stmt);
 
 // 判断数据的输入输出属性
-bool inputOrOutput(std::string dataType);
+IOTYPE inputOrOutput(const clang::ParmVarDecl* param);
 
 }
 

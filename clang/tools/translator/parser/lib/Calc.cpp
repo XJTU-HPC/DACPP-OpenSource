@@ -4762,127 +4762,179 @@ std::string func(std::string code, const std::string& name) {
 
     return result;
 }
+static bool is_ident_char(char c) {
+    return std::isalnum(static_cast<unsigned char>(c)) || c == '_';
+}
+static std::string make_replacement_1d(const std::string &name,const std::string &inside,const dacppTranslator::clacparam &temp){
+    if (temp.flag.size() >= 2 && temp.flag[0] && temp.flag[1]) {
+        return name + "[(" + inside + " + " + name + "_0) * " + name + "_1_shape + (" + inside + " + " + name + "_1)]";
+    }
+    for (size_t i = 0; i < temp.flag.size(); ++i) {
+        if (!temp.flag[i]) continue;
+        if (temp.dimid[i] == 0) {
+            return name + "[(0 + " + name + "_0) * " + name + "_1_shape + (" + inside + " + " + name + "_1)]";
+        } else {
+            return name + "[(" + inside + " + " + name + "_0) * " + name + "_1_shape + (0 + " + name + "_1)]";
+        }
+    }
+    return name + "[" + inside + "]";
+}
+static std::string make_replacement_2d(const std::string &name,const std::string &inside1, const std::string &inside2)
+{
+    return name + "[(" + inside1 + " + " + name + "_0) * " + name + "_1_shape + (" + inside2 + " + " + name + "_1)]";
+}
+std::string funcnew3(const std::string code,const std::string &name, const dacppTranslator::clacparam &temp)
+{
+    const std::string s = code;
+    std::string out;
+    out.reserve(s.size() * 2);
 
-// std::string funcnew(std::string code,const std::string& name,int dim){
-//      std::string result = code;
-//      std::regex pattern2D("\\b" + name +"\\s*\\[\\s*([^\\]]+)\\s*\\]\\s*\\[\\s*([^\\]]+)\\s*\\]");
+    size_t n = s.size();
+    size_t i = 0;//扫描指针
+    size_t last_appended = 0;//写入指针
 
-//       std::string replacement2D = name + "[(($1 / info_" +name + "_acc[1] + " +name +"_0)*" + name + "_1_shape + ($2 % info_" + name + "_acc[1] + " + name + "_1)]";
+    while (i < n) {
+        char c = s[i];
 
-//       result = std::regex_replace(result, pattern2D, replacement2D);
-     
-//       std::regex pattern1D(R"(\b)" + name + R"(\s*\[\s*([^\]]+)\s*\])");
-//       std::string replacement1D;
-//       if(dim == 1){
-//          replacement1D = name + "[$1+" + name + "_0]";
-//       }
-//       else if(dim == 2){
-//        replacement1D = name + "[(($1 / info_" +name + "_acc[1]) + " + name +"_0) * " + name + "_1_shape + ($1 % info_" +name +"_acc[1] + " + name + "_1)]";
-//       }
-//       result = std::regex_replace(result, pattern1D, replacement1D);
-//       return result;
+        // skip strings and comments but still copy them to output
+        if (c == '"') {
+            ++i;
+            while (i < n) {
+                if (s[i] == '"' && s[i-1] != '\\') { ++i; break; }
+                ++i;
+            }
+            // copy everything from last_appended to i
+            out.append(s, last_appended, i - last_appended);
+            last_appended = i;
+            continue;
+        }
+        if (c == '\'') {
+            ++i;
+            while (i < n) {
+                if (s[i] == '\'' && s[i-1] != '\\') { ++i; break; }
+                ++i;
+            }
+            out.append(s, last_appended, i - last_appended);
+            last_appended = i;
+            continue;
+        }
+        if (c == '/' && i + 1 < n && s[i+1] == '/') {
+            i += 2;
+            while (i < n && s[i] != '\n') ++i;
+            out.append(s, last_appended, i - last_appended);
+            last_appended = i;
+            continue;
+        }
+        if (c == '/' && i + 1 < n && s[i+1] == '*') {
+            i += 2;
+            while (i + 1 < n) {
+                if (s[i] == '*' && s[i+1] == '/') { i += 2; break; }
+                ++i;
+            }
+            out.append(s, last_appended, i - last_appended);
+            last_appended = i;
+            continue;
+        }
 
-// }
+        // try match identifier name at position i
+        if ((std::isalpha(static_cast<unsigned char>(c)) || c == '_')) {
+            size_t j = i;
+            while (j < n && is_ident_char(s[j])) ++j;
+            size_t len = j - i;
+            if (len == name.size() && s.compare(i, name.size(), name) == 0) {
+                // left boundary
+                if (i > 0 && is_ident_char(s[i-1])) {
+                    // it's part of a longer identifier, skip
+                    ++i;
+                    continue;
+                }
+                // find next non-space and check '['
+                size_t k = j;
+                while (k < n && std::isspace(static_cast<unsigned char>(s[k]))) ++k;
+                if (k < n && s[k] == '[') {
+                    // found name[  => parse bracket content
+                    size_t p = k + 1;
+                    int depth = 1;
+                    while (p < n && depth > 0) {
+                        // handle nested strings/comments inside index
+                        if (s[p] == '"') { ++p; while (p < n) { if (s[p] == '"' && s[p-1] != '\\') { ++p; break; } ++p; } continue; }
+                        if (s[p] == '\'') { ++p; while (p < n) { if (s[p] == '\'' && s[p-1] != '\\') { ++p; break; } ++p; } continue; }
+                        if (s[p] == '/' && p + 1 < n && s[p+1] == '/') { p += 2; while (p < n && s[p] != '\n') ++p; continue; }
+                        if (s[p] == '/' && p + 1 < n && s[p+1] == '*') { p += 2; while (p + 1 < n) { if (s[p] == '*' && s[p+1] == '/') { p += 2; break;} ++p; } continue; }
 
+                        if (s[p] == '[') ++depth;
+                        else if (s[p] == ']') --depth;
+                        ++p;
+                    }
+                    if (depth != 0) {
+                        // unmatched, treat as normal text
+                        ++i;
+                        continue;
+                    }
+                    size_t first_end = p - 1;
+                    std::string inside1 = s.substr(k + 1, first_end - (k + 1));
 
+                    // now check for second [ ... ] immediately after (allow spaces)
+                    size_t q = first_end + 1;
+                    while (q < n && std::isspace(static_cast<unsigned char>(s[q]))) ++q;
+                    bool has_second = false;
+                    size_t second_end = 0;
+                    std::string inside2;
+                    if (q < n && s[q] == '[') {
+                        size_t p2 = q + 1;
+                        int depth2 = 1;
+                        while (p2 < n && depth2 > 0) {
+                            if (s[p2] == '"') { ++p2; while (p2 < n) { if (s[p2] == '"' && s[p2-1] != '\\') { ++p2; break; } ++p2; } continue; }
+                            if (s[p2] == '\'') { ++p2; while (p2 < n) { if (s[p2] == '\'' && s[p2-1] != '\\') { ++p2; break; } ++p2; } continue; }
+                            if (s[p2] == '/' && p2 + 1 < n && s[p2+1] == '/') { p2 += 2; while (p2 < n && s[p2] != '\n') ++p2; continue; }
+                            if (s[p2] == '/' && p2 + 1 < n && s[p2+1] == '*') { p2 += 2; while (p2 + 1 < n) { if (s[p2] == '*' && s[p2+1] == '/') { p2 += 2; break; } ++p2; } continue; }
 
+                            if (s[p2] == '[') ++depth2;
+                            else if (s[p2] == ']') --depth2;
+                            ++p2;
+                        }
+                        if (depth2 == 0) {
+                            has_second = true;
+                            second_end = p2 - 1;
+                            inside2 = s.substr(q + 1, second_end - (q + 1));
+                        }
+                    }
 
-// std::string funcnew2(std::string code,const std::string& name,dacppTranslator::clacparam temp){ 
-//   std::string result = code; 
-//   std::regex pattern2D("\\b" + name +"\\s*\\[\\s*([^\\]]+)\\s*\\]\\s*\\[\\s*([^\\]]+)\\s*\\]"); 
-//   std::smatch m2D;
-//   if(std::regex_search(result,m2D,pattern2D)){
-//      std::string replacement2D = name + "[($1 + " +name +"_0)*" + name + "_1_shape + ($2 "+ " + " + name + "_1)]"; 
-//       result = std::regex_replace(result, pattern2D, replacement2D);  
-//       return result;
-//   }
-//   std::regex pattern1D(R"(\b)" + name + R"(\s*\[\s*([^\]]+)\s*\])"); 
-//     std::string replacement1D;
-//     if(temp.flag[0]==1&&temp.flag[1]==1){
-//       replacement1D = name + "[($1 " + "+ " + name +"_0) * " + name + "_1_shape + ($1 + " + name + "_1)]"; 
-//             result = std::regex_replace(result, pattern1D, replacement1D); 
-//             return result;
-//     }
-//     else{
-//       for(int i=0;i<temp.flag.size();i++){
-//       if(temp.flag[i]==1){
-//         if(temp.dimid[i]==0){
-//           replacement1D = name + "[(0 " + "+ " + name +"_0) * " + name + "_1_shape + ($1 + " + name + "_1)]"; 
-//             result = std::regex_replace(result, pattern1D, replacement1D); 
-//             return result;
-//         }
-//         else if(temp.dimid[i]==1){
-//           replacement1D = name + "[($1 " + "+ " + name +"_0) * " + name + "_1_shape + (0 + " + name + "_1)]"; 
-//            result = std::regex_replace(result, pattern1D, replacement1D); 
-//            return result;
-//         }
-//       }
-//     }
-//   }
-// }
-// std::string funcnew2(std::string code, const std::string& name, dacppTranslator::clacparam temp) {
-//     std::string result = code;
+                    // append everything up to 'name' (from last_appended)
+                    out.append(s, last_appended, i - last_appended);
 
-//     // ================ 先处理 2D a[x][y]（保持原始正则） ================
-//     std::regex pattern2D("\\b" + name + "\\s*\\[\\s*([^\\]]+)\\s*\\]\\s*\\[\\s*([^\\]]+)\\s*\\]");
-//     std::smatch m2D;
-//     if (std::regex_search(result, m2D, pattern2D)) {
-//         std::string replacement2D = name + "[($1 + " + name + "_0) * " +
-//                                     name + "_1_shape + ($2 + " + name + "_1)]";
-//         result = std::regex_replace(result, pattern2D, replacement2D);
-//         return result;
-//     }
+                    // construct replacement
+                    std::string replacement;
+                    if (has_second) {
+                        replacement = make_replacement_2d(name, inside1, inside2);
+                        // advance i to after second_end
+                        i = second_end + 1;
+                        last_appended = i;
+                    } else {
+                        replacement = make_replacement_1d(name, inside1, temp);
+                        i = first_end + 1;
+                        last_appended = i;
+                    }
 
-//     // ================ 处理 1D（允许嵌套） a[...] =================
-//     // 匹配： name[
-//     std::regex startPattern("\\b" + name + "\\s*\\[");
-//     std::smatch match;
-//     if (!std::regex_search(result, match, startPattern)) {
-//         return result; // 没找到 1D
-//     }
+                    // append replacement
+                    out.append(replacement);
 
-//     size_t startPos = match.position(0) + match.length(0); // '[' 之后
-//     size_t scan = startPos;
-//     int bracket = 1;
+                    // continue scanning from current i
+                    continue;
+                }
+            }
+            // not matching name[...] -> append identifier as normal
+            // but we don't append immediately; let the normal copying logic handle it
+        }
 
-//     // 手动扫描找对应的 ']'
-//     while (scan < result.size() && bracket > 0) {
-//         if (result[scan] == '[') bracket++;
-//         else if (result[scan] == ']') bracket--;
-//         scan++;
-//     }
+        // 普通字符，直接跳过（我们暂不立即 append，最后把 tail 一并 append）
+        ++i;
+    }
 
-//     size_t endPos = scan - 1; // 结束的 ']'
-
-//     // 中间内容 (支持嵌套)
-//     std::string inside = result.substr(startPos, endPos - startPos);
-
-//     // ================ 根据 flag/dimid 构造 replacement =================
-//     std::string replacement;
-
-//     // flag0 和 flag1 同时为 1
-//     if (temp.flag[0] == 1 && temp.flag[1] == 1) {
-//         replacement = name + "[(" + inside + " + " + name + "_0) * " +
-//                       name + "_1_shape + (" + inside + " + " + name + "_1)]";
-//     } else {
-//         for (int i = 0; i < temp.flag.size(); i++) {
-//             if (temp.flag[i] == 1) {
-//                 if (temp.dimid[i] == 0) {
-//                     replacement = name + "[(0 + " + name + "_0) * " +
-//                                   name + "_1_shape + (" + inside + " + " + name + "_1)]";
-//                 } else if (temp.dimid[i] == 1) {
-//                     replacement = name + "[(" + inside + " + " + name + "_0) * " +
-//                                   name + "_1_shape + (0 + " + name + "_1)]";
-//                 }
-//                 break;
-//             }
-//         }
-//     }
-//     result.replace(match.position(0), endPos - match.position(0) + 1, replacement);
-//     return result;
-// }
-
-
+    // append remaining tail
+    if (last_appended < n) out.append(s, last_appended, n - last_appended);
+    return out;
+}
 
 
 std::string funcnew2(std::string code, const std::string& name,
@@ -4986,27 +5038,13 @@ std::string dacppTranslator::Calc::getBody(int idx,std::vector<dacppTranslator::
     int dim0=temp.dimesion;
     std::string name = temp.name;
     if(dim0==2)
-     code = funcnew2(code,name,temp);
+     code = funcnew3(code,name,temp);
     if(dim0==1)
     code = funcnew1(code,name);
   }
   return code;
 }
-std::string dacppTranslator::Calc::getBody(int idx,std::vector<int>& dim) {
-  std::string name="name";
-  return name;
-}
-//   std::string code = body[idx];
-//   for (int i = 0; i < getNumParams(); i++) {
-//     int dim0= dim[i];
-//     std::string name = getParam(i)->getName();
-//     if(dim0==2)
-//      code = funcnew2(code,name,dim0);
-//     if(dim0==1)
-//     code = funcnew1(code,name,dim0);
-//   }
-//   return code;
-// }
+
 std::string dacppTranslator::Calc::getBody(int idx) {
   std::string code = body[idx];
   for (int i = 0; i < getNumParams(); i++) {
@@ -5096,8 +5134,7 @@ void dacppTranslator::Calc::parseCalc(const BinaryOperator* dacExpr) {
         Param* param = new Param();
 
         // 获取参数读写属性
-        param->setRw(inputOrOutput(calcFunc->getParamDecl(paramsCount)->getType().getAsString()));
-
+        param->setRw(inputOrOutput(calcFunc->getParamDecl(paramsCount)));
         // 设置参数类型
         param->setType(calcFunc->getParamDecl(paramsCount)->getType());
         

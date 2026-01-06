@@ -8,7 +8,6 @@ namespace dacpp {
 struct Error: public std::exception {
     Error(const char* file, const char* func, unsigned int line);
     const char* what() const noexcept;
-
     static char msg_[300];
     const char* file_;
     const char* func_;

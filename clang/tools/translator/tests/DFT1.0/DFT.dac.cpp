@@ -3,7 +3,7 @@
 #include <complex>
 #include <cmath>
 #include "ReconTensor.h"
-
+//对于for循环里面的tensor翻译出来需要array2Tensor
 namespace dacpp {
     typedef std::vector<std::any> list;
 }
@@ -73,7 +73,22 @@ int main() {
 
     // 计算离散傅里叶变换
     vector<Complex> output(N);
-    dftfunc(input, output);
+    int N = input.size();
+    output.resize(N);
+
+    std::vector<int> vec(N);
+
+    // 使用 for 循环初始化 vector，元素从 1 到 N
+    for (int i = 0; i < N; ++i) {
+        vec[i] = i;  // 赋值为 1 到 N
+    }
+    dacpp::Vector<int> vec_tensor(vec);
+    dacpp::Vector<std::complex<double>> input_tensor(input);
+    dacpp::Vector<std::complex<double>> output_tensor(output);
+
+    // DFT 公式：X[k] = Σ (x[n] * e^(-2πi * k * n / N)), k=0 to N-1
+    DFT(input_tensor, output_tensor, vec_tensor) <-> dft;
+    output_tensor.print();
 
     // // 输出傅里叶变换后的数据（频域）
     // cout << "\n傅里叶变换后的数据（频域）:" << endl;

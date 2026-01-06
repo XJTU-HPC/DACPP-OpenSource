@@ -12,10 +12,15 @@ namespace dacppTranslator {
 /*
     参数
 */
+enum class IOTYPE{
+    READ,
+    WRITE,
+    READ_WRITE
+};
 class Param {
 
 private:
-    bool rw; // 读写属性
+    IOTYPE rw;// 读写属性
     std::string name; // 参数名
     std::vector<int> shape; // 参数形状
     int dimension;
@@ -24,8 +29,8 @@ public:
     Param();
     std::string rule;
 
-    void setRw(bool rw);
-    bool getRw();
+    void setRw(IOTYPE type);
+    IOTYPE getRw();
 
     void setType(clang::QualType newType);
     std::string getType();

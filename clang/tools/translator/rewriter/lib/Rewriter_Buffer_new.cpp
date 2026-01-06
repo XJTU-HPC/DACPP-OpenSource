@@ -10,11 +10,12 @@
 #include "buffer_template_new.h"
 #include "usm_template.h"
 #include "Calc.h"
+#include "ASTParse.h"
 std::vector<int> dim;
 std::vector<dacppTranslator::clacparam> clacparams;
 
 void dacppTranslator::Rewriter::rewriteDac_Buffer() {
-    std::cout << "软编码BUFFER版本翻译" << std::endl;
+    // std::cout << "软编码BUFFER版本翻译" << std::endl;
 
     std::string code = "";
     
@@ -71,11 +72,11 @@ void dacppTranslator::Rewriter::rewriteDac_Buffer() {
                 bindoffset.push_back(info[i].offset);
             }
         }
-
+        std::cout << "break 0" << std::endl;
         // 计算结构
         code += "void " + calc->getName() + "(";
         for(int count = 0; count < calc->getNumParams(); count++) {
-            if(shell->getShellParam(count)->getRw()==1)code += calc->getParam(count)->getBasicType() + "* " + calc->getParam(count)->getName() + ",";
+            if(shell->getShellParam(count)->getRw()!=IOTYPE::READ)code += calc->getParam(count)->getBasicType() + "* " + calc->getParam(count)->getName() + ",";
             else code += "const " + calc->getParam(count)->getBasicType() + "* " + calc->getParam(count)->getName() + ",";
         }
           for(int count = 0;count < shell->getNumShellParams(); count ++){
@@ -122,14 +123,58 @@ void dacppTranslator::Rewriter::rewriteDac_Buffer() {
         // std::cout << code;
 
         std::string dacShellName = shell->getName() + "_" + calc->getName();
+        // std::string dacShellParams = "";
+        // for (int count = 0; count < shell->getNumParams(); count++) {
+        //     Param* param = shell->getParam(count);
+        //     dacShellParams += param->getType() + " " + param->getName();
+        //     if(count != shell->getNumParams() - 1) { 
+        //         dacShellParams += ", ";
+        //     }
+        // }
         std::string dacShellParams = "";
-        for (int count = 0; count < shell->getNumParams(); count++) {
-            Param* param = shell->getParam(count);
-            dacShellParams += param->getType() + " " + param->getName();
-            if(count != shell->getNumParams() - 1) { 
-                dacShellParams += ", ";
-            }
+
+
+
+//------------------------------------
+// 1. 原有 shell 参数
+//------------------------------------
+for (int count = 0; count < shell->getNumParams(); count++) {
+    Param* param = shell->getParam(count);
+    dacShellParams += param->getType() + " " + param->getName();
+    if (count != shell->getNumParams() - 1) {
+        dacShellParams += ", ";
+    }
+}
+
+//------------------------------------
+// 2. 追加 forStatementVars（排除 shellVars）
+//------------------------------------
+if(dacppFile->mode!=1){
+bool needComma = (shell->getNumParams() > 0);
+auto Vars=dacppFile->getForStatementVars();
+for (const auto &var : Vars) {
+    const std::string &type = var.second;
+    const std::string &name = var.first;
+
+    // 检查是否在 shellVars 中
+    bool inShellVars = false;
+    for (const auto &shellVar : dacppFile->shellVars) {
+        if (shellVar.first == name) {
+            inShellVars = true;
+            break;
         }
+    }
+    if (inShellVars) continue;
+
+    if (needComma) {
+        dacShellParams += ", ";
+    }
+
+    dacShellParams += type + " " + name;
+    needComma = true;
+}
+}
+
         //算子初始化
         std::string opInit = "";
         std::string infoInit = "";
@@ -192,7 +237,7 @@ void dacppTranslator::Rewriter::rewriteDac_Buffer() {
             for(int NumSplit = 0; NumSplit < shellParam->getNumSplit(); NumSplit++){
                 if(shellParam->getSplit(NumSplit)->getId() == "void") { continue;}
                 Split* split = shellParam->getSplit(NumSplit);
-                if(shellParam->getRw() == 1){
+                if(shellParam->getRw() == IOTYPE:: WRITE){
                     for(int i = 0; i < info.size(); i++){
                         if(shell->search_symbol(info[i].v)->getId() == split->getId())
                                 set = std::to_string(info[i].icls);
@@ -231,36 +276,19 @@ void dacppTranslator::Rewriter::rewriteDac_Buffer() {
 
         //生成设备内存分配大小
         std::string divice_memory = "";
-        for(int NumShellParam = 0; NumShellParam < shell->getNumShellParams(); NumShellParam++){
-            ShellParam* shellParam = shell->getShellParam(NumShellParam);
-            if(shellParam->getRw() == 1){
-                //divice_memory += BUFFER_TEMPLATE::CodeGen_DeviceMemSizeGenerate(shellParam->getName()+"_Size","In_Ops","Out_Ops","info_"+shellParam->getName());
-                // divice_memory += BUFFER_TEMPLATE::CodeGen_DeviceMemSizeGenerate(shellParam->getName()+"Reduction_Size","info_"+shellParam->getName(),"Reduction_Ops");
-            }
-            else{
-                //divice_memory += BUFFER_TEMPLATE::CodeGen_DeviceMemSizeGenerate(shellParam->getName()+"_Size","info_"+shellParam->getName(),shellParam->getName()+"_Ops");
-            }
-        }
+   
         // std::cout << divice_memory;
 
         //生成算子的划分长度
         std::string splitLength = "";
-        for(int NumShellParam = 0; NumShellParam < shell->getNumShellParams(); NumShellParam++){
-            ShellParam* shellParam = shell->getShellParam(NumShellParam);
-            if(shellParam->getRw() == 1){
-                //splitLength += BUFFER_TEMPLATE::CodeGen_Init_Split_Length("In_Ops",shellParam->getName()+"_Size");
-            }
-            else{
-                //splitLength += BUFFER_TEMPLATE::CodeGen_Init_Split_Length(shellParam->getName()+"_Ops",shellParam->getName()+"_Size");
-            }
-        }
+
         // std::cout << splitLength;
 
         //AddDacOps2Vector
         std::string AddDacOps2Vector = "";
         for(int NumShellParam = 0; NumShellParam < shell->getNumShellParams(); NumShellParam++){
             ShellParam* shellParam = shell->getShellParam(NumShellParam);
-            if(shellParam->getRw() == 1){
+            if(shellParam->getRw() != IOTYPE::READ){
                 AddDacOps2Vector += BUFFER_TEMPLATE::CodeGen_Add_DacOps2Vector("ops_s","In_Ops");
             }
             else{
@@ -289,17 +317,7 @@ void dacppTranslator::Rewriter::rewriteDac_Buffer() {
         // std::cout << ParameterGenerate;
         //设置内存分配
         std::string deviceMemAlloc = "";
-        for(int NumShellParam = 0; NumShellParam < shell->getNumShellParams(); NumShellParam++){
-            ShellParam* shellParam = shell->getShellParam(NumShellParam);
-            if(shellParam->getRw() == 1){
-                //deviceMemAlloc += BUFFER_TEMPLATE::CodeGen_DeviceMemAlloc(shellParam->getBasicType(),shellParam->getName(),shellParam->getName()+"_Size");
-                // deviceMemAlloc += BUFFER_TEMPLATE::CodeGen_DeviceMemAllocReduction(shellParam->getBasicType(),shellParam->getName(),shellParam->getName()+"Reduction_Size");
-            }
-            // else{
-            //     deviceMemAlloc += BUFFER_TEMPLATE::CodeGen_DeviceMemAlloc(shellParam->getBasicType(),shellParam->getName(),shellParam->getName()+"_Size");
-            // }
-        }
-        // std::cout << deviceMemAlloc;
+
 
         //主机数据移动至设备
         std::string H2DMemMove = "";
@@ -320,7 +338,7 @@ void dacppTranslator::Rewriter::rewriteDac_Buffer() {
         for(int NumShellParam = 0; NumShellParam < shell->getNumShellParams(); NumShellParam++){
             ShellParam* shellParam = shell->getShellParam(NumShellParam);
             Dac_Ops ops;
-            if(shellParam->getRw()==0){
+            if(shellParam->getRw()==IOTYPE::READ){
                 for(int NumSplit = 0; NumSplit < shellParam->getNumSplit(); NumSplit++){
                     if(shellParam->getSplit(NumSplit)->getId() == "void") { continue;}
                     Dac_Op op = Dac_Op(shellParam->getSplit(NumSplit)->getId(), 0, NumSplit);
@@ -364,11 +382,14 @@ void dacppTranslator::Rewriter::rewriteDac_Buffer() {
         //2025.12.4：这里要进行一个小判断：对于只读的数据，将buffer的访问模式修改为只读 然后禁止数据写回操作
         //2025.12.4：对于只写的数据，访问模式设置为覆盖写 同时注意 写成这样*r_matC
         for (int argCount = 0; argCount < shell->getNumShellParams(); argCount++) {
-            if(shell->getShellParam(argCount)->getRw() == 0){
+            if(shell->getShellParam(argCount)->getRw() == IOTYPE::READ){
                 Accessor_List += BUFFER_TEMPLATE::CodeGen_AccessorInit0_read(shell->getShellParam(argCount)->getName(), shell->getShellParam(argCount)->getBasicType());
             }
-            else {
+            else if(shell->getShellParam(argCount)->getRw() == IOTYPE::WRITE){
                 Accessor_List += BUFFER_TEMPLATE::CodeGen_AccessorInit0_write(shell->getShellParam(argCount)->getName(), shell->getShellParam(argCount)->getBasicType());
+            }
+            else if(shell->getShellParam(argCount)->getRw() == IOTYPE::READ_WRITE){
+                Accessor_List += BUFFER_TEMPLATE::CodeGen_AccessorInit0_read_write(shell->getShellParam(argCount)->getName(), shell->getShellParam(argCount)->getBasicType());
             }
         }
         std::string Accessor_Pointer_List = "";
@@ -387,15 +408,21 @@ void dacppTranslator::Rewriter::rewriteDac_Buffer() {
                     getpos += BUFFER_TEMPLATE::CodeGen_getpos0(shell->getShellParam(argCount)->getName(), std::to_string(NumSplit));
             }  
         }
-	    std::string KernelExecute = BUFFER_TEMPLATE::CodeGen_KernelExecute("Item_Size",AccessorInit,BindingInit,getpos,Accessor_List,Accessor_Pointer_List,CalcEmbed);//注意这里面填的size的大小需要是前面算出来的大小
-        // std::cout << KernelExecute;
+	    std::string KernelExecute;
+        if(dacppFile->getForStatementCtrl()&&dacppFile->mode==0){
+            std::cout << "break 1" << std::endl;
+            KernelExecute = BUFFER_TEMPLATE::CodeGen_KernelExecute2("Item_Size",AccessorInit,BindingInit,getpos,Accessor_List,Accessor_Pointer_List,CalcEmbed,dacppFile);//注意这里面填的size的大小需要是前面算出来的大小
+        }else{
+            std::cout << "break 2" << std::endl;
+            KernelExecute = BUFFER_TEMPLATE::CodeGen_KernelExecute("Item_Size",AccessorInit,BindingInit,getpos,Accessor_List,Accessor_Pointer_List,CalcEmbed);//注意这里面填的size的大小需要是前面算出来的大小
+        }// std::cout << KernelExecute;
 
         std::string Reduction;
         std::string D2HMemMove;
         std::string ReductionRule = "sycl::plus<>()";
         for(int NumShellParam = 0; NumShellParam < shell->getNumShellParams(); NumShellParam++){
             ShellParam* shellParam = shell->getShellParam(NumShellParam);
-            if(shellParam->getRw() == 1){
+            if(shellParam->getRw() != IOTYPE::READ){
                 // Reduction += BUFFER_TEMPLATE::CodeGen_Reduction_Span(shellParam->getName()+"Reduction_Size","Reduction_Split_Size","Reduction_Split_Length",shellParam->getName(),shellParam->getBasicType(),ReductionRule);
 	            Reduction += BUFFER_TEMPLATE::CodeGen_Result_B2H_Mov(shellParam->getName(),shellParam->getName()+"_Size");
             }
@@ -406,12 +433,13 @@ void dacppTranslator::Rewriter::rewriteDac_Buffer() {
         std::string dataRecon = "";
         for(int NumShellParam = 0; NumShellParam < shell->getNumShellParams(); NumShellParam++){
             ShellParam* shellParam = shell->getShellParam(NumShellParam);
-            if(shellParam->getRw() == 1){
+            if(shellParam->getRw() == IOTYPE::WRITE){
                 dataRecon += BUFFER_TEMPLATE::CodeGen_Init_Host_Memory(shellParam->getBasicType(),shellParam->getName());
-            }else{
-                dataRecon += BUFFER_TEMPLATE::CodeGen_D2B_Mov_Buffer(shellParam->getBasicType(),shellParam->getName(),shellParam->getName()+"_Size");
+            }else if(shellParam->getRw() == IOTYPE::READ){
+                dataRecon += BUFFER_TEMPLATE::CodeGen_D2B_Mov_Buffer(shellParam->getBasicType(),shellParam->getName(),shellParam->getName()+"_Size");}
+            else if(shellParam->getRw() == IOTYPE::READ_WRITE){
+                 dataRecon += BUFFER_TEMPLATE::CodeGen_D2B_Mov_Buffer_read_write(shellParam->getBasicType(),shellParam->getName(),shellParam->getName()+"_Size");}
             }
-        }
 
         //dataRecon
         //std::string dataRecon = "";
@@ -425,7 +453,7 @@ void dacppTranslator::Rewriter::rewriteDac_Buffer() {
             }
             std::string dataOpsInit = BUFFER_TEMPLATE::CodeGen_DataOpsInit(shellParam->getName(),opPushBack);
             // dataRecon += BUFFER_TEMPLATE::CodeGen_DataReconstruct(shellParam->getBasicType(),shellParam->getName(),shellParam->getName()+"_Size",dataOpsInit);
-            if(shellParam->getRw() == 1){
+            if(shellParam->getRw() != IOTYPE::READ){
                 dataRecon += BUFFER_TEMPLATE::CodeGen_DataReconstruct1(shellParam->getBasicType(),shellParam->getName(),shellParam->getName()+"_Size",dataOpsInit);
             }
             else{

@@ -18,11 +18,11 @@ using namespace llvm;
 dacppTranslator::Param::Param() {
 }
 
-void dacppTranslator::Param::setRw(bool rw) {
-    this->rw = rw;
+void dacppTranslator::Param::setRw(IOTYPE type) {
+    this->rw = type;
 }
 
-bool dacppTranslator::Param::getRw() {
+dacppTranslator::IOTYPE dacppTranslator::Param::getRw() {
     return rw;
 }
 

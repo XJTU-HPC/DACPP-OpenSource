@@ -1,7 +1,11 @@
+#include "clang/AST/Attr.h"
+#include "clang/AST/Decl.h"
+
 #include <string>
 #include <vector>
 
 #include "ASTParse.h"
+#include "Param.h"
 
 using namespace clang;
 
@@ -40,15 +44,42 @@ void dacppTranslator::getSplitExpr(Expr* curExpr, std::string& name, std::vector
 }
 
 
-// 判断数据的输入输出属性
-bool dacppTranslator::inputOrOutput(std::string dataType) {
-    std::string pre = "const";
-    std::string::size_type idx;
-    idx = dataType.find(pre);
-    if(idx == std::string::npos) {
-        return true;
+//判断数据的输入输出属性
+// dacppTranslator::IOTYPE
+// dacppTranslator::inputOrOutput(std::string dataType) {
+//     if (dataType.find("volatile") != std::string::npos) {
+//         return IOTYPE::READ_WRITE;
+//     }
+//     else if (dataType.find("const") != std::string::npos) {
+//         return IOTYPE::READ;
+//     }
+//     else {
+//         return IOTYPE::WRITE;
+//     }
+// }
+dacppTranslator::IOTYPE
+dacppTranslator::inputOrOutput(const clang::ParmVarDecl* param) {
+
+
+    for (const auto* attr : param->attrs()) {
+        if (const auto* ann = llvm::dyn_cast<clang::AnnotateAttr>(attr)) {
+            std::string tag = ann->getAnnotation().str();
+            if (tag == "read")
+                return IOTYPE::READ;
+            if (tag == "write")
+                return IOTYPE::WRITE;
+            if (tag == "read_write")
+                return IOTYPE::READ_WRITE;
+        }
     }
-    else {
-        return false;
-    }
+
+    QualType QT = param->getType();
+
+    QualType baseType = QT.getNonReferenceType();
+
+    if (baseType.isConstQualified())
+        return IOTYPE::READ;
+
+    return IOTYPE::WRITE;
 }
+

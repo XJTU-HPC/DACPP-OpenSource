@@ -361,10 +361,8 @@ bool Visitor::VisitVarDecl (VarDecl *D)
           continue;
         }
         shellParam->setRw(
-            dacppTranslator::inputOrOutput(sh->getShellLoc()
-                                               ->getParamDecl(paramsCount)
-                                               ->getType()
-                                               .getAsString()));
+            dacppTranslator::inputOrOutput(sh->getShellLoc()->getParamDecl(paramsCount)));
+        
         shellParam->setType(sh->getParam(paramsCount)->newType);
         shellParam->setName(sh->getParam(paramsCount)->getName());
         /*
@@ -526,6 +524,7 @@ void dacppTranslator::Shell::parseShell(const BinaryOperator* dacExpr, std::vect
   Expr *dacExprLHS = dacppTranslator::Expression::shellLHS_p (dacExpr) ? dacExpr->getLHS() : dacExpr->getRHS();
   CallExpr *shellCall = getNode<CallExpr>(dacExprLHS);
   FunctionDecl *shellFunc = shellCall->getDirectCallee();
+  // shellFunc->dump();
 
   // 设置 AST 中 Shell 节点的位置
   setShellLoc(shellFunc);
@@ -539,8 +538,7 @@ void dacppTranslator::Shell::parseShell(const BinaryOperator* dacExpr, std::vect
     Param *param = new Param();
 
     // 获取参数读写属性
-    param->setRw(inputOrOutput(
-        shellFunc->getParamDecl(paramsCount)->getType().getAsString()));
+    param->setRw(inputOrOutput(shellFunc->getParamDecl(paramsCount)));
 
     // 设置参数类型
     param->setType(shellFunc->getParamDecl(paramsCount)->getType());

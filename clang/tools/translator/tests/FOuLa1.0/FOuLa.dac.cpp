@@ -9,7 +9,8 @@
 #include <fstream>
 #include <queue>
 #include "ReconTensor.h"
-
+#define DACPP_TRANSLATE_MODE 1
+//vector的相关操作有待实现
 namespace dacpp {
     typedef std::vector<std::any> list;
 }
@@ -81,18 +82,17 @@ int main() {
     }
 
     dacpp::Matrix<double> u_tensor({m+1, n+1}, u_flat);
-
     for (int k = 0; k < n; k++) {
-        dacpp::Vector<double> middle_tensor = u_tensor[{1,m}][k+1];
+        dacpp::Vector<double> u_kout = u_tensor[{1,m}][k+1];
         std::vector<double> r_data;
         r_data.push_back(r);
-        dacpp::Vector<double> R(r_data);
-        dacpp::Vector<double> u_test1 = u_tensor[{}][k];
-        PDE(u_test1, middle_tensor, R) <-> pde;
+        dacpp::Vector<double> r(r_data);
+        dacpp::Vector<double> u_kin = u_tensor[{}][k];
+        PDE(u_kin, u_kout, r) <-> pde;
         
         //计算完毕后，替换第1到4个点
         for (int i = 1; i <= m-1; i++) {
-            u_tensor[i][k+1] = middle_tensor[i-1];
+            u_tensor[i][k+1] = u_kout[i-1];
         }
 
     }

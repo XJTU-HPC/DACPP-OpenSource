@@ -53,7 +53,6 @@ public:
     int getNumParams();
 
     void setBody(Stmt* body);
-    std::string getBody(int idx,std::vector<int>& dim);
     std::string getBody(int idx);
     std::string getBody(int idx,std::vector<dacppTranslator::clacparam>& dim);
     std::string dacfor_getBody(int idx);

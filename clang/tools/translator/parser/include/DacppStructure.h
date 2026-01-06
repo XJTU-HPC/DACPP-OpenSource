@@ -1,3 +1,4 @@
+//定义dacppfile的文件
 #ifndef TRANSLATOR_PARSER_DACPPSTRUCTURE_H
 #define TRANSLATOR_PARSER_DACPPSTRUCTURE_H
 
@@ -6,7 +7,6 @@
 #include <vector>
 
 #include "clang/AST/AST.h"
-
 #include "Split.h"
 #include "Param.h"
 #include "Shell.h"
@@ -46,7 +46,6 @@ private:
 public:
     NameSpace();
     NameSpace(std::string name);
-
     void setName(std::string name);
     std::string getName();
 };
@@ -63,16 +62,12 @@ private:
 
 public:
     Expression();
-
     void setShell(Shell* shell);
     Shell* getShell();
-
     void setCalc(Calc* calc);
     Calc* getCalc();
-
     void setDacExpr(const clang::BinaryOperator* dacExpr);
     const clang::BinaryOperator* getDacExpr();
-
     static bool shellLHS_p(const BinaryOperator *dacExpr);
 };
 
@@ -83,19 +78,30 @@ public:
 class DacppFile {
 public:
     std::vector<const clang::BinaryOperator*> dacExprs;
-private:
     std::vector<HeaderFile*> headerFiles; // 头文件
     std::vector<NameSpace*> nameSpaces; // 命名空间
     
     std::vector<Expression*> exprs; // 数据关联计算表达式
     const FunctionDecl* mainFuncLoc; // AST中主函数节点位置
+    /****************dacfor相关*****************/
     clang::TranslationUnitDecl* decl;
-    ControlBlock* block;
-    const CallExpr* FS;
-    // SourceRange forRange;
-
-
-
+    ControlBlock* block;//用于存dacfor
+    const CallExpr* FS;// SourceRange forRange;
+    /*2025.12.1新增↓*/
+    clang::ASTContext *Context = nullptr;//用于存储本代码的ASTContext
+    /****************for循环相关*****************/
+    //这里的for循环是指包含了表达式的for循环 形如for(...) {shell<->clac;}
+    const clang::ForStmt* forStatement;  // 用于存储包裹了表达式的循环语句
+    bool forStatementCtrl = false; // 用于标记是否检测到了包裹表达式的循环语句
+    std::vector<std::pair<std::string, std::string>> forStatementVars; // 记录前文提及的for循环中用到的、但是在for循环外声明的变量的   变量名及其类型,第一个表示变量名，第二个表示变量类型
+    /****************main函数相关*****************/
+    const clang::FunctionDecl* mainFunctionDecl = nullptr; // main 函数声明
+    const clang::Stmt* mainStmt = nullptr;             // main 函数体
+    /*2025.12.3新增，for循环并行化相关*/
+    // 在 DacppFile 类中新增成员
+    std::vector<const clang::ForStmt*> innerForStatements;  // 用于存储 forstatement 内部的所有 for 循环
+    std::vector<std::pair<std::string, std::string>> shellVars; // shell参数的变量名及其类型,第一个表示变量名，第二个表示变量类型
+    int mode = 0; //用于存储翻译模式,0表示使用新版本，1表示强制用老版本
 public:
     const FunctionDecl* node;
     DacppFile();
@@ -137,10 +143,36 @@ public:
     }
     // void setForRange(SourceRange range) { forRange = range; }
     // SourceRange getForRange() const { return forRange; }
+    /*2025.12.01新增*/
+    void setForStatement(const clang::ForStmt* FS) {
+        this->forStatement = FS;
+        this->forStatementCtrl = true;
+    }
+    const clang::ForStmt* getForStatement() {
+        return forStatement;
+    }
+    bool getForStatementCtrl() {
+        return forStatementCtrl;
+    }
+    void collectVarsFromForStatement();//找出从for语句中提取的在for循环外定义并在for循环内使用的变量名及其类型
+    std::vector<std::pair<std::string, std::string>> getForStatementVars();//返回从for语句中提取的在for循环外定义并在for循环内使用的变量名及其类型
+    std::vector<std::pair<std::string, std::string>> getShellVars(){    
+    std::vector<std::pair<std::string, std::string>> result = shellVars;
+    for (auto &var : result) {
+        if (var.second == "_Bool") {
+            var.second = "bool";
+        }
+    }
+    return result;
+}//返回从for语句中提取的在for循环外定义并在for循环内使用的变量名及其类型
+    void setContext(clang::ASTContext* ctx) { this->Context = ctx; }//设置上下文
+    clang::ASTContext* getContext() { return this->Context; }//获取上下文
+    void setMainFunction(const clang::FunctionDecl* func) { this->mainFunctionDecl = func; }//设置主函数decl
+    const clang::FunctionDecl* getMainFunction() { return this->mainFunctionDecl; }//获取主函数decl
+    void setMainBody(const clang::Stmt* body) { this->mainStmt = body; }//设置主函数体
+    const clang::Stmt* getMainBody() { return this->mainStmt; }//获取主函数体
+    void collectInnerForStmts();  // step1 的核心函数
 
 };
-
-
 }
-
 #endif
