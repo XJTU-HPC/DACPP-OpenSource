@@ -9,6 +9,7 @@ const int TIME_STEPS = 200;  // 时间步数
 const double DELTA_T = 0.01; // 时间步长
 const double DELTA_X = 1.0;  // 空间步长
 
+
 // 流量函数，考虑密度对流量的影响
 double q1(double rho) {
     const double V_max = 30.0; // 最大速度

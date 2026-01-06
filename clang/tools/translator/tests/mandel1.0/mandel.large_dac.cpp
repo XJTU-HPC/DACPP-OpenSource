@@ -62,22 +62,6 @@ calc void mandel(complex<float>* complex_points,
 
 }
 
-// 计算 Mandelbrot 集
-void ComputeMandelbrot() {
-    mandelbrot_flags.resize(total_points, 0);  // 初始化一维数组为 0
-
-    dacpp::Vector<complex<float>> complex_points_tensor(complex_points);
-    dacpp::Vector<int> mandelbrot_flags_tensor(mandelbrot_flags);
-
-
-    MANDEL(complex_points_tensor, mandelbrot_flags_tensor) <-> mandel;
-
-    // 统计数组中 1 的个数
-    mandelbrot_count = 0;
-    for (int i = 0; i < total_points; i++){
-        if (mandelbrot_flags_tensor[i] == 1) mandelbrot_count++;
-    }
-}
 
 // 打印统计信息
 void PrintStats() {
@@ -91,7 +75,19 @@ int main() {
     InitializeComplexPoints();
 
     // 计算 Mandelbrot 集
-    ComputeMandelbrot();
+    mandelbrot_flags.resize(total_points, 0);  // 初始化一维数组为 0
+
+    dacpp::Vector<complex<float>> complex_points_tensor(complex_points);
+    dacpp::Vector<int> mandelbrot_flags_tensor(mandelbrot_flags);
+
+
+    MANDEL(complex_points_tensor, mandelbrot_flags_tensor) <-> mandel;
+
+    // 统计数组中 1 的个数
+    mandelbrot_count = 0;
+    for (int i = 0; i < total_points; i++){
+        if (mandelbrot_flags_tensor[i] == 1) mandelbrot_count++;
+    }
 
     // 打印统计信息
     PrintStats();

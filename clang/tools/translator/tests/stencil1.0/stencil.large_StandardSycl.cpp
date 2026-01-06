@@ -7,8 +7,8 @@ using namespace sycl;
 using namespace std;
 
 // 网格参数
-const int NX = 128;           // x方向网格数量
-const int NY = 128;           // y方向网格数量
+const int NX = 8192*8;           // x方向网格数量
+const int NY = 8192*8;           // y方向网格数量
 const double Lx = 10.0f;       // x方向长度
 const double Ly = 10.0f;       // y方向长度
 const double alpha = 0.01f;    // 热扩散系数

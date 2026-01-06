@@ -12,7 +12,7 @@ const int NY = 8;    // y方向网格数量
 const double Lx = 10.0f; // x方向长度
 const double Ly = 10.0f; // y方向长度
 const double c = 1.0f;   // 波速
-const int TIME_STEPS = 1000; // 时间步数
+const int TIME_STEPS = 10; // 时间步数
 
 int main() {
     // 网格步长

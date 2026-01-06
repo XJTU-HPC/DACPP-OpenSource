@@ -70,9 +70,7 @@ int main(){
         if(step>0)
         q.parallel_for(range<1>(step),[=](id<1>idx){
             int i=1+idx[0];
-            u_device[i*(n+1)+k+1]=r*u_device[(i-1)*(n+1)+k]
-                +(1-2*r)*u_device[i*(n+1)+k]
-                +r*u_device[(i+1)*(n+1)+k];
+            u_device[i*(n+1)+k+1]=r*u_device[(i-1)*(n+1)+k]+(1-2*r)*u_device[i*(n+1)+k]+r*u_device[(i+1)*(n+1)+k];
         }).wait();
     }
 

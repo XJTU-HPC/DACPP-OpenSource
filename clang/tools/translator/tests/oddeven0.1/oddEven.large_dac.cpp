@@ -3,11 +3,12 @@
 #include <cstdlib>
 #include <ctime>
 #include "ReconTensor.h"
+#define DACPP_TRANSLATE_MODE 1
 
 namespace dacpp {
     typedef std::vector<std::any> list;
 }
-const int N = 1024;  // 假设数组的大小为1024
+const int N = 8192;  // 假设数组的大小为1024
 
 
 // 交换函数

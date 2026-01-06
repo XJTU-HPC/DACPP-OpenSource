@@ -5,6 +5,7 @@
 
 using namespace sycl;
 
+
 int main() {
     auto start_time = std::chrono::high_resolution_clock::now(); // 开始时间测量
     const int N = 100; // 矩阵大小

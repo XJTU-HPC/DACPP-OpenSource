@@ -8,7 +8,7 @@ namespace dacpp {
 
 using namespace std;
 
-shell dacpp::list matrixMultiply_shell(const dacpp::Matrix<int>& matA,
+shell dacpp::list matrixMultiply_shell( const dacpp::Matrix<int>& matA,
                                         const dacpp::Matrix<int>& matB,
                                         dacpp::Matrix<int>& matC) {
     dacpp::index idx1, idx2;
@@ -36,8 +36,9 @@ int main() {
 
     std::vector<int> dataC{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16};
     dacpp::Matrix<int> matC({4, 4}, dataC);
-
+    // for(int i=0;i<1;i++){
     matrixMultiply_shell(matA, matB, matC) <-> matrixMultiply_calc;
+    // }
     matC.print();
 
     return 0;

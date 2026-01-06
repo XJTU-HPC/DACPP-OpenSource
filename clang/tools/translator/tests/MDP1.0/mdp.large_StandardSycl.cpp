@@ -8,8 +8,8 @@ const double A = 1.0;  // 吸引力系数
 const double D = 0.1;  // 扩散系数
 const double dx = 0.1; // 空间步长
 const double dt = 0.01; // 时间步长
-const int N = 150;     // 空间网格点数
-const int T = 1500;    // 时间步数
+const int N = 10000;     // 空间网格点数
+const int T = 1000;    // 时间步数
 
 // 初始化用户偏好分布
 void initialize(std::vector<double>& p) {

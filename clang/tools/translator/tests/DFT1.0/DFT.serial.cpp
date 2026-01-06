@@ -6,6 +6,7 @@
 using namespace std;
 using Complex = complex<double>;  // 复数类型别名
 
+
 // 离散傅里叶变换（DFT）
 void dft(const vector<Complex>& input, vector<Complex>& output) {
     int N = input.size();

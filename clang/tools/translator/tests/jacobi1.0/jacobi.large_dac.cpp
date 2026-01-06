@@ -2,6 +2,7 @@
 #include <vector>
 #include <cmath>
 #include "ReconTensor.h"
+#define DACPP_TRANSLATE_MODE 1
 // 定义矩阵大小
 const int N = 1000; // 可以修改 N 的值来改变矩阵大小
 const int max_iter = 100000;

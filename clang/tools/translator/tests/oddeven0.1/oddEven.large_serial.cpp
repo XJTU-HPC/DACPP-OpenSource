@@ -5,7 +5,7 @@
 
 using namespace std;
 
-const int N = 1024;  // 假设数组的大小为8
+const int N = 8192;  // 假设数组的大小为8
 
 // 交换函数
 void swap(vector<int>& array, int i, int j) {

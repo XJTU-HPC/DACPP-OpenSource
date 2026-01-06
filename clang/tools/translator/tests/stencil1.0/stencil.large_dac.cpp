@@ -2,6 +2,7 @@
 #include <vector>
 #include <cmath>
 #include "ReconTensor.h"
+// #define DACPP_TRANSLATE_MODE 1
 
 using namespace std;
 namespace dacpp {
@@ -9,8 +10,8 @@ namespace dacpp {
 }
 
 // 网格参数
-const int NX = 128;           // x方向网格数量
-const int NY = 128;           // y方向网格数量
+const int NX = 8192*8;           // x方向网格数量
+const int NY = 8192*8;           // y方向网格数量
 const double Lx = 10.0f;       // x方向长度
 const double Ly = 10.0f;       // y方向长度
 const double alpha = 0.01f;    // 热扩散系数
@@ -23,8 +24,8 @@ const double dy = Ly / (NY - 1);
 const double dt_stability = (dx * dx * dy * dy) / (2.0f * alpha * (dx * dx + dy * dy));
 const double delta_t = 0.4f * dt_stability; // 选择一个更严格的时间步长以确保稳定性
 
-shell dacpp::list stencilShell(const dacpp::Matrix<double>& matIn, 
-                                dacpp::Matrix<double>& matOut) {
+shell dacpp::list stencilShell( dacpp::Matrix<double>& matIn READ_WRITE, 
+                                dacpp::Matrix<double>& matOut READ_WRITE) {
     dacpp::split sp1(3, 1), sp2(3, 1);
     dacpp::index idx1, idx2;
     binding(sp1, idx1);
@@ -63,35 +64,33 @@ int main() {
     }
 
     //std::vector<int> shape = {32, 32};
-    dacpp::Matrix<double> u_curr_tensor({NX, NY}, u_curr);
+    dacpp::Matrix<double> matIn({NX, NY}, u_curr);
     dacpp::Matrix<double> u_next_tensor({NX, NY}, u_next);
-
+    dacpp::Matrix<double> matOut = u_next_tensor[{1,NX-1}][{1,NY-1}];
     for(int i=0;i<TIME_STEPS;i++) {
-        dacpp::Matrix<double> middle_tensor = u_next_tensor[{1,NX-1}][{1,NY-1}];
-        stencilShell(u_curr_tensor, middle_tensor) <-> stencil;
+        stencilShell(matIn, matOut) <-> stencil;
 
         for (int i = 1; i <= NX-2; i++) {
             for(int j = 1; j <=NY-2; j++){
-                double* data = new double[1];
-                u_curr_tensor[i][j]=middle_tensor[i-1][j-1];
+                matIn[i][j]=matOut[i-1][j-1];
             }
         }
 
         // 处理边界条件（绝热边界：导数为零）
-        for (int j = 0; j < NY; ++j) {
+        for (int j = 0; j <= NY-1; ++j) {
             //double* data = new double[1];
-            u_curr_tensor[0][j]=u_curr_tensor[1][j];              // 顶部边界
-            u_curr_tensor[NX - 1][j]=u_curr_tensor[NX-2][j];
+            matIn[0][j]=matIn[1][j];              // 顶部边界
+            matIn[NX - 1][j]=matIn[NX-2][j];
              // 底部边界
         }
-        for (int i = 0; i < NX; ++i) {
+        for (int i = 0; i < NX-1; ++i) {
             //double* data = new double[1];
-            u_curr_tensor[i][0]=u_curr_tensor[i][1];              // 顶部边界
-            u_curr_tensor[i][NY-1]=u_curr_tensor[i][NY-2];
+            matIn[i][0]=matIn[i][1];              // 顶部边界
+            matIn[i][NY-1]=matIn[i][NY-2];
         }
         
     }
-    u_curr_tensor[0].print();
+    matIn[0].print();
 
 
     // 输出最终结果的某些值作为示例

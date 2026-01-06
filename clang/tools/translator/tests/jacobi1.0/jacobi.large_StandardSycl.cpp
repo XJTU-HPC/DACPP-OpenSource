@@ -3,11 +3,12 @@
 #include <vector>
 #include <cmath>
 
+
 using namespace sycl;
 
 int main() {
     auto start_time = std::chrono::high_resolution_clock::now(); // 开始时间测量
-    const int N = 1000; // 矩阵大小
+    const int N = 10000; // 矩阵大小
     const int max_iter = 1000;
     const float tolerance = 1e-6;
 

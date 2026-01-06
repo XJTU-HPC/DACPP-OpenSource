@@ -4,6 +4,7 @@
 
 using namespace std;
 
+
 // 全局变量定义
 int row_count = 16, col_count = 16, max_iterations = 1000;
 vector<complex<float>> complex_points;  // 一维向量表示复数点
