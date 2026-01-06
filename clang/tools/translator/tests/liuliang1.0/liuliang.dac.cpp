@@ -43,8 +43,8 @@ calc void lwr(dacpp::Vector<double> & rho, double* new_rho) {
     //new_rho += 0.1 * (rho[0] + new_rho - 2 * rho[1]);
 }
 
-shell dacpp::list LWR_shell(const dacpp::Vector<double> & rho, 
-                            dacpp::Vector<double> & new_rho) {
+shell dacpp::list LWR_shell([[clang::annotate("read_write")]] dacpp::Vector<double> & rho, 
+                            [[clang::annotate("read_write")]]dacpp::Vector<double> & new_rho) {
     dacpp::index idx1;
     dacpp::split S1(2, 1);
     binding(idx1, S1);
@@ -54,24 +54,24 @@ shell dacpp::list LWR_shell(const dacpp::Vector<double> & rho,
 
 int main() {
     // 创建 Tensor 类型对象
-    std::vector<double> rho(WIDTH, 0.0);
-    std::vector<double> new_rho(WIDTH, 0.0);
-    initializeDensity(rho);
-    dacpp::Vector<double> rho_tensor(rho);
-    dacpp::Vector<double> new_rho_tensor(new_rho);
-    dacpp::Vector<double> middle_out_tensor = new_rho_tensor[{1,WIDTH-1}];
-    dacpp::Vector<double> middle_in_tensor = rho_tensor[{0,WIDTH-1}];
+    std::vector<double> rho1(WIDTH, 0.0);
+    std::vector<double> new_rho1(WIDTH, 0.0);
+    initializeDensity(rho1);
+    dacpp::Vector<double> rho_tensor(rho1);
+    dacpp::Vector<double> new_rho_tensor(new_rho1);
+    dacpp::Vector<double> new_rho = new_rho_tensor[{1,WIDTH-1}];
+    dacpp::Vector<double> rho = rho_tensor[{0,WIDTH-1}];
     for (int t = 0; t < TIME_STEPS; ++t) {
-        LWR_shell(middle_in_tensor, middle_out_tensor) <-> lwr;
+        LWR_shell(rho, new_rho) <-> lwr;
         for (int i = 1; i <= WIDTH-2; i++) {
-            middle_in_tensor[i] = middle_out_tensor[i-1];
+            rho[i] = new_rho[i-1];
         }
-        
-        middle_in_tensor[0] = middle_out_tensor[0]; // 左边界无车流
+        for(int i=0;i<1;i++){
+        rho[0] = new_rho[0]; // 左边界无车流
         //middle_in_tensor[99] = middle_out_tensor[97];
-
     }
-    std::cout << middle_in_tensor[15] << std::endl;
+    }
+    std::cout << rho[15] << std::endl;
     
 
     

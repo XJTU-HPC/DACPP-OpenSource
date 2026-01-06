@@ -39,7 +39,7 @@ void normalize(dacpp::Vector<double>& p) {
     }
 }
 
-shell dacpp::list mdp_shell(const dacpp::Vector<double>& p, dacpp::Vector<double>& new_p){
+shell dacpp::list mdp_shell([[clang::annotate("read_write")]] dacpp::Vector<double>& p, [[clang::annotate("read_write")]]dacpp::Vector<double>& new_p){
     dacpp::index idx;
     dacpp::split sp(3,1);
     binding(idx, sp);
@@ -54,31 +54,28 @@ calc void mdp(dacpp::Vector<double>& p, double* new_p){
 }
 
 // 数值求解Fokker-Planck方程
-void solveFokkerPlanck(std::vector<double>& p) {
-    std::vector<double> new_p(N-2, 0.0); // 存储下一时间步的分布
-    dacpp::Vector<double> p_tensor(p);
-    dacpp::Vector<double> new_p_tensor(new_p);
-    for (int t = 0; t < T; ++t) {
-        mdp_shell(p_tensor, new_p_tensor) <->  mdp;
-        //normalize(new_p_tensor); // 归一化分布  
-        // 更新分布
-        for(int i = 0; i < N-2; i++){
-            p_tensor[i+1] = new_p_tensor[i];
-        }
-        // 设置边界条件
-        //p_tensor[0] = 0.0;
-        //p_tensor[N - 1] = 0.0;
-        
-    }
-    std::cout << p_tensor[2] << std::endl;
-    //p_tensor.print();
-}
 
 int main() {
-    std::vector<double> p(N, 0.0); // 存储用户偏好分布
+    std::vector<double> p1(N, 0.0); // 存储用户偏好分布
     // 初始化偏好分布
-    initialize(p);
+    initialize(p1);
     // 数值求解Fokker-Planck方程
-    solveFokkerPlanck(p);
+    std::vector<double> new_p1(N-2, 0.0); // 存储下一时间步的分布
+    dacpp::Vector<double> p(p1);
+    dacpp::Vector<double> new_p(new_p1);
+    for (int t = 0; t < T; ++t) {
+        mdp_shell(p, new_p) <->  mdp;
+        //normalize(new_p); // 归一化分布  
+        // 更新分布
+        for(int i = 0; i <= N-3; i++){
+            p[i+1] = new_p[i];
+        }
+        // 设置边界条件
+        //p[0] = 0.0;
+        //p[N - 1] = 0.0;
+        
+    }
+    std::cout << p[2] << std::endl;
+    //p.print();
     return 0;
 }

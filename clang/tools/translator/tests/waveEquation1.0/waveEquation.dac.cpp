@@ -8,8 +8,8 @@ namespace dacpp {
     typedef std::vector<std::any> list;
 }
 // 网格参数
-const int NX = 8;    // x方向网格数量
-const int NY = 8;    // y方向网格数量
+const int NX = 8192;    // x方向网格数量
+const int NY = 8192;    // y方向网格数量
 const double Lx = 10.0f; // x方向长度
 const double Ly = 10.0f; // y方向长度
 const double c = 1.0f;   // 波速
@@ -21,9 +21,9 @@ const double dy = Ly / (NY - 1);
 // CFL条件
 const double dt = 0.5f * std::fmin(dx, dy) / c; // 满足稳定性条件
 
-shell dacpp::list waveEqShell(const dacpp::Matrix<double>& matCur, 
-                                const dacpp::Matrix<double>& matPrev, 
-                                dacpp::Matrix<double>& matNext) {
+shell dacpp::list waveEqShell([[clang::annotate("write")]] dacpp::Matrix<double>& matCur, 
+                             [[clang::annotate("read_write")]] dacpp::Matrix<double>& matPrev, 
+                            [[clang::annotate("write")]] dacpp::Matrix<double>& matNext){
     dacpp::split sp1(3, 1), sp2(3, 1);
     dacpp::index idx1, idx2;
     binding(sp1, idx1);
@@ -64,38 +64,38 @@ int main() {
     //     //std::cout << std::endl;
     // }
 
-    dacpp::Matrix<double> u_curr_tensor({NX, NY}, u_curr);
+    dacpp::Matrix<double> matCur({NX, NY}, u_curr);
     dacpp::Matrix<double> u_prev_tensor({NX, NY}, u_prev);
     dacpp::Matrix<double> u_next_tensor({NX, NY}, u_next);
-    dacpp::Matrix<double> u_prev_middle_tensor = u_prev_tensor[{1,NX-1}][{1,NY-1}];
+    dacpp::Matrix<double> matPrev = u_prev_tensor[{1,NX-1}][{1,NY-1}];
+    dacpp::Matrix<double> matNext = u_next_tensor[{1,NX-1}][{1,NY-1}];
+    
     for(int i = 0;i < TIME_STEPS; i++) {
-        dacpp::Matrix<double> u_next_middle_tensor = u_next_tensor[{1,NX-1}][{1,NY-1}];
-        waveEqShell(u_curr_tensor, u_prev_middle_tensor, u_next_middle_tensor) <-> waveEq;
+        waveEqShell(matCur, matPrev, matNext) <-> waveEq;
         for (int i = 1; i <= NX-2; i++) {
             for(int j = 1; j <=NY-2; j++){
-                u_prev_middle_tensor[i-1][j-1]=u_curr_tensor[i][j];
+                matPrev[i-1][j-1]=matCur[i][j];
             }
         }
 
         for (int i = 1; i <= NX-2; i++) {
             for(int j = 1; j <=NY-2; j++){
-                u_curr_tensor[i][j]=u_next_middle_tensor[i-1][j-1];
+                matCur[i][j]=matNext[i-1][j-1];
             }
         }
         // 处理边界条件（绝热边界：导数为零）
-        for (int i = 0; i < NX; ++i) {       
-            u_curr_tensor[i][NY-1]=0;
-            u_curr_tensor[i][0]=0;
+        for (int i = 0; i <= NX-1; ++i) {       
+            matCur[i][NY-1]=0;
+            matCur[i][0]=0;
         }
-        for (int j = 0; j < NY; ++j) {
-            u_curr_tensor[NX - 1][j]=0;
-            u_curr_tensor[0][j]=0;
+        for (int j = 0; j <= NY-1; ++j) {
+            matCur[NX - 1][j]=0;
+            matCur[0][j]=0;
              // 底部边界
         }
-
-        
     }
-    u_curr_tensor.print(); 
+    //
+    matCur.print(); 
     return 0;
 }
 
