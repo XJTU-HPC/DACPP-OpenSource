@@ -11,6 +11,7 @@ namespace dacpp {
 const int N = 8;  // 假设数组的大小为1024
 
 
+
 // 交换函数
 void swap(vector<int>& array, int i, int j) {
     int temp = array[i];

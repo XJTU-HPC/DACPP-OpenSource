@@ -13,6 +13,7 @@ using Complex = std::complex<double>;  // 复数类型别名
 const int N = 8;
 
 
+
 shell dacpp::list DFT(const dacpp::Vector<std::complex<double>>& input,
                         dacpp::Vector<std::complex<double>>& output, 
                     const dacpp::Vector<int>& vec) {

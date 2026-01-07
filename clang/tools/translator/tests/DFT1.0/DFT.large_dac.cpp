@@ -8,6 +8,7 @@ namespace dacpp {
     typedef std::vector<std::any> list;
 }
 
+
 using namespace std;
 using Complex = std::complex<double>;  // 复数类型别名
 const int N = 8192;

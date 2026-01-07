@@ -14,6 +14,7 @@ const double Ly = 10.0f;       // y方向长度
 const double alpha = 0.01f;    // 热扩散系数
 const int TIME_STEPS = 10;  // 时间步数
 
+
 int main() {
     // 空间步长
     double dx = Lx / (NX - 1);

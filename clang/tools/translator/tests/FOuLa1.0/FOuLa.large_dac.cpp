@@ -42,6 +42,7 @@ calc void pde(dacpp::Vector<double>& u_kin,
     u_kout[0] = r[0] * u_kin[0] + (1 - 2 * r[0]) * u_kin[1] + r[0] * u_kin[2];
 }
 
+
 int main() {
     int n = 5000; //时间域n等分
     int m = 30; //空间域m等分
@@ -82,7 +83,7 @@ int main() {
     }
 
     dacpp::Matrix<double> u_tensor({m+1, n+1}, u_flat);
-    for (int k = 0; k < n; k++) {
+    for (int k = 0; k <= n-1; k++) {
         dacpp::Vector<double> u_kout = u_tensor[{1,m}][k+1];
         std::vector<double> r_data;
         r_data.push_back(r);

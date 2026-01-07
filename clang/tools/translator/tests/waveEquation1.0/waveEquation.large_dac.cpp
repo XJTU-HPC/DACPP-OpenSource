@@ -18,6 +18,7 @@ const int TIME_STEPS = 1000; // 时间步数
 const double dx = Lx / (NX - 1);
 const double dy = Ly / (NY - 1);
 
+
 // CFL条件
 const double dt = 0.5f * std::fmin(dx, dy) / c; // 满足稳定性条件
 

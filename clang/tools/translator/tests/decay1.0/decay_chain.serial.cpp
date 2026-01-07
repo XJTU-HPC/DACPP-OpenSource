@@ -2,6 +2,7 @@
 #include <vector>
 #include <iomanip>
 #include <cmath>
+
 int main() {
     size_t numIsotopes = 10; // 同位素数量
     double dt = 0.1;         // 时间步长

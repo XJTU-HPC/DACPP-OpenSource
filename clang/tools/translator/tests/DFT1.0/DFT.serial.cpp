@@ -25,6 +25,7 @@ void dft(const vector<Complex>& input, vector<Complex>& output) {
     }
 }
 
+
 int main() {
     // 定义一个输入信号（长度为8的复数序列）
     int N = 8;

@@ -4,12 +4,13 @@
 #include "ReconTensor.h"
 #define DACPP_TRANSLATE_MODE 1
 // 定义矩阵大小
-const int N = 100; // 可以修改 N 的值来改变矩阵大小
-const int max_iter = 10000;
+const int N = 10; // 可以修改 N 的值来改变矩阵大小
+const int max_iter = 100;
 const float tolerance = 1e-6;
 namespace dacpp {
     typedef std::vector<std::any> list;
 }
+
 
 
 shell dacpp::list jacobiShell(const dacpp::Matrix<float>& A, 

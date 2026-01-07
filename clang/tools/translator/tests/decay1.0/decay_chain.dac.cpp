@@ -7,6 +7,7 @@ namespace dacpp {
     typedef std::vector<std::any> list;
 }
 
+
 const double dt = 0.1;       // 时间步长
 const double T = 5.0;       // 总时间
 const size_t numIsotopes = 10; // 设定大量同位素（例如，10000个）

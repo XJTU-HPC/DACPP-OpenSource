@@ -14,6 +14,7 @@ const double Ly = 10.0f; // y方向长度
 const double c = 1.0f;   // 波速
 const int TIME_STEPS = 10; // 时间步数
 
+
 int main() {
     // 网格步长
     double dx = Lx / (NX - 1);

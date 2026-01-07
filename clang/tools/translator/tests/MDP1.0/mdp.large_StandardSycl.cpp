@@ -20,6 +20,7 @@ void initialize(std::vector<double>& p) {
     }
 }
 
+
 // 归一化函数
 void normalize(std::vector<double>& p) {
     double sum = 0.0;

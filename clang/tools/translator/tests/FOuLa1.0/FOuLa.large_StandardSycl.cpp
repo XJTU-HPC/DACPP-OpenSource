@@ -27,6 +27,7 @@ namespace Func{
 };
 using namespace Func;
 
+
 int main(){
     auto start = std::chrono::high_resolution_clock::now();
 	int n,m;
