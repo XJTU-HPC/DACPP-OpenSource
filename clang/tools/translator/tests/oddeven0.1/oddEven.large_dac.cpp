@@ -8,7 +8,7 @@
 namespace dacpp {
     typedef std::vector<std::any> list;
 }
-const int N = 8192;  // 假设数组的大小为1024
+const int N = 1024;  // 假设数组的大小为1024
 
 
 
