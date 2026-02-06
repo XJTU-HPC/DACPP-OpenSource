@@ -12,7 +12,7 @@ namespace dacpp {
 
 const int NUM_NEURONS = 8;   // 神经元数量（层宽度）
 const int INPUT_SIZE  = 8;   // 每个神经元输入数
-
+ 
 shell dacpp::list gradSumShell(dacpp::Matrix<float>& matGrads READ,
                                dacpp::Matrix<float>& matNeuronSum WRITE) {
     dacpp::index idx1, idx2;

@@ -18,7 +18,7 @@ int main() {
             host_grads[i*INPUT_SIZE+j]=j;
         }
     }
-
+ 
     queue q;
 
 
