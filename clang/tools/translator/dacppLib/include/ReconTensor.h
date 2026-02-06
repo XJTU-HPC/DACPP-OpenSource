@@ -50,7 +50,7 @@ namespace dacpp {
         int getShape(int dimIdx) const;
         int getStride(int dimIdx) const;
         int getSize() const;
-        void tensor2Array(ImplType* data) const;
+        void tensor2Array(ImplType*& data) const;
         void tensor2Array(std::vector <ImplType>& data)const;
         void array2Tensor(ImplType* data);
         void array2Tensor(std::vector <ImplType> data);
@@ -97,48 +97,49 @@ namespace dacpp {
         return size;
     }
     template<class ImplType>
-    void TensorBase<ImplType> :: tensor2Array(ImplType* data) const { 
-    const int total_size = getSize();
-    const ImplType* src = this->data_.get();
-    const int offset = this->offset_;
-    const int* stride = this->stride_.get();
-    const int* shape  = this->shape_.get();
-    const int dim = this->dim_;
+    void TensorBase<ImplType> :: tensor2Array(ImplType* &data) const { 
+        const int total_size = getSize();
+        const ImplType* src = this->data_.get();
+        const int offset = this->offset_;
+        const int* stride = this->stride_.get();
+        const int* shape  = this->shape_.get();
+        const int dim = this->dim_;
 
-    // 判断是否连续存储
-    bool is_contiguous = true;
-    int expected_stride = 1;
-    for (int i = dim - 1; i >= 0; --i) {
-        if (stride[i] != expected_stride) {
-            is_contiguous = false;
-            break;
+        // 判断是否连续存储
+        bool is_contiguous = true;
+        int expected_stride = 1;
+        for (int i = dim - 1; i >= 0; --i) {
+            if (stride[i] != expected_stride) {
+                is_contiguous = false;
+                break;
+            }
+            expected_stride *= shape[i];
         }
-        expected_stride *= shape[i];
-    }
 
-    // 连续存储：直接 memcpy
-    if (is_contiguous) {
-        std::memcpy(data, src + offset, sizeof(ImplType) * total_size);
-        return;
-    }
-
-    // 非连续存储：线性访问转换
-    std::vector<int> idx(dim, 0);
-    for (int linear = 0; linear < total_size; ++linear) {
-        int real_index = offset;
-        for (int d = 0; d < dim; ++d) {
-            real_index += idx[d] * stride[d];
+        // 连续存储：直接 memcpy
+        if (is_contiguous) {
+            // std::memcpy(data, src + offset, sizeof(ImplType) * total_size);
+            data=getDataPtr().get();
+            return;
         }
-        data[linear] = src[real_index];
+
+        // 非连续存储：线性访问转换
+        std::vector<int> idx(dim, 0);
+        for (int linear = 0; linear < total_size; ++linear) {
+            int real_index = offset;
+            for (int d = 0; d < dim; ++d) {
+                real_index += idx[d] * stride[d];
+            }
+            data[linear] = src[real_index];
 
         // 增加多维坐标
-        for (int d = dim - 1; d >= 0; --d) {
-            idx[d]++;
-            if (idx[d] < shape[d]) break;
-            idx[d] = 0;
+            for (int d = dim - 1; d >= 0; --d) {
+                idx[d]++;
+                if (idx[d] < shape[d]) break;
+                idx[d] = 0;
+            }
         }
     }
-}
     template<class ImplType>
     void TensorBase<ImplType>::tensor2Array(std::vector<ImplType>& data) const {
     const int total_size = getSize();
