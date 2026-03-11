@@ -4783,6 +4783,270 @@ static std::string make_replacement_2d(const std::string &name,const std::string
 {
     return name + "[(" + inside1 + " + " + name + "_0) * " + name + "_1_shape + (" + inside2 + " + " + name + "_1)]";
 }
+static std::string make_replacement_nd(
+    const std::string &name,
+    const std::vector<std::string> &indices,
+    const dacppTranslator::clacparam &temp)
+{
+    size_t dim = static_cast<size_t>(temp.dimesion);
+    if (dim == 0) {
+        return name + "[]";
+    }
+
+    // 按“物理维度”标记：true 表示该维被降维算子固定
+    std::vector<bool> fixed_dim(dim, false);
+
+    for (size_t k = 0; k < temp.dimid.size(); ++k) {
+        if (k >= temp.flag.size()) break;
+
+        // flag[k] == 1 表示第 k 个算子是降维算子
+        if (temp.flag[k]) {
+            int d = temp.dimid[k];
+            if (d >= 0 && static_cast<size_t>(d) < dim) {
+                fixed_dim[d] = true;
+            }
+        }
+    }
+
+    // 每个物理维最终对应的局部索引表达式
+    std::vector<std::string> per_dim(dim, "0");
+
+    // 非固定维，按顺序吃掉 calc 里出现的下标
+    size_t idx = 0;
+    for (size_t d = 0; d < dim; ++d) {
+        if (!fixed_dim[d]) {
+            if (idx < indices.size()) {
+                per_dim[d] = indices[idx++];
+            }
+        }
+    }
+
+    std::string expr;
+    for (size_t i = 0; i < dim; ++i) {
+        if (i != 0) expr += " + ";
+
+        expr += "(" + per_dim[i] + " + " + name + "_" + std::to_string(i) + ")";
+
+        for (size_t j = i + 1; j < dim; ++j) {
+            expr += " * " + name + "_" + std::to_string(j) + "_shape";
+        }
+    }
+
+    return name + "[" + expr + "]";
+}
+static std::string funcnewN(
+        const std::string &code,
+        const std::string &name,
+        const dacppTranslator::clacparam &temp)
+{
+    const std::string &s = code;
+
+    std::string out;
+    out.reserve(s.size() * 4);
+
+    size_t n = s.size();
+    size_t i = 0;
+    size_t last_appended = 0;
+
+    while (i < n) {
+
+        char c = s[i];
+
+        // skip string
+        if (c == '"') {
+            ++i;
+            while (i < n) {
+                if (s[i] == '"' && s[i-1] != '\\') {
+                    ++i;
+                    break;
+                }
+                ++i;
+            }
+
+            out.append(s, last_appended, i - last_appended);
+            last_appended = i;
+            continue;
+        }
+
+        // skip char
+        if (c == '\'') {
+            ++i;
+            while (i < n) {
+                if (s[i] == '\'' && s[i-1] != '\\') {
+                    ++i;
+                    break;
+                }
+                ++i;
+            }
+
+            out.append(s, last_appended, i - last_appended);
+            last_appended = i;
+            continue;
+        }
+
+        // skip //
+        if (c == '/' && i + 1 < n && s[i+1] == '/') {
+
+            i += 2;
+
+            while (i < n && s[i] != '\n')
+                ++i;
+
+            out.append(s, last_appended, i - last_appended);
+            last_appended = i;
+
+            continue;
+        }
+
+        // skip /* */
+        if (c == '/' && i + 1 < n && s[i+1] == '*') {
+
+            i += 2;
+
+            while (i + 1 < n) {
+
+                if (s[i] == '*' && s[i+1] == '/') {
+                    i += 2;
+                    break;
+                }
+
+                ++i;
+            }
+
+            out.append(s, last_appended, i - last_appended);
+            last_appended = i;
+
+            continue;
+        }
+
+        // identifier
+        if (std::isalpha((unsigned char)c) || c == '_') {
+
+            size_t j = i;
+
+            while (j < n && is_ident_char(s[j]))
+                ++j;
+
+            size_t len = j - i;
+
+            if (len == name.size() &&
+                s.compare(i, name.size(), name) == 0) {
+
+                if (i > 0 && is_ident_char(s[i-1])) {
+                    ++i;
+                    continue;
+                }
+
+                size_t pos = j;
+
+                std::vector<std::string> indices;
+
+                while (true) {
+
+                    while (pos < n &&
+                           std::isspace((unsigned char)s[pos]))
+                        ++pos;
+
+                    if (pos >= n || s[pos] != '[')
+                        break;
+
+                    size_t start = pos + 1;
+                    size_t p = start;
+
+                    int depth = 1;
+
+                    while (p < n && depth > 0) {
+
+                        if (s[p] == '"') {
+                            ++p;
+                            while (p < n) {
+                                if (s[p] == '"' && s[p-1] != '\\') {
+                                    ++p;
+                                    break;
+                                }
+                                ++p;
+                            }
+                            continue;
+                        }
+
+                        if (s[p] == '\'') {
+                            ++p;
+                            while (p < n) {
+                                if (s[p] == '\'' && s[p-1] != '\\') {
+                                    ++p;
+                                    break;
+                                }
+                                ++p;
+                            }
+                            continue;
+                        }
+
+                        if (s[p] == '/' && p + 1 < n && s[p+1] == '/') {
+                            p += 2;
+                            while (p < n && s[p] != '\n') ++p;
+                            continue;
+                        }
+
+                        if (s[p] == '/' && p + 1 < n && s[p+1] == '*') {
+                            p += 2;
+                            while (p + 1 < n) {
+                                if (s[p] == '*' && s[p+1] == '/') {
+                                    p += 2;
+                                    break;
+                                }
+                                ++p;
+                            }
+                            continue;
+                        }
+
+                        if (s[p] == '[') depth++;
+                        else if (s[p] == ']') depth--;
+
+                        ++p;
+                    }
+
+                    if (depth != 0)
+                        break;
+
+                    size_t end = p - 1;
+
+                    indices.push_back(
+                        s.substr(start, end - start)
+                    );
+
+                    pos = p;
+                }
+
+                if (!indices.empty()) {
+
+                    out.append(s, last_appended,
+                               i - last_appended);
+
+                    std::string replacement =
+                        make_replacement_nd(name,
+                                            indices,
+                                            temp);
+
+                    out.append(replacement);
+
+                    i = pos;
+                    last_appended = i;
+
+                    continue;
+                }
+            }
+        }
+
+        ++i;
+    }
+
+    if (last_appended < n)
+        out.append(s,
+                   last_appended,
+                   n - last_appended);
+
+    return out;
+}
 std::string funcnew3(const std::string code,const std::string &name, const dacppTranslator::clacparam &temp)
 {
     const std::string s = code;
@@ -4937,88 +5201,6 @@ std::string funcnew3(const std::string code,const std::string &name, const dacpp
 }
 
 
-std::string funcnew2(std::string code, const std::string& name,
-                     dacppTranslator::clacparam temp)
-{
-    std::string result = code;
-
-    // 1) 一次性替换所有 2D： name[x][y]
-    {
-        std::regex pattern2D("\\b" + name + "\\s*\\[\\s*([^\\]]+)\\s*\\]\\s*\\[\\s*([^\\]]+)\\s*\\]");
-        std::string replacement2D =
-            name + "[($1 + " + name + "_0) * " + name + "_1_shape + ($2 + " + name + "_1)]";
-        result = std::regex_replace(result, pattern2D, replacement2D);
-    }
-
-    // 2) 逐个替换 1D：用 substr(tail) + smatch 避免迭代器 match 类型问题
-    std::regex start(name + "\\s*\\[");
-    size_t searchPos = 0;
-
-    while (searchPos < result.size()) {
-        // tail 为从 searchPos 开始的子串
-        std::string tail = result.substr(searchPos);
-        std::smatch m; // 用 smatch 匹配整个字符串 tail
-
-        if (!std::regex_search(tail, m, start)) break; // no more matches
-
-        // m.position(0) 是在 tail 中的位置，换算回 result 的绝对位置
-        size_t matchPos = searchPos + static_cast<size_t>(m.position(0));
-        size_t idx = matchPos + static_cast<size_t>(m.length(0)); // '[' 后第一个字符位置 in result
-
-        // 手动配对方括号，支持嵌套
-        int depth = 1;
-        size_t p = idx;
-        while (p < result.size() && depth > 0) {
-            if (result[p] == '[') depth++;
-            else if (result[p] == ']') depth--;
-            p++;
-        }
-        if (depth != 0) {
-            // 没找到配对的 ]：停止处理以避免死循环 / 错误
-            break;
-        }
-
-        size_t endBracket = p - 1; // ']' 位置
-        std::string inside = result.substr(idx, endBracket - idx);
-
-        // 构造替换串（按你的 flag/dimid 逻辑）
-        std::string replacement;
-        bool applied = false;
-
-        if (temp.flag.size() >= 2 && temp.flag[0] && temp.flag[1]) {
-            replacement = name + "[(" + inside + " + " + name + "_0) * " +
-                          name + "_1_shape + (" + inside + " + " + name + "_1)]";
-            applied = true;
-        } else {
-            for (size_t i = 0; i < temp.flag.size(); ++i) {
-                if (!temp.flag[i]) continue;
-                if (temp.dimid[i] == 0) {
-                    replacement = name + "[(0 + " + name + "_0) * " +
-                                  name + "_1_shape + (" + inside + " + " + name + "_1)]";
-                } else {
-                    replacement = name + "[(" + inside + " + " + name + "_0) * " +
-                                  name + "_1_shape + (0 + " + name + "_1)]";
-                }
-                applied = true;
-                break;
-            }
-        }
-
-        if (!applied) {
-            // 不替换：必须前进 searchPos 到 endBracket + 1 否则会死循环
-            searchPos = endBracket + 1;
-            continue;
-        }
-
-        // 执行替换（替换从 matchPos 开始到 endBracket 包含 ']' 的整段）
-        result.replace(matchPos, endBracket - matchPos + 1, replacement);
-
-        // 替换后 searchPos 移至 replacement 之后，避免再次匹配刚替换的文本
-        searchPos = matchPos + replacement.length();
-    }
-
-    return result;
-}
 
 
 std::string funcnew1(std::string code,const std::string& name){
@@ -5041,6 +5223,9 @@ std::string dacppTranslator::Calc::getBody(int idx,std::vector<dacppTranslator::
      code = funcnew3(code,name,temp);
     if(dim0==1)
     code = funcnew1(code,name);
+    if(dim0>=3){
+      code = funcnewN(code,name,temp);
+    }
   }
   return code;
 }
@@ -5128,7 +5313,7 @@ void dacppTranslator::Calc::parseCalc(const BinaryOperator* dacExpr) {
 
     // 设置 Calc 函数名称
     setName(calcFunc->getNameAsString());
-
+  
     // 设置 Calc 参数列表
     for(unsigned int paramsCount = 0; paramsCount < calcFunc->getNumParams(); paramsCount++) {
         Param* param = new Param();

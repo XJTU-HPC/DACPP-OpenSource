@@ -96,24 +96,25 @@ void dacppTranslator::Rewriter::rewriteDac_Buffer() {
             }
         }
         code += ") ";
-        for(int i=0;i<shell->getNumShellParams();i++){
-            clacparam temp; 
-            temp.name=calc->getParam(i)->getName();
-            temp.dimesion=shell->getShellParam(i)->getDimension();
-            dim.push_back(shell->getShellParam(i)->getDimension());
-            if(shell->getShellParam(i)->getDimension()==2){
-                int splitsize=shell->getShellParam(i)->getNumSplit();
-                for(int count=0;count<shell->getShellParam(i)->getNumSplit();count++){
-                    Split *a =shell->getShellParam(i)->getSplit(count);   
-                    temp.dimid.push_back(a->getDimIdx());
-                    if(a->type== "IndexSplit"){
-                        temp.flag.push_back(1);
-                    }
-                    else temp.flag.push_back(0);
-                }
-            }
-            clacparams.push_back(temp);
+    for (int i = 0; i < shell->getNumShellParams(); i++) {
+        clacparam temp;
+    temp.name = calc->getParam(i)->getName();
+    temp.dimesion = shell->getShellParam(i)->getDimension();
+    dim.push_back(shell->getShellParam(i)->getDimension());
+
+    for (int count = 0; count < shell->getShellParam(i)->getNumSplit(); count++) {
+        Split *a = shell->getShellParam(i)->getSplit(count);
+        temp.dimid.push_back(a->getDimIdx());
+
+        if (a->type == "IndexSplit") {
+            temp.flag.push_back(1);
+        } else {
+            temp.flag.push_back(0);
         }
+    }
+
+    clacparams.push_back(temp);
+}
         for(int count = 0; count < calc->getNumBody(); count++) {
             
             code += calc->getBody(count,clacparams) + "\n";
