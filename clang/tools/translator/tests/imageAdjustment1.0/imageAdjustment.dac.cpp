@@ -54,14 +54,10 @@ void print_image(const std::vector<std::vector<Pixel>>& image, int num_rows = 5,
 }
 
 int main() {
-    // 初始化一个简单的图像（10x10），所有像素值初始化为(100, 100, 100)
-
-    int width, height;
-    std::cout << "Enter width: ";
-    std::cin >> width;  // 错误：无法修改const变量
-
-    std::cout << "Enter height: ";
-    std::cin >> height;  // 错误：无法修改const变量
+    // Use a fixed image size so every MPI rank sees the same dimensions
+    // without competing for stdin.
+    const int width = 4;
+    const int height = 4;
     std::vector<Pixel> image(height*width, {100, 100, 100});
     std::vector<Pixel> image2(height*width, {100, 100, 100});
     //std::vector<std::vector<Pixel>> image2(height, std::vector<Pixel>(width, {100, 100, 100}));
@@ -77,7 +73,9 @@ int main() {
     imageAdjustment(image_tensor, image_tensor2) <-> image_1;
     std::cout << "\nImage After Color Adjustment:" << std::endl;
 
-    std::vector<Pixel> image3 = image2;
+    // image2 has been moved into image_tensor2 by ReconTensor's ownership model,
+    // so build a fresh output buffer instead of reusing the moved-from vector.
+    std::vector<Pixel> image3(height * width, {0, 0, 0});
     dacpp::Tensor<Pixel, 2> image_tensor3({height, width}, image3);
 
 

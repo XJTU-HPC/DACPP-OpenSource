@@ -7,6 +7,7 @@
 #include <queue>
 #include "ReconTensor.h"
 
+
 namespace dacpp {
     typedef std::vector<std::any> list;
 }
@@ -44,266 +45,276 @@ void initializeDensity(std::vector<double>& rho) {
 #include <sycl/sycl.hpp>
 #include "DataReconstructor1.h"
 #include "ParameterGeneration.h"
+#include <mpi.h>
+#include <cstdio>
+#include "MPIPlanner.h"
 
 using namespace sycl;
 
-void lwr(double* rho,double* new_rho,sycl::accessor<int, 1, sycl::access::mode::read_write> info_rho_acc, sycl::accessor<int, 1, sycl::access::mode::read_write> info_new_rho_acc) 
-{
+inline void lwr_mpi_local(dacpp::mpi::View1D<double> rho, dacpp::mpi::View1D<double> new_rho) {
     new_rho[0] = rho[1] - (DELTA_T / DELTA_X) * (q(rho[1]) - q(rho[0]));
     new_rho[0] = std::max(0., new_rho[0]);
 }
 
 
-// 生成函数调用
-void LWR_shell_lwr(const dacpp::Vector<double> & rho, dacpp::Vector<double> & new_rho) { 
-    // 设备选择
-    auto selector = default_selector_v;
-    queue q(selector);
-    //声明参数生成工具
-    ParameterGeneration para_gene_tool;
-    // 算子初始化
-    
-    // 数据信息初始化
-    DataInfo info_rho;
-    info_rho.dim = rho.getDim();
-    for(int i = 0; i < info_rho.dim; i++) info_rho.dimLength.push_back(rho.getShape(i));
-	
-    // 数据信息初始化
-    DataInfo info_new_rho;
-    info_new_rho.dim = new_rho.getDim();
-    for(int i = 0; i < info_new_rho.dim; i++) info_new_rho.dimLength.push_back(new_rho.getShape(i));
-	
-    // 规则分区算子初始化
-    RegularSlice S1 = RegularSlice("S1", 2, 1);
-    S1.setDimId(0);
-    S1.SetSplitSize(para_gene_tool.init_operetor_splitnumber(S1,info_rho));
-
-    // 降维算子初始化
-    Index idx1 = Index("idx1");
-    idx1.setDimId(0);
-    idx1.SetSplitSize(para_gene_tool.init_operetor_splitnumber(idx1,info_new_rho));
-
-    //参数生成
-	
-    // 参数生成 提前计算后面需要用到的参数	
-	
-    // 算子组初始化
-    Dac_Ops rho_Ops;
-    
-    S1.setDimId(0);
-    rho_Ops.push_back(S1);
-
-
-    // 算子组初始化
-    Dac_Ops new_rho_Ops;
-    
-    idx1.setDimId(0);
-    new_rho_Ops.push_back(idx1);
-
-
-    // 算子组初始化
-    Dac_Ops In_Ops;
-    
-    S1.setDimId(0);
-    In_Ops.push_back(S1);
-
-
-    // 算子组初始化
-    Dac_Ops Out_Ops;
-    
-    idx1.setDimId(0);
-    Out_Ops.push_back(idx1);
-
-
-    // 算子组初始化
-    Dac_Ops Reduction_Ops;
-    
-    idx1.setDimId(0);
-    Reduction_Ops.push_back(idx1);
-
-
-	
-    //生成设备内存分配大小
-    int rho_Size = para_gene_tool.init_device_memory_size(info_rho,rho_Ops);
-
-    //生成设备内存分配大小
-    int new_rho_Size = para_gene_tool.init_device_memory_size(In_Ops,Out_Ops,info_new_rho);
-
-    //生成设备内存分配大小
-    int new_rhoReduction_Size = para_gene_tool.init_device_memory_size(info_new_rho,Reduction_Ops);
-
-	
-    // 计算算子组里面的算子的划分长度
-    para_gene_tool.init_op_split_length(rho_Ops,rho_Size);
-
-    // 计算算子组里面的算子的划分长度
-    para_gene_tool.init_op_split_length(In_Ops,new_rho_Size);
-
-	
-	
-    std::vector<Dac_Ops> ops_s;
-	
-    ops_s.push_back(rho_Ops);
-
-    ops_s.push_back(In_Ops);
-
-
-	// 生成划分长度的二维矩阵
-    int SplitLength[2][1] = {0};
-    para_gene_tool.init_split_length_martix(2,1,&SplitLength[0][0],ops_s);
-
-	
-    // 计算工作项的大小
-    int Item_Size = para_gene_tool.init_work_item_size(In_Ops);
-
-	
-    // 计算归约中split_size的大小
-    int Reduction_Split_Size = para_gene_tool.init_reduction_split_size(In_Ops,Out_Ops);
-
-	
-    // 计算归约中split_length的大小
-    int Reduction_Split_Length = para_gene_tool.init_reduction_split_length(Out_Ops);
-
-
-    // 设备内存分配
-    
-    // 归约设备内存分配
-    double *reduction_new_rho = malloc_device<double>(new_rhoReduction_Size,q);
-    // 数据关联计算
-    
-	    
-	
-    // 设备内存分配
-    double *d_rho=malloc_device<double>(rho_Size,q);
-    // 设备内存分配
-    double *d_new_rho=malloc_device<double>(new_rho_Size,q);
-    // 数据移动
-	double* h_rho = (double*)malloc(rho_Size*sizeof(double));
-	rho.tensor2Array(h_rho);
-    q.memcpy(d_rho,h_rho,rho_Size*sizeof(double)).wait();
-
-    // 数据移动
-	double* h_new_rho = (double*)malloc(new_rho_Size*sizeof(double));
-	// new_rho.tensor2Array(h_new_rho);
-    q.memset(d_new_rho, 0, new_rho_Size*sizeof(double)).wait();
-    // 数据重组
-    DataReconstructor<double> rho_tool;
-    
-    // 数据算子组初始化
-    Dac_Ops rho_ops;
-    
-    S1.setDimId(0);
-    rho_ops.push_back(S1);
-
-    rho_tool.init(info_rho,rho_ops);
-	double *r_rho=malloc_device<double>(rho_Size,q);
-    rho_tool.Reconstruct(r_rho,d_rho,q);
-	std::vector<int> info_partition_rho=para_gene_tool.init_partition_data_shape(info_rho,rho_ops);
-    sycl::buffer<int> info_partition_rho_buffer(info_partition_rho.data(), sycl::range<1>(info_partition_rho.size()));
-
-    // 数据重组
-    DataReconstructor<double> new_rho_tool;
-    
-    // 数据算子组初始化
-    Dac_Ops new_rho_ops;
-    
-    idx1.setDimId(0);
-    new_rho_ops.push_back(idx1);
-
-    new_rho_tool.init(info_new_rho,new_rho_ops);
-	double *r_new_rho=malloc_device<double>(new_rho_Size,q);
-    new_rho_tool.Reconstruct(r_new_rho,d_new_rho,q);
-	std::vector<int> info_partition_new_rho=para_gene_tool.init_partition_data_shape(info_new_rho,new_rho_ops);
-    sycl::buffer<int> info_partition_new_rho_buffer(info_partition_new_rho.data(), sycl::range<1>(info_partition_new_rho.size()));
-
-	
-    sycl::device device = q.get_device();
-    int max_global_size = device.get_info<sycl::info::device::max_work_item_sizes<3>>()[2];
-	//工作项划分
-    int work_group_size = (Item_Size + max_global_size - 1) / max_global_size;  // 计算所需的工作组数量
-    sycl::range<3> local(1, 1, std::min(Item_Size, max_global_size)); 
-    sycl::range<3> global(1, 1, (Item_Size <= max_global_size) ? Item_Size : work_group_size * max_global_size);
-    //队列提交命令组
-    q.submit([&](handler &h) {
-        // 访问器初始化
-        
-        auto info_partition_rho_accessor = info_partition_rho_buffer.get_access<sycl::access::mode::read_write>(h);
-
-        auto info_partition_new_rho_accessor = info_partition_new_rho_buffer.get_access<sycl::access::mode::read_write>(h);
-
-        h.parallel_for(sycl::nd_range<3>(global, local),[=](sycl::nd_item<3> item) {
-            const auto item_id = item.get_group(2)*item.get_local_range(2)+item.get_local_id(2);
-            if(item_id >= Item_Size)
-                return;
-            // 索引初始化
-			
-            const auto idx1_=(item_id+(0))%idx1.split_size;
-            const auto S1_=(item_id+(0))%S1.split_size;
-            // 嵌入计算
-			
-            lwr(r_rho+(S1_*SplitLength[0][0]),r_new_rho+(S1_*SplitLength[1][0]),info_partition_rho_accessor,info_partition_new_rho_accessor);
-        });
-    }).wait();
-    
-
-	
-    // 归约
-    if(Reduction_Split_Size > 1)
-    {
-        for(int i=0;i<new_rhoReduction_Size;i++) {
-            q.submit([&](handler &h) {
-    	        h.parallel_for(
-                range<1>(Reduction_Split_Size),
-                reduction(reduction_new_rho+i, 
-                sycl::plus<>(),
-                property::reduction::initialize_to_identity()),
-                [=](id<1> idx,auto &reducer) {
-                    reducer.combine(r_new_rho[(i/Reduction_Split_Length)*Reduction_Split_Length*Reduction_Split_Size+i%Reduction_Split_Length+idx*Reduction_Split_Length]);
-     	        });
-         }).wait();
-        }
-        q.memcpy(r_new_rho,reduction_new_rho, new_rhoReduction_Size*sizeof(double)).wait();
+void LWR_shell_lwr(dacpp::Vector<double> & rho, dacpp::Vector<double> & new_rho) {
+    int mpi_rank = 0;
+    int mpi_size = 1;
+    MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &mpi_size);
+    sycl::queue q(sycl::default_selector_v);
+    std::vector<int64_t> binding_split_sizes;
+    dacpp::mpi::AccessPattern pattern_rho;
+    pattern_rho.param_id = 0;
+    pattern_rho.name = "rho";
+    pattern_rho.mode = dacpp::mpi::AccessMode::ReadWrite;
+    pattern_rho.data_info.dim = rho.getDim();
+    for (int dim = 0; dim < rho.getDim(); ++dim) pattern_rho.data_info.dimLength.push_back(rho.getShape(dim));
+    Dac_Op pattern_rho_op_0;
+    pattern_rho_op_0.setDimId(0);
+    pattern_rho_op_0.size = 2;
+    pattern_rho_op_0.stride = 1;
+    pattern_rho_op_0.SetSplitSize((rho.getShape(0) - 2) / 1 + 1);
+    pattern_rho.param_ops.push_back(pattern_rho_op_0);
+    pattern_rho.bind_set_id.push_back(0);
+    pattern_rho.bind_offset_expr.push_back("0");
+    pattern_rho.is_index_op.push_back(false);
+    pattern_rho.partition_shape = dacpp::mpi::init_partition_shape(pattern_rho);
+    pattern_rho.bind_split_sizes = dacpp::mpi::init_bind_split_sizes(pattern_rho);
+    if (binding_split_sizes.size() < pattern_rho.bind_split_sizes.size()) binding_split_sizes.resize(pattern_rho.bind_split_sizes.size(), 1);
+    for (std::size_t bind_i = 0; bind_i < pattern_rho.bind_split_sizes.size(); ++bind_i) {
+        binding_split_sizes[bind_i] = std::max<int64_t>(binding_split_sizes[bind_i], pattern_rho.bind_split_sizes[bind_i]);
     }
-
-
-    // 归并结果返回
-    new_rho_tool.UpdateData(r_new_rho,d_new_rho,q);
-	q.memcpy(h_new_rho,d_new_rho, new_rho_Size*sizeof(double)).wait();
-	new_rho.array2Tensor(h_new_rho);
-
-	
-
-    // 内存释放
-    
-    sycl::free(d_rho, q);
-    sycl::free(d_new_rho, q);
+    dacpp::mpi::AccessPattern pattern_new_rho;
+    pattern_new_rho.param_id = 1;
+    pattern_new_rho.name = "new_rho";
+    pattern_new_rho.mode = dacpp::mpi::AccessMode::ReadWrite;
+    pattern_new_rho.data_info.dim = new_rho.getDim();
+    for (int dim = 0; dim < new_rho.getDim(); ++dim) pattern_new_rho.data_info.dimLength.push_back(new_rho.getShape(dim));
+    Dac_Op pattern_new_rho_op_0;
+    pattern_new_rho_op_0.setDimId(0);
+    pattern_new_rho_op_0.size = 1;
+    pattern_new_rho_op_0.stride = 1;
+    pattern_new_rho_op_0.SetSplitSize(new_rho.getShape(0));
+    pattern_new_rho.param_ops.push_back(pattern_new_rho_op_0);
+    pattern_new_rho.bind_set_id.push_back(1);
+    pattern_new_rho.bind_offset_expr.push_back("0");
+    pattern_new_rho.is_index_op.push_back(true);
+    pattern_new_rho.partition_shape = dacpp::mpi::init_partition_shape(pattern_new_rho);
+    pattern_new_rho.bind_split_sizes = dacpp::mpi::init_bind_split_sizes(pattern_new_rho);
+    if (binding_split_sizes.size() < pattern_new_rho.bind_split_sizes.size()) binding_split_sizes.resize(pattern_new_rho.bind_split_sizes.size(), 1);
+    for (std::size_t bind_i = 0; bind_i < pattern_new_rho.bind_split_sizes.size(); ++bind_i) {
+        binding_split_sizes[bind_i] = std::max<int64_t>(binding_split_sizes[bind_i], pattern_new_rho.bind_split_sizes[bind_i]);
+    }
+    int64_t total_items = 1;
+    for (int64_t split_size : binding_split_sizes) total_items *= split_size;
+    auto item_range = dacpp::mpi::get_rank_item_range(total_items, mpi_rank, mpi_size);
+    const int64_t local_item_count = item_range.size();
+    pattern_rho.bind_split_sizes = binding_split_sizes;
+    pattern_new_rho.bind_split_sizes = binding_split_sizes;
+    auto pack_rho = dacpp::mpi::build_rw_pack_map(item_range, pattern_rho);
+    auto slots_rho = dacpp::mpi::build_item_slots(item_range, pattern_rho, pack_rho);
+    std::vector<double> local_rho(pack_rho.globals.size());
+    if (mpi_rank == 0) {
+        std::vector<double> global_rho;
+        rho.tensor2Array(global_rho);
+        local_rho = dacpp::mpi::pack_values_by_globals(global_rho, pack_rho.globals);
+        for (int peer = 1; peer < mpi_size; ++peer) {
+            auto peer_range = dacpp::mpi::get_rank_item_range(total_items, peer, mpi_size);
+            auto peer_pack = dacpp::mpi::build_rw_pack_map(peer_range, pattern_rho);
+            auto peer_values = dacpp::mpi::pack_values_by_globals(global_rho, peer_pack.globals);
+            int peer_count = static_cast<int>(peer_values.size());
+            MPI_Send(&peer_count, 1, MPI_INT, peer, 1000, MPI_COMM_WORLD);
+            if (peer_count > 0) {
+                MPI_Send(peer_values.data(), peer_count, MPI_DOUBLE, peer, 2000, MPI_COMM_WORLD);
+            }
+        }
+    } else {
+        int recv_count = 0;
+        MPI_Recv(&recv_count, 1, MPI_INT, 0, 1000, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        local_rho.resize(recv_count);
+        if (recv_count > 0) {
+            MPI_Recv(local_rho.data(), recv_count, MPI_DOUBLE, 0, 2000, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        }
+    }
+    const int rho_partition_size = static_cast<int>(dacpp::mpi::partition_element_count(pattern_rho));
+    auto pack_new_rho = dacpp::mpi::build_rw_pack_map(item_range, pattern_new_rho);
+    auto slots_new_rho = dacpp::mpi::build_item_slots(item_range, pattern_new_rho, pack_new_rho);
+    std::vector<double> local_new_rho(pack_new_rho.globals.size());
+    if (mpi_rank == 0) {
+        std::vector<double> global_new_rho;
+        new_rho.tensor2Array(global_new_rho);
+        local_new_rho = dacpp::mpi::pack_values_by_globals(global_new_rho, pack_new_rho.globals);
+        for (int peer = 1; peer < mpi_size; ++peer) {
+            auto peer_range = dacpp::mpi::get_rank_item_range(total_items, peer, mpi_size);
+            auto peer_pack = dacpp::mpi::build_rw_pack_map(peer_range, pattern_new_rho);
+            auto peer_values = dacpp::mpi::pack_values_by_globals(global_new_rho, peer_pack.globals);
+            int peer_count = static_cast<int>(peer_values.size());
+            MPI_Send(&peer_count, 1, MPI_INT, peer, 1001, MPI_COMM_WORLD);
+            if (peer_count > 0) {
+                MPI_Send(peer_values.data(), peer_count, MPI_DOUBLE, peer, 2001, MPI_COMM_WORLD);
+            }
+        }
+    } else {
+        int recv_count = 0;
+        MPI_Recv(&recv_count, 1, MPI_INT, 0, 1001, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        local_new_rho.resize(recv_count);
+        if (recv_count > 0) {
+            MPI_Recv(local_new_rho.data(), recv_count, MPI_DOUBLE, 0, 2001, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        }
+    }
+    const int new_rho_partition_size = static_cast<int>(dacpp::mpi::partition_element_count(pattern_new_rho));
+    if (local_item_count > 0) {
+        {
+            sycl::buffer<double, 1> buffer_rho(local_rho.data(), sycl::range<1>(local_rho.size()));
+            sycl::buffer<int32_t, 1> slots_buffer_rho(slots_rho.data(), sycl::range<1>(slots_rho.size()));
+            sycl::buffer<double, 1> buffer_new_rho(local_new_rho.data(), sycl::range<1>(local_new_rho.size()));
+            sycl::buffer<int32_t, 1> slots_buffer_new_rho(slots_new_rho.data(), sycl::range<1>(slots_new_rho.size()));
+            q.submit([&](sycl::handler& h) {
+                auto acc_rho = buffer_rho.get_access<sycl::access::mode::read_write>(h);
+                auto slots_acc_rho = slots_buffer_rho.get_access<sycl::access::mode::read>(h);
+                auto acc_new_rho = buffer_new_rho.get_access<sycl::access::mode::read_write>(h);
+                auto slots_acc_new_rho = slots_buffer_new_rho.get_access<sycl::access::mode::read>(h);
+                h.parallel_for(sycl::range<1>(static_cast<std::size_t>(local_item_count)), [=](sycl::id<1> idx) {
+                    const int item_linear = static_cast<int>(idx[0]);
+                    auto* data_rho = acc_rho.template get_multi_ptr<sycl::access::decorated::no>().get();
+                    auto* slots_rho = slots_acc_rho.template get_multi_ptr<sycl::access::decorated::no>().get();
+                    dacpp::mpi::View1D<double> view_rho{data_rho, slots_rho, item_linear * rho_partition_size};
+                    auto* data_new_rho = acc_new_rho.template get_multi_ptr<sycl::access::decorated::no>().get();
+                    auto* slots_new_rho = slots_acc_new_rho.template get_multi_ptr<sycl::access::decorated::no>().get();
+                    dacpp::mpi::View1D<double> view_new_rho{data_new_rho, slots_new_rho, item_linear * new_rho_partition_size};
+                    lwr_mpi_local(view_rho, view_new_rho);
+                });
+            });
+            q.wait();
+        }
+    }
+    auto writeback_rho = dacpp::mpi::build_writeback_values(local_rho, pack_rho);
+    const auto& writeback_globals_rho = pack_rho.writeback_globals.empty() ? pack_rho.globals : pack_rho.writeback_globals;
+    std::vector<double> synced_rho;
+    if (mpi_rank == 0) {
+        std::vector<double> global_out_rho;
+        rho.tensor2Array(global_out_rho);
+        dacpp::mpi::apply_writeback_by_globals(writeback_rho, writeback_globals_rho, global_out_rho);
+        for (int peer = 1; peer < mpi_size; ++peer) {
+            int recv_count = 0;
+            MPI_Recv(&recv_count, 1, MPI_INT, peer, 3000, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+            if (recv_count <= 0) continue;
+            std::vector<int64_t> recv_globals(recv_count);
+            std::vector<double> recv_values(recv_count);
+            MPI_Recv(recv_globals.data(), recv_count, MPI_LONG_LONG, peer, 4000, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+            MPI_Recv(recv_values.data(), recv_count, MPI_DOUBLE, peer, 5000, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+            dacpp::mpi::apply_writeback_by_globals(recv_values, recv_globals, global_out_rho);
+        }
+        rho.array2Tensor(global_out_rho);
+        synced_rho = global_out_rho;
+    } else {
+        int send_count = static_cast<int>(writeback_globals_rho.size());
+        MPI_Send(&send_count, 1, MPI_INT, 0, 3000, MPI_COMM_WORLD);
+        if (send_count > 0) {
+            MPI_Send(const_cast<int64_t*>(writeback_globals_rho.data()), send_count, MPI_LONG_LONG, 0, 4000, MPI_COMM_WORLD);
+            MPI_Send(writeback_rho.data(), send_count, MPI_DOUBLE, 0, 5000, MPI_COMM_WORLD);
+        }
+    }
+    int synced_count_rho = 0;
+    if (mpi_rank == 0) {
+        synced_count_rho = static_cast<int>(synced_rho.size());
+    }
+    MPI_Bcast(&synced_count_rho, 1, MPI_INT, 0, MPI_COMM_WORLD);
+    if (mpi_rank != 0) {
+        synced_rho.resize(synced_count_rho);
+    }
+    if (synced_count_rho > 0) {
+        MPI_Bcast(synced_rho.data(), synced_count_rho, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+    }
+    if (mpi_rank != 0) {
+        rho.array2Tensor(synced_rho);
+    }
+    auto writeback_new_rho = dacpp::mpi::build_writeback_values(local_new_rho, pack_new_rho);
+    const auto& writeback_globals_new_rho = pack_new_rho.writeback_globals.empty() ? pack_new_rho.globals : pack_new_rho.writeback_globals;
+    std::vector<double> synced_new_rho;
+    if (mpi_rank == 0) {
+        std::vector<double> global_out_new_rho;
+        new_rho.tensor2Array(global_out_new_rho);
+        dacpp::mpi::apply_writeback_by_globals(writeback_new_rho, writeback_globals_new_rho, global_out_new_rho);
+        for (int peer = 1; peer < mpi_size; ++peer) {
+            int recv_count = 0;
+            MPI_Recv(&recv_count, 1, MPI_INT, peer, 3001, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+            if (recv_count <= 0) continue;
+            std::vector<int64_t> recv_globals(recv_count);
+            std::vector<double> recv_values(recv_count);
+            MPI_Recv(recv_globals.data(), recv_count, MPI_LONG_LONG, peer, 4001, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+            MPI_Recv(recv_values.data(), recv_count, MPI_DOUBLE, peer, 5001, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+            dacpp::mpi::apply_writeback_by_globals(recv_values, recv_globals, global_out_new_rho);
+        }
+        new_rho.array2Tensor(global_out_new_rho);
+        synced_new_rho = global_out_new_rho;
+    } else {
+        int send_count = static_cast<int>(writeback_globals_new_rho.size());
+        MPI_Send(&send_count, 1, MPI_INT, 0, 3001, MPI_COMM_WORLD);
+        if (send_count > 0) {
+            MPI_Send(const_cast<int64_t*>(writeback_globals_new_rho.data()), send_count, MPI_LONG_LONG, 0, 4001, MPI_COMM_WORLD);
+            MPI_Send(writeback_new_rho.data(), send_count, MPI_DOUBLE, 0, 5001, MPI_COMM_WORLD);
+        }
+    }
+    int synced_count_new_rho = 0;
+    if (mpi_rank == 0) {
+        synced_count_new_rho = static_cast<int>(synced_new_rho.size());
+    }
+    MPI_Bcast(&synced_count_new_rho, 1, MPI_INT, 0, MPI_COMM_WORLD);
+    if (mpi_rank != 0) {
+        synced_new_rho.resize(synced_count_new_rho);
+    }
+    if (synced_count_new_rho > 0) {
+        MPI_Bcast(synced_new_rho.data(), synced_count_new_rho, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+    }
+    if (mpi_rank != 0) {
+        new_rho.array2Tensor(synced_new_rho);
+    }
 }
 
 int main() {
-    // 创建 Tensor 类型对象
-    std::vector<double> rho(WIDTH, 0.0);
-    std::vector<double> new_rho(WIDTH, 0.0);
-    initializeDensity(rho);
-    dacpp::Vector<double> rho_tensor(rho);
-    dacpp::Vector<double> new_rho_tensor(new_rho);
-    dacpp::Vector<double> middle_out_tensor = new_rho_tensor[{1,WIDTH-1}];
-    dacpp::Vector<double> middle_in_tensor = rho_tensor[{0,WIDTH-1}];
-    for (int t = 0; t < TIME_STEPS; ++t) {
-        LWR_shell_lwr(middle_in_tensor, middle_out_tensor);
-        for (int i = 1; i <= WIDTH-2; i++) {
-            middle_in_tensor[i] = middle_out_tensor[i-1];
-        }
-        
-        middle_in_tensor[0] = middle_out_tensor[0]; // 左边界无车流
-        //middle_in_tensor[99] = middle_out_tensor[97];
-
+    int dacpp_mpi_finalize_needed = 0;
+    int dacpp_mpi_initialized = 0;
+    MPI_Initialized(&dacpp_mpi_initialized);
+    if (!dacpp_mpi_initialized) {
+        int dacpp_mpi_argc = 0;
+        char** dacpp_mpi_argv = nullptr;
+        MPI_Init(&dacpp_mpi_argc, &dacpp_mpi_argv);
+        dacpp_mpi_finalize_needed = 1;
     }
-    std::cout << middle_in_tensor[15] << std::endl;
+    int mpi_rank = 0;
+    int mpi_size = 1;
+    MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &mpi_size);
+    if (mpi_rank != 0) {
+        freopen("/dev/null", "w", stdout);
+    }
+
+    // 创建 Tensor 类型对象
+    std::vector<double> rho1(WIDTH, 0.0);
+    std::vector<double> new_rho1(WIDTH, 0.0);
+    initializeDensity(rho1);
+    dacpp::Vector<double> rho_tensor(rho1);
+    dacpp::Vector<double> new_rho_tensor(new_rho1);
+    dacpp::Vector<double> new_rho = new_rho_tensor[{1,WIDTH-1}];
+    dacpp::Vector<double> rho = rho_tensor[{0,WIDTH-1}];
+    LWR_shell_lwr(rho, new_rho);
+    
+    std::cout << rho[15] << std::endl;
     
 
     
 
     // 释放动态分配的内存
 
-    return 0;
+    
+    if (dacpp_mpi_finalize_needed) {
+        MPI_Finalize();
+    }
+return 0;
+
+    if (dacpp_mpi_finalize_needed) {
+        MPI_Finalize();
+    }
 }

@@ -52,6 +52,7 @@ class Dac_Ops{
 		void pop_back();
 		void clear();
 		Dac_Op& operator[](int i);
+		const Dac_Op& operator[](int i) const;
 };
 /*
 	Dac 数据类，表示数据信息。
@@ -172,6 +173,10 @@ inline void Dac_Ops::clear(){
 	}
 }
 inline Dac_Op& Dac_Ops::operator[](int i){
+	return this->DacOps[i];
+}
+
+inline const Dac_Op& Dac_Ops::operator[](int i) const{
 	return this->DacOps[i];
 }
 

@@ -9,7 +9,9 @@
 #include <fstream>
 #include <queue>
 #include "ReconTensor.h"
+#define DACPP_TRANSLATE_MODE 1
 
+//vector的相关操作有待实现
 namespace dacpp {
     typedef std::vector<std::any> list;
 }
@@ -32,281 +34,234 @@ double exact(double x, double t) { return x*(x*x+exp(t)); }
 #include <sycl/sycl.hpp>
 #include "DataReconstructor1.h"
 #include "ParameterGeneration.h"
+#include <mpi.h>
+#include <cstdio>
+#include "MPIPlanner.h"
 
 using namespace sycl;
 
-void pde(double* u_kin,double* u_kout,double* r,sycl::accessor<int, 1, sycl::access::mode::read_write> info_u_kin_acc, sycl::accessor<int, 1, sycl::access::mode::read_write> info_u_kout_acc, sycl::accessor<int, 1, sycl::access::mode::read_write> info_r_acc) 
-{
+inline void pde_mpi_local(dacpp::mpi::View1D<const double> u_kin, dacpp::mpi::View1D<double> u_kout, dacpp::mpi::View1D<const double> r) {
     u_kout[0] = r[0] * u_kin[0] + (1 - 2 * r[0]) * u_kin[1] + r[0] * u_kin[2];
 }
 
 
-// 生成函数调用
-void PDE_pde(const dacpp::Vector<double> & u_kin, dacpp::Vector<double> & u_kout, const dacpp::Vector<double> & r) { 
-    // 设备选择
-    auto selector = default_selector_v;
-    queue q(selector);
-    //声明参数生成工具
-    ParameterGeneration para_gene_tool;
-    // 算子初始化
-    
-    // 数据信息初始化
-    DataInfo info_u_kin;
-    info_u_kin.dim = u_kin.getDim();
-    for(int i = 0; i < info_u_kin.dim; i++) info_u_kin.dimLength.push_back(u_kin.getShape(i));
-	
-    // 数据信息初始化
-    DataInfo info_u_kout;
-    info_u_kout.dim = u_kout.getDim();
-    for(int i = 0; i < info_u_kout.dim; i++) info_u_kout.dimLength.push_back(u_kout.getShape(i));
-	
-    // 数据信息初始化
-    DataInfo info_r;
-    info_r.dim = r.getDim();
-    for(int i = 0; i < info_r.dim; i++) info_r.dimLength.push_back(r.getShape(i));
-	
-    // 规则分区算子初始化
-    RegularSlice s = RegularSlice("s", 3, 1);
-    s.setDimId(0);
-    s.SetSplitSize(para_gene_tool.init_operetor_splitnumber(s,info_u_kin));
-
-    // 降维算子初始化
-    Index i = Index("i");
-    i.setDimId(0);
-    i.SetSplitSize(para_gene_tool.init_operetor_splitnumber(i,info_u_kout));
-
-    //参数生成
-	
-    // 参数生成 提前计算后面需要用到的参数	
-	
-    // 算子组初始化
-    Dac_Ops u_kin_Ops;
-    
-    s.setDimId(0);
-    u_kin_Ops.push_back(s);
-
-
-    // 算子组初始化
-    Dac_Ops u_kout_Ops;
-    
-    i.setDimId(0);
-    u_kout_Ops.push_back(i);
-
-
-    // 算子组初始化
-    Dac_Ops r_Ops;
-    
-
-    // 算子组初始化
-    Dac_Ops In_Ops;
-    
-    s.setDimId(0);
-    In_Ops.push_back(s);
-
-
-    // 算子组初始化
-    Dac_Ops Out_Ops;
-    
-    i.setDimId(0);
-    Out_Ops.push_back(i);
-
-
-    // 算子组初始化
-    Dac_Ops Reduction_Ops;
-    
-    i.setDimId(0);
-    Reduction_Ops.push_back(i);
-
-
-	
-    //生成设备内存分配大小
-    int u_kin_Size = para_gene_tool.init_device_memory_size(info_u_kin,u_kin_Ops);
-
-    //生成设备内存分配大小
-    int u_kout_Size = para_gene_tool.init_device_memory_size(In_Ops,Out_Ops,info_u_kout);
-
-    //生成设备内存分配大小
-    int u_koutReduction_Size = para_gene_tool.init_device_memory_size(info_u_kout,Reduction_Ops);
-
-    //生成设备内存分配大小
-    int r_Size = para_gene_tool.init_device_memory_size(info_r,r_Ops);
-
-	
-    // 计算算子组里面的算子的划分长度
-    para_gene_tool.init_op_split_length(u_kin_Ops,u_kin_Size);
-
-    // 计算算子组里面的算子的划分长度
-    para_gene_tool.init_op_split_length(In_Ops,u_kout_Size);
-
-    // 计算算子组里面的算子的划分长度
-    para_gene_tool.init_op_split_length(r_Ops,r_Size);
-
-	
-	
-    std::vector<Dac_Ops> ops_s;
-	
-    ops_s.push_back(u_kin_Ops);
-
-    ops_s.push_back(In_Ops);
-
-    ops_s.push_back(r_Ops);
-
-
-	// 生成划分长度的二维矩阵
-    int SplitLength[3][1] = {0};
-    para_gene_tool.init_split_length_martix(3,1,&SplitLength[0][0],ops_s);
-
-	
-    // 计算工作项的大小
-    int Item_Size = para_gene_tool.init_work_item_size(In_Ops);
-
-	
-    // 计算归约中split_size的大小
-    int Reduction_Split_Size = para_gene_tool.init_reduction_split_size(In_Ops,Out_Ops);
-
-	
-    // 计算归约中split_length的大小
-    int Reduction_Split_Length = para_gene_tool.init_reduction_split_length(Out_Ops);
-
-
-    // 设备内存分配
-    
-    // 归约设备内存分配
-    double *reduction_u_kout = malloc_device<double>(u_koutReduction_Size,q);
-    // 数据关联计算
-    
-	    
-	
-    // 设备内存分配
-    double *d_u_kin=malloc_device<double>(u_kin_Size,q);
-    // 设备内存分配
-    double *d_u_kout=malloc_device<double>(u_kout_Size,q);
-    // 设备内存分配
-    double *d_r=malloc_device<double>(r_Size,q);
-    // 数据移动
-	double* h_u_kin = (double*)malloc(u_kin_Size*sizeof(double));
-	u_kin.tensor2Array(h_u_kin);
-    q.memcpy(d_u_kin,h_u_kin,u_kin_Size*sizeof(double)).wait();
-
-    // 数据移动
-	double* h_u_kout = (double*)malloc(u_kout_Size*sizeof(double));
-	// u_kout.tensor2Array(h_u_kout);
-    q.memset(d_u_kout, 0, u_kout_Size*sizeof(double)).wait();
-    // 数据移动
-	double* h_r = (double*)malloc(r_Size*sizeof(double));
-	r.tensor2Array(h_r);
-    q.memcpy(d_r,h_r,r_Size*sizeof(double)).wait();
-
-    // 数据重组
-    DataReconstructor<double> u_kin_tool;
-    
-    // 数据算子组初始化
-    Dac_Ops u_kin_ops;
-    
-    s.setDimId(0);
-    u_kin_ops.push_back(s);
-
-    u_kin_tool.init(info_u_kin,u_kin_ops);
-	double *r_u_kin=malloc_device<double>(u_kin_Size,q);
-    u_kin_tool.Reconstruct(r_u_kin,d_u_kin,q);
-	std::vector<int> info_partition_u_kin=para_gene_tool.init_partition_data_shape(info_u_kin,u_kin_ops);
-    sycl::buffer<int> info_partition_u_kin_buffer(info_partition_u_kin.data(), sycl::range<1>(info_partition_u_kin.size()));
-
-    // 数据重组
-    DataReconstructor<double> u_kout_tool;
-    
-    // 数据算子组初始化
-    Dac_Ops u_kout_ops;
-    
-    i.setDimId(0);
-    u_kout_ops.push_back(i);
-
-    u_kout_tool.init(info_u_kout,u_kout_ops);
-	double *r_u_kout=malloc_device<double>(u_kout_Size,q);
-    u_kout_tool.Reconstruct(r_u_kout,d_u_kout,q);
-	std::vector<int> info_partition_u_kout=para_gene_tool.init_partition_data_shape(info_u_kout,u_kout_ops);
-    sycl::buffer<int> info_partition_u_kout_buffer(info_partition_u_kout.data(), sycl::range<1>(info_partition_u_kout.size()));
-
-    // 数据重组
-    DataReconstructor<double> r_tool;
-    
-    // 数据算子组初始化
-    Dac_Ops r_ops;
-    
-
-    r_tool.init(info_r,r_ops);
-	double *r_r=malloc_device<double>(r_Size,q);
-    r_tool.Reconstruct(r_r,d_r,q);
-	std::vector<int> info_partition_r=para_gene_tool.init_partition_data_shape(info_r,r_ops);
-    sycl::buffer<int> info_partition_r_buffer(info_partition_r.data(), sycl::range<1>(info_partition_r.size()));
-
-	
-    sycl::device device = q.get_device();
-    int max_global_size = device.get_info<sycl::info::device::max_work_item_sizes<3>>()[2];
-	//工作项划分
-    int work_group_size = (Item_Size + max_global_size - 1) / max_global_size;  // 计算所需的工作组数量
-    sycl::range<3> local(1, 1, std::min(Item_Size, max_global_size)); 
-    sycl::range<3> global(1, 1, (Item_Size <= max_global_size) ? Item_Size : work_group_size * max_global_size);
-    //队列提交命令组
-    q.submit([&](handler &h) {
-        // 访问器初始化
-        
-        auto info_partition_u_kin_accessor = info_partition_u_kin_buffer.get_access<sycl::access::mode::read_write>(h);
-
-        auto info_partition_u_kout_accessor = info_partition_u_kout_buffer.get_access<sycl::access::mode::read_write>(h);
-
-        auto info_partition_r_accessor = info_partition_r_buffer.get_access<sycl::access::mode::read_write>(h);
-
-        h.parallel_for(sycl::nd_range<3>(global, local),[=](sycl::nd_item<3> item) {
-            const auto item_id = item.get_group(2)*item.get_local_range(2)+item.get_local_id(2);
-            if(item_id >= Item_Size)
-                return;
-            // 索引初始化
-			
-            const auto i_=(item_id+(0))%i.split_size;
-            const auto s_=(item_id+(0))%s.split_size;
-            // 嵌入计算
-			
-            pde(r_u_kin+(s_*SplitLength[0][0]),r_u_kout+(s_*SplitLength[1][0]),r_r,info_partition_u_kin_accessor,info_partition_u_kout_accessor,info_partition_r_accessor);
-        });
-    }).wait();
-    
-
-	
-    // 归约
-    if(Reduction_Split_Size > 1)
-    {
-        for(int i=0;i<u_koutReduction_Size;i++) {
-            q.submit([&](handler &h) {
-    	        h.parallel_for(
-                range<1>(Reduction_Split_Size),
-                reduction(reduction_u_kout+i, 
-                sycl::plus<>(),
-                property::reduction::initialize_to_identity()),
-                [=](id<1> idx,auto &reducer) {
-                    reducer.combine(r_u_kout[(i/Reduction_Split_Length)*Reduction_Split_Length*Reduction_Split_Size+i%Reduction_Split_Length+idx*Reduction_Split_Length]);
-     	        });
-         }).wait();
-        }
-        q.memcpy(r_u_kout,reduction_u_kout, u_koutReduction_Size*sizeof(double)).wait();
+void PDE_pde(const dacpp::Vector<double> & u_kin, dacpp::Vector<double> & u_kout, const dacpp::Vector<double> & r) {
+    int mpi_rank = 0;
+    int mpi_size = 1;
+    MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &mpi_size);
+    sycl::queue q(sycl::default_selector_v);
+    std::vector<int64_t> binding_split_sizes;
+    dacpp::mpi::AccessPattern pattern_u_kin;
+    pattern_u_kin.param_id = 0;
+    pattern_u_kin.name = "u_kin";
+    pattern_u_kin.mode = dacpp::mpi::AccessMode::Read;
+    pattern_u_kin.data_info.dim = u_kin.getDim();
+    for (int dim = 0; dim < u_kin.getDim(); ++dim) pattern_u_kin.data_info.dimLength.push_back(u_kin.getShape(dim));
+    Dac_Op pattern_u_kin_op_0;
+    pattern_u_kin_op_0.setDimId(0);
+    pattern_u_kin_op_0.size = 3;
+    pattern_u_kin_op_0.stride = 1;
+    pattern_u_kin_op_0.SetSplitSize((u_kin.getShape(0) - 3) / 1 + 1);
+    pattern_u_kin.param_ops.push_back(pattern_u_kin_op_0);
+    pattern_u_kin.bind_set_id.push_back(0);
+    pattern_u_kin.bind_offset_expr.push_back("0");
+    pattern_u_kin.is_index_op.push_back(false);
+    pattern_u_kin.partition_shape = dacpp::mpi::init_partition_shape(pattern_u_kin);
+    pattern_u_kin.bind_split_sizes = dacpp::mpi::init_bind_split_sizes(pattern_u_kin);
+    if (binding_split_sizes.size() < pattern_u_kin.bind_split_sizes.size()) binding_split_sizes.resize(pattern_u_kin.bind_split_sizes.size(), 1);
+    for (std::size_t bind_i = 0; bind_i < pattern_u_kin.bind_split_sizes.size(); ++bind_i) {
+        binding_split_sizes[bind_i] = std::max<int64_t>(binding_split_sizes[bind_i], pattern_u_kin.bind_split_sizes[bind_i]);
     }
-
-
-    // 归并结果返回
-    u_kout_tool.UpdateData(r_u_kout,d_u_kout,q);
-	q.memcpy(h_u_kout,d_u_kout, u_kout_Size*sizeof(double)).wait();
-	u_kout.array2Tensor(h_u_kout);
-
-	
-
-    // 内存释放
-    
-    sycl::free(d_u_kin, q);
-    sycl::free(d_u_kout, q);
-    sycl::free(d_r, q);
+    dacpp::mpi::AccessPattern pattern_u_kout;
+    pattern_u_kout.param_id = 1;
+    pattern_u_kout.name = "u_kout";
+    pattern_u_kout.mode = dacpp::mpi::AccessMode::Write;
+    pattern_u_kout.data_info.dim = u_kout.getDim();
+    for (int dim = 0; dim < u_kout.getDim(); ++dim) pattern_u_kout.data_info.dimLength.push_back(u_kout.getShape(dim));
+    Dac_Op pattern_u_kout_op_0;
+    pattern_u_kout_op_0.setDimId(0);
+    pattern_u_kout_op_0.size = 1;
+    pattern_u_kout_op_0.stride = 1;
+    pattern_u_kout_op_0.SetSplitSize(u_kout.getShape(0));
+    pattern_u_kout.param_ops.push_back(pattern_u_kout_op_0);
+    pattern_u_kout.bind_set_id.push_back(1);
+    pattern_u_kout.bind_offset_expr.push_back("0");
+    pattern_u_kout.is_index_op.push_back(true);
+    pattern_u_kout.partition_shape = dacpp::mpi::init_partition_shape(pattern_u_kout);
+    pattern_u_kout.bind_split_sizes = dacpp::mpi::init_bind_split_sizes(pattern_u_kout);
+    if (binding_split_sizes.size() < pattern_u_kout.bind_split_sizes.size()) binding_split_sizes.resize(pattern_u_kout.bind_split_sizes.size(), 1);
+    for (std::size_t bind_i = 0; bind_i < pattern_u_kout.bind_split_sizes.size(); ++bind_i) {
+        binding_split_sizes[bind_i] = std::max<int64_t>(binding_split_sizes[bind_i], pattern_u_kout.bind_split_sizes[bind_i]);
+    }
+    dacpp::mpi::AccessPattern pattern_r;
+    pattern_r.param_id = 2;
+    pattern_r.name = "r";
+    pattern_r.mode = dacpp::mpi::AccessMode::Read;
+    pattern_r.data_info.dim = r.getDim();
+    for (int dim = 0; dim < r.getDim(); ++dim) pattern_r.data_info.dimLength.push_back(r.getShape(dim));
+    pattern_r.partition_shape = dacpp::mpi::init_partition_shape(pattern_r);
+    pattern_r.bind_split_sizes = dacpp::mpi::init_bind_split_sizes(pattern_r);
+    if (binding_split_sizes.size() < pattern_r.bind_split_sizes.size()) binding_split_sizes.resize(pattern_r.bind_split_sizes.size(), 1);
+    for (std::size_t bind_i = 0; bind_i < pattern_r.bind_split_sizes.size(); ++bind_i) {
+        binding_split_sizes[bind_i] = std::max<int64_t>(binding_split_sizes[bind_i], pattern_r.bind_split_sizes[bind_i]);
+    }
+    int64_t total_items = 1;
+    for (int64_t split_size : binding_split_sizes) total_items *= split_size;
+    auto item_range = dacpp::mpi::get_rank_item_range(total_items, mpi_rank, mpi_size);
+    const int64_t local_item_count = item_range.size();
+    pattern_u_kin.bind_split_sizes = binding_split_sizes;
+    pattern_u_kout.bind_split_sizes = binding_split_sizes;
+    pattern_r.bind_split_sizes = binding_split_sizes;
+    auto pack_u_kin = dacpp::mpi::build_input_pack_map(item_range, pattern_u_kin);
+    auto slots_u_kin = dacpp::mpi::build_item_slots(item_range, pattern_u_kin, pack_u_kin);
+    std::vector<double> local_u_kin(pack_u_kin.globals.size());
+    if (mpi_rank == 0) {
+        std::vector<double> global_u_kin;
+        u_kin.tensor2Array(global_u_kin);
+        local_u_kin = dacpp::mpi::pack_values_by_globals(global_u_kin, pack_u_kin.globals);
+        for (int peer = 1; peer < mpi_size; ++peer) {
+            auto peer_range = dacpp::mpi::get_rank_item_range(total_items, peer, mpi_size);
+            auto peer_pack = dacpp::mpi::build_input_pack_map(peer_range, pattern_u_kin);
+            auto peer_values = dacpp::mpi::pack_values_by_globals(global_u_kin, peer_pack.globals);
+            int peer_count = static_cast<int>(peer_values.size());
+            MPI_Send(&peer_count, 1, MPI_INT, peer, 1000, MPI_COMM_WORLD);
+            if (peer_count > 0) {
+                MPI_Send(peer_values.data(), peer_count, MPI_DOUBLE, peer, 2000, MPI_COMM_WORLD);
+            }
+        }
+    } else {
+        int recv_count = 0;
+        MPI_Recv(&recv_count, 1, MPI_INT, 0, 1000, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        local_u_kin.resize(recv_count);
+        if (recv_count > 0) {
+            MPI_Recv(local_u_kin.data(), recv_count, MPI_DOUBLE, 0, 2000, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        }
+    }
+    const int u_kin_partition_size = static_cast<int>(dacpp::mpi::partition_element_count(pattern_u_kin));
+    auto pack_u_kout = dacpp::mpi::build_output_pack_map(item_range, pattern_u_kout);
+    auto slots_u_kout = dacpp::mpi::build_item_slots(item_range, pattern_u_kout, pack_u_kout);
+    std::vector<double> local_u_kout(pack_u_kout.globals.size());
+    const int u_kout_partition_size = static_cast<int>(dacpp::mpi::partition_element_count(pattern_u_kout));
+    auto pack_r = dacpp::mpi::build_input_pack_map(item_range, pattern_r);
+    auto slots_r = dacpp::mpi::build_item_slots(item_range, pattern_r, pack_r);
+    std::vector<double> local_r(pack_r.globals.size());
+    if (mpi_rank == 0) {
+        std::vector<double> global_r;
+        r.tensor2Array(global_r);
+        local_r = dacpp::mpi::pack_values_by_globals(global_r, pack_r.globals);
+        for (int peer = 1; peer < mpi_size; ++peer) {
+            auto peer_range = dacpp::mpi::get_rank_item_range(total_items, peer, mpi_size);
+            auto peer_pack = dacpp::mpi::build_input_pack_map(peer_range, pattern_r);
+            auto peer_values = dacpp::mpi::pack_values_by_globals(global_r, peer_pack.globals);
+            int peer_count = static_cast<int>(peer_values.size());
+            MPI_Send(&peer_count, 1, MPI_INT, peer, 1002, MPI_COMM_WORLD);
+            if (peer_count > 0) {
+                MPI_Send(peer_values.data(), peer_count, MPI_DOUBLE, peer, 2002, MPI_COMM_WORLD);
+            }
+        }
+    } else {
+        int recv_count = 0;
+        MPI_Recv(&recv_count, 1, MPI_INT, 0, 1002, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        local_r.resize(recv_count);
+        if (recv_count > 0) {
+            MPI_Recv(local_r.data(), recv_count, MPI_DOUBLE, 0, 2002, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        }
+    }
+    const int r_partition_size = static_cast<int>(dacpp::mpi::partition_element_count(pattern_r));
+    if (local_item_count > 0) {
+        {
+            sycl::buffer<double, 1> buffer_u_kin(local_u_kin.data(), sycl::range<1>(local_u_kin.size()));
+            sycl::buffer<int32_t, 1> slots_buffer_u_kin(slots_u_kin.data(), sycl::range<1>(slots_u_kin.size()));
+            sycl::buffer<double, 1> buffer_u_kout(local_u_kout.data(), sycl::range<1>(local_u_kout.size()));
+            sycl::buffer<int32_t, 1> slots_buffer_u_kout(slots_u_kout.data(), sycl::range<1>(slots_u_kout.size()));
+            sycl::buffer<double, 1> buffer_r(local_r.data(), sycl::range<1>(local_r.size()));
+            sycl::buffer<int32_t, 1> slots_buffer_r(slots_r.data(), sycl::range<1>(slots_r.size()));
+            q.submit([&](sycl::handler& h) {
+                auto acc_u_kin = buffer_u_kin.get_access<sycl::access::mode::read>(h);
+                auto slots_acc_u_kin = slots_buffer_u_kin.get_access<sycl::access::mode::read>(h);
+                auto acc_u_kout = buffer_u_kout.get_access<sycl::access::mode::read_write>(h);
+                auto slots_acc_u_kout = slots_buffer_u_kout.get_access<sycl::access::mode::read>(h);
+                auto acc_r = buffer_r.get_access<sycl::access::mode::read>(h);
+                auto slots_acc_r = slots_buffer_r.get_access<sycl::access::mode::read>(h);
+                h.parallel_for(sycl::range<1>(static_cast<std::size_t>(local_item_count)), [=](sycl::id<1> idx) {
+                    const int item_linear = static_cast<int>(idx[0]);
+                    auto* data_u_kin = acc_u_kin.template get_multi_ptr<sycl::access::decorated::no>().get();
+                    auto* slots_u_kin = slots_acc_u_kin.template get_multi_ptr<sycl::access::decorated::no>().get();
+                    dacpp::mpi::View1D<const double> view_u_kin{data_u_kin, slots_u_kin, item_linear * u_kin_partition_size};
+                    auto* data_u_kout = acc_u_kout.template get_multi_ptr<sycl::access::decorated::no>().get();
+                    auto* slots_u_kout = slots_acc_u_kout.template get_multi_ptr<sycl::access::decorated::no>().get();
+                    dacpp::mpi::View1D<double> view_u_kout{data_u_kout, slots_u_kout, item_linear * u_kout_partition_size};
+                    auto* data_r = acc_r.template get_multi_ptr<sycl::access::decorated::no>().get();
+                    auto* slots_r = slots_acc_r.template get_multi_ptr<sycl::access::decorated::no>().get();
+                    dacpp::mpi::View1D<const double> view_r{data_r, slots_r, item_linear * r_partition_size};
+                    pde_mpi_local(view_u_kin, view_u_kout, view_r);
+                });
+            });
+            q.wait();
+        }
+    }
+    auto writeback_u_kout = dacpp::mpi::build_writeback_values(local_u_kout, pack_u_kout);
+    const auto& writeback_globals_u_kout = pack_u_kout.writeback_globals.empty() ? pack_u_kout.globals : pack_u_kout.writeback_globals;
+    std::vector<double> synced_u_kout;
+    if (mpi_rank == 0) {
+        std::vector<double> global_out_u_kout;
+        u_kout.tensor2Array(global_out_u_kout);
+        dacpp::mpi::apply_writeback_by_globals(writeback_u_kout, writeback_globals_u_kout, global_out_u_kout);
+        for (int peer = 1; peer < mpi_size; ++peer) {
+            int recv_count = 0;
+            MPI_Recv(&recv_count, 1, MPI_INT, peer, 3001, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+            if (recv_count <= 0) continue;
+            std::vector<int64_t> recv_globals(recv_count);
+            std::vector<double> recv_values(recv_count);
+            MPI_Recv(recv_globals.data(), recv_count, MPI_LONG_LONG, peer, 4001, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+            MPI_Recv(recv_values.data(), recv_count, MPI_DOUBLE, peer, 5001, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+            dacpp::mpi::apply_writeback_by_globals(recv_values, recv_globals, global_out_u_kout);
+        }
+        u_kout.array2Tensor(global_out_u_kout);
+        synced_u_kout = global_out_u_kout;
+    } else {
+        int send_count = static_cast<int>(writeback_globals_u_kout.size());
+        MPI_Send(&send_count, 1, MPI_INT, 0, 3001, MPI_COMM_WORLD);
+        if (send_count > 0) {
+            MPI_Send(const_cast<int64_t*>(writeback_globals_u_kout.data()), send_count, MPI_LONG_LONG, 0, 4001, MPI_COMM_WORLD);
+            MPI_Send(writeback_u_kout.data(), send_count, MPI_DOUBLE, 0, 5001, MPI_COMM_WORLD);
+        }
+    }
+    int synced_count_u_kout = 0;
+    if (mpi_rank == 0) {
+        synced_count_u_kout = static_cast<int>(synced_u_kout.size());
+    }
+    MPI_Bcast(&synced_count_u_kout, 1, MPI_INT, 0, MPI_COMM_WORLD);
+    if (mpi_rank != 0) {
+        synced_u_kout.resize(synced_count_u_kout);
+    }
+    if (synced_count_u_kout > 0) {
+        MPI_Bcast(synced_u_kout.data(), synced_count_u_kout, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+    }
+    if (mpi_rank != 0) {
+        u_kout.array2Tensor(synced_u_kout);
+    }
 }
 
 int main() {
+    int dacpp_mpi_finalize_needed = 0;
+    int dacpp_mpi_initialized = 0;
+    MPI_Initialized(&dacpp_mpi_initialized);
+    if (!dacpp_mpi_initialized) {
+        int dacpp_mpi_argc = 0;
+        char** dacpp_mpi_argv = nullptr;
+        MPI_Init(&dacpp_mpi_argc, &dacpp_mpi_argv);
+        dacpp_mpi_finalize_needed = 1;
+    }
+    int mpi_rank = 0;
+    int mpi_size = 1;
+    MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &mpi_size);
+    if (mpi_rank != 0) {
+        freopen("/dev/null", "w", stdout);
+    }
+
     int n = 100; //时间域n等分
     int m = 5; //空间域m等分
     double r = 0.25;
@@ -346,18 +301,17 @@ int main() {
     }
 
     dacpp::Matrix<double> u_tensor({m+1, n+1}, u_flat);
-
-    for (int k = 0; k < n; k++) {
-        dacpp::Vector<double> middle_tensor = u_tensor[{1,m}][k+1];
+    for (int k = 0; k <= n-1; k++) {
+        dacpp::Vector<double> u_kout = u_tensor[{1,m}][k+1];
         std::vector<double> r_data;
         r_data.push_back(r);
-        dacpp::Vector<double> R(r_data);
-        dacpp::Vector<double> u_test1 = u_tensor[{}][k];
-        PDE_pde(u_test1, middle_tensor, R);
+        dacpp::Vector<double> r(r_data);
+        dacpp::Vector<double> u_kin = u_tensor[{}][k];
+        PDE_pde(u_kin, u_kout, r);
         
         //计算完毕后，替换第1到4个点
         for (int i = 1; i <= m-1; i++) {
-            u_tensor[i][k+1] = middle_tensor[i-1];
+            u_tensor[i][k+1] = u_kout[i-1];
         }
 
     }
@@ -390,5 +344,13 @@ int main() {
     // }
 
 
-    return 0;
+    
+    if (dacpp_mpi_finalize_needed) {
+        MPI_Finalize();
+    }
+return 0;
+
+    if (dacpp_mpi_finalize_needed) {
+        MPI_Finalize();
+    }
 }

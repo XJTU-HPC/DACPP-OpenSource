@@ -89,6 +89,10 @@ static llvm::cl::alias BufferMode("buffer",
 static llvm::cl::alias Usm_timeMode("usm_time",
                                     llvm::cl::desc("Alias for --mode=usm_time"),
                                     llvm::cl::aliasopt(ModeOpt));
+static llvm::cl::opt<bool>
+    MpiOpt("mpi",
+           llvm::cl::desc("Enable V1 MPI code generation for non-stencil programs"),
+           llvm::cl::init(false));
 
 using namespace clang;
 using namespace clang::ast_matchers;
@@ -485,6 +489,7 @@ public:
     std::cout << "处理翻译单元" << std::endl;
     dacppTranslator::Rewriter *rewriter = new dacppTranslator::Rewriter();
     dacppFile->mode = TranslateMode;
+    dacppFile->setEnableMPI(MpiOpt);
     if (dacppFile->getBlock()) {
       dacppFile->setHeaderFile("\"DataReconstructor.new.h\"");
       dacppFile->setHeaderFile("\"ParameterGeneration.h\"");
@@ -493,12 +498,19 @@ public:
       dacppFile->setHeaderFile("\"DataReconstructor1.h\"");
       dacppFile->setHeaderFile("\"ParameterGeneration.h\"");
     }
+    if (MpiOpt) {
+      dacppFile->setHeaderFile("<mpi.h>");
+      dacppFile->setHeaderFile("<cstdio>");
+      dacppFile->setHeaderFile("\"MPIPlanner.h\"");
+    }
     rewriter->setRewriter(clangRewriter);
     rewriter->setDacppFile(dacppFile);
 
     // dacppTranslator::printDacppFileInfo(dacppFile);
 
-if (ModeOpt == "usm") {
+if (MpiOpt) {
+    rewriter->rewriteMPI();
+} else if (ModeOpt == "usm") {
   //  rewriter->rewriteDac_Usm();
 } else if (ModeOpt == "buffer") {
     std::cout<<"使用BUFFER版本翻译"<<std::endl;

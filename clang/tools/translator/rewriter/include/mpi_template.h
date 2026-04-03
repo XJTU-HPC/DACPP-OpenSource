@@ -21,7 +21,6 @@ namespace MPI_TEMPLATE {
     extern const char *SCATTER_2D_ROW_SPLIT_Template;
     extern const char *SCATTER_2D_Template;
     extern const char *GATHER_1D_Template;
-    extern const char *GATHER_2D_Template;
     extern const char *GATHER_2D_ROW_Template;
     extern const char *MPI_FINISH_Template;
     extern const char *DACPP_TO_STD_INDEX_Template;

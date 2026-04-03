@@ -33,7 +33,7 @@ set(REWRITER_SOURCES
   rewriter/lib/buffer_template_new.cpp
   rewriter/lib/universal_template.cpp
   rewriter/lib/mpi_template.cpp
-  # rewriter/lib/Rewriter_MPI.cpp
+  rewriter/lib/Rewriter_MPI.cpp
   rewriter/lib/Multiple_template.cpp
 )
 

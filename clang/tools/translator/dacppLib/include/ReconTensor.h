@@ -3,6 +3,7 @@
 #define RECONTENSOR_H
 
 #include <algorithm>
+#include <any>
 #include <iostream>
 #include <vector>
 #include <exception>

@@ -3,11 +3,13 @@
 #include <cstdlib>
 #include <ctime>
 #include "ReconTensor.h"
+#define DACPP_TRANSLATE_MODE 1
 
 namespace dacpp {
     typedef std::vector<std::any> list;
 }
 const int N = 8;  // 假设数组的大小为1024
+
 
 
 // 交换函数
@@ -25,11 +27,13 @@ void swap(vector<int>& array, int i, int j) {
 #include <sycl/sycl.hpp>
 #include "DataReconstructor1.h"
 #include "ParameterGeneration.h"
+#include <mpi.h>
+#include <cstdio>
+#include "MPIPlanner.h"
 
 using namespace sycl;
 
-void oddeven(int* array,int* array_out,sycl::accessor<int, 1, sycl::access::mode::read_write> info_array_acc, sycl::accessor<int, 1, sycl::access::mode::read_write> info_array_out_acc) 
-{
+inline void oddeven_mpi_local(dacpp::mpi::View1D<const int> array, dacpp::mpi::View1D<int> array_out) {
     if (array[0] > array[1]) {
         array_out[0] = array[1];
         array_out[1] = array[0];
@@ -40,223 +44,157 @@ void oddeven(int* array,int* array_out,sycl::accessor<int, 1, sycl::access::mode
 }
 
 
-// 生成函数调用
-void ODDEVEN_oddeven(const dacpp::Vector<int> & array, dacpp::Vector<int> & array_out) { 
-    // 设备选择
-    auto selector = default_selector_v;
-    queue q(selector);
-    //声明参数生成工具
-    ParameterGeneration para_gene_tool;
-    // 算子初始化
-    
-    // 数据信息初始化
-    DataInfo info_array;
-    info_array.dim = array.getDim();
-    for(int i = 0; i < info_array.dim; i++) info_array.dimLength.push_back(array.getShape(i));
-	
-    // 数据信息初始化
-    DataInfo info_array_out;
-    info_array_out.dim = array_out.getDim();
-    for(int i = 0; i < info_array_out.dim; i++) info_array_out.dimLength.push_back(array_out.getShape(i));
-	
-    // 规则分区算子初始化
-    RegularSlice S1 = RegularSlice("S1", 2, 2);
-    S1.setDimId(0);
-    S1.SetSplitSize(para_gene_tool.init_operetor_splitnumber(S1,info_array));
-
-    //参数生成
-	
-    // 参数生成 提前计算后面需要用到的参数	
-	
-    // 算子组初始化
-    Dac_Ops array_Ops;
-    
-    S1.setDimId(0);
-    array_Ops.push_back(S1);
-
-
-    // 算子组初始化
-    Dac_Ops array_out_Ops;
-    
-    S1.setDimId(0);
-    array_out_Ops.push_back(S1);
-
-
-    // 算子组初始化
-    Dac_Ops In_Ops;
-    
-    S1.setDimId(0);
-    In_Ops.push_back(S1);
-
-
-    // 算子组初始化
-    Dac_Ops Out_Ops;
-    
-    S1.setDimId(0);
-    Out_Ops.push_back(S1);
-
-
-    // 算子组初始化
-    Dac_Ops Reduction_Ops;
-    
-    S1.setDimId(0);
-    Reduction_Ops.push_back(S1);
-
-
-	
-    //生成设备内存分配大小
-    int array_Size = para_gene_tool.init_device_memory_size(info_array,array_Ops);
-
-    //生成设备内存分配大小
-    int array_out_Size = para_gene_tool.init_device_memory_size(In_Ops,Out_Ops,info_array_out);
-
-    //生成设备内存分配大小
-    int array_outReduction_Size = para_gene_tool.init_device_memory_size(info_array_out,Reduction_Ops);
-
-	
-    // 计算算子组里面的算子的划分长度
-    para_gene_tool.init_op_split_length(array_Ops,array_Size);
-
-    // 计算算子组里面的算子的划分长度
-    para_gene_tool.init_op_split_length(In_Ops,array_out_Size);
-
-	
-	
-    std::vector<Dac_Ops> ops_s;
-	
-    ops_s.push_back(array_Ops);
-
-    ops_s.push_back(In_Ops);
-
-
-	// 生成划分长度的二维矩阵
-    int SplitLength[2][1] = {0};
-    para_gene_tool.init_split_length_martix(2,1,&SplitLength[0][0],ops_s);
-
-	
-    // 计算工作项的大小
-    int Item_Size = para_gene_tool.init_work_item_size(In_Ops);
-
-	
-    // 计算归约中split_size的大小
-    int Reduction_Split_Size = para_gene_tool.init_reduction_split_size(In_Ops,Out_Ops);
-
-	
-    // 计算归约中split_length的大小
-    int Reduction_Split_Length = para_gene_tool.init_reduction_split_length(Out_Ops);
-
-
-    // 设备内存分配
-    
-    // 归约设备内存分配
-    int *reduction_array_out = malloc_device<int>(array_outReduction_Size,q);
-    // 数据关联计算
-    
-	    
-	
-    // 设备内存分配
-    int *d_array=malloc_device<int>(array_Size,q);
-    // 设备内存分配
-    int *d_array_out=malloc_device<int>(array_out_Size,q);
-    // 数据移动
-	int* h_array = (int*)malloc(array_Size*sizeof(int));
-	array.tensor2Array(h_array);
-    q.memcpy(d_array,h_array,array_Size*sizeof(int)).wait();
-
-    // 数据移动
-	int* h_array_out = (int*)malloc(array_out_Size*sizeof(int));
-	// array_out.tensor2Array(h_array_out);
-    q.memset(d_array_out, 0, array_out_Size*sizeof(int)).wait();
-    // 数据重组
-    DataReconstructor<int> array_tool;
-    
-    // 数据算子组初始化
-    Dac_Ops array_ops;
-    
-    S1.setDimId(0);
-    array_ops.push_back(S1);
-
-    array_tool.init(info_array,array_ops);
-	int *r_array=malloc_device<int>(array_Size,q);
-    array_tool.Reconstruct(r_array,d_array,q);
-	std::vector<int> info_partition_array=para_gene_tool.init_partition_data_shape(info_array,array_ops);
-    sycl::buffer<int> info_partition_array_buffer(info_partition_array.data(), sycl::range<1>(info_partition_array.size()));
-
-    // 数据重组
-    DataReconstructor<int> array_out_tool;
-    
-    // 数据算子组初始化
-    Dac_Ops array_out_ops;
-    
-    S1.setDimId(0);
-    array_out_ops.push_back(S1);
-
-    array_out_tool.init(info_array_out,array_out_ops);
-	int *r_array_out=malloc_device<int>(array_out_Size,q);
-    array_out_tool.Reconstruct(r_array_out,d_array_out,q);
-	std::vector<int> info_partition_array_out=para_gene_tool.init_partition_data_shape(info_array_out,array_out_ops);
-    sycl::buffer<int> info_partition_array_out_buffer(info_partition_array_out.data(), sycl::range<1>(info_partition_array_out.size()));
-
-	
-    sycl::device device = q.get_device();
-    int max_global_size = device.get_info<sycl::info::device::max_work_item_sizes<3>>()[2];
-	//工作项划分
-    int work_group_size = (Item_Size + max_global_size - 1) / max_global_size;  // 计算所需的工作组数量
-    sycl::range<3> local(1, 1, std::min(Item_Size, max_global_size)); 
-    sycl::range<3> global(1, 1, (Item_Size <= max_global_size) ? Item_Size : work_group_size * max_global_size);
-    //队列提交命令组
-    q.submit([&](handler &h) {
-        // 访问器初始化
-        
-        auto info_partition_array_accessor = info_partition_array_buffer.get_access<sycl::access::mode::read_write>(h);
-
-        auto info_partition_array_out_accessor = info_partition_array_out_buffer.get_access<sycl::access::mode::read_write>(h);
-
-        h.parallel_for(sycl::nd_range<3>(global, local),[=](sycl::nd_item<3> item) {
-            const auto item_id = item.get_group(2)*item.get_local_range(2)+item.get_local_id(2);
-            if(item_id >= Item_Size)
-                return;
-            // 索引初始化
-			
-            const auto S1_=(item_id+(0))%S1.split_size;
-            // 嵌入计算
-			
-            oddeven(r_array+(S1_*SplitLength[0][0]),r_array_out+(S1_*SplitLength[1][0]),info_partition_array_accessor,info_partition_array_out_accessor);
-        });
-    }).wait();
-    
-
-	
-    // 归约
-    if(Reduction_Split_Size > 1)
-    {
-        for(int i=0;i<array_outReduction_Size;i++) {
-            q.submit([&](handler &h) {
-    	        h.parallel_for(
-                range<1>(Reduction_Split_Size),
-                reduction(reduction_array_out+i, 
-                sycl::plus<>(),
-                property::reduction::initialize_to_identity()),
-                [=](id<1> idx,auto &reducer) {
-                    reducer.combine(r_array_out[(i/Reduction_Split_Length)*Reduction_Split_Length*Reduction_Split_Size+i%Reduction_Split_Length+idx*Reduction_Split_Length]);
-     	        });
-         }).wait();
-        }
-        q.memcpy(r_array_out,reduction_array_out, array_outReduction_Size*sizeof(int)).wait();
+void ODDEVEN_oddeven(const dacpp::Vector<int> & array, dacpp::Vector<int> & array_out) {
+    int mpi_rank = 0;
+    int mpi_size = 1;
+    MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &mpi_size);
+    sycl::queue q(sycl::default_selector_v);
+    std::vector<int64_t> binding_split_sizes;
+    dacpp::mpi::AccessPattern pattern_array;
+    pattern_array.param_id = 0;
+    pattern_array.name = "array";
+    pattern_array.mode = dacpp::mpi::AccessMode::Read;
+    pattern_array.data_info.dim = array.getDim();
+    for (int dim = 0; dim < array.getDim(); ++dim) pattern_array.data_info.dimLength.push_back(array.getShape(dim));
+    Dac_Op pattern_array_op_0;
+    pattern_array_op_0.setDimId(0);
+    pattern_array_op_0.size = 2;
+    pattern_array_op_0.stride = 2;
+    pattern_array_op_0.SetSplitSize((array.getShape(0) - 2) / 2 + 1);
+    pattern_array.param_ops.push_back(pattern_array_op_0);
+    pattern_array.bind_set_id.push_back(0);
+    pattern_array.bind_offset_expr.push_back("0");
+    pattern_array.is_index_op.push_back(false);
+    pattern_array.partition_shape = dacpp::mpi::init_partition_shape(pattern_array);
+    pattern_array.bind_split_sizes = dacpp::mpi::init_bind_split_sizes(pattern_array);
+    if (binding_split_sizes.size() < pattern_array.bind_split_sizes.size()) binding_split_sizes.resize(pattern_array.bind_split_sizes.size(), 1);
+    for (std::size_t bind_i = 0; bind_i < pattern_array.bind_split_sizes.size(); ++bind_i) {
+        binding_split_sizes[bind_i] = std::max<int64_t>(binding_split_sizes[bind_i], pattern_array.bind_split_sizes[bind_i]);
     }
-
-
-    // 归并结果返回
-    array_out_tool.UpdateData(r_array_out,d_array_out,q);
-	q.memcpy(h_array_out,d_array_out, array_out_Size*sizeof(int)).wait();
-	array_out.array2Tensor(h_array_out);
-
-	
-
-    // 内存释放
-    
-    sycl::free(d_array, q);
-    sycl::free(d_array_out, q);
+    dacpp::mpi::AccessPattern pattern_array_out;
+    pattern_array_out.param_id = 1;
+    pattern_array_out.name = "array_out";
+    pattern_array_out.mode = dacpp::mpi::AccessMode::Write;
+    pattern_array_out.data_info.dim = array_out.getDim();
+    for (int dim = 0; dim < array_out.getDim(); ++dim) pattern_array_out.data_info.dimLength.push_back(array_out.getShape(dim));
+    Dac_Op pattern_array_out_op_0;
+    pattern_array_out_op_0.setDimId(0);
+    pattern_array_out_op_0.size = 2;
+    pattern_array_out_op_0.stride = 2;
+    pattern_array_out_op_0.SetSplitSize((array_out.getShape(0) - 2) / 2 + 1);
+    pattern_array_out.param_ops.push_back(pattern_array_out_op_0);
+    pattern_array_out.bind_set_id.push_back(0);
+    pattern_array_out.bind_offset_expr.push_back("0");
+    pattern_array_out.is_index_op.push_back(false);
+    pattern_array_out.partition_shape = dacpp::mpi::init_partition_shape(pattern_array_out);
+    pattern_array_out.bind_split_sizes = dacpp::mpi::init_bind_split_sizes(pattern_array_out);
+    if (binding_split_sizes.size() < pattern_array_out.bind_split_sizes.size()) binding_split_sizes.resize(pattern_array_out.bind_split_sizes.size(), 1);
+    for (std::size_t bind_i = 0; bind_i < pattern_array_out.bind_split_sizes.size(); ++bind_i) {
+        binding_split_sizes[bind_i] = std::max<int64_t>(binding_split_sizes[bind_i], pattern_array_out.bind_split_sizes[bind_i]);
+    }
+    int64_t total_items = 1;
+    for (int64_t split_size : binding_split_sizes) total_items *= split_size;
+    auto item_range = dacpp::mpi::get_rank_item_range(total_items, mpi_rank, mpi_size);
+    const int64_t local_item_count = item_range.size();
+    pattern_array.bind_split_sizes = binding_split_sizes;
+    pattern_array_out.bind_split_sizes = binding_split_sizes;
+    auto pack_array = dacpp::mpi::build_input_pack_map(item_range, pattern_array);
+    auto slots_array = dacpp::mpi::build_item_slots(item_range, pattern_array, pack_array);
+    std::vector<int> local_array(pack_array.globals.size());
+    if (mpi_rank == 0) {
+        std::vector<int> global_array;
+        array.tensor2Array(global_array);
+        local_array = dacpp::mpi::pack_values_by_globals(global_array, pack_array.globals);
+        for (int peer = 1; peer < mpi_size; ++peer) {
+            auto peer_range = dacpp::mpi::get_rank_item_range(total_items, peer, mpi_size);
+            auto peer_pack = dacpp::mpi::build_input_pack_map(peer_range, pattern_array);
+            auto peer_values = dacpp::mpi::pack_values_by_globals(global_array, peer_pack.globals);
+            int peer_count = static_cast<int>(peer_values.size());
+            MPI_Send(&peer_count, 1, MPI_INT, peer, 1000, MPI_COMM_WORLD);
+            if (peer_count > 0) {
+                MPI_Send(peer_values.data(), peer_count, MPI_INT, peer, 2000, MPI_COMM_WORLD);
+            }
+        }
+    } else {
+        int recv_count = 0;
+        MPI_Recv(&recv_count, 1, MPI_INT, 0, 1000, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        local_array.resize(recv_count);
+        if (recv_count > 0) {
+            MPI_Recv(local_array.data(), recv_count, MPI_INT, 0, 2000, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        }
+    }
+    const int array_partition_size = static_cast<int>(dacpp::mpi::partition_element_count(pattern_array));
+    auto pack_array_out = dacpp::mpi::build_output_pack_map(item_range, pattern_array_out);
+    auto slots_array_out = dacpp::mpi::build_item_slots(item_range, pattern_array_out, pack_array_out);
+    std::vector<int> local_array_out(pack_array_out.globals.size());
+    const int array_out_partition_size = static_cast<int>(dacpp::mpi::partition_element_count(pattern_array_out));
+    if (local_item_count > 0) {
+        {
+            sycl::buffer<int, 1> buffer_array(local_array.data(), sycl::range<1>(local_array.size()));
+            sycl::buffer<int32_t, 1> slots_buffer_array(slots_array.data(), sycl::range<1>(slots_array.size()));
+            sycl::buffer<int, 1> buffer_array_out(local_array_out.data(), sycl::range<1>(local_array_out.size()));
+            sycl::buffer<int32_t, 1> slots_buffer_array_out(slots_array_out.data(), sycl::range<1>(slots_array_out.size()));
+            q.submit([&](sycl::handler& h) {
+                auto acc_array = buffer_array.get_access<sycl::access::mode::read>(h);
+                auto slots_acc_array = slots_buffer_array.get_access<sycl::access::mode::read>(h);
+                auto acc_array_out = buffer_array_out.get_access<sycl::access::mode::read_write>(h);
+                auto slots_acc_array_out = slots_buffer_array_out.get_access<sycl::access::mode::read>(h);
+                h.parallel_for(sycl::range<1>(static_cast<std::size_t>(local_item_count)), [=](sycl::id<1> idx) {
+                    const int item_linear = static_cast<int>(idx[0]);
+                    auto* data_array = acc_array.template get_multi_ptr<sycl::access::decorated::no>().get();
+                    auto* slots_array = slots_acc_array.template get_multi_ptr<sycl::access::decorated::no>().get();
+                    dacpp::mpi::View1D<const int> view_array{data_array, slots_array, item_linear * array_partition_size};
+                    auto* data_array_out = acc_array_out.template get_multi_ptr<sycl::access::decorated::no>().get();
+                    auto* slots_array_out = slots_acc_array_out.template get_multi_ptr<sycl::access::decorated::no>().get();
+                    dacpp::mpi::View1D<int> view_array_out{data_array_out, slots_array_out, item_linear * array_out_partition_size};
+                    oddeven_mpi_local(view_array, view_array_out);
+                });
+            });
+            q.wait();
+        }
+    }
+    auto writeback_array_out = dacpp::mpi::build_writeback_values(local_array_out, pack_array_out);
+    const auto& writeback_globals_array_out = pack_array_out.writeback_globals.empty() ? pack_array_out.globals : pack_array_out.writeback_globals;
+    std::vector<int> synced_array_out;
+    if (mpi_rank == 0) {
+        std::vector<int> global_out_array_out;
+        array_out.tensor2Array(global_out_array_out);
+        dacpp::mpi::apply_writeback_by_globals(writeback_array_out, writeback_globals_array_out, global_out_array_out);
+        for (int peer = 1; peer < mpi_size; ++peer) {
+            int recv_count = 0;
+            MPI_Recv(&recv_count, 1, MPI_INT, peer, 3001, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+            if (recv_count <= 0) continue;
+            std::vector<int64_t> recv_globals(recv_count);
+            std::vector<int> recv_values(recv_count);
+            MPI_Recv(recv_globals.data(), recv_count, MPI_LONG_LONG, peer, 4001, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+            MPI_Recv(recv_values.data(), recv_count, MPI_INT, peer, 5001, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+            dacpp::mpi::apply_writeback_by_globals(recv_values, recv_globals, global_out_array_out);
+        }
+        array_out.array2Tensor(global_out_array_out);
+        synced_array_out = global_out_array_out;
+    } else {
+        int send_count = static_cast<int>(writeback_globals_array_out.size());
+        MPI_Send(&send_count, 1, MPI_INT, 0, 3001, MPI_COMM_WORLD);
+        if (send_count > 0) {
+            MPI_Send(const_cast<int64_t*>(writeback_globals_array_out.data()), send_count, MPI_LONG_LONG, 0, 4001, MPI_COMM_WORLD);
+            MPI_Send(writeback_array_out.data(), send_count, MPI_INT, 0, 5001, MPI_COMM_WORLD);
+        }
+    }
+    int synced_count_array_out = 0;
+    if (mpi_rank == 0) {
+        synced_count_array_out = static_cast<int>(synced_array_out.size());
+    }
+    MPI_Bcast(&synced_count_array_out, 1, MPI_INT, 0, MPI_COMM_WORLD);
+    if (mpi_rank != 0) {
+        synced_array_out.resize(synced_count_array_out);
+    }
+    if (synced_count_array_out > 0) {
+        MPI_Bcast(synced_array_out.data(), synced_count_array_out, MPI_INT, 0, MPI_COMM_WORLD);
+    }
+    if (mpi_rank != 0) {
+        array_out.array2Tensor(synced_array_out);
+    }
 }
 
 void oddEvenMergeSort(vector<int>& array, int n) {
@@ -293,6 +231,23 @@ void oddEvenMergeSort(vector<int>& array, int n) {
 
 // 主函数：初始化数据并调用奇偶归并排序
 int main() {
+    int dacpp_mpi_finalize_needed = 0;
+    int dacpp_mpi_initialized = 0;
+    MPI_Initialized(&dacpp_mpi_initialized);
+    if (!dacpp_mpi_initialized) {
+        int dacpp_mpi_argc = 0;
+        char** dacpp_mpi_argv = nullptr;
+        MPI_Init(&dacpp_mpi_argc, &dacpp_mpi_argv);
+        dacpp_mpi_finalize_needed = 1;
+    }
+    int mpi_rank = 0;
+    int mpi_size = 1;
+    MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &mpi_size);
+    if (mpi_rank != 0) {
+        freopen("/dev/null", "w", stdout);
+    }
+
     vector<int> array(N);
 
     // 初始化数据
@@ -315,5 +270,13 @@ int main() {
     oddEvenMergeSort(array, N);
 
 
-    return 0;
+    
+    if (dacpp_mpi_finalize_needed) {
+        MPI_Finalize();
+    }
+return 0;
+
+    if (dacpp_mpi_finalize_needed) {
+        MPI_Finalize();
+    }
 }

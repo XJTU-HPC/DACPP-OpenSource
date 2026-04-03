@@ -102,6 +102,7 @@ public:
     std::vector<const clang::ForStmt*> innerForStatements;  // 用于存储 forstatement 内部的所有 for 循环
     std::vector<std::pair<std::string, std::string>> shellVars; // shell参数的变量名及其类型,第一个表示变量名，第二个表示变量类型
     int mode = 0; //用于存储翻译模式,0表示使用新版本，1表示强制用老版本
+    bool enableMPI = false;
 public:
     const FunctionDecl* node;
     DacppFile();
@@ -172,6 +173,8 @@ public:
     void setMainBody(const clang::Stmt* body) { this->mainStmt = body; }//设置主函数体
     const clang::Stmt* getMainBody() { return this->mainStmt; }//获取主函数体
     void collectInnerForStmts();  // step1 的核心函数
+    void setEnableMPI(bool enabled) { this->enableMPI = enabled; }
+    bool getEnableMPI() const { return this->enableMPI; }
 
 };
 }
