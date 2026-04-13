@@ -65,15 +65,19 @@ class ParamAccessVisitor : public clang::RecursiveASTVisitor<ParamAccessVisitor>
 public:
     const std::unordered_map<const clang::ValueDecl*, int>& ParamIndices;
     std::vector<bool> Reads;
+    std::vector<bool> UpdateReads;
     std::vector<bool> Writes;
 
     explicit ParamAccessVisitor(
         const std::unordered_map<const clang::ValueDecl*, int>& paramIndices,
         int paramCount)
-        : ParamIndices(paramIndices), Reads(paramCount, false), Writes(paramCount, false) {}
+        : ParamIndices(paramIndices),
+          Reads(paramCount, false),
+          UpdateReads(paramCount, false),
+          Writes(paramCount, false) {}
 
     bool VisitDeclRefExpr(clang::DeclRefExpr* DRE) {
-        if (!DRE || WriteDepth < 0) {
+        if (!DRE) {
             return true;
         }
 
@@ -84,6 +88,8 @@ public:
 
         if (WriteDepth > 0) {
             Writes[it->second] = true;
+        } else if (UpdateReadDepth > 0) {
+            UpdateReads[it->second] = true;
         } else {
             Reads[it->second] = true;
         }
@@ -114,7 +120,9 @@ public:
         ++WriteDepth;
         TraverseStmt(BO->getLHS());
         --WriteDepth;
+        ++UpdateReadDepth;
         TraverseStmt(BO->getLHS());
+        --UpdateReadDepth;
         TraverseStmt(BO->getRHS());
         return true;
     }
@@ -128,15 +136,63 @@ public:
             ++WriteDepth;
             TraverseStmt(UO->getSubExpr());
             --WriteDepth;
+            ++UpdateReadDepth;
             TraverseStmt(UO->getSubExpr());
+            --UpdateReadDepth;
             return true;
         }
 
         return clang::RecursiveASTVisitor<ParamAccessVisitor>::TraverseUnaryOperator(UO);
     }
 
+    bool TraverseCXXOperatorCallExpr(clang::CXXOperatorCallExpr* OpCall) {
+        if (!OpCall) {
+            return true;
+        }
+
+        if (OpCall->isAssignmentOp()) {
+            if (OpCall->getNumArgs() > 0) {
+                ++WriteDepth;
+                TraverseStmt(OpCall->getArg(0));
+                --WriteDepth;
+
+                if (OpCall->getOperator() != clang::OO_Equal) {
+                    ++UpdateReadDepth;
+                    TraverseStmt(OpCall->getArg(0));
+                    --UpdateReadDepth;
+                }
+            }
+
+            for (unsigned argIdx = 1; argIdx < OpCall->getNumArgs(); ++argIdx) {
+                TraverseStmt(OpCall->getArg(argIdx));
+            }
+            return true;
+        }
+
+        if (OpCall->getOperator() == clang::OO_PlusPlus ||
+            OpCall->getOperator() == clang::OO_MinusMinus) {
+            if (OpCall->getNumArgs() > 0) {
+                ++WriteDepth;
+                TraverseStmt(OpCall->getArg(0));
+                --WriteDepth;
+
+                ++UpdateReadDepth;
+                TraverseStmt(OpCall->getArg(0));
+                --UpdateReadDepth;
+            }
+
+            for (unsigned argIdx = 1; argIdx < OpCall->getNumArgs(); ++argIdx) {
+                TraverseStmt(OpCall->getArg(argIdx));
+            }
+            return true;
+        }
+
+        return clang::RecursiveASTVisitor<ParamAccessVisitor>::TraverseCXXOperatorCallExpr(OpCall);
+    }
+
 private:
     int WriteDepth = 0;
+    int UpdateReadDepth = 0;
 };
 
 std::string mpiDatatypeFor(const std::string& type) {
@@ -218,17 +274,19 @@ std::vector<IOTYPE> inferEffectiveParamModes(Shell* shell, Calc* calc) {
     visitor.TraverseStmt(calcLoc->getBody());
 
     for (int paramIdx = 0; paramIdx < calc->getNumParams(); ++paramIdx) {
-        if (modes[paramIdx] != IOTYPE::READ_WRITE) {
-            continue;
-        }
-
         const bool reads = visitor.Reads[paramIdx];
+        const bool updateReads = visitor.UpdateReads[paramIdx];
         const bool writes = visitor.Writes[paramIdx];
+
         if (reads && writes) {
             modes[paramIdx] = IOTYPE::READ_WRITE;
+        } else if (writes && updateReads) {
+            modes[paramIdx] = modes[paramIdx] == IOTYPE::WRITE
+                                  ? IOTYPE::WRITE
+                                  : IOTYPE::READ_WRITE;
         } else if (writes) {
             modes[paramIdx] = IOTYPE::WRITE;
-        } else if (reads) {
+        } else if (reads || updateReads) {
             modes[paramIdx] = IOTYPE::READ;
         }
     }

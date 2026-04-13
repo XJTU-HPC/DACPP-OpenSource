@@ -68,7 +68,7 @@ DYLD_LIBRARY_PATH=/Volumes/QUQ/working/sycl-install/lib mpirun -np 2 /tmp/my_bin
 该测试脚本的工作流程为：
 1. 遍历所有的非 Stencil 测试（如 `FOuLa1.0`, `decay1.0`, `matMul1.0` 等）
 2. **生成基准**：采用默认 `--mode=buffer` 不带 `--mpi` 进行代码翻译，编译并执行获得单机的 `base.out`
-3. **生成待测目标**：采用 `--mode=usm --mpi` 生成支持 MPI 的 SYCL 代码，然后由 `mpirun -np 2` 分发执行，获得 `mpi.out`
+3. **生成待测目标**：采用 `--mode=buffer --mpi` 生成支持 MPI 的 SYCL 代码，然后由 `mpirun -np 2` 分发执行，获得 `mpi.out`
 4. 对两者的结果（去除 AdaptiveCpp 警告后）进行比对
 
 **运行方法**：
