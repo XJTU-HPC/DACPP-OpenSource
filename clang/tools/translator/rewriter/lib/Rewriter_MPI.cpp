@@ -9,6 +9,7 @@
 #include "clang/AST/Stmt.h"
 #include "clang/Lex/Lexer.h"
 #include "clang/Rewrite/Core/Rewriter.h"
+#include "clang/AST/RecursiveASTVisitor.h"
 #include "llvm/ADT/StringExtras.h"
 
 #include "Rewriter.h"
@@ -16,6 +17,127 @@
 namespace {
 
 using namespace dacppTranslator;
+
+class TensorUseVisitor : public clang::RecursiveASTVisitor<TensorUseVisitor> {
+public:
+    std::string TargetName;
+    const std::vector<const clang::BinaryOperator*>& DacExprs;
+    
+    bool NeedsBcast = false;
+    int InsideDacExpr = 0;
+
+    TensorUseVisitor(std::string name, const std::vector<const clang::BinaryOperator*>& dacExprs) 
+        : TargetName(std::move(name)), DacExprs(dacExprs) {}
+
+    bool TraverseStmt(clang::Stmt* S) {
+        if (!S) return true;
+        
+        bool isDacExpr = false;
+        for (auto* expr : DacExprs) {
+            if (S == expr) {
+                isDacExpr = true;
+                break;
+            }
+        }
+
+        if (isDacExpr) InsideDacExpr++;
+        
+        bool result = clang::RecursiveASTVisitor<TensorUseVisitor>::TraverseStmt(S);
+        
+        if (isDacExpr) InsideDacExpr--;
+        
+        return result;
+    }
+
+    bool VisitDeclRefExpr(clang::DeclRefExpr* DRE) {
+        if (NeedsBcast) return true;
+        
+        if (DRE->getDecl() && DRE->getDecl()->getNameAsString() == TargetName) {
+            if (InsideDacExpr == 0) {
+                NeedsBcast = true;
+            }
+        }
+        return true;
+    }
+};
+
+class ParamAccessVisitor : public clang::RecursiveASTVisitor<ParamAccessVisitor> {
+public:
+    const std::unordered_map<const clang::ValueDecl*, int>& ParamIndices;
+    std::vector<bool> Reads;
+    std::vector<bool> Writes;
+
+    explicit ParamAccessVisitor(
+        const std::unordered_map<const clang::ValueDecl*, int>& paramIndices,
+        int paramCount)
+        : ParamIndices(paramIndices), Reads(paramCount, false), Writes(paramCount, false) {}
+
+    bool VisitDeclRefExpr(clang::DeclRefExpr* DRE) {
+        if (!DRE || WriteDepth < 0) {
+            return true;
+        }
+
+        auto it = ParamIndices.find(DRE->getDecl());
+        if (it == ParamIndices.end()) {
+            return true;
+        }
+
+        if (WriteDepth > 0) {
+            Writes[it->second] = true;
+        } else {
+            Reads[it->second] = true;
+        }
+        return true;
+    }
+
+    bool TraverseBinaryOperator(clang::BinaryOperator* BO) {
+        if (!BO) {
+            return true;
+        }
+
+        if (BO->isAssignmentOp()) {
+            ++WriteDepth;
+            TraverseStmt(BO->getLHS());
+            --WriteDepth;
+            TraverseStmt(BO->getRHS());
+            return true;
+        }
+
+        return clang::RecursiveASTVisitor<ParamAccessVisitor>::TraverseBinaryOperator(BO);
+    }
+
+    bool TraverseCompoundAssignOperator(clang::CompoundAssignOperator* BO) {
+        if (!BO) {
+            return true;
+        }
+
+        ++WriteDepth;
+        TraverseStmt(BO->getLHS());
+        --WriteDepth;
+        TraverseStmt(BO->getLHS());
+        TraverseStmt(BO->getRHS());
+        return true;
+    }
+
+    bool TraverseUnaryOperator(clang::UnaryOperator* UO) {
+        if (!UO) {
+            return true;
+        }
+
+        if (UO->isIncrementDecrementOp()) {
+            ++WriteDepth;
+            TraverseStmt(UO->getSubExpr());
+            --WriteDepth;
+            TraverseStmt(UO->getSubExpr());
+            return true;
+        }
+
+        return clang::RecursiveASTVisitor<ParamAccessVisitor>::TraverseUnaryOperator(UO);
+    }
+
+private:
+    int WriteDepth = 0;
+};
 
 std::string mpiDatatypeFor(const std::string& type) {
     if (type == "float") return "MPI_FLOAT";
@@ -75,6 +197,45 @@ std::string toAccessorMode(IOTYPE mode) {
                                 : "sycl::access::mode::read_write";
 }
 
+std::vector<IOTYPE> inferEffectiveParamModes(Shell* shell, Calc* calc) {
+    std::vector<IOTYPE> modes;
+    modes.reserve(shell->getNumShellParams());
+    for (int paramIdx = 0; paramIdx < shell->getNumShellParams(); ++paramIdx) {
+        modes.push_back(shell->getShellParam(paramIdx)->getRw());
+    }
+
+    clang::FunctionDecl* calcLoc = calc->getCalcLoc();
+    if (!calcLoc || !calcLoc->getBody()) {
+        return modes;
+    }
+
+    std::unordered_map<const clang::ValueDecl*, int> paramIndices;
+    for (int paramIdx = 0; paramIdx < calcLoc->getNumParams(); ++paramIdx) {
+        paramIndices.emplace(calcLoc->getParamDecl(paramIdx), paramIdx);
+    }
+
+    ParamAccessVisitor visitor(paramIndices, calc->getNumParams());
+    visitor.TraverseStmt(calcLoc->getBody());
+
+    for (int paramIdx = 0; paramIdx < calc->getNumParams(); ++paramIdx) {
+        if (modes[paramIdx] != IOTYPE::READ_WRITE) {
+            continue;
+        }
+
+        const bool reads = visitor.Reads[paramIdx];
+        const bool writes = visitor.Writes[paramIdx];
+        if (reads && writes) {
+            modes[paramIdx] = IOTYPE::READ_WRITE;
+        } else if (writes) {
+            modes[paramIdx] = IOTYPE::WRITE;
+        } else if (reads) {
+            modes[paramIdx] = IOTYPE::READ;
+        }
+    }
+
+    return modes;
+}
+
 int inferViewRank(ShellParam* shellParam, Param* calcParam) {
     const std::string calcType = calcParam->getType();
     if (calcType.find('*') != std::string::npos) {
@@ -96,9 +257,9 @@ int inferViewRank(ShellParam* shellParam, Param* calcParam) {
     return shellDim > 0 ? shellDim : 1;
 }
 
-std::string toViewType(ShellParam* shellParam, Param* calcParam) {
+std::string toViewType(ShellParam* shellParam, Param* calcParam, IOTYPE mode) {
     const std::string baseType = calcParam->getBasicType();
-    const bool isReadOnly = shellParam->getRw() == IOTYPE::READ;
+    const bool isReadOnly = mode == IOTYPE::READ;
     const std::string qualifiedType = isReadOnly ? ("const " + baseType) : baseType;
     const int dim = inferViewRank(shellParam, calcParam);
 
@@ -139,8 +300,26 @@ struct SplitBindMeta {
 
 std::unordered_map<std::string, SplitBindMeta>
 collectSplitBindMeta(Shell* shell) {
-    std::unordered_map<std::string, int> splitBindId;
     std::unordered_map<std::string, SplitBindMeta> splitMeta;
+    std::unordered_map<int, int> componentBindId;
+
+    std::vector<BINDINFO> bindInfo;
+    shell->GetBindInfo(&bindInfo);
+
+    for (const auto& info : bindInfo) {
+        Split* split = shell->search_symbol(info.v);
+        if (!split || split->getId() == "void") {
+            continue;
+        }
+
+        auto [it, inserted] =
+            componentBindId.emplace(info.icls, static_cast<int>(componentBindId.size()));
+        const std::string offset = info.offset.empty() ? "0" : info.offset;
+        splitMeta[split->getId()] = SplitBindMeta{it->second, offset};
+    }
+
+    std::unordered_map<std::string, int> fallbackBindId;
+    const int fallbackBase = static_cast<int>(componentBindId.size());
 
     for (int paramIdx = 0; paramIdx < shell->getNumShellParams(); ++paramIdx) {
         ShellParam* shellParam = shell->getShellParam(paramIdx);
@@ -150,8 +329,12 @@ collectSplitBindMeta(Shell* shell) {
                 continue;
             }
 
+            if (splitMeta.find(split->getId()) != splitMeta.end()) {
+                continue;
+            }
+
             auto [it, inserted] =
-                splitBindId.emplace(split->getId(), static_cast<int>(splitBindId.size()));
+                fallbackBindId.emplace(split->getId(), fallbackBase + static_cast<int>(fallbackBindId.size()));
             splitMeta[split->getId()] = SplitBindMeta{it->second, "0"};
         }
     }
@@ -161,7 +344,8 @@ collectSplitBindMeta(Shell* shell) {
 
 std::string buildPatternInitCode(Shell* shell,
                                  Calc* calc,
-                                 const std::unordered_map<std::string, SplitBindMeta>& splitMeta) {
+                                 const std::unordered_map<std::string, SplitBindMeta>& splitMeta,
+                                 const std::vector<IOTYPE>& paramModes) {
     std::string code;
     for (int paramIdx = 0; paramIdx < shell->getNumShellParams(); ++paramIdx) {
         ShellParam* shellParam = shell->getShellParam(paramIdx);
@@ -170,11 +354,12 @@ std::string buildPatternInitCode(Shell* shell,
         const std::string& name = calcParam->getName();
         const std::string& tensorName = shellWrapperParam->getName();
         const std::string patternName = "pattern_" + name;
+        const IOTYPE mode = paramModes[paramIdx];
 
         code += "    dacpp::mpi::AccessPattern " + patternName + ";\n";
         code += "    " + patternName + ".param_id = " + std::to_string(paramIdx) + ";\n";
         code += "    " + patternName + ".name = \"" + name + "\";\n";
-        code += "    " + patternName + ".mode = " + toPlannerMode(shellParam->getRw()) + ";\n";
+        code += "    " + patternName + ".mode = " + toPlannerMode(mode) + ";\n";
         code += "    " + patternName + ".data_info.dim = " + tensorName + ".getDim();\n";
         code += "    for (int dim = 0; dim < " + tensorName +
                 ".getDim(); ++dim) " + patternName +
@@ -240,9 +425,10 @@ std::string buildPatternInitCode(Shell* shell,
 }
 
 std::string buildLocalCalcCode(Shell* shell, Calc* calc) {
+    const auto paramModes = inferEffectiveParamModes(shell, calc);
     std::string code = "inline void " + calc->getName() + "_mpi_local(";
     for (int paramIdx = 0; paramIdx < calc->getNumParams(); ++paramIdx) {
-        code += toViewType(shell->getShellParam(paramIdx), calc->getParam(paramIdx)) + " " +
+        code += toViewType(shell->getShellParam(paramIdx), calc->getParam(paramIdx), paramModes[paramIdx]) + " " +
                 calc->getParam(paramIdx)->getName();
         if (paramIdx + 1 != calc->getNumParams()) {
             code += ", ";
@@ -276,13 +462,22 @@ std::string buildRemotePackBuilderExpr(IOTYPE mode,
     return "dacpp::mpi::build_rw_pack_map(" + rangeName + ", " + patternName + ")";
 }
 
-std::string buildWrapperCode(Shell* shell, Calc* calc) {
+std::string buildWrapperCode(DacppFile* dacppFile, Shell* shell, Calc* calc) {
     const std::string wrapperName = shell->getName() + "_" + calc->getName();
+    const auto paramModes = inferEffectiveParamModes(shell, calc);
 
     std::string signature;
     for (int paramIdx = 0; paramIdx < shell->getNumParams(); ++paramIdx) {
         Param* param = shell->getParam(paramIdx);
-        signature += param->getType() + " " + param->getName();
+        std::string paramType = param->getType();
+        // Ensure pass-by-reference so that MPI gather writeback
+        // (tensorName.array2Tensor(...)) modifies the caller's tensor,
+        // not a local copy.  This is essential for multi-stage pipelines
+        // where stage N's output feeds stage N+1.
+        if (paramType.size() > 0 && paramType.back() != '&' && paramType.back() != '*') {
+            paramType += "&";
+        }
+        signature += paramType + " " + param->getName();
         if (paramIdx + 1 != shell->getNumParams()) {
             signature += ", ";
         }
@@ -298,7 +493,7 @@ std::string buildWrapperCode(Shell* shell, Calc* calc) {
     code += "    MPI_Comm_size(MPI_COMM_WORLD, &mpi_size);\n";
     code += "    sycl::queue q(sycl::default_selector_v);\n";
     code += "    std::vector<int64_t> binding_split_sizes;\n";
-    code += buildPatternInitCode(shell, calc, splitMeta);
+    code += buildPatternInitCode(shell, calc, splitMeta, paramModes);
     code += "    int64_t total_items = 1;\n";
     code += "    for (int64_t split_size : binding_split_sizes) total_items *= split_size;\n";
     code += "    auto item_range = dacpp::mpi::get_rank_item_range(total_items, mpi_rank, mpi_size);\n";
@@ -312,6 +507,7 @@ std::string buildWrapperCode(Shell* shell, Calc* calc) {
         ShellParam* shellParam = shell->getShellParam(paramIdx);
         Param* shellWrapperParam = shell->getParam(paramIdx);
         Param* calcParam = calc->getParam(paramIdx);
+        const IOTYPE mode = paramModes[paramIdx];
         const std::string& calcName = calcParam->getName();
         const std::string& tensorName = shellWrapperParam->getName();
         const std::string patternName = "pattern_" + calcName;
@@ -327,45 +523,48 @@ std::string buildWrapperCode(Shell* shell, Calc* calc) {
             mpiPayloadCountExpr("recv_count", calcParam->getBasicType());
 
         code += "    auto " + packName + " = " +
-                buildPackBuilderExpr(shellParam->getRw(), patternName) + ";\n";
+                buildPackBuilderExpr(mode, patternName) + ";\n";
         code += "    auto " + slotsName + " = dacpp::mpi::build_item_slots(item_range, " +
                 patternName + ", " + packName + ");\n";
         code += "    std::vector<" + calcParam->getBasicType() + "> " + localName + "(" +
                 packName + ".globals.size());\n";
 
-        if (shellParam->getRw() != IOTYPE::WRITE) {
+        if (mode != IOTYPE::WRITE) {
+            code += "    int recv_count_" + calcName + " = 0;\n";
+            code += "    std::vector<int> sendcounts_" + calcName + ";\n";
+            code += "    std::vector<int> displs_" + calcName + ";\n";
+            code += "    std::vector<" + calcParam->getBasicType() + "> sendbuf_" + calcName + ";\n";
             code += "    if (mpi_rank == 0) {\n";
+            code += "        sendcounts_" + calcName + ".resize(mpi_size);\n";
+            code += "        displs_" + calcName + ".resize(mpi_size);\n";
+            code += "        int current_displ = 0;\n";
             code += "        std::vector<" + calcParam->getBasicType() + "> " + globalName + ";\n";
             code += "        " + tensorName + ".tensor2Array(" + globalName + ");\n";
-            code += "        " + localName +
-                    " = dacpp::mpi::pack_values_by_globals(" + globalName + ", " + packName +
-                    ".globals);\n";
-            code += "        for (int peer = 1; peer < mpi_size; ++peer) {\n";
-            code += "            auto peer_range = dacpp::mpi::get_rank_item_range(total_items, peer, mpi_size);\n";
-            code += "            auto peer_pack = " +
-                    buildRemotePackBuilderExpr(shellParam->getRw(), "peer_range", patternName) +
-                    ";\n";
-            code += "            auto peer_values = dacpp::mpi::pack_values_by_globals(" + globalName +
-                    ", peer_pack.globals);\n";
-            code += "            int peer_count = static_cast<int>(peer_values.size());\n";
-            code += "            MPI_Send(&peer_count, 1, MPI_INT, peer, " +
-                    std::to_string(1000 + paramIdx) + ", MPI_COMM_WORLD);\n";
-            code += "            if (peer_count > 0) {\n";
-            code += "                MPI_Send(peer_values.data(), " + payloadPeerCount + ", " + mpiType +
-                    ", peer, " + std::to_string(2000 + paramIdx) + ", MPI_COMM_WORLD);\n";
-            code += "            }\n";
-            code += "        }\n";
-            code += "    } else {\n";
-            code += "        int recv_count = 0;\n";
-            code += "        MPI_Recv(&recv_count, 1, MPI_INT, 0, " +
-                    std::to_string(1000 + paramIdx) + ", MPI_COMM_WORLD, MPI_STATUS_IGNORE);\n";
-            code += "        " + localName + ".resize(recv_count);\n";
-            code += "        if (recv_count > 0) {\n";
-            code += "            MPI_Recv(" + localName + ".data(), " + payloadRecvCount + ", " + mpiType +
-                    ", 0, " + std::to_string(2000 + paramIdx) +
-                    ", MPI_COMM_WORLD, MPI_STATUS_IGNORE);\n";
+            code += "        for (int r = 0; r < mpi_size; ++r) {\n";
+            code += "            auto r_range = dacpp::mpi::get_rank_item_range(total_items, r, mpi_size);\n";
+            code += "            auto r_pack = " + buildRemotePackBuilderExpr(mode, "r_range", patternName) + ";\n";
+            code += "            auto r_values = dacpp::mpi::pack_values_by_globals(" + globalName + ", r_pack.globals);\n";
+            code += "            int r_count = static_cast<int>(r_values.size());\n";
+            code += "            sendcounts_" + calcName + "[r] = r_count;\n";
+            code += "            displs_" + calcName + "[r] = current_displ;\n";
+            code += "            current_displ += r_count;\n";
+            code += "            sendbuf_" + calcName + ".insert(sendbuf_" + calcName + ".end(), r_values.begin(), r_values.end());\n";
             code += "        }\n";
             code += "    }\n";
+            code += "    MPI_Scatter(mpi_rank == 0 ? sendcounts_" + calcName + ".data() : nullptr, 1, MPI_INT, &recv_count_" + calcName + ", 1, MPI_INT, 0, MPI_COMM_WORLD);\n";
+            code += "    " + localName + ".resize(recv_count_" + calcName + ");\n";
+            code += "    std::vector<int> sendcounts_bytes_" + calcName + " = sendcounts_" + calcName + ";\n";
+            code += "    std::vector<int> displs_bytes_" + calcName + " = displs_" + calcName + ";\n";
+            if (usesByteTransport(calcParam->getBasicType())) {
+                code += "    if (mpi_rank == 0) {\n";
+                code += "        for (int r = 0; r < mpi_size; ++r) {\n";
+                code += "            sendcounts_bytes_" + calcName + "[r] *= sizeof(" + calcParam->getBasicType() + ");\n";
+                code += "            displs_bytes_" + calcName + "[r] *= sizeof(" + calcParam->getBasicType() + ");\n";
+                code += "        }\n";
+                code += "    }\n";
+            }
+            std::string payloadRecvCount = mpiPayloadCountExpr("recv_count_" + calcName, calcParam->getBasicType());
+            code += "    MPI_Scatterv(mpi_rank == 0 ? sendbuf_" + calcName + ".data() : nullptr, mpi_rank == 0 ? sendcounts_bytes_" + calcName + ".data() : nullptr, mpi_rank == 0 ? displs_bytes_" + calcName + ".data() : nullptr, " + mpiType + ", " + localName + ".data(), " + payloadRecvCount + ", " + mpiType + ", 0, MPI_COMM_WORLD);\n";
         }
 
         code += "    const int " + calcName + "_partition_size = static_cast<int>(dacpp::mpi::partition_element_count(" +
@@ -389,11 +588,10 @@ std::string buildWrapperCode(Shell* shell, Calc* calc) {
     }
     code += "            q.submit([&](sycl::handler& h) {\n";
     for (int paramIdx = 0; paramIdx < shell->getNumShellParams(); ++paramIdx) {
-        ShellParam* shellParam = shell->getShellParam(paramIdx);
         Param* calcParam = calc->getParam(paramIdx);
         const std::string& name = calcParam->getName();
         code += "                auto acc_" + name + " = buffer_" + name + ".get_access<" +
-                toAccessorMode(shellParam->getRw()) + ">(h);\n";
+                toAccessorMode(paramModes[paramIdx]) + ">(h);\n";
         code += "                auto slots_acc_" + name +
                 " = slots_buffer_" + name + ".get_access<sycl::access::mode::read>(h);\n";
     }
@@ -410,11 +608,11 @@ std::string buildWrapperCode(Shell* shell, Calc* calc) {
                 " = slots_acc_" + name +
                 ".template get_multi_ptr<sycl::access::decorated::no>().get();\n";
         if (inferViewRank(shellParam, calcParam) <= 1) {
-            code += "                    " + toViewType(shellParam, calcParam) + " view_" + name +
+            code += "                    " + toViewType(shellParam, calcParam, paramModes[paramIdx]) + " view_" + name +
                     "{data_" + name + ", slots_" + name + ", item_linear * " + name +
                     "_partition_size};\n";
         } else {
-            code += "                    " + toViewType(shellParam, calcParam) + " view_" + name +
+            code += "                    " + toViewType(shellParam, calcParam, paramModes[paramIdx]) + " view_" + name +
                     "{data_" + name + ", slots_" + name + ", item_linear * " + name +
                     "_partition_size, " + name + "_cols};\n";
         }
@@ -434,81 +632,95 @@ std::string buildWrapperCode(Shell* shell, Calc* calc) {
     code += "    }\n";
 
     for (int paramIdx = 0; paramIdx < shell->getNumShellParams(); ++paramIdx) {
-        ShellParam* shellParam = shell->getShellParam(paramIdx);
-        if (shellParam->getRw() == IOTYPE::READ) {
+        if (paramModes[paramIdx] == IOTYPE::READ) {
             continue;
         }
 
         Param* calcParam = calc->getParam(paramIdx);
         Param* shellWrapperParam = shell->getParam(paramIdx);
-        const std::string& name = calcParam->getName();
+        const std::string& calcName = calcParam->getName();
         const std::string& tensorName = shellWrapperParam->getName();
-        const std::string packName = "pack_" + name;
-        const std::string localName = "local_" + name;
-        const std::string globalName = "global_out_" + name;
-        const std::string wbName = "writeback_" + name;
+        const std::string packName = "pack_" + calcName;
+        const std::string localName = "local_" + calcName;
+        const std::string globalName = "global_out_" + calcName;
+        const std::string wbName = "writeback_" + calcName;
         const std::string mpiType = mpiDatatypeFor(calcParam->getBasicType());
         const std::string payloadRecvCount =
             mpiPayloadCountExpr("recv_count", calcParam->getBasicType());
         const std::string payloadSendCount =
             mpiPayloadCountExpr("send_count", calcParam->getBasicType());
-        const std::string payloadSyncedCount =
-            mpiPayloadCountExpr("synced_count_" + name, calcParam->getBasicType());
+        bool needsBcast = dacppFile->getMPIBroadcastOutputs();
+        if (dacppFile->getMainBody()) {
+            TensorUseVisitor visitor(tensorName, dacppFile->dacExprs);
+            visitor.TraverseStmt(const_cast<clang::Stmt*>(dacppFile->getMainBody()));
+            needsBcast = visitor.NeedsBcast;
+        }
 
-        code += "    auto " + wbName + " = dacpp::mpi::build_writeback_values(" + localName +
-                ", " + packName + ");\n";
-        code += "    const auto& writeback_globals_" + name + " = " + packName +
-                ".writeback_globals.empty() ? " + packName + ".globals : " + packName +
-                ".writeback_globals;\n";
-        code += "    std::vector<" + calcParam->getBasicType() + "> synced_" + name + ";\n";
+        code += "    auto " + wbName + " = dacpp::mpi::build_writeback_values(" + localName + ", " + packName + ");\n";
+        code += "    const auto& writeback_globals_" + calcName + " = " + packName + ".writeback_globals.empty() ? " + packName + ".globals : " + packName + ".writeback_globals;\n";
+        if (needsBcast) {
+            code += "    std::vector<" + calcParam->getBasicType() + "> synced_" + calcName + ";\n";
+        }
+        code += "    int send_count_" + calcName + " = static_cast<int>(writeback_globals_" + calcName + ".size());\n";
+        code += "    std::vector<int> recvcounts_" + calcName + ";\n";
+        code += "    std::vector<int> recvdispls_" + calcName + ";\n";
+        code += "    std::vector<int64_t> global_recv_globals_" + calcName + ";\n";
+        code += "    std::vector<" + calcParam->getBasicType() + "> global_recv_values_" + calcName + ";\n";
+        code += "    if (mpi_rank == 0) {\n";
+        code += "        recvcounts_" + calcName + ".resize(mpi_size);\n";
+        code += "        recvdispls_" + calcName + ".resize(mpi_size);\n";
+        code += "    }\n";
+        code += "    MPI_Gather(&send_count_" + calcName + ", 1, MPI_INT, mpi_rank == 0 ? recvcounts_" + calcName + ".data() : nullptr, 1, MPI_INT, 0, MPI_COMM_WORLD);\n";
+        code += "    if (mpi_rank == 0) {\n";
+        code += "        int current_displ = 0;\n";
+        code += "        for (int r = 0; r < mpi_size; ++r) {\n";
+        code += "            recvdispls_" + calcName + "[r] = current_displ;\n";
+        code += "            current_displ += recvcounts_" + calcName + "[r];\n";
+        code += "        }\n";
+        code += "        global_recv_globals_" + calcName + ".resize(current_displ);\n";
+        code += "        global_recv_values_" + calcName + ".resize(current_displ);\n";
+        code += "    }\n";
+        code += "    MPI_Gatherv(const_cast<int64_t*>(writeback_globals_" + calcName + ".data()), send_count_" + calcName + ", MPI_LONG_LONG, mpi_rank == 0 ? global_recv_globals_" + calcName + ".data() : nullptr, mpi_rank == 0 ? recvcounts_" + calcName + ".data() : nullptr, mpi_rank == 0 ? recvdispls_" + calcName + ".data() : nullptr, MPI_LONG_LONG, 0, MPI_COMM_WORLD);\n";
+        code += "    std::vector<int> recvcounts_bytes_" + calcName + " = recvcounts_" + calcName + ";\n";
+        code += "    std::vector<int> recvdispls_bytes_" + calcName + " = recvdispls_" + calcName + ";\n";
+        if (usesByteTransport(calcParam->getBasicType())) {
+            code += "    if (mpi_rank == 0) {\n";
+            code += "        for (int r = 0; r < mpi_size; ++r) {\n";
+            code += "            recvcounts_bytes_" + calcName + "[r] *= sizeof(" + calcParam->getBasicType() + ");\n";
+            code += "            recvdispls_bytes_" + calcName + "[r] *= sizeof(" + calcParam->getBasicType() + ");\n";
+            code += "        }\n";
+            code += "    }\n";
+        }
+        std::string payloadSendCount2 = mpiPayloadCountExpr("send_count_" + calcName, calcParam->getBasicType());
+        code += "    MPI_Gatherv(" + wbName + ".data(), " + payloadSendCount2 + ", " + mpiType + ", mpi_rank == 0 ? global_recv_values_" + calcName + ".data() : nullptr, mpi_rank == 0 ? recvcounts_bytes_" + calcName + ".data() : nullptr, mpi_rank == 0 ? recvdispls_bytes_" + calcName + ".data() : nullptr, " + mpiType + ", 0, MPI_COMM_WORLD);\n";
         code += "    if (mpi_rank == 0) {\n";
         code += "        std::vector<" + calcParam->getBasicType() + "> " + globalName + ";\n";
         code += "        " + tensorName + ".tensor2Array(" + globalName + ");\n";
-        code += "        dacpp::mpi::apply_writeback_by_globals(" + wbName +
-                ", writeback_globals_" + name + ", " + globalName + ");\n";
-        code += "        for (int peer = 1; peer < mpi_size; ++peer) {\n";
-        code += "            int recv_count = 0;\n";
-        code += "            MPI_Recv(&recv_count, 1, MPI_INT, peer, " +
-                std::to_string(3000 + paramIdx) + ", MPI_COMM_WORLD, MPI_STATUS_IGNORE);\n";
-        code += "            if (recv_count <= 0) continue;\n";
-        code += "            std::vector<int64_t> recv_globals(recv_count);\n";
-        code += "            std::vector<" + calcParam->getBasicType() + "> recv_values(recv_count);\n";
-        code += "            MPI_Recv(recv_globals.data(), recv_count, MPI_LONG_LONG, peer, " +
-                std::to_string(4000 + paramIdx) + ", MPI_COMM_WORLD, MPI_STATUS_IGNORE);\n";
-        code += "            MPI_Recv(recv_values.data(), " + payloadRecvCount + ", " + mpiType + ", peer, " +
-                std::to_string(5000 + paramIdx) + ", MPI_COMM_WORLD, MPI_STATUS_IGNORE);\n";
-        code += "            dacpp::mpi::apply_writeback_by_globals(recv_values, recv_globals, " +
-                globalName + ");\n";
-        code += "        }\n";
+        code += "        dacpp::mpi::apply_writeback_by_globals(global_recv_values_" + calcName + ", global_recv_globals_" + calcName + ", " + globalName + ");\n";
         code += "        " + tensorName + ".array2Tensor(" + globalName + ");\n";
-        code += "        synced_" + name + " = " + globalName + ";\n";
-        code += "    } else {\n";
-        code += "        int send_count = static_cast<int>(writeback_globals_" + name + ".size());\n";
-        code += "        MPI_Send(&send_count, 1, MPI_INT, 0, " +
-                std::to_string(3000 + paramIdx) + ", MPI_COMM_WORLD);\n";
-        code += "        if (send_count > 0) {\n";
-        code += "            MPI_Send(const_cast<int64_t*>(writeback_globals_" + name +
-                ".data()), send_count, MPI_LONG_LONG, 0, " +
-                std::to_string(4000 + paramIdx) + ", MPI_COMM_WORLD);\n";
-        code += "            MPI_Send(" + wbName + ".data(), " + payloadSendCount + ", " + mpiType +
-                ", 0, " + std::to_string(5000 + paramIdx) + ", MPI_COMM_WORLD);\n";
-        code += "        }\n";
+        if (needsBcast) {
+            code += "        synced_" + calcName + " = " + globalName + ";\n";
+        }
         code += "    }\n";
-        code += "    int synced_count_" + name + " = 0;\n";
-        code += "    if (mpi_rank == 0) {\n";
-        code += "        synced_count_" + name + " = static_cast<int>(synced_" + name + ".size());\n";
-        code += "    }\n";
-        code += "    MPI_Bcast(&synced_count_" + name + ", 1, MPI_INT, 0, MPI_COMM_WORLD);\n";
-        code += "    if (mpi_rank != 0) {\n";
-        code += "        synced_" + name + ".resize(synced_count_" + name + ");\n";
-        code += "    }\n";
-        code += "    if (synced_count_" + name + " > 0) {\n";
-        code += "        MPI_Bcast(synced_" + name + ".data(), " + payloadSyncedCount + ", " + mpiType +
-                ", 0, MPI_COMM_WORLD);\n";
-        code += "    }\n";
-        code += "    if (mpi_rank != 0) {\n";
-        code += "        " + tensorName + ".array2Tensor(synced_" + name + ");\n";
-        code += "    }\n";
+        if (needsBcast) {
+            const std::string payloadSyncedCount =
+                mpiPayloadCountExpr("synced_count_" + calcName, calcParam->getBasicType());
+            code += "    int synced_count_" + calcName + " = 0;\n";
+            code += "    if (mpi_rank == 0) {\n";
+            code += "        synced_count_" + calcName + " = static_cast<int>(synced_" + calcName + ".size());\n";
+            code += "    }\n";
+            code += "    MPI_Bcast(&synced_count_" + calcName + ", 1, MPI_INT, 0, MPI_COMM_WORLD);\n";
+            code += "    if (mpi_rank != 0) {\n";
+            code += "        synced_" + calcName + ".resize(synced_count_" + calcName + ");\n";
+            code += "    }\n";
+            code += "    if (synced_count_" + calcName + " > 0) {\n";
+            code += "        MPI_Bcast(synced_" + calcName + ".data(), " + payloadSyncedCount + ", " + mpiType +
+                    ", 0, MPI_COMM_WORLD);\n";
+            code += "    }\n";
+            code += "    if (mpi_rank != 0) {\n";
+            code += "        " + tensorName + ".array2Tensor(synced_" + calcName + ");\n";
+            code += "    }\n";
+        }
     }
 
     code += "}\n";
@@ -541,19 +753,23 @@ std::string buildPrelude(DacppFile* dacppFile) {
 
 void dacppTranslator::Rewriter::rewriteMPI() {
     std::string generated = buildPrelude(dacppFile);
+    std::set<std::string> generatedWrappers;
 
     for (int exprIdx = 0; exprIdx < dacppFile->getNumExpression(); ++exprIdx) {
         Expression* expr = dacppFile->getExpression(exprIdx);
         Shell* shell = expr->getShell();
         Calc* calc = expr->getCalc();
 
-        generated += buildLocalCalcCode(shell, calc);
-        generated += "\n";
-        generated += buildWrapperCode(shell, calc);
-        generated += "\n";
+        const std::string wrapperName = shell->getName() + "_" + calc->getName();
+        if (generatedWrappers.insert(wrapperName).second) {
+            generated += buildLocalCalcCode(shell, calc);
+            generated += "\n";
+            generated += buildWrapperCode(dacppFile, shell, calc);
+            generated += "\n";
 
-        rewriter->RemoveText(shell->getShellLoc()->getSourceRange());
-        rewriter->RemoveText(calc->getCalcLoc()->getSourceRange());
+            rewriter->RemoveText(shell->getShellLoc()->getSourceRange());
+            rewriter->RemoveText(calc->getCalcLoc()->getSourceRange());
+        }
     }
 
     rewriter->InsertText(dacppFile->node->getBeginLoc(), generated);
@@ -590,6 +806,7 @@ void dacppTranslator::Rewriter::rewriteMPI() {
     const std::string mpiFinish = R"(
     if (dacpp_mpi_finalize_needed) {
         MPI_Finalize();
+        dacpp_mpi_finalize_needed = 0;
     }
 )";
 
@@ -599,5 +816,13 @@ void dacppTranslator::Rewriter::rewriteMPI() {
     for (const clang::ReturnStmt* returnStmt : returnStmts) {
         rewriter->InsertTextBefore(returnStmt->getBeginLoc(), mpiFinish);
     }
-    rewriter->InsertTextBefore(body->getRBracLoc(), mpiFinish);
+    
+    if (!body->body_empty()) {
+        const Stmt* lastStmt = body->body_back();
+        if (!llvm::isa<clang::ReturnStmt>(lastStmt)) {
+            rewriter->InsertTextBefore(body->getRBracLoc(), mpiFinish);
+        }
+    } else {
+        rewriter->InsertTextBefore(body->getRBracLoc(), mpiFinish);
+    }
 }

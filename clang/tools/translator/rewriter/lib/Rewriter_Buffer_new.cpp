@@ -11,8 +11,6 @@
 #include "usm_template.h"
 #include "Calc.h"
 #include "ASTParse.h"
-std::vector<int> dim;
-std::vector<dacppTranslator::clacparam> clacparams;
 
 void dacppTranslator::Rewriter::rewriteDac_Buffer() {
     // std::cout << "软编码BUFFER版本翻译" << std::endl;
@@ -96,28 +94,23 @@ void dacppTranslator::Rewriter::rewriteDac_Buffer() {
             }
         }
         code += ") ";
-    for (int i = 0; i < shell->getNumShellParams(); i++) {
-        clacparam temp;
-    temp.name = calc->getParam(i)->getName();
-    temp.dimesion = shell->getShellParam(i)->getDimension();
-    dim.push_back(shell->getShellParam(i)->getDimension());
+        std::vector<dacppTranslator::clacparam> calcParams;
+        calcParams.reserve(shell->getNumShellParams());
+        for (int i = 0; i < shell->getNumShellParams(); i++) {
+            clacparam temp;
+            temp.name = calc->getParam(i)->getName();
+            temp.dimesion = shell->getShellParam(i)->getDimension();
 
-    for (int count = 0; count < shell->getShellParam(i)->getNumSplit(); count++) {
-        Split *a = shell->getShellParam(i)->getSplit(count);
-        temp.dimid.push_back(a->getDimIdx());
+            for (int count = 0; count < shell->getShellParam(i)->getNumSplit(); count++) {
+                Split *a = shell->getShellParam(i)->getSplit(count);
+                temp.dimid.push_back(a->getDimIdx());
+                temp.flag.push_back(a->type == "IndexSplit" ? 1 : 0);
+            }
 
-        if (a->type == "IndexSplit") {
-            temp.flag.push_back(1);
-        } else {
-            temp.flag.push_back(0);
+            calcParams.push_back(temp);
         }
-    }
-
-    clacparams.push_back(temp);
-}
         for(int count = 0; count < calc->getNumBody(); count++) {
-            
-            code += calc->getBody(count,clacparams) + "\n";
+            code += calc->getBody(count, calcParams) + "\n";
         }
 
 
@@ -471,14 +464,13 @@ for (const auto &var : Vars) {
         // }
 
         std::string dac = BUFFER_TEMPLATE::CodeGen_DataAssocComp(dataRecon, H2DMemMove, KernelExecute, Reduction, D2HMemMove);
-	    std::string res = USM_TEMPLATE::CodeGen_DAC2SYCL2(
+	    std::string res = BUFFER_TEMPLATE::CodeGen_DAC2SYCL2(
 		dacShellName,
 		dacShellParams,
         opInit,
         ParameterGenerate,
 		deviceMemAlloc,
-		dac,
-		MemFree);
+		dac);
         code += res;
         code += "\n\n";
         rewriter->RemoveText(shell->getShellLoc()->getSourceRange());

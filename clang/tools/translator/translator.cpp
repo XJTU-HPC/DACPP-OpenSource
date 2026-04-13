@@ -94,6 +94,22 @@ static llvm::cl::opt<bool>
            llvm::cl::desc("Enable V1 MPI code generation for non-stencil programs"),
            llvm::cl::init(false));
 
+enum class MpiOutputSyncMode {
+  AllRanks,
+  RootOnly
+};
+
+static llvm::cl::opt<MpiOutputSyncMode>
+    MpiOutputSyncModeOpt(
+        "mpi-output-sync",
+        llvm::cl::desc("How WRITE/READ_WRITE outputs are synchronized after root gather"),
+        llvm::cl::values(
+            clEnumValN(MpiOutputSyncMode::AllRanks, "all-ranks",
+                       "Gather on root, then broadcast updated outputs back to every rank"),
+            clEnumValN(MpiOutputSyncMode::RootOnly, "root-only",
+                       "Gather on root only; skip the final output broadcast")),
+        llvm::cl::init(MpiOutputSyncMode::AllRanks));
+
 using namespace clang;
 using namespace clang::ast_matchers;
 using namespace clang::driver;
@@ -490,6 +506,8 @@ public:
     dacppTranslator::Rewriter *rewriter = new dacppTranslator::Rewriter();
     dacppFile->mode = TranslateMode;
     dacppFile->setEnableMPI(MpiOpt);
+    dacppFile->setMPIBroadcastOutputs(
+        MpiOutputSyncModeOpt == MpiOutputSyncMode::AllRanks);
     if (dacppFile->getBlock()) {
       dacppFile->setHeaderFile("\"DataReconstructor.new.h\"");
       dacppFile->setHeaderFile("\"ParameterGeneration.h\"");

@@ -34,8 +34,8 @@ const char *DAC2SYCL_Template_2 = R"~~~(
 // 生成函数调用
 void {{DAC_SHELL_NAME}}({{DAC_SHELL_PARAMS}}) { 
     // 设备选择
-    auto selector = default_selector_v;
-    queue q(selector);
+    auto selector = sycl::default_selector_v;
+    sycl::queue q(selector);
     //声明参数生成工具
     ParameterGeneration para_gene_tool;
     // 算子初始化

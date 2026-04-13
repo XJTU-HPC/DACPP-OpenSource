@@ -1,4 +1,4 @@
-#include <CL/sycl.hpp>
+#include <sycl/sycl.hpp>
 #include <iostream>
 #include <vector>
 #include <cmath>
@@ -40,18 +40,18 @@ int main() {
 
     // 使用SYCL进行并行计算
     {
-        cl::sycl::queue q;
+        sycl::queue q;
 
         for (int t = 0; t < T; ++t) {
             // 对内部点进行更新，边界条件暂不考虑
-            cl::sycl::buffer<double, 1> p_buffer(p.data(), cl::sycl::range<1>(N));
-            cl::sycl::buffer<double, 1> new_p_buffer(new_p.data(), cl::sycl::range<1>(N));
+            sycl::buffer<double, 1> p_buffer(p.data(), sycl::range<1>(N));
+            sycl::buffer<double, 1> new_p_buffer(new_p.data(), sycl::range<1>(N));
 
-            q.submit([&](cl::sycl::handler& cgh) {
-                auto p_access = p_buffer.get_access<cl::sycl::access::mode::read>(cgh);
-                auto new_p_access = new_p_buffer.get_access<cl::sycl::access::mode::write>(cgh);
+            q.submit([&](sycl::handler& cgh) {
+                auto p_access = p_buffer.get_access<sycl::access::mode::read>(cgh);
+                auto new_p_access = new_p_buffer.get_access<sycl::access::mode::write>(cgh);
 
-                cgh.parallel_for<class FokkerPlanck>(cl::sycl::range<1>(N - 2), [=](cl::sycl::item<1> item) {
+                cgh.parallel_for<class FokkerPlanck>(sycl::range<1>(N - 2), [=](sycl::item<1> item) {
                     int i = item.get_id(0) + 1; // 因为我们从1到N-2的索引进行计算
 
                     // 扩散项和漂移项

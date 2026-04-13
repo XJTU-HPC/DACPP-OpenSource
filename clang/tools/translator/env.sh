@@ -15,7 +15,13 @@ if ! command -v icpx &> /dev/null; then
 fi
 
 # Get the directory of this script
-SCRIPT_PATH=$(realpath "${BASH_SOURCE[0]}")
+if [[ -n "${BASH_SOURCE[0]:-}" ]]; then
+    SCRIPT_PATH=$(realpath "${BASH_SOURCE[0]}")
+elif [[ -n "${ZSH_VERSION:-}" ]]; then
+    SCRIPT_PATH=$(realpath "${(%):-%x}")
+else
+    SCRIPT_PATH=$(realpath "$0")
+fi
 WORK_DIR=$(dirname "$SCRIPT_PATH")
 HOST_OS=$(uname -s)
 DEFAULT_ACPP_ROOT=/Volumes/QUQ/working/sycl-install

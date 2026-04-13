@@ -63,12 +63,15 @@ int main() {
                     //     it = i;
                     //     break;
                     // }
-                    if (std::sqrt(z.real()*z.real() + z.imag()*z.imag()) > 2.0f) {
+                    if (sycl::sqrt(z.real()*z.real() + z.imag()*z.imag()) > 2.0f) {
                         it = i;
                         break;
                     }
 
-                    z = z * z + c;
+                    z = std::complex<float>(
+                        z.real()*z.real() - z.imag()*z.imag() + c.real(),
+                        2.0f*z.real()*z.imag() + c.imag()
+                    );
                     it = max_iterations;
                 }
 

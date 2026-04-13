@@ -103,6 +103,7 @@ public:
     std::vector<std::pair<std::string, std::string>> shellVars; // shell参数的变量名及其类型,第一个表示变量名，第二个表示变量类型
     int mode = 0; //用于存储翻译模式,0表示使用新版本，1表示强制用老版本
     bool enableMPI = false;
+    bool mpiBroadcastOutputs = true;
 public:
     const FunctionDecl* node;
     DacppFile();
@@ -175,6 +176,8 @@ public:
     void collectInnerForStmts();  // step1 的核心函数
     void setEnableMPI(bool enabled) { this->enableMPI = enabled; }
     bool getEnableMPI() const { return this->enableMPI; }
+    void setMPIBroadcastOutputs(bool enabled) { this->mpiBroadcastOutputs = enabled; }
+    bool getMPIBroadcastOutputs() const { return this->mpiBroadcastOutputs; }
 
 };
 }

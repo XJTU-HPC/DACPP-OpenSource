@@ -116,28 +116,32 @@ void PDE_pde(const dacpp::Vector<double> & u_kin, dacpp::Vector<double> & u_kout
     auto pack_u_kin = dacpp::mpi::build_input_pack_map(item_range, pattern_u_kin);
     auto slots_u_kin = dacpp::mpi::build_item_slots(item_range, pattern_u_kin, pack_u_kin);
     std::vector<double> local_u_kin(pack_u_kin.globals.size());
+    int recv_count_u_kin = 0;
+    std::vector<int> sendcounts_u_kin;
+    std::vector<int> displs_u_kin;
+    std::vector<double> sendbuf_u_kin;
     if (mpi_rank == 0) {
+        sendcounts_u_kin.resize(mpi_size);
+        displs_u_kin.resize(mpi_size);
+        int current_displ = 0;
         std::vector<double> global_u_kin;
         u_kin.tensor2Array(global_u_kin);
-        local_u_kin = dacpp::mpi::pack_values_by_globals(global_u_kin, pack_u_kin.globals);
-        for (int peer = 1; peer < mpi_size; ++peer) {
-            auto peer_range = dacpp::mpi::get_rank_item_range(total_items, peer, mpi_size);
-            auto peer_pack = dacpp::mpi::build_input_pack_map(peer_range, pattern_u_kin);
-            auto peer_values = dacpp::mpi::pack_values_by_globals(global_u_kin, peer_pack.globals);
-            int peer_count = static_cast<int>(peer_values.size());
-            MPI_Send(&peer_count, 1, MPI_INT, peer, 1000, MPI_COMM_WORLD);
-            if (peer_count > 0) {
-                MPI_Send(peer_values.data(), peer_count, MPI_DOUBLE, peer, 2000, MPI_COMM_WORLD);
-            }
-        }
-    } else {
-        int recv_count = 0;
-        MPI_Recv(&recv_count, 1, MPI_INT, 0, 1000, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-        local_u_kin.resize(recv_count);
-        if (recv_count > 0) {
-            MPI_Recv(local_u_kin.data(), recv_count, MPI_DOUBLE, 0, 2000, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        for (int r = 0; r < mpi_size; ++r) {
+            auto r_range = dacpp::mpi::get_rank_item_range(total_items, r, mpi_size);
+            auto r_pack = dacpp::mpi::build_input_pack_map(r_range, pattern_u_kin);
+            auto r_values = dacpp::mpi::pack_values_by_globals(global_u_kin, r_pack.globals);
+            int r_count = static_cast<int>(r_values.size());
+            sendcounts_u_kin[r] = r_count;
+            displs_u_kin[r] = current_displ;
+            current_displ += r_count;
+            sendbuf_u_kin.insert(sendbuf_u_kin.end(), r_values.begin(), r_values.end());
         }
     }
+    MPI_Scatter(mpi_rank == 0 ? sendcounts_u_kin.data() : nullptr, 1, MPI_INT, &recv_count_u_kin, 1, MPI_INT, 0, MPI_COMM_WORLD);
+    local_u_kin.resize(recv_count_u_kin);
+    std::vector<int> sendcounts_bytes_u_kin = sendcounts_u_kin;
+    std::vector<int> displs_bytes_u_kin = displs_u_kin;
+    MPI_Scatterv(mpi_rank == 0 ? sendbuf_u_kin.data() : nullptr, mpi_rank == 0 ? sendcounts_bytes_u_kin.data() : nullptr, mpi_rank == 0 ? displs_bytes_u_kin.data() : nullptr, MPI_DOUBLE, local_u_kin.data(), recv_count_u_kin, MPI_DOUBLE, 0, MPI_COMM_WORLD);
     const int u_kin_partition_size = static_cast<int>(dacpp::mpi::partition_element_count(pattern_u_kin));
     auto pack_u_kout = dacpp::mpi::build_output_pack_map(item_range, pattern_u_kout);
     auto slots_u_kout = dacpp::mpi::build_item_slots(item_range, pattern_u_kout, pack_u_kout);
@@ -146,28 +150,32 @@ void PDE_pde(const dacpp::Vector<double> & u_kin, dacpp::Vector<double> & u_kout
     auto pack_r = dacpp::mpi::build_input_pack_map(item_range, pattern_r);
     auto slots_r = dacpp::mpi::build_item_slots(item_range, pattern_r, pack_r);
     std::vector<double> local_r(pack_r.globals.size());
+    int recv_count_r = 0;
+    std::vector<int> sendcounts_r;
+    std::vector<int> displs_r;
+    std::vector<double> sendbuf_r;
     if (mpi_rank == 0) {
+        sendcounts_r.resize(mpi_size);
+        displs_r.resize(mpi_size);
+        int current_displ = 0;
         std::vector<double> global_r;
         r.tensor2Array(global_r);
-        local_r = dacpp::mpi::pack_values_by_globals(global_r, pack_r.globals);
-        for (int peer = 1; peer < mpi_size; ++peer) {
-            auto peer_range = dacpp::mpi::get_rank_item_range(total_items, peer, mpi_size);
-            auto peer_pack = dacpp::mpi::build_input_pack_map(peer_range, pattern_r);
-            auto peer_values = dacpp::mpi::pack_values_by_globals(global_r, peer_pack.globals);
-            int peer_count = static_cast<int>(peer_values.size());
-            MPI_Send(&peer_count, 1, MPI_INT, peer, 1002, MPI_COMM_WORLD);
-            if (peer_count > 0) {
-                MPI_Send(peer_values.data(), peer_count, MPI_DOUBLE, peer, 2002, MPI_COMM_WORLD);
-            }
-        }
-    } else {
-        int recv_count = 0;
-        MPI_Recv(&recv_count, 1, MPI_INT, 0, 1002, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-        local_r.resize(recv_count);
-        if (recv_count > 0) {
-            MPI_Recv(local_r.data(), recv_count, MPI_DOUBLE, 0, 2002, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        for (int r = 0; r < mpi_size; ++r) {
+            auto r_range = dacpp::mpi::get_rank_item_range(total_items, r, mpi_size);
+            auto r_pack = dacpp::mpi::build_input_pack_map(r_range, pattern_r);
+            auto r_values = dacpp::mpi::pack_values_by_globals(global_r, r_pack.globals);
+            int r_count = static_cast<int>(r_values.size());
+            sendcounts_r[r] = r_count;
+            displs_r[r] = current_displ;
+            current_displ += r_count;
+            sendbuf_r.insert(sendbuf_r.end(), r_values.begin(), r_values.end());
         }
     }
+    MPI_Scatter(mpi_rank == 0 ? sendcounts_r.data() : nullptr, 1, MPI_INT, &recv_count_r, 1, MPI_INT, 0, MPI_COMM_WORLD);
+    local_r.resize(recv_count_r);
+    std::vector<int> sendcounts_bytes_r = sendcounts_r;
+    std::vector<int> displs_bytes_r = displs_r;
+    MPI_Scatterv(mpi_rank == 0 ? sendbuf_r.data() : nullptr, mpi_rank == 0 ? sendcounts_bytes_r.data() : nullptr, mpi_rank == 0 ? displs_bytes_r.data() : nullptr, MPI_DOUBLE, local_r.data(), recv_count_r, MPI_DOUBLE, 0, MPI_COMM_WORLD);
     const int r_partition_size = static_cast<int>(dacpp::mpi::partition_element_count(pattern_r));
     if (local_item_count > 0) {
         {
@@ -204,29 +212,35 @@ void PDE_pde(const dacpp::Vector<double> & u_kin, dacpp::Vector<double> & u_kout
     auto writeback_u_kout = dacpp::mpi::build_writeback_values(local_u_kout, pack_u_kout);
     const auto& writeback_globals_u_kout = pack_u_kout.writeback_globals.empty() ? pack_u_kout.globals : pack_u_kout.writeback_globals;
     std::vector<double> synced_u_kout;
+    int send_count_u_kout = static_cast<int>(writeback_globals_u_kout.size());
+    std::vector<int> recvcounts_u_kout;
+    std::vector<int> recvdispls_u_kout;
+    std::vector<int64_t> global_recv_globals_u_kout;
+    std::vector<double> global_recv_values_u_kout;
+    if (mpi_rank == 0) {
+        recvcounts_u_kout.resize(mpi_size);
+        recvdispls_u_kout.resize(mpi_size);
+    }
+    MPI_Gather(&send_count_u_kout, 1, MPI_INT, mpi_rank == 0 ? recvcounts_u_kout.data() : nullptr, 1, MPI_INT, 0, MPI_COMM_WORLD);
+    if (mpi_rank == 0) {
+        int current_displ = 0;
+        for (int r = 0; r < mpi_size; ++r) {
+            recvdispls_u_kout[r] = current_displ;
+            current_displ += recvcounts_u_kout[r];
+        }
+        global_recv_globals_u_kout.resize(current_displ);
+        global_recv_values_u_kout.resize(current_displ);
+    }
+    MPI_Gatherv(const_cast<int64_t*>(writeback_globals_u_kout.data()), send_count_u_kout, MPI_LONG_LONG, mpi_rank == 0 ? global_recv_globals_u_kout.data() : nullptr, mpi_rank == 0 ? recvcounts_u_kout.data() : nullptr, mpi_rank == 0 ? recvdispls_u_kout.data() : nullptr, MPI_LONG_LONG, 0, MPI_COMM_WORLD);
+    std::vector<int> recvcounts_bytes_u_kout = recvcounts_u_kout;
+    std::vector<int> recvdispls_bytes_u_kout = recvdispls_u_kout;
+    MPI_Gatherv(writeback_u_kout.data(), send_count_u_kout, MPI_DOUBLE, mpi_rank == 0 ? global_recv_values_u_kout.data() : nullptr, mpi_rank == 0 ? recvcounts_bytes_u_kout.data() : nullptr, mpi_rank == 0 ? recvdispls_bytes_u_kout.data() : nullptr, MPI_DOUBLE, 0, MPI_COMM_WORLD);
     if (mpi_rank == 0) {
         std::vector<double> global_out_u_kout;
         u_kout.tensor2Array(global_out_u_kout);
-        dacpp::mpi::apply_writeback_by_globals(writeback_u_kout, writeback_globals_u_kout, global_out_u_kout);
-        for (int peer = 1; peer < mpi_size; ++peer) {
-            int recv_count = 0;
-            MPI_Recv(&recv_count, 1, MPI_INT, peer, 3001, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-            if (recv_count <= 0) continue;
-            std::vector<int64_t> recv_globals(recv_count);
-            std::vector<double> recv_values(recv_count);
-            MPI_Recv(recv_globals.data(), recv_count, MPI_LONG_LONG, peer, 4001, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-            MPI_Recv(recv_values.data(), recv_count, MPI_DOUBLE, peer, 5001, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-            dacpp::mpi::apply_writeback_by_globals(recv_values, recv_globals, global_out_u_kout);
-        }
+        dacpp::mpi::apply_writeback_by_globals(global_recv_values_u_kout, global_recv_globals_u_kout, global_out_u_kout);
         u_kout.array2Tensor(global_out_u_kout);
         synced_u_kout = global_out_u_kout;
-    } else {
-        int send_count = static_cast<int>(writeback_globals_u_kout.size());
-        MPI_Send(&send_count, 1, MPI_INT, 0, 3001, MPI_COMM_WORLD);
-        if (send_count > 0) {
-            MPI_Send(const_cast<int64_t*>(writeback_globals_u_kout.data()), send_count, MPI_LONG_LONG, 0, 4001, MPI_COMM_WORLD);
-            MPI_Send(writeback_u_kout.data(), send_count, MPI_DOUBLE, 0, 5001, MPI_COMM_WORLD);
-        }
     }
     int synced_count_u_kout = 0;
     if (mpi_rank == 0) {
@@ -347,10 +361,7 @@ int main() {
     
     if (dacpp_mpi_finalize_needed) {
         MPI_Finalize();
+        dacpp_mpi_finalize_needed = 0;
     }
 return 0;
-
-    if (dacpp_mpi_finalize_needed) {
-        MPI_Finalize();
-    }
 }

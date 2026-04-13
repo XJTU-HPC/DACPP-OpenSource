@@ -88,7 +88,7 @@ bool max_generate(std::string& reductionText, std::string original,
     }
 
     // 4. 生成 q.submit 代码
-    reductionText += " q.submit([&](sycl::handler &h) {\n";
+    reductionText += " dacpp_q.submit([&](sycl::handler &h) {\n";
 
     // 4.1 accessors
 // 4.1 accessors
@@ -254,9 +254,10 @@ const char *ACCESSOR_POINTER_Template = R"~~~(
 const char *DAC2SYCL_Template_2 = R"~~~(
 // 生成函数调用
 void {{DAC_SHELL_NAME}}({{DAC_SHELL_PARAMS}}) { 
+    using namespace sycl;
     // 设备选择
     auto selector = default_selector_v;
-    queue q(selector);
+    sycl::queue dacpp_q(selector);
     //声明参数生成工具
     ParameterGeneration para_gene_tool;
     // 算子初始化
@@ -269,7 +270,7 @@ void {{DAC_SHELL_NAME}}({{DAC_SHELL_PARAMS}}) {
     {{DATA_ASSOC_COMP}}
 })~~~";
 
-std::string CodeGen_DAC2SYCL2(std::string dacShellName, std::string dacShellParams,std::string opInit, std::string parameter_generate, std::string deviceMemAlloc, std::string dataAssocComp, std::string memFree){
+std::string CodeGen_DAC2SYCL2(std::string dacShellName, std::string dacShellParams,std::string opInit, std::string parameter_generate, std::string deviceMemAlloc, std::string dataAssocComp){
     return templateString(DAC2SYCL_Template_2,
 	{	
 		{"{{DAC_SHELL_NAME}}",    dacShellName},
@@ -567,7 +568,7 @@ if (!flag && found){
     code += "    int __jR = (" + jR + ");\n";
     code += "    int __jN = __jR - __jL + 1;\n";
 
-    code += "    q.submit([&](sycl::handler& h){\n";
+    code += "    dacpp_q.submit([&](sycl::handler& h){\n";
 
     // ★ 插入 accessor
     code += accessorDecl;
@@ -728,7 +729,7 @@ std::string parallelizeSingleFor(const clang::ForStmt* FS,clang::ASTContext* Con
     code += "  int __R = (" + R + ");\n";
     code += "  int __N = __R - __L +1;\n";
 
-    code += "  q.submit([&](sycl::handler& h){\n";
+    code += "  dacpp_q.submit([&](sycl::handler& h){\n";
     code += accessorDecl;
     code += "    h.parallel_for(sycl::range<1>(__N), [=](sycl::id<1> idx){\n";
     code += ptrDecl;
@@ -1695,7 +1696,7 @@ std::string CodeGen_OpPushBack2Ops(std::string name, std::string opName, std::st
 
 //二维划分的Buffer内核执行模板
 const char *KERNEL_EXECUTE_Template = R"~~~(
-    sycl::device device = q.get_device();
+    sycl::device device = dacpp_q.get_device();
     auto max_sizes = device.get_info<sycl::info::device::max_work_item_sizes<3>>();
     int max_global_size_x = max_sizes[0];
     int max_global_size_y = max_sizes[1];
@@ -1717,7 +1718,7 @@ const char *KERNEL_EXECUTE_Template = R"~~~(
     sycl::range<2> global(global_x, global_y);
 
     //队列提交命令组
-    q.submit([&](handler &h) {
+    dacpp_q.submit([&](handler &h) {
     {{ACCESSOR_LIST}}
     {{ACCESSOR_INIT}}
         h.parallel_for(sycl::nd_range<2>(global, local), [=](sycl::nd_item<2> item) {
@@ -1741,7 +1742,7 @@ const char *KERNEL_EXECUTE_Template = R"~~~(
 
 const char *KERNEL_EXECUTE_Template1 = R"~~~(
 	    //队列提交命令组
-    q.submit([&](handler &h) {
+    dacpp_q.submit([&](handler &h) {
     {{ACCESSOR_LIST}}
     {{ACCESSOR_INIT}}
         h.parallel_for(sycl::nd_range<2>(global, local), [=](sycl::nd_item<2> item) {
@@ -1764,7 +1765,7 @@ const char *KERNEL_EXECUTE_Template1 = R"~~~(
 
 
 const char *submitCode = R"~~~(
-    q.submit([&](handler &h) {
+    dacpp_q.submit([&](handler &h) {
     {{ACCESSOR_LIST}}
     {{ACCESSOR_INIT}}
         h.parallel_for(sycl::nd_range<2>(global, local), [=](sycl::nd_item<2> item) {
@@ -1787,7 +1788,7 @@ const char *submitCode = R"~~~(
 )~~~";
 //for循环包含内核函数的情况下的二维划分的Buffer内核执行模板
 const char *KERNEL_EXECUTE_Template2 = R"~~~(
-    sycl::device device = q.get_device();
+    sycl::device device = dacpp_q.get_device();
     auto max_sizes = device.get_info<sycl::info::device::max_work_item_sizes<3>>();
     int max_global_size_x = max_sizes[0];
     int max_global_size_y = max_sizes[1];
@@ -2097,7 +2098,7 @@ const char *REDUCTION_Template_Span = R"~~~(
     if({{SPLIT_SIZE}} > 1)
     {
         for(int i=0;i<{{SPAN_SIZE}};i++) {
-            q.submit([&](handler &h) {
+            dacpp_q.submit([&](handler &h) {
                 accessor d_{{NAME}}{r_{{NAME}}, h};
     	        h.parallel_for(
                 range<1>({{SPLIT_SIZE}}),

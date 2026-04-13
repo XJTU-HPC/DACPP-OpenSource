@@ -40,8 +40,8 @@ void {{DAC_SHELL_NAME}}({{DAC_SHELL_PARAMS}}) {
 	auto device_init_start=std::chrono::high_resolution_clock::now();
 
     // 设备选择
-    auto selector = default_selector_v;
-    queue q(selector,sycl::property::queue::enable_profiling{});
+    auto selector = sycl::default_selector_v;
+    sycl::queue q(selector,sycl::property::queue::enable_profiling{});
 	auto device_init_end=std::chrono::high_resolution_clock::now();
 	double deviceInit_time = std::chrono::duration_cast<std::chrono::microseconds>(
     device_init_end - device_init_start).count() * 1e-3; //设备初始化时间
