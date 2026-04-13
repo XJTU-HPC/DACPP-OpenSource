@@ -427,3 +427,117 @@ bash test_mpi.sh
 得到：
 
 - `10 tests | 10 passed | 0 failed | 0 skipped`
+
+---
+
+## 7. 2026-04-13 Buffer / ReconTensor 补充修复日志
+
+这一轮没有改 MPI planner，本次追加的是两个 buffer 侧问题和一个 `ReconTensor` 偏移问题。
+
+### 7.1 ReconTensor 切片 offset 丢失
+
+涉及文件：
+
+- [ReconTensor.h](/Volumes/QUQ/working/dacpp/clang/tools/translator/dacppLib/include/ReconTensor.h)
+
+问题现象：
+
+- 对已经带 `offset_` 的 Tensor / TensorProxy 再做切片时，新的切片起点没有把旧 offset 叠加进去
+- 连续存储路径下 `tensor2Array()` 直接返回底层首地址，没有加当前切片偏移
+- 结果是多层切片时读到了原 tensor 的错误起始位置
+
+修改点：
+
+- `tensor2Array(ImplType*& data)` 连续路径改为 `getDataPtr().get() + offset`
+- `Tensor::slice(...)` 的新 offset 改为 `this->offset_ + start * stride`
+- `TensorProxy(Tensor<...>, start, end, dimIdx)` 的新 offset 改为 `tensor.getOffset() + start * stride`
+
+直接验证：
+
+- `oddeven0.1` 从失败恢复为通过
+
+### 7.2 Buffer 路径重复展开 time-step
+
+涉及文件：
+
+- [Rewriter_Buffer_new.cpp](/Volumes/QUQ/working/dacpp/clang/tools/translator/rewriter/lib/Rewriter_Buffer_new.cpp)
+
+问题现象：
+
+- `rewriteMain()` 已经保留宿主侧外层时间推进循环，只替换 `<->` 表达式
+- buffer rewriter 又在 wrapper 里走 `CodeGen_KernelExecute2(...)`，把整段外层循环体再次展开
+- `stencil1.0` / `waveEquation1.0` 因此出现重复 time-step
+
+修改点：
+
+- 移除 `CodeGen_KernelExecute2(...)` 分支
+- 统一改为 `CodeGen_KernelExecute(...)`，只生成一次 shell wrapper 的 kernel 提交逻辑
+
+直接验证：
+
+- `stencil1.0` 恢复通过
+- `waveEquation1.0` 不再出现重复 time-step 导致的错误推进
+
+### 7.3 Buffer 参数访问模式按 calc 实际语义收窄
+
+涉及文件：
+
+- [Rewriter_Buffer_new.cpp](/Volumes/QUQ/working/dacpp/clang/tools/translator/rewriter/lib/Rewriter_Buffer_new.cpp)
+
+问题现象：
+
+- 仅靠 shell 标注生成 buffer accessor 会把一部分参数模式判错
+- `waveEquation1.0` 中 `matCur` 虽然 shell 侧走 `WRITE` 路径，但 calc 实际读取 `cur`，旧逻辑会生成 `discard_write` 且不做输入拷贝，结果全零
+- 初版修复把“所有读写”都粗暴升级成 `READ_WRITE`，又带来了两个回归：
+- `DFT1.0` 里的 `std::complex` 赋值在 AST 中是 `CXXOperatorCallExpr`，没被识别为写，导致输出参数被错误生成为 `const`
+- `matMul1.0` 的 `dotProduct += ...` 属于局部累加，不应该触发 host 旧值 copy-in；若直接升成 `READ_WRITE` 会把初始 `matC` 叠加进去
+
+修改点：
+
+- 新增 `ParamAccessVisitor`，从 `calc->getCalcLoc()->getBody()` 推断每个参数的真实访问方式
+- 区分三类访问：
+- `Reads`：普通读
+- `UpdateReads`：`+=` / `++` / overloaded compound assign 这种更新型读
+- `Writes`：普通写
+- 增加对 `CXXOperatorCallExpr` 的处理，覆盖 `operator=`、overloaded `+=`、`++/--`
+- 模式收敛规则改为：
+- 普通读 + 写 => `READ_WRITE`
+- 只有写 => `WRITE`
+- 只有普通读 => `READ`
+- 只有“更新型读 + 写”时，若 shell 原本就是 `WRITE`，继续保持 `WRITE`，避免无意义的 host copy-in
+
+直接验证：
+
+- `waveEquation1.0` 从全零输出恢复通过
+- `DFT1.0` 编译恢复正常并通过
+- `matMul1.0` 不再把初始 `matC` 叠加进结果
+
+### 7.4 本轮验证结果
+
+编译：
+
+```bash
+cmake --build /Volumes/QUQ/working/dacpp/build --target translator -j8
+```
+
+通过。
+
+关键回归：
+
+```bash
+bash /Volumes/QUQ/working/dacpp/clang/tools/translator/test_local.sh matMul1.0 DFT1.0 oddeven0.1 stencil1.0 waveEquation1.0
+```
+
+结果：
+
+- `5 tests | 5 passed | 0 failed | 0 skipped`
+
+默认本地冒烟：
+
+```bash
+bash /Volumes/QUQ/working/dacpp/clang/tools/translator/test_local.sh
+```
+
+结果：
+
+- `8 tests | 8 passed | 0 failed | 0 skipped`

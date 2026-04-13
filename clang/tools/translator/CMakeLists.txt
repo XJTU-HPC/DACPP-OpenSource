@@ -20,19 +20,13 @@ set(PARSER_SOURCES
   parser/lib/Dacfor.cpp
 )
 set(REWRITER_SOURCES
-  # rewriter/lib/dacInfo.cpp
-  # rewriter/lib/sub_template.cpp
+  # Keep this list limited to active rewriter/template sources.
+  # Legacy variants were moved to translator/archive/.
   rewriter/lib/usm_time_template.cpp
   rewriter/lib/usm_template.cpp
-  # rewriter/lib/Rewriter_Usm.cpp
-  # rewriter/lib/Rewriter_Usm_time.cpp
-  # rewriter/lib/Rewriter_Buffer.cpp
   rewriter/lib/Rewriter_Buffer_new.cpp
-  # rewriter/lib/Rewriter_Multiple.cpp
-  # rewriter/lib/buffer_template.cpp
   rewriter/lib/buffer_template_new.cpp
   rewriter/lib/universal_template.cpp
-  rewriter/lib/mpi_template.cpp
   rewriter/lib/Rewriter_MPI.cpp
   rewriter/lib/Multiple_template.cpp
 )

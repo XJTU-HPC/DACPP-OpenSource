@@ -1,6 +1,8 @@
 #include <set>
 #include <iostream>
 #include <sstream>
+#include <unordered_map>
+#include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/Rewrite/Core/Rewriter.h"
 #include "Rewriter.h"
 #include "Split.h"
@@ -11,6 +13,187 @@
 #include "usm_template.h"
 #include "Calc.h"
 #include "ASTParse.h"
+
+namespace {
+
+class ParamAccessVisitor : public clang::RecursiveASTVisitor<ParamAccessVisitor> {
+public:
+    explicit ParamAccessVisitor(
+        const std::unordered_map<const clang::ValueDecl*, int>& paramIndices,
+        int paramCount)
+        : ParamIndices(paramIndices),
+          Reads(paramCount, false),
+          UpdateReads(paramCount, false),
+          Writes(paramCount, false) {}
+
+    bool VisitDeclRefExpr(clang::DeclRefExpr* DRE) {
+        if (!DRE) {
+            return true;
+        }
+
+        auto it = ParamIndices.find(DRE->getDecl());
+        if (it == ParamIndices.end()) {
+            return true;
+        }
+
+        if (WriteDepth > 0) {
+            Writes[it->second] = true;
+        } else if (UpdateReadDepth > 0) {
+            UpdateReads[it->second] = true;
+        } else {
+            Reads[it->second] = true;
+        }
+        return true;
+    }
+
+    bool TraverseBinaryOperator(clang::BinaryOperator* BO) {
+        if (!BO) {
+            return true;
+        }
+
+        if (BO->isAssignmentOp()) {
+            ++WriteDepth;
+            TraverseStmt(BO->getLHS());
+            --WriteDepth;
+            TraverseStmt(BO->getRHS());
+            return true;
+        }
+
+        return clang::RecursiveASTVisitor<ParamAccessVisitor>::TraverseBinaryOperator(BO);
+    }
+
+    bool TraverseCompoundAssignOperator(clang::CompoundAssignOperator* BO) {
+        if (!BO) {
+            return true;
+        }
+
+        ++WriteDepth;
+        TraverseStmt(BO->getLHS());
+        --WriteDepth;
+        ++UpdateReadDepth;
+        TraverseStmt(BO->getLHS());
+        --UpdateReadDepth;
+        TraverseStmt(BO->getRHS());
+        return true;
+    }
+
+    bool TraverseUnaryOperator(clang::UnaryOperator* UO) {
+        if (!UO) {
+            return true;
+        }
+
+        if (UO->isIncrementDecrementOp()) {
+            ++WriteDepth;
+            TraverseStmt(UO->getSubExpr());
+            --WriteDepth;
+            ++UpdateReadDepth;
+            TraverseStmt(UO->getSubExpr());
+            --UpdateReadDepth;
+            return true;
+        }
+
+        return clang::RecursiveASTVisitor<ParamAccessVisitor>::TraverseUnaryOperator(UO);
+    }
+
+    bool TraverseCXXOperatorCallExpr(clang::CXXOperatorCallExpr* OpCall) {
+        if (!OpCall) {
+            return true;
+        }
+
+        if (OpCall->isAssignmentOp()) {
+            if (OpCall->getNumArgs() > 0) {
+                ++WriteDepth;
+                TraverseStmt(OpCall->getArg(0));
+                --WriteDepth;
+
+                if (OpCall->getOperator() != clang::OO_Equal) {
+                    ++UpdateReadDepth;
+                    TraverseStmt(OpCall->getArg(0));
+                    --UpdateReadDepth;
+                }
+            }
+
+            for (unsigned argIdx = 1; argIdx < OpCall->getNumArgs(); ++argIdx) {
+                TraverseStmt(OpCall->getArg(argIdx));
+            }
+            return true;
+        }
+
+        if (OpCall->getOperator() == clang::OO_PlusPlus ||
+            OpCall->getOperator() == clang::OO_MinusMinus) {
+            if (OpCall->getNumArgs() > 0) {
+                ++WriteDepth;
+                TraverseStmt(OpCall->getArg(0));
+                --WriteDepth;
+
+                ++UpdateReadDepth;
+                TraverseStmt(OpCall->getArg(0));
+                --UpdateReadDepth;
+            }
+
+            for (unsigned argIdx = 1; argIdx < OpCall->getNumArgs(); ++argIdx) {
+                TraverseStmt(OpCall->getArg(argIdx));
+            }
+            return true;
+        }
+
+        return clang::RecursiveASTVisitor<ParamAccessVisitor>::TraverseCXXOperatorCallExpr(OpCall);
+    }
+
+    std::vector<bool> Reads;
+    std::vector<bool> UpdateReads;
+    std::vector<bool> Writes;
+
+private:
+    const std::unordered_map<const clang::ValueDecl*, int>& ParamIndices;
+    int WriteDepth = 0;
+    int UpdateReadDepth = 0;
+};
+
+std::vector<dacppTranslator::IOTYPE> inferEffectiveBufferParamModes(
+    dacppTranslator::Shell* shell,
+    dacppTranslator::Calc* calc) {
+    std::vector<dacppTranslator::IOTYPE> modes;
+    modes.reserve(shell->getNumShellParams());
+    for (int paramIdx = 0; paramIdx < shell->getNumShellParams(); ++paramIdx) {
+        modes.push_back(shell->getShellParam(paramIdx)->getRw());
+    }
+
+    clang::FunctionDecl* calcLoc = calc->getCalcLoc();
+    if (!calcLoc || !calcLoc->getBody()) {
+        return modes;
+    }
+
+    std::unordered_map<const clang::ValueDecl*, int> paramIndices;
+    for (int paramIdx = 0; paramIdx < calcLoc->getNumParams(); ++paramIdx) {
+        paramIndices.emplace(calcLoc->getParamDecl(paramIdx), paramIdx);
+    }
+
+    ParamAccessVisitor visitor(paramIndices, calc->getNumParams());
+    visitor.TraverseStmt(calcLoc->getBody());
+
+    for (int paramIdx = 0; paramIdx < calc->getNumParams(); ++paramIdx) {
+        const bool reads = visitor.Reads[paramIdx];
+        const bool updateReads = visitor.UpdateReads[paramIdx];
+        const bool writes = visitor.Writes[paramIdx];
+
+        if (reads && writes) {
+            modes[paramIdx] = dacppTranslator::IOTYPE::READ_WRITE;
+        } else if (writes && updateReads) {
+            modes[paramIdx] = modes[paramIdx] == dacppTranslator::IOTYPE::WRITE
+                                  ? dacppTranslator::IOTYPE::WRITE
+                                  : dacppTranslator::IOTYPE::READ_WRITE;
+        } else if (writes) {
+            modes[paramIdx] = dacppTranslator::IOTYPE::WRITE;
+        } else if (reads || updateReads) {
+            modes[paramIdx] = dacppTranslator::IOTYPE::READ;
+        }
+    }
+
+    return modes;
+}
+
+}  // namespace
 
 void dacppTranslator::Rewriter::rewriteDac_Buffer() {
     // std::cout << "软编码BUFFER版本翻译" << std::endl;
@@ -34,6 +217,7 @@ void dacppTranslator::Rewriter::rewriteDac_Buffer() {
         Expression* expr = dacppFile->getExpression(i);
         Shell* shell = expr->getShell();
         Calc* calc = expr->getCalc();
+        const auto effectiveParamModes = inferEffectiveBufferParamModes(shell, calc);
         
 
         std::vector<BINDINFO> info;
@@ -74,7 +258,7 @@ void dacppTranslator::Rewriter::rewriteDac_Buffer() {
         // 计算结构
         code += "void " + calc->getName() + "(";
         for(int count = 0; count < calc->getNumParams(); count++) {
-            if(shell->getShellParam(count)->getRw()!=IOTYPE::READ)code += calc->getParam(count)->getBasicType() + "* " + calc->getParam(count)->getName() + ",";
+            if(effectiveParamModes[count] != IOTYPE::READ)code += calc->getParam(count)->getBasicType() + "* " + calc->getParam(count)->getName() + ",";
             else code += "const " + calc->getParam(count)->getBasicType() + "* " + calc->getParam(count)->getName() + ",";
         }
           for(int count = 0;count < shell->getNumShellParams(); count ++){
@@ -231,7 +415,7 @@ for (const auto &var : Vars) {
             for(int NumSplit = 0; NumSplit < shellParam->getNumSplit(); NumSplit++){
                 if(shellParam->getSplit(NumSplit)->getId() == "void") { continue;}
                 Split* split = shellParam->getSplit(NumSplit);
-                if(shellParam->getRw() == IOTYPE:: WRITE){
+                if(effectiveParamModes[NumShellParam] == IOTYPE::WRITE){
                     for(int i = 0; i < info.size(); i++){
                         if(shell->search_symbol(info[i].v)->getId() == split->getId())
                                 set = std::to_string(info[i].icls);
@@ -282,7 +466,7 @@ for (const auto &var : Vars) {
         std::string AddDacOps2Vector = "";
         for(int NumShellParam = 0; NumShellParam < shell->getNumShellParams(); NumShellParam++){
             ShellParam* shellParam = shell->getShellParam(NumShellParam);
-            if(shellParam->getRw() != IOTYPE::READ){
+            if(effectiveParamModes[NumShellParam] != IOTYPE::READ){
                 AddDacOps2Vector += BUFFER_TEMPLATE::CodeGen_Add_DacOps2Vector("ops_s","In_Ops");
             }
             else{
@@ -332,7 +516,7 @@ for (const auto &var : Vars) {
         for(int NumShellParam = 0; NumShellParam < shell->getNumShellParams(); NumShellParam++){
             ShellParam* shellParam = shell->getShellParam(NumShellParam);
             Dac_Ops ops;
-            if(shellParam->getRw()==IOTYPE::READ){
+            if(effectiveParamModes[NumShellParam] == IOTYPE::READ){
                 for(int NumSplit = 0; NumSplit < shellParam->getNumSplit(); NumSplit++){
                     if(shellParam->getSplit(NumSplit)->getId() == "void") { continue;}
                     Dac_Op op = Dac_Op(shellParam->getSplit(NumSplit)->getId(), 0, NumSplit);
@@ -376,13 +560,13 @@ for (const auto &var : Vars) {
         //2025.12.4：这里要进行一个小判断：对于只读的数据，将buffer的访问模式修改为只读 然后禁止数据写回操作
         //2025.12.4：对于只写的数据，访问模式设置为覆盖写 同时注意 写成这样*r_matC
         for (int argCount = 0; argCount < shell->getNumShellParams(); argCount++) {
-            if(shell->getShellParam(argCount)->getRw() == IOTYPE::READ){
+            if(effectiveParamModes[argCount] == IOTYPE::READ){
                 Accessor_List += BUFFER_TEMPLATE::CodeGen_AccessorInit0_read(shell->getShellParam(argCount)->getName(), shell->getShellParam(argCount)->getBasicType());
             }
-            else if(shell->getShellParam(argCount)->getRw() == IOTYPE::WRITE){
+            else if(effectiveParamModes[argCount] == IOTYPE::WRITE){
                 Accessor_List += BUFFER_TEMPLATE::CodeGen_AccessorInit0_write(shell->getShellParam(argCount)->getName(), shell->getShellParam(argCount)->getBasicType());
             }
-            else if(shell->getShellParam(argCount)->getRw() == IOTYPE::READ_WRITE){
+            else if(effectiveParamModes[argCount] == IOTYPE::READ_WRITE){
                 Accessor_List += BUFFER_TEMPLATE::CodeGen_AccessorInit0_read_write(shell->getShellParam(argCount)->getName(), shell->getShellParam(argCount)->getBasicType());
             }
         }
@@ -402,21 +586,21 @@ for (const auto &var : Vars) {
                     getpos += BUFFER_TEMPLATE::CodeGen_getpos0(shell->getShellParam(argCount)->getName(), std::to_string(NumSplit));
             }  
         }
-	    std::string KernelExecute;
-        if(dacppFile->getForStatementCtrl()&&dacppFile->mode==0){
-            std::cout << "break 1" << std::endl;
-            KernelExecute = BUFFER_TEMPLATE::CodeGen_KernelExecute2("Item_Size",AccessorInit,BindingInit,getpos,Accessor_List,Accessor_Pointer_List,CalcEmbed,dacppFile);//注意这里面填的size的大小需要是前面算出来的大小
-        }else{
-            std::cout << "break 2" << std::endl;
-            KernelExecute = BUFFER_TEMPLATE::CodeGen_KernelExecute("Item_Size",AccessorInit,BindingInit,getpos,Accessor_List,Accessor_Pointer_List,CalcEmbed);//注意这里面填的size的大小需要是前面算出来的大小
-        }// std::cout << KernelExecute;
+		    std::string KernelExecute;
+	        // rewriteMain() now preserves the original outer host loop and only
+	        // replaces the `<->` expression with the generated shell wrapper call.
+	        // Re-emitting the whole outer loop body inside the wrapper would execute
+	        // time-stepping logic twice (observed in stencil/waveEquation).
+	        std::cout << "break 2" << std::endl;
+	        KernelExecute = BUFFER_TEMPLATE::CodeGen_KernelExecute("Item_Size",AccessorInit,BindingInit,getpos,Accessor_List,Accessor_Pointer_List,CalcEmbed);//注意这里面填的size的大小需要是前面算出来的大小
+	        // std::cout << KernelExecute;
 
         std::string Reduction;
         std::string D2HMemMove;
         std::string ReductionRule = "sycl::plus<>()";
         for(int NumShellParam = 0; NumShellParam < shell->getNumShellParams(); NumShellParam++){
             ShellParam* shellParam = shell->getShellParam(NumShellParam);
-            if(shellParam->getRw() != IOTYPE::READ){
+            if(effectiveParamModes[NumShellParam] != IOTYPE::READ){
                 // Reduction += BUFFER_TEMPLATE::CodeGen_Reduction_Span(shellParam->getName()+"Reduction_Size","Reduction_Split_Size","Reduction_Split_Length",shellParam->getName(),shellParam->getBasicType(),ReductionRule);
 	            Reduction += BUFFER_TEMPLATE::CodeGen_Result_B2H_Mov(shellParam->getName(),shellParam->getName()+"_Size");
             }
@@ -427,11 +611,11 @@ for (const auto &var : Vars) {
         std::string dataRecon = "";
         for(int NumShellParam = 0; NumShellParam < shell->getNumShellParams(); NumShellParam++){
             ShellParam* shellParam = shell->getShellParam(NumShellParam);
-            if(shellParam->getRw() == IOTYPE::WRITE){
+            if(effectiveParamModes[NumShellParam] == IOTYPE::WRITE){
                 dataRecon += BUFFER_TEMPLATE::CodeGen_Init_Host_Memory(shellParam->getBasicType(),shellParam->getName());
-            }else if(shellParam->getRw() == IOTYPE::READ){
+            }else if(effectiveParamModes[NumShellParam] == IOTYPE::READ){
                 dataRecon += BUFFER_TEMPLATE::CodeGen_D2B_Mov_Buffer(shellParam->getBasicType(),shellParam->getName(),shellParam->getName()+"_Size");}
-            else if(shellParam->getRw() == IOTYPE::READ_WRITE){
+            else if(effectiveParamModes[NumShellParam] == IOTYPE::READ_WRITE){
                  dataRecon += BUFFER_TEMPLATE::CodeGen_D2B_Mov_Buffer_read_write(shellParam->getBasicType(),shellParam->getName(),shellParam->getName()+"_Size");}
             }
 
@@ -447,7 +631,7 @@ for (const auto &var : Vars) {
             }
             std::string dataOpsInit = BUFFER_TEMPLATE::CodeGen_DataOpsInit(shellParam->getName(),opPushBack);
             // dataRecon += BUFFER_TEMPLATE::CodeGen_DataReconstruct(shellParam->getBasicType(),shellParam->getName(),shellParam->getName()+"_Size",dataOpsInit);
-            if(shellParam->getRw() != IOTYPE::READ){
+            if(effectiveParamModes[NumShellParam] != IOTYPE::READ){
                 dataRecon += BUFFER_TEMPLATE::CodeGen_DataReconstruct1(shellParam->getBasicType(),shellParam->getName(),shellParam->getName()+"_Size",dataOpsInit);
             }
             else{

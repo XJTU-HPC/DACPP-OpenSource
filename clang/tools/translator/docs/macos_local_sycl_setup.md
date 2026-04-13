@@ -80,7 +80,52 @@ bash test_mpi.sh
 
 所有的中间产物和日志会保存在 `/tmp/dacpp_mpi_tests` 目录下。
 
-> **注意：** 某些测试（如 `matMul1.0` 和 `DFT1.0`）在使用 `--mode=buffer` 作为基准时由于 `Rewriter_Buffer.cpp` 内 `using namespace sycl;` 的缺失而导致编译器报出 `queue` 等歧义报错，这是已知问题，目前测试脚本会将这些失败按 `[FAIL]` 输出。
+> **注意：** 这份文档里提到的旧版 `Rewriter_Buffer.cpp` 基线路径已经不再是主线；当前 baseline 走的是 `Rewriter_Buffer_new.cpp`。历史旧实现已被归档到 `translator/archive/`，以免和现行代码路径混淆。
+
+## 运行本机 macOS 回归脚本
+
+如果你想在这台 macOS 机器上做本地 buffer 模式回归，使用 `test_local.sh`：
+
+- `test_mpi.sh`：验证 `--mode=usm --mpi` 路径，基线是单机 `--mode=buffer`
+- `test_local.sh`：验证本机单进程 `--mode=buffer` 路径，适合快速 smoke test 和定位非 MPI 代码生成问题
+
+默认 smoke suite：
+
+```bash
+cd /Volumes/QUQ/working/dacpp/clang/tools/translator
+bash test_local.sh
+```
+
+只跑指定样例：
+
+```bash
+cd /Volumes/QUQ/working/dacpp/clang/tools/translator
+bash test_local.sh gradientSum
+bash test_local.sh oddeven0.1 stencil1.0
+```
+
+打开扩展样例集：
+
+```bash
+cd /Volumes/QUQ/working/dacpp/clang/tools/translator
+INCLUDE_EXTENDED_LOCAL_TESTS=1 bash test_local.sh
+```
+
+调整单个样例超时时间：
+
+```bash
+cd /Volumes/QUQ/working/dacpp/clang/tools/translator
+LOCAL_TEST_TIMEOUT_SEC=300 bash test_local.sh MDP1.0
+```
+
+脚本行为说明：
+
+1. 自动挑选主 `.dac.cpp`，按 `--mode=buffer` 生成 `*.dac_sycl_buffer.cpp`
+2. 优先使用 `StandardSycl.cpp` 作为参考实现；如果本机不兼容，再回退到 `serial.cpp`，最后才回退到 `result.out`
+3. 运行前会对旧版 `StandardSycl.cpp` 做一层本机兼容适配，例如 `CL/sycl.hpp` 命名空间补齐、`gpu_selector_v -> default_selector_v`
+4. 输出比对前会过滤 AdaptiveCpp 警告，避免误报
+
+所有的中间产物和日志会保存在 `/tmp/dacpp_local_tests` 目录下。
 
 ## 当前测试状态
 
@@ -88,4 +133,10 @@ bash test_mpi.sh
 
 ```text
 /tmp/dacpp-mpi-final.gqTD5X
+```
+
+本机 `test_local.sh` 默认 smoke suite 最近一轮结果：
+
+```text
+8 tests | 8 passed | 0 failed | 0 skipped
 ```

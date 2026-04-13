@@ -120,7 +120,7 @@ namespace dacpp {
         // 连续存储：直接 memcpy
         if (is_contiguous) {
             // std::memcpy(data, src + offset, sizeof(ImplType) * total_size);
-            data=getDataPtr().get(); 
+            data = getDataPtr().get() + offset;
             return;
         }
 
@@ -915,7 +915,7 @@ namespace dacpp {
         if(dimIdx >= this->dim_ || start >= this->shape_.get()[dimIdx] || end > this->shape_.get()[dimIdx]
         || start < 0 || end < 0 || start > end) 
             throw std::runtime_error("[{}] operates on dimensions that exceed those of Tensor.");
-        int offset = start * this->stride_.get()[dimIdx];
+        int offset = this->offset_ + start * this->stride_.get()[dimIdx];
         int dim = this->dim_;
         std::shared_ptr<int> shape(new int[dim], std::default_delete<int[]>());
         std::shared_ptr<int> stride(new int[dim], std::default_delete<int[]>());
@@ -1037,7 +1037,7 @@ namespace dacpp {
         if(dimIdx >= tensor.getDim() || start >= tensor.getShape(dimIdx) || end > tensor.getShape(dimIdx)
         || start < 0 || end < 0 || start > end) 
             throw std::runtime_error("[{}] operates on dimensions that exceed those of TensorProxy.");
-        int offset = start * tensor.getStride(dimIdx);
+        int offset = tensor.getOffset() + start * tensor.getStride(dimIdx);
         int dim = tensor.getDim();
         std::shared_ptr<int> shape(new int[dim], std::default_delete<int[]>());
         std::shared_ptr<int> stride(new int[dim], std::default_delete<int[]>());
