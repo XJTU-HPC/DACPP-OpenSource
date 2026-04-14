@@ -1,5 +1,7 @@
 //实现dacppfile的文件
 #include <string>
+#include <regex>
+#include <set>
 
 #include "clang/AST/Attr.h"
 #include "llvm/ADT/StringExtras.h"
@@ -16,6 +18,7 @@
 #include "clang/AST/Stmt.h"
 #include "clang/AST/Decl.h"
 #include "clang/AST/RecursiveASTVisitor.h"
+#include "llvm/ADT/STLExtras.h"
 
 
 using namespace clang;
@@ -38,6 +41,53 @@ public:
         return true;
     }
 };
+
+static bool rangeContains(const clang::SourceManager& SM,
+                          clang::SourceRange outer,
+                          clang::SourceRange inner) {
+    if (outer.isInvalid() || inner.isInvalid()) {
+        return false;
+    }
+
+    auto beforeOrEqual = [&](clang::SourceLocation lhs, clang::SourceLocation rhs) {
+        return lhs == rhs || SM.isBeforeInTranslationUnit(lhs, rhs);
+    };
+
+    return beforeOrEqual(outer.getBegin(), inner.getBegin()) &&
+           beforeOrEqual(inner.getEnd(), outer.getEnd());
+}
+
+static bool containsWord(const std::string& text, const std::string& word) {
+    std::regex pattern("\\b" + word + "\\b");
+    return std::regex_search(text, pattern);
+}
+
+static bool isSupportedRegionLoop(const clang::ForStmt* FS,
+                                  clang::ASTContext* Context) {
+    if (!FS || !Context) {
+        return false;
+    }
+
+    const std::string loopText = Lexer::getSourceText(
+        CharSourceRange::getTokenRange(FS->getSourceRange()),
+        Context->getSourceManager(),
+        Context->getLangOpts()).str();
+
+    if (loopText.empty() || loopText.find("<->") != std::string::npos) {
+        return false;
+    }
+
+    static const std::vector<std::string> kRejectedKeywords = {
+        "if", "while", "switch", "return", "break", "continue", "goto"
+    };
+    for (const auto& keyword : kRejectedKeywords) {
+        if (containsWord(loopText, keyword)) {
+            return false;
+        }
+    }
+
+    return true;
+}
 
 /**
  * 存储头文件信息类实现
@@ -464,4 +514,102 @@ void dacppTranslator::DacppFile::collectInnerForStmts() {
     llvm::outs() << "[DacppFile] Found " 
                  << innerForStatements.size() 
                  << " inner for-loops inside outer for.\n";
+}
+
+void dacppTranslator::DacppFile::analyzeBufferRegionPlan() {
+    bufferRegionPlan = BufferRegionPlan{};
+
+    if (!this->Context || !this->forStatement || this->exprs.size() != 1 ||
+        this->dacExprs.size() != 1) {
+        bufferRegionPlan.disableReason = "requires exactly one <-> inside one outer loop";
+        return;
+    }
+
+    const auto* body = llvm::dyn_cast_or_null<clang::CompoundStmt>(this->forStatement->getBody());
+    if (!body) {
+        bufferRegionPlan.disableReason = "outer loop body must be a compound statement";
+        return;
+    }
+
+    auto* expr = this->exprs.front();
+    const auto* dacExpr = expr ? expr->getDacExpr() : nullptr;
+    if (!dacExpr) {
+        bufferRegionPlan.disableReason = "missing DAC expression";
+        return;
+    }
+
+    const auto& SM = this->Context->getSourceManager();
+
+    int exprCountInOuterFor = 0;
+    for (const auto* candidate : this->dacExprs) {
+        if (candidate && rangeContains(SM, this->forStatement->getSourceRange(),
+                                       candidate->getSourceRange())) {
+            ++exprCountInOuterFor;
+        }
+    }
+    if (exprCountInOuterFor != 1) {
+        bufferRegionPlan.disableReason = "outer loop contains multiple <-> expressions";
+        return;
+    }
+
+    int dacStmtIndex = -1;
+    for (std::size_t idx = 0; idx < body->size(); ++idx) {
+        const auto* stmt = body->body_begin()[idx];
+        if (stmt && rangeContains(SM, stmt->getSourceRange(), dacExpr->getSourceRange())) {
+            dacStmtIndex = static_cast<int>(idx);
+            break;
+        }
+    }
+    if (dacStmtIndex < 0) {
+        bufferRegionPlan.disableReason = "failed to locate top-level <-> statement";
+        return;
+    }
+    if (dacStmtIndex != 0) {
+        bufferRegionPlan.disableReason = "only loops with <-> as the first top-level statement are supported";
+        return;
+    }
+
+    std::set<std::string> shellVarNames;
+    for (const auto& entry : this->shellVars) {
+        shellVarNames.insert(entry.first);
+    }
+
+    std::vector<const clang::ForStmt*> siblingFors;
+    for (std::size_t idx = static_cast<std::size_t>(dacStmtIndex + 1); idx < body->size(); ++idx) {
+        const auto* stmt = body->body_begin()[idx];
+        const auto* siblingFor = llvm::dyn_cast_or_null<clang::ForStmt>(stmt);
+        if (!siblingFor) {
+            bufferRegionPlan.disableReason = "only sibling for-loops are supported after <->";
+            return;
+        }
+        if (!isSupportedRegionLoop(siblingFor, this->Context)) {
+            bufferRegionPlan.disableReason = "sibling loop contains unsupported control flow";
+            return;
+        }
+
+        const std::string loopText = Lexer::getSourceText(
+            CharSourceRange::getTokenRange(siblingFor->getSourceRange()),
+            this->Context->getSourceManager(),
+            this->Context->getLangOpts()).str();
+        for (const auto& captured : this->getForStatementVars()) {
+            if (shellVarNames.count(captured.first) != 0) {
+                continue;
+            }
+            if (containsWord(loopText, captured.first)) {
+                bufferRegionPlan.disableReason =
+                    "sibling loop uses non-shell captured state";
+                return;
+            }
+        }
+
+        siblingFors.push_back(siblingFor);
+    }
+
+    bufferRegionPlan.enabled = true;
+    bufferRegionPlan.exprIndex = 0;
+    bufferRegionPlan.parentFunction = this->node;
+    bufferRegionPlan.outerFor = this->forStatement;
+    bufferRegionPlan.dacExpr = dacExpr;
+    bufferRegionPlan.siblingForStmts = std::move(siblingFors);
+    bufferRegionPlan.capturedVars = this->getForStatementVars();
 }

@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" &> /dev/null && pwd)"
 source "$SCRIPT_DIR/env.sh"
 
 TESTS_DIR="$SCRIPT_DIR/tests"
-TMP_DIR="/tmp/dacpp_mpi_tests"
+TMP_DIR="/Volumes/QUQ/working/mpi_tmp"
 
 rm -rf "$TMP_DIR"
 mkdir -p "$TMP_DIR"
@@ -79,13 +79,13 @@ for test_name in "${NON_STENCIL_TESTS[@]}"; do
     clean_output "$work_dir/base.out"
 
     # Step 2: Translate MPI
-    echo "  [Step 2] Translate --mode=usm --mpi and compile"
+    echo "  [Step 2] Translate --mode=buffer --mpi and compile"
     mpi_dac="$work_dir/$(basename "${dac_file%.dac.cpp}").mpi.dac.cpp"
     cp "$dac_file" "$mpi_dac"
-    mpi_sycl="${mpi_dac%.dac.cpp}.dac_sycl_usm.cpp"
+    mpi_sycl="${mpi_dac%.dac.cpp}.dac_sycl_buffer_mpi.cpp"
     mpi_bin="$work_dir/mpi_bin"
 
-    if ! run_in_env "$work_dir/step2.log" "dacpp '$mpi_dac' --mode=usm --mpi && acpp-compile '$mpi_sycl' '$mpi_bin'"; then
+    if ! run_in_env "$work_dir/step2.log" "dacpp '$mpi_dac' --mode=buffer --mpi && acpp-compile '$mpi_sycl' '$mpi_bin'"; then
         echo "[FAIL] MPI translate/compile failed."
         head -n 20 "$work_dir/step2.log"
         FAILED=$((FAILED + 1))

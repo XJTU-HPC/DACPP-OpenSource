@@ -118,6 +118,10 @@ public:
         return;
     }
 
+    if (dacppFile->hasBufferRegionPlan()) {
+        return;
+    }
+
     //===========================
     // 2. 如果没有 forStatement，保持原逻辑即可
     //===========================

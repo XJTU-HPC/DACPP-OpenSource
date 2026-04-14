@@ -78,7 +78,7 @@ cd /Volumes/QUQ/working/dacpp/clang/tools/translator
 bash test_mpi.sh
 ```
 
-所有的中间产物和日志会保存在 `/tmp/dacpp_mpi_tests` 目录下。
+所有的中间产物和日志会保存在 `/Volumes/QUQ/working/mpi_tmp` 目录下。
 
 > **注意：** 这份文档里提到的旧版 `Rewriter_Buffer.cpp` 基线路径已经不再是主线；当前 baseline 走的是 `Rewriter_Buffer_new.cpp`。历史旧实现已被归档到 `translator/archive/`，以免和现行代码路径混淆。
 

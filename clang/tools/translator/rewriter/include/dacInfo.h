@@ -217,10 +217,32 @@ inline DacData& Args::operator[](int i){
 	return this->args[i];
 }
 
+inline RegularSlice::RegularSlice() {
+	if (this->name) {
+		this->name[0] = '\0';
+	}
+	this->split_size = 0;
+	this->split_length = 0;
+	this->dimId = 0;
+	this->stride = 0;
+	this->size = 0;
+}
+
 inline RegularSlice::RegularSlice(std::string name, int size, int stride) {
 	strcpy(this->name,name.c_str());
 	this->stride = stride;
 	this->size = size;
+}
+
+inline Index::Index() {
+	if (this->name) {
+		this->name[0] = '\0';
+	}
+	this->split_size = 0;
+	this->split_length = 0;
+	this->dimId = 0;
+	this->stride = 1;
+	this->size = 1;
 }
 
 inline Index::Index(std::string name) {

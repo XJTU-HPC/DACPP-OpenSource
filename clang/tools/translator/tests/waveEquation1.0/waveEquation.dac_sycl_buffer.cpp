@@ -39,219 +39,154 @@ void waveEq(const double* cur,const double* prev,double* next,int cur_0,int cur_
     next[(0 + next_0) * next_1_shape + (0 + next_1)] = 2.F * cur[(1 + cur_0) * cur_1_shape + (1 + cur_1)] - prev[(0 + prev_0) * prev_1_shape + (0 + prev_1)] + (c * c) * dt * dt * (u_xx + u_yy);
 }
 
-
-// 生成函数调用
-void waveEqShell_waveEq(dacpp::Matrix<double> & matCur, dacpp::Matrix<double> & matPrev, dacpp::Matrix<double> & matNext) { 
-    using namespace sycl;
-    // 设备选择
-    auto selector = default_selector_v;
-    sycl::queue dacpp_q(selector);
-    //声明参数生成工具
+struct __dacpp_ctx_waveEqShell_waveEq {
+    sycl::queue dacpp_q{};
     ParameterGeneration para_gene_tool;
-    // 算子初始化
-    
-    // 数据信息初始化
-    DataInfo info_matCur;
-    info_matCur.dim = matCur.getDim();
-    int info_matCur_Shape[2] = {0};
-    for(int i = 0; i < info_matCur.dim; i++)
-    {
-        info_matCur.dimLength.push_back(matCur.getShape(i));
-        info_matCur_Shape[i] = matCur.getShape(i);
-    }
-	
-    // 数据信息初始化
-    DataInfo info_matPrev;
-    info_matPrev.dim = matPrev.getDim();
-    int info_matPrev_Shape[2] = {0};
-    for(int i = 0; i < info_matPrev.dim; i++)
-    {
-        info_matPrev.dimLength.push_back(matPrev.getShape(i));
-        info_matPrev_Shape[i] = matPrev.getShape(i);
-    }
-	
-    // 数据信息初始化
-    DataInfo info_matNext;
-    info_matNext.dim = matNext.getDim();
-    int info_matNext_Shape[2] = {0};
-    for(int i = 0; i < info_matNext.dim; i++)
-    {
-        info_matNext.dimLength.push_back(matNext.getShape(i));
-        info_matNext_Shape[i] = matNext.getShape(i);
-    }
-	
-    // 规则分区算子初始化
-    RegularSlice sp1 = RegularSlice("sp1", 3, 1);
-    sp1.setDimId(0);
-    sp1.SetSplitSize(para_gene_tool.init_operetor_splitnumber(sp1,info_matCur));
-
-    // 规则分区算子初始化
-    RegularSlice sp2 = RegularSlice("sp2", 3, 1);
-    sp2.setDimId(1);
-    sp2.SetSplitSize(para_gene_tool.init_operetor_splitnumber(sp2,info_matCur));
-
-    // 降维算子初始化
-    Index idx1 = Index("idx1");
-    idx1.setDimId(0);
-    idx1.SetSplitSize(para_gene_tool.init_operetor_splitnumber(idx1,info_matPrev));
-
-    // 降维算子初始化
-    Index idx2 = Index("idx2");
-    idx2.setDimId(1);
-    idx2.SetSplitSize(para_gene_tool.init_operetor_splitnumber(idx2,info_matPrev));
-
-    //参数生成
-	
-    // 参数生成 提前计算后面需要用到的参数	
-	
-    // 算子组初始化
-    Dac_Ops matCur_Ops;
-    
-    sp1.setDimId(0);
-    matCur_Ops.push_back(sp1);
-
-    sp2.setDimId(1);
-    matCur_Ops.push_back(sp2);
-
-
-    // 算子组初始化
-    Dac_Ops matPrev_Ops;
-    
-    idx1.setDimId(0);
-    matPrev_Ops.push_back(idx1);
-
-    idx2.setDimId(1);
-    matPrev_Ops.push_back(idx2);
-
-
-    // 算子组初始化
-    Dac_Ops matNext_Ops;
-    
-    idx1.setDimId(0);
-    matNext_Ops.push_back(idx1);
-
-    idx2.setDimId(1);
-    matNext_Ops.push_back(idx2);
-
-
-    // 算子组初始化
+    int Item_Size = 0;
+    int dim_x = 1;
+    int dim_y = 1;
+    int local_x = 1;
+    int local_y = 1;
+    int global_x = 1;
+    int global_y = 1;
+    RegularSlice sp1;
+    RegularSlice sp2;
+    Index idx1;
+    Index idx2;
     Dac_Ops In_Ops;
-    
-    sp1.setDimId(0);
-    In_Ops.push_back(sp1);
-
-    sp2.setDimId(1);
-    In_Ops.push_back(sp2);
-
-
-    // 算子组初始化
     Dac_Ops Out_Ops;
-    
-    idx1.setDimId(0);
-    Out_Ops.push_back(idx1);
+    DataInfo info_matCur;
+    std::vector<int> info_matCur_Shape;
+    Dac_Ops matCur_Ops;
+    std::vector<double> h_matCur;
+    std::unique_ptr<sycl::buffer<double, 1>> r_matCur;
+    std::vector<int> info_partition_matCur;
+    std::unique_ptr<sycl::buffer<int, 1>> info_partition_matCur_buffer;
+    DataInfo info_matPrev;
+    std::vector<int> info_matPrev_Shape;
+    Dac_Ops matPrev_Ops;
+    std::vector<double> h_matPrev;
+    std::unique_ptr<sycl::buffer<double, 1>> r_matPrev;
+    std::vector<int> info_partition_matPrev;
+    std::unique_ptr<sycl::buffer<int, 1>> info_partition_matPrev_buffer;
+    DataInfo info_matNext;
+    std::vector<int> info_matNext_Shape;
+    Dac_Ops matNext_Ops;
+    std::vector<double> h_matNext;
+    std::unique_ptr<sycl::buffer<double, 1>> r_matNext;
+    std::vector<int> info_partition_matNext;
+    std::unique_ptr<sycl::buffer<int, 1>> info_partition_matNext_buffer;
+};
 
-    idx2.setDimId(1);
-    Out_Ops.push_back(idx2);
-
-
-	
-	
-	
-    // 计算工作项的大小
-    int Item_Size = para_gene_tool.init_work_item_size(In_Ops);
-
-
-    // 设备内存分配
-    
-    // 数据关联计算
-    
-	
-    // 数据移动
-    double* h_matCur = (double*)malloc(matCur.getSize()*sizeof(double));
-    matCur.tensor2Array(h_matCur);
-	buffer<double, 1> r_matCur(h_matCur, range<1>(matCur.getSize()));
-
-    // 数据移动
-    double* h_matPrev = (double*)malloc(matPrev.getSize()*sizeof(double));
-    matPrev.tensor2Array(h_matPrev);
-	buffer<double, 1> r_matPrev(h_matPrev, range<1>(matPrev.getSize()));
-
-    // 数据移动
-    double* h_matNext = (double*)malloc(matNext.getSize()*sizeof(double));
-
-    // 数据重组
-    
-    
-    // 数据算子组初始化
-    Dac_Ops matCur_ops;
-    
-    sp1.setDimId(0);
-    matCur_ops.push_back(sp1);
-    sp2.setDimId(1);
-    matCur_ops.push_back(sp2);
-
-
-	std::vector<int> info_partition_matCur=para_gene_tool.init_partition_data_shape(info_matCur,matCur_ops);
-    sycl::buffer<int> info_partition_matCur_buffer(info_partition_matCur.data(), sycl::range<1>(info_partition_matCur.size()));
-
-    // 数据重组
-    
-    
-    // 数据算子组初始化
-    Dac_Ops matPrev_ops;
-    
-    idx1.setDimId(0);
-    matPrev_ops.push_back(idx1);
-    idx2.setDimId(1);
-    matPrev_ops.push_back(idx2);
-
-
-	std::vector<int> info_partition_matPrev=para_gene_tool.init_partition_data_shape(info_matPrev,matPrev_ops);
-    sycl::buffer<int> info_partition_matPrev_buffer(info_partition_matPrev.data(), sycl::range<1>(info_partition_matPrev.size()));
-
-    // 数据重组
-    
-    // 数据算子组初始化
-    Dac_Ops matNext_ops;
-    
-    idx1.setDimId(0);
-    matNext_ops.push_back(idx1);
-    idx2.setDimId(1);
-    matNext_ops.push_back(idx2);
-
-
-    auto r_matNext = std::make_unique<sycl::buffer<double, 1>>(h_matNext,sycl::range<1>(matNext.getSize()));
-    r_matNext->set_final_data(h_matNext);
-
-	std::vector<int> info_partition_matNext=para_gene_tool.init_partition_data_shape(info_matNext,matNext_ops);
-    sycl::buffer<int> info_partition_matNext_buffer(info_partition_matNext.data(), sycl::range<1>(info_partition_matNext.size()));
-    
-	
-	
-    sycl::device device = dacpp_q.get_device();
+void __dacpp_init_waveEqShell_waveEq(__dacpp_ctx_waveEqShell_waveEq& ctx, dacpp::Matrix<double> & matCur, dacpp::Matrix<double> & matPrev, dacpp::Matrix<double> & matNext) {
+    ctx.dacpp_q = sycl::queue(sycl::default_selector_v);
+    ctx.info_matCur = DataInfo{};
+    ctx.info_matCur.dim = matCur.getDim();
+    ctx.info_matCur.dimLength.clear();
+    ctx.info_matCur_Shape.assign(ctx.info_matCur.dim, 0);
+    for (int dimIdx = 0; dimIdx < ctx.info_matCur.dim; ++dimIdx) {
+        ctx.info_matCur.dimLength.push_back(matCur.getShape(dimIdx));
+        ctx.info_matCur_Shape[dimIdx] = matCur.getShape(dimIdx);
+    }
+    ctx.info_matPrev = DataInfo{};
+    ctx.info_matPrev.dim = matPrev.getDim();
+    ctx.info_matPrev.dimLength.clear();
+    ctx.info_matPrev_Shape.assign(ctx.info_matPrev.dim, 0);
+    for (int dimIdx = 0; dimIdx < ctx.info_matPrev.dim; ++dimIdx) {
+        ctx.info_matPrev.dimLength.push_back(matPrev.getShape(dimIdx));
+        ctx.info_matPrev_Shape[dimIdx] = matPrev.getShape(dimIdx);
+    }
+    ctx.info_matNext = DataInfo{};
+    ctx.info_matNext.dim = matNext.getDim();
+    ctx.info_matNext.dimLength.clear();
+    ctx.info_matNext_Shape.assign(ctx.info_matNext.dim, 0);
+    for (int dimIdx = 0; dimIdx < ctx.info_matNext.dim; ++dimIdx) {
+        ctx.info_matNext.dimLength.push_back(matNext.getShape(dimIdx));
+        ctx.info_matNext_Shape[dimIdx] = matNext.getShape(dimIdx);
+    }
+    ctx.sp1 = RegularSlice("sp1", 3, 1);
+    ctx.sp1.setDimId(0);
+    ctx.sp1.SetSplitSize(ctx.para_gene_tool.init_operetor_splitnumber(ctx.sp1, ctx.info_matCur));
+    ctx.sp2 = RegularSlice("sp2", 3, 1);
+    ctx.sp2.setDimId(1);
+    ctx.sp2.SetSplitSize(ctx.para_gene_tool.init_operetor_splitnumber(ctx.sp2, ctx.info_matCur));
+    ctx.idx1 = Index("idx1");
+    ctx.idx1.setDimId(0);
+    ctx.idx1.SetSplitSize(ctx.para_gene_tool.init_operetor_splitnumber(ctx.idx1, ctx.info_matPrev));
+    ctx.idx2 = Index("idx2");
+    ctx.idx2.setDimId(1);
+    ctx.idx2.SetSplitSize(ctx.para_gene_tool.init_operetor_splitnumber(ctx.idx2, ctx.info_matPrev));
+    ctx.matCur_Ops.clear();
+    ctx.sp1.setDimId(0);
+    ctx.matCur_Ops.push_back(ctx.sp1);
+    ctx.sp2.setDimId(1);
+    ctx.matCur_Ops.push_back(ctx.sp2);
+    ctx.matPrev_Ops.clear();
+    ctx.idx1.setDimId(0);
+    ctx.matPrev_Ops.push_back(ctx.idx1);
+    ctx.idx2.setDimId(1);
+    ctx.matPrev_Ops.push_back(ctx.idx2);
+    ctx.matNext_Ops.clear();
+    ctx.idx1.setDimId(0);
+    ctx.matNext_Ops.push_back(ctx.idx1);
+    ctx.idx2.setDimId(1);
+    ctx.matNext_Ops.push_back(ctx.idx2);
+    ctx.In_Ops.clear();
+    ctx.Out_Ops.clear();
+    ctx.sp1.setDimId(0);
+    ctx.In_Ops.push_back(ctx.sp1);
+    ctx.sp2.setDimId(1);
+    ctx.In_Ops.push_back(ctx.sp2);
+    ctx.idx1.setDimId(0);
+    ctx.Out_Ops.push_back(ctx.idx1);
+    ctx.idx2.setDimId(1);
+    ctx.Out_Ops.push_back(ctx.idx2);
+    ctx.Item_Size = ctx.para_gene_tool.init_work_item_size(ctx.In_Ops);
+    sycl::device device = ctx.dacpp_q.get_device();
     auto max_sizes = device.get_info<sycl::info::device::max_work_item_sizes<3>>();
-    int max_global_size_x = max_sizes[0];
-    int max_global_size_y = max_sizes[1];
-    int max_global_size_z = max_sizes[2];
+    ctx.dim_x = static_cast<int>(sycl::ceil(sycl::sqrt(static_cast<float>(ctx.Item_Size))));
+    ctx.dim_y = static_cast<int>(sycl::ceil(static_cast<float>(ctx.Item_Size) / ctx.dim_x));
+    ctx.local_x = std::min(16, static_cast<int>(max_sizes[0]));
+    ctx.local_y = std::min(16, static_cast<int>(max_sizes[1]));
+    ctx.global_x = ((ctx.dim_x + ctx.local_x - 1) / ctx.local_x) * ctx.local_x;
+    ctx.global_y = ((ctx.dim_y + ctx.local_y - 1) / ctx.local_y) * ctx.local_y;
+    ctx.h_matCur.clear();
+    matCur.tensor2Array(ctx.h_matCur);
+    ctx.r_matCur = std::make_unique<sycl::buffer<double, 1>>(ctx.h_matCur.data(), sycl::range<1>(matCur.getSize()));
+    ctx.info_partition_matCur = ctx.para_gene_tool.init_partition_data_shape(ctx.info_matCur, ctx.matCur_Ops);
+    ctx.info_partition_matCur_buffer = std::make_unique<sycl::buffer<int, 1>>(ctx.info_partition_matCur.data(), sycl::range<1>(ctx.info_partition_matCur.size()));
+    ctx.h_matPrev.clear();
+    matPrev.tensor2Array(ctx.h_matPrev);
+    ctx.r_matPrev = std::make_unique<sycl::buffer<double, 1>>(ctx.h_matPrev.data(), sycl::range<1>(matPrev.getSize()));
+    ctx.info_partition_matPrev = ctx.para_gene_tool.init_partition_data_shape(ctx.info_matPrev, ctx.matPrev_Ops);
+    ctx.info_partition_matPrev_buffer = std::make_unique<sycl::buffer<int, 1>>(ctx.info_partition_matPrev.data(), sycl::range<1>(ctx.info_partition_matPrev.size()));
+    ctx.h_matNext.clear();
+    ctx.r_matNext = std::make_unique<sycl::buffer<double, 1>>(sycl::range<1>(matNext.getSize()));
+    ctx.info_partition_matNext = ctx.para_gene_tool.init_partition_data_shape(ctx.info_matNext, ctx.matNext_Ops);
+    ctx.info_partition_matNext_buffer = std::make_unique<sycl::buffer<int, 1>>(ctx.info_partition_matNext.data(), sycl::range<1>(ctx.info_partition_matNext.size()));
+}
 
-	// 二维划分（可测试三维拓展）
-    int dim_x = (int)sycl::ceil(sycl::sqrt((float)Item_Size));
-    int dim_y = (int)sycl::ceil((float)Item_Size / dim_x);
-
-    // 固定 local 为 16*16,但受设备上限约束
-    int local_x = std::min(16, max_global_size_x);
-    int local_y = std::min(16, max_global_size_y);
-
-    // 对齐 global 到 local 的整数倍（防止越界）
-    int global_x = ((dim_x + local_x - 1) / local_x) * local_x;
-    int global_y = ((dim_y + local_y - 1) / local_y) * local_y;
-
-    sycl::range<2> local(local_x, local_y);
-    sycl::range<2> global(global_x, global_y);
-
-    //队列提交命令组
+void __dacpp_submit_waveEqShell_waveEq(__dacpp_ctx_waveEqShell_waveEq& ctx) {
+    using namespace sycl;
+    auto& dacpp_q = ctx.dacpp_q;
+    auto& sp1 = ctx.sp1;
+    auto& sp2 = ctx.sp2;
+    auto& idx1 = ctx.idx1;
+    auto& idx2 = ctx.idx2;
+    auto& r_matCur = *ctx.r_matCur;
+    auto& r_matPrev = *ctx.r_matPrev;
+    auto* r_matNext = ctx.r_matNext.get();
+    auto& info_partition_matCur_buffer = *ctx.info_partition_matCur_buffer;
+    auto& info_partition_matPrev_buffer = *ctx.info_partition_matPrev_buffer;
+    auto& info_partition_matNext_buffer = *ctx.info_partition_matNext_buffer;
+    auto* info_matCur_Shape = ctx.info_matCur_Shape.data();
+    auto* info_matPrev_Shape = ctx.info_matPrev_Shape.data();
+    auto* info_matNext_Shape = ctx.info_matNext_Shape.data();
+    const int Item_Size = ctx.Item_Size;
+    sycl::range<2> local(ctx.local_x, ctx.local_y);
+    sycl::range<2> global(ctx.global_x, ctx.global_y);
     dacpp_q.submit([&](handler &h) {
-    
+
         accessor<double, 1, access::mode::read> acc_matCur(r_matCur, h);
         r_matCur.set_final_data(nullptr);
         
@@ -259,50 +194,168 @@ void waveEqShell_waveEq(dacpp::Matrix<double> & matCur, dacpp::Matrix<double> & 
         r_matPrev.set_final_data(nullptr);
         
         accessor<double, 1, sycl::access::mode::discard_write> acc_matNext(*r_matNext, h);
-    
         auto info_partition_matCur_accessor = info_partition_matCur_buffer.get_access<sycl::access::mode::read>(h);
         auto info_partition_matPrev_accessor = info_partition_matPrev_buffer.get_access<sycl::access::mode::read>(h);
-        auto info_partition_matNext_accessor = info_partition_matNext_buffer.get_access<sycl::access::mode::read>(h);
-        h.parallel_for(sycl::nd_range<2>(global, local), [=](sycl::nd_item<2> item) {
+        auto info_partition_matNext_accessor = info_partition_matNext_buffer.get_access<sycl::access::mode::read>(h);        h.parallel_for(sycl::nd_range<2>(global, local), [=](sycl::nd_item<2> item) {
             int gx = item.get_global_id(0);
             int gy = item.get_global_id(1);
             int item_id = gx * global[1] + gy;
             if(item_id >= Item_Size)
                 return;
             // 索引初始化
-			
+
             const auto sp1_=(item_id/sp2.split_size+(0))%sp1.split_size;
             const auto idx1_=(item_id/sp2.split_size+(0))%idx1.split_size;
             const auto sp2_=(item_id+(0))%sp2.split_size;
-            const auto idx2_=(item_id+(0))%idx2.split_size;
-			// 获得划分数据单元左上角（第一个元素）的位置
-			
+            const auto idx2_=(item_id+(0))%idx2.split_size;            // 获得划分数据单元左上角（第一个元素）的位置
+
 			const auto matCur_0 = sp1_ * sp1.stride;
 			const auto matCur_1 = sp2_ * sp2.stride;
 			const auto matPrev_0 = idx1_ * idx1.stride;
 			const auto matPrev_1 = idx2_ * idx2.stride;
 			const auto matNext_0 = idx1_ * idx1.stride;
-			const auto matNext_1 = idx2_ * idx2.stride;
-            // 获得accessor指针
-            
+			const auto matNext_1 = idx2_ * idx2.stride;            // 获得accessor指针
+
             auto* d_matCur = acc_matCur.get_multi_ptr<access::decorated::no>().get();
             auto* d_matPrev = acc_matPrev.get_multi_ptr<access::decorated::no>().get();
-            auto* d_matNext = acc_matNext.get_multi_ptr<access::decorated::no>().get();
-            // 嵌入计算
-			
-            waveEq(d_matCur,d_matPrev,d_matNext,matCur_0,matCur_1,matPrev_0,matPrev_1,matNext_0,matNext_1,info_matCur_Shape[0],info_matCur_Shape[1],info_matPrev_Shape[0],info_matPrev_Shape[1],info_matNext_Shape[0],info_matNext_Shape[1],info_partition_matCur_accessor,info_partition_matPrev_accessor,info_partition_matNext_accessor);
-        });
-    }).wait();
-    
+            auto* d_matNext = acc_matNext.get_multi_ptr<access::decorated::no>().get();            // 嵌入计算
 
-	
-    //结果返回语句改为析构语句
-    r_matNext.reset();
-    matNext.array2Tensor(h_matNext);
-
-	
-
+            waveEq(d_matCur,d_matPrev,d_matNext,matCur_0,matCur_1,matPrev_0,matPrev_1,matNext_0,matNext_1,info_matCur_Shape[0],info_matCur_Shape[1],info_matPrev_Shape[0],info_matPrev_Shape[1],info_matNext_Shape[0],info_matNext_Shape[1],info_partition_matCur_accessor,info_partition_matPrev_accessor,info_partition_matNext_accessor);        });
+    });
 }
+
+void __dacpp_submit_region_waveEqShell_waveEq_stmt_0(__dacpp_ctx_waveEqShell_waveEq& ctx) {
+    using namespace sycl;
+    auto& dacpp_q = ctx.dacpp_q;
+    auto* r_matCur = ctx.r_matCur.get();
+    auto* r_matPrev = ctx.r_matPrev.get();
+    auto* r_matNext = ctx.r_matNext.get();
+    auto* info_matCur_Shape = ctx.info_matCur_Shape.data();
+    auto* info_matPrev_Shape = ctx.info_matPrev_Shape.data();
+    auto* info_matNext_Shape = ctx.info_matNext_Shape.data();
+{
+    int __iL = (1);
+    int __iR = (NX-2);
+    int __iN = __iR - __iL +1;
+    int __jL = (1);
+    int __jR = (NY-2);
+    int __jN = __jR - __jL + 1;
+    dacpp_q.submit([&](sycl::handler& h){
+    auto acc_matCur = r_matCur->get_access<sycl::access::mode::read_write>(h);
+    auto acc_matPrev = r_matPrev->get_access<sycl::access::mode::read_write>(h);
+    h.parallel_for(sycl::range<2>(__iN, __jN), [=](sycl::id<2> idx){
+      auto* d_matCur = acc_matCur.template get_multi_ptr<sycl::access::decorated::no>().get();
+      auto* d_matPrev = acc_matPrev.template get_multi_ptr<sycl::access::decorated::no>().get();
+      int i = __iL + idx[0];
+      int j = __jL + idx[1];
+      {
+                d_matPrev[(i-1) * (info_matPrev_Shape[0]) + (j-1)]=d_matCur[(i) * (info_matCur_Shape[0]) + (j)];
+            }
+    });
+  });
+}
+}
+
+void __dacpp_submit_region_waveEqShell_waveEq_stmt_1(__dacpp_ctx_waveEqShell_waveEq& ctx) {
+    using namespace sycl;
+    auto& dacpp_q = ctx.dacpp_q;
+    auto* r_matCur = ctx.r_matCur.get();
+    auto* r_matPrev = ctx.r_matPrev.get();
+    auto* r_matNext = ctx.r_matNext.get();
+    auto* info_matCur_Shape = ctx.info_matCur_Shape.data();
+    auto* info_matPrev_Shape = ctx.info_matPrev_Shape.data();
+    auto* info_matNext_Shape = ctx.info_matNext_Shape.data();
+{
+    int __iL = (1);
+    int __iR = (NX-2);
+    int __iN = __iR - __iL +1;
+    int __jL = (1);
+    int __jR = (NY-2);
+    int __jN = __jR - __jL + 1;
+    dacpp_q.submit([&](sycl::handler& h){
+    auto acc_matCur = r_matCur->get_access<sycl::access::mode::read_write>(h);
+    auto acc_matNext = r_matNext->get_access<sycl::access::mode::read_write>(h);
+    h.parallel_for(sycl::range<2>(__iN, __jN), [=](sycl::id<2> idx){
+      auto* d_matCur = acc_matCur.template get_multi_ptr<sycl::access::decorated::no>().get();
+      auto* d_matNext = acc_matNext.template get_multi_ptr<sycl::access::decorated::no>().get();
+      int i = __iL + idx[0];
+      int j = __jL + idx[1];
+      {
+                d_matCur[(i) * (info_matCur_Shape[0]) + (j)]=d_matNext[(i-1) * (info_matPrev_Shape[0]) + (j-1)];
+            }
+    });
+  });
+}
+}
+
+void __dacpp_submit_region_waveEqShell_waveEq_stmt_2(__dacpp_ctx_waveEqShell_waveEq& ctx) {
+    using namespace sycl;
+    auto& dacpp_q = ctx.dacpp_q;
+    auto* r_matCur = ctx.r_matCur.get();
+    auto* r_matPrev = ctx.r_matPrev.get();
+    auto* r_matNext = ctx.r_matNext.get();
+    auto* info_matCur_Shape = ctx.info_matCur_Shape.data();
+    auto* info_matPrev_Shape = ctx.info_matPrev_Shape.data();
+    auto* info_matNext_Shape = ctx.info_matNext_Shape.data();
+{
+  int __L = (0);
+  int __R = (NX-1);
+  int __N = __R - __L +1;
+  dacpp_q.submit([&](sycl::handler& h){
+    auto acc_matCur = r_matCur->get_access<sycl::access::mode::read_write>(h);
+    h.parallel_for(sycl::range<1>(__N), [=](sycl::id<1> idx){
+      auto* d_matCur = acc_matCur.template get_multi_ptr<sycl::access::decorated::no>().get();
+      int i = __L + idx[0];
+      {       
+            d_matCur[(i) * (info_matCur_Shape[0]) + (NY-1)]=0;
+            d_matCur[(i) * (info_matCur_Shape[0]) + (0)]=0;
+        }
+    });
+  });
+}
+}
+
+void __dacpp_submit_region_waveEqShell_waveEq_stmt_3(__dacpp_ctx_waveEqShell_waveEq& ctx) {
+    using namespace sycl;
+    auto& dacpp_q = ctx.dacpp_q;
+    auto* r_matCur = ctx.r_matCur.get();
+    auto* r_matPrev = ctx.r_matPrev.get();
+    auto* r_matNext = ctx.r_matNext.get();
+    auto* info_matCur_Shape = ctx.info_matCur_Shape.data();
+    auto* info_matPrev_Shape = ctx.info_matPrev_Shape.data();
+    auto* info_matNext_Shape = ctx.info_matNext_Shape.data();
+{
+  int __L = (0);
+  int __R = (NY-1);
+  int __N = __R - __L +1;
+  dacpp_q.submit([&](sycl::handler& h){
+    auto acc_matCur = r_matCur->get_access<sycl::access::mode::read_write>(h);
+    h.parallel_for(sycl::range<1>(__N), [=](sycl::id<1> idx){
+      auto* d_matCur = acc_matCur.template get_multi_ptr<sycl::access::decorated::no>().get();
+      int j = __L + idx[0];
+      {
+            d_matCur[(NX - 1) * (info_matCur_Shape[0]) + (j)]=0;
+            d_matCur[(0) * (info_matCur_Shape[0]) + (j)]=0;
+             // 底部边界
+        }
+    });
+  });
+}
+}
+
+void __dacpp_sync_waveEqShell_waveEq(__dacpp_ctx_waveEqShell_waveEq& ctx, dacpp::Matrix<double> & matCur, dacpp::Matrix<double> & matPrev, dacpp::Matrix<double> & matNext) {
+    using namespace sycl;
+    ctx.dacpp_q.wait();
+    ctx.h_matCur.resize(matCur.getSize());
+    {
+        host_accessor acc(*ctx.r_matCur);
+        for (std::size_t idx = 0; idx < ctx.h_matCur.size(); ++idx) {
+            ctx.h_matCur[idx] = acc[idx];
+        }
+    }
+    matCur.array2Tensor(ctx.h_matCur);
+}
+
 
 int main() {
     // 初始化波场
@@ -335,30 +388,19 @@ int main() {
     dacpp::Matrix<double> matPrev = u_prev_tensor[{1,NX-1}][{1,NY-1}];
     dacpp::Matrix<double> matNext = u_next_tensor[{1,NX-1}][{1,NY-1}];
     
-    for(int i = 0;i < TIME_STEPS; i++) {
-        waveEqShell_waveEq(matCur, matPrev, matNext);
-        for (int i = 1; i <= NX-2; i++) {
-            for(int j = 1; j <=NY-2; j++){
-                matPrev[i-1][j-1]=matCur[i][j];
-            }
-        }
+        __dacpp_ctx_waveEqShell_waveEq __dacpp_ctx_waveEqShell_waveEq_0;
+    __dacpp_init_waveEqShell_waveEq(__dacpp_ctx_waveEqShell_waveEq_0, matCur, matPrev, matNext);
+for(int i = 0;i < TIME_STEPS; i++) {
+        __dacpp_submit_waveEqShell_waveEq(__dacpp_ctx_waveEqShell_waveEq_0);
+        __dacpp_submit_region_waveEqShell_waveEq_stmt_0(__dacpp_ctx_waveEqShell_waveEq_0);
 
-        for (int i = 1; i <= NX-2; i++) {
-            for(int j = 1; j <=NY-2; j++){
-                matCur[i][j]=matNext[i-1][j-1];
-            }
-        }
+        __dacpp_submit_region_waveEqShell_waveEq_stmt_1(__dacpp_ctx_waveEqShell_waveEq_0);
         // 处理边界条件（绝热边界：导数为零）
-        for (int i = 0; i <= NX-1; ++i) {       
-            matCur[i][NY-1]=0;
-            matCur[i][0]=0;
-        }
-        for (int j = 0; j <= NY-1; ++j) {
-            matCur[NX - 1][j]=0;
-            matCur[0][j]=0;
-             // 底部边界
-        }
+        __dacpp_submit_region_waveEqShell_waveEq_stmt_2(__dacpp_ctx_waveEqShell_waveEq_0);
+        __dacpp_submit_region_waveEqShell_waveEq_stmt_3(__dacpp_ctx_waveEqShell_waveEq_0);
     }
+    __dacpp_sync_waveEqShell_waveEq(__dacpp_ctx_waveEqShell_waveEq_0, matCur, matPrev, matNext);
+
     //
     matCur.print(); 
     return 0;

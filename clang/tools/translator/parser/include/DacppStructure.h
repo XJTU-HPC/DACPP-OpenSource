@@ -19,6 +19,17 @@ using namespace clang;
 
 namespace dacppTranslator {
 
+struct BufferRegionPlan {
+    bool enabled = false;
+    int exprIndex = -1;
+    const clang::FunctionDecl* parentFunction = nullptr;
+    const clang::ForStmt* outerFor = nullptr;
+    const clang::BinaryOperator* dacExpr = nullptr;
+    std::vector<const clang::ForStmt*> siblingForStmts;
+    std::vector<std::pair<std::string, std::string>> capturedVars;
+    std::string disableReason;
+};
+
 
 /**
  * 存储头文件信息
@@ -104,6 +115,7 @@ public:
     int mode = 0; //用于存储翻译模式,0表示使用新版本，1表示强制用老版本
     bool enableMPI = false;
     bool mpiBroadcastOutputs = true;
+    BufferRegionPlan bufferRegionPlan;
 public:
     const FunctionDecl* node;
     DacppFile();
@@ -174,6 +186,9 @@ public:
     void setMainBody(const clang::Stmt* body) { this->mainStmt = body; }//设置主函数体
     const clang::Stmt* getMainBody() { return this->mainStmt; }//获取主函数体
     void collectInnerForStmts();  // step1 的核心函数
+    void analyzeBufferRegionPlan();
+    const BufferRegionPlan& getBufferRegionPlan() const { return this->bufferRegionPlan; }
+    bool hasBufferRegionPlan() const { return this->bufferRegionPlan.enabled; }
     void setEnableMPI(bool enabled) { this->enableMPI = enabled; }
     bool getEnableMPI() const { return this->enableMPI; }
     void setMPIBroadcastOutputs(bool enabled) { this->mpiBroadcastOutputs = enabled; }

@@ -6,7 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" &> /dev/null && pwd)"
 source "$SCRIPT_DIR/env.sh"
 
 TESTS_DIR="$SCRIPT_DIR/tests"
-TMP_DIR="/tmp/dacpp_local_tests"
+TMP_DIR="/Volumes/QUQ/working/local_tmp"
 
 LOCAL_TESTS=(
     "matMul1.0"

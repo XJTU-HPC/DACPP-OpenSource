@@ -524,6 +524,16 @@ public:
     rewriter->setRewriter(clangRewriter);
     rewriter->setDacppFile(dacppFile);
 
+    if (!MpiOpt && ModeOpt == "buffer") {
+      dacppFile->analyzeBufferRegionPlan();
+      if (dacppFile->hasBufferRegionPlan()) {
+        llvm::outs() << "[DACPP] buffer region optimization enabled\n";
+      } else if (!dacppFile->getBufferRegionPlan().disableReason.empty()) {
+        llvm::outs() << "[DACPP] buffer region optimization skipped: "
+                     << dacppFile->getBufferRegionPlan().disableReason << "\n";
+      }
+    }
+
     // dacppTranslator::printDacppFileInfo(dacppFile);
 
 if (MpiOpt) {
