@@ -7,7 +7,7 @@ git clone --branch test git@github.com:XJTU-HPC/dacpp.git
 cd dacpp
 cmake -S llvm -B build -G Ninja \
   -DLLVM_ENABLE_PROJECTS="clang" \
-  -DCMAKE_INSTALL_PREFIX=/data/user_name/clang \
+  -DCMAKE_INSTALL_PREFIX=/Volumes/QUQ/data/user_name/clang \
   -DCMAKE_BUILD_TYPE=Debug
 cmake --build build -j8 --target translator
 ```

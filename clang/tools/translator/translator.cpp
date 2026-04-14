@@ -79,7 +79,7 @@ private:
 static llvm::cl::opt<std::string>
     ModeOpt("mode",
             llvm::cl::desc("Choose backend mode: usm or buffer or usm_time"),
-            llvm::cl::init("usm"));
+            llvm::cl::init("buffer"));
 
 static llvm::cl::alias UsmMode("usm", llvm::cl::desc("Alias for --mode=usm"),
                                llvm::cl::aliasopt(ModeOpt));
