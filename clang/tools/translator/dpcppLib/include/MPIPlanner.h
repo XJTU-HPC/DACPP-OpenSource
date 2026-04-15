@@ -8,8 +8,11 @@
 #include <string>
 #include <type_traits>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
+
+#include <mpi.h>
 
 #include "DataReconstructor.new.h"
 #include "dacInfo.h"
@@ -399,6 +402,201 @@ struct View2D {
         return View2DRow<T>{data, slots, offset + row * cols};
     }
 };
+
+// ---------------------------------------------------------------------------
+// Halo exchange support for MPI stencil optimization
+// ---------------------------------------------------------------------------
+
+/// Information for a single neighbor direction, scoped to one parameter.
+struct HaloRegion {
+    int neighbor_rank = -1;
+    /// Global positions I need to receive from this neighbor.
+    std::vector<int64_t> recv_globals;
+    /// Corresponding slots in the local array (via g2l).
+    std::vector<int32_t> recv_local_slots;
+    /// Global positions I need to send to this neighbor.
+    std::vector<int64_t> send_globals;
+    /// Corresponding slots in the local array.
+    std::vector<int32_t> send_local_slots;
+};
+
+/// Complete halo information for one parameter (up to 2 neighbors).
+struct ParamHalo {
+    std::vector<HaloRegion> regions;
+};
+
+/// Compute halo regions for a single parameter on the current rank.
+/// The caller provides the parameter's AccessPattern, its effective mode,
+/// and the current rank's item range.
+///
+/// Algorithm:
+///   For each neighbor (rank-1, rank+1):
+///     recv = my_input_globals ∩ neighbor_output_globals
+///     send = my_output_globals ∩ neighbor_input_globals
+inline ParamHalo computeParamHalo(
+    const AccessPattern& pattern,
+    AccessMode mode,
+    ItemRange my_range,
+    int64_t total_items,
+    int mpi_rank,
+    int mpi_size)
+{
+    ParamHalo halo;
+
+    // Build my own input/output position sets.
+    // For "output" we use the same collect_positions_for_item — the output
+    // positions of an item are the positions its partition covers.
+    std::vector<int64_t> my_input_globals;
+    std::vector<int64_t> my_output_globals;
+    {
+        std::unordered_set<int64_t> seen_in, seen_out;
+        for (int64_t item = my_range.begin; item < my_range.end; ++item) {
+            auto positions = collect_positions_for_item(item, pattern);
+            for (auto g : positions) {
+                if (seen_in.insert(g).second) {
+                    my_input_globals.push_back(g);
+                }
+                // For output, all partition positions are potential outputs.
+                // A more precise analysis could restrict to write-mode dims,
+                // but using the full partition is safe for correctness.
+                if (seen_out.insert(g).second) {
+                    my_output_globals.push_back(g);
+                }
+            }
+        }
+        std::sort(my_input_globals.begin(), my_input_globals.end());
+        std::sort(my_output_globals.begin(), my_output_globals.end());
+    }
+
+    for (int delta : {-1, 1}) {
+        const int neighbor = mpi_rank + delta;
+        if (neighbor < 0 || neighbor >= mpi_size) continue;
+
+        HaloRegion region;
+        region.neighbor_rank = neighbor;
+
+        ItemRange nb_range = get_rank_item_range(total_items, neighbor, mpi_size);
+
+        // Collect neighbor's input and output positions.
+        std::vector<int64_t> nb_input_globals;
+        std::vector<int64_t> nb_output_globals;
+        {
+            std::unordered_set<int64_t> seen_in, seen_out;
+            for (int64_t item = nb_range.begin; item < nb_range.end; ++item) {
+                auto positions = collect_positions_for_item(item, pattern);
+                for (auto g : positions) {
+                    if (seen_in.insert(g).second) {
+                        nb_input_globals.push_back(g);
+                    }
+                    if (seen_out.insert(g).second) {
+                        nb_output_globals.push_back(g);
+                    }
+                }
+            }
+            std::sort(nb_input_globals.begin(), nb_input_globals.end());
+            std::sort(nb_output_globals.begin(), nb_output_globals.end());
+        }
+
+        // Build the pack map's g2l for local slot lookup.
+        // We need a unified g2l that covers all positions in my input pack.
+        PackMap my_pack = make_pack_map_from_globals(my_input_globals);
+
+        // Recv: positions I read that the neighbor produces (writes).
+        // recv = my_input_globals ∩ nb_output_globals
+        if (mode != AccessMode::Write) {
+            std::vector<int64_t> recv_globals;
+            std::set_intersection(
+                my_input_globals.begin(), my_input_globals.end(),
+                nb_output_globals.begin(), nb_output_globals.end(),
+                std::back_inserter(recv_globals));
+            for (auto g : recv_globals) {
+                auto it = my_pack.g2l.find(g);
+                if (it != my_pack.g2l.end()) {
+                    region.recv_globals.push_back(g);
+                    region.recv_local_slots.push_back(it->second);
+                }
+            }
+        }
+
+        // Send: positions I produce that the neighbor reads.
+        // send = my_output_globals ∩ nb_input_globals
+        if (mode != AccessMode::Read) {
+            std::vector<int64_t> send_globals;
+            std::set_intersection(
+                my_output_globals.begin(), my_output_globals.end(),
+                nb_input_globals.begin(), nb_input_globals.end(),
+                std::back_inserter(send_globals));
+            for (auto g : send_globals) {
+                auto it = my_pack.g2l.find(g);
+                if (it != my_pack.g2l.end()) {
+                    region.send_globals.push_back(g);
+                    region.send_local_slots.push_back(it->second);
+                }
+            }
+        }
+
+        if (!region.recv_globals.empty() || !region.send_globals.empty()) {
+            halo.regions.push_back(std::move(region));
+        }
+    }
+
+    return halo;
+}
+
+/// Perform halo exchange for a single parameter, iterating over neighbors.
+/// Uses non-blocking send/recv to avoid deadlock.
+template <typename T>
+inline void exchangeHalo(std::vector<T>& local_data,
+                         const ParamHalo& halo,
+                         void* mpi_type_ptr) {
+    // mpi_type_ptr is a pointer to the MPI_Datatype; we cast it back.
+    MPI_Datatype mpi_type = *static_cast<MPI_Datatype*>(mpi_type_ptr);
+
+    for (const auto& region : halo.regions) {
+        if (region.neighbor_rank < 0) continue;
+
+        // Pack send buffer.
+        std::vector<T> send_buf;
+        send_buf.reserve(region.send_local_slots.size());
+        for (int32_t slot : region.send_local_slots) {
+            send_buf.push_back(local_data[static_cast<std::size_t>(slot)]);
+        }
+
+        // Prepare receive buffer.
+        std::vector<T> recv_buf(region.recv_local_slots.size());
+
+        MPI_Request reqs[2];
+        int req_count = 0;
+
+        if (!send_buf.empty()) {
+            MPI_Isend(send_buf.data(),
+                      static_cast<int>(send_buf.size()),
+                      mpi_type,
+                      region.neighbor_rank,
+                      /*tag=*/0,
+                      MPI_COMM_WORLD,
+                      &reqs[req_count++]);
+        }
+        if (!recv_buf.empty()) {
+            MPI_Irecv(recv_buf.data(),
+                      static_cast<int>(recv_buf.size()),
+                      mpi_type,
+                      region.neighbor_rank,
+                      /*tag=*/0,
+                      MPI_COMM_WORLD,
+                      &reqs[req_count++]);
+        }
+
+        if (req_count > 0) {
+            MPI_Waitall(req_count, reqs, MPI_STATUSES_IGNORE);
+        }
+
+        // Unpack receive buffer into local data.
+        for (std::size_t i = 0; i < region.recv_local_slots.size(); ++i) {
+            local_data[static_cast<std::size_t>(region.recv_local_slots[i])] = recv_buf[i];
+        }
+    }
+}
 
 }  // namespace mpi
 }  // namespace dacpp

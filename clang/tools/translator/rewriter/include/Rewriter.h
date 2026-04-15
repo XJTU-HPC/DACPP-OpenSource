@@ -101,7 +101,7 @@ public:
 
     const LangOptions& LO = rewriter->getLangOpts();
 
-    if (dacppFile->hasBufferRegionPlan() && !dacppFile->getEnableMPI()) {
+    if (dacppFile->getMainAlreadyRewritten()) {
         return;
     }
 
@@ -218,6 +218,7 @@ public:
 
 
     void rewriteMPI();
+    void rewriteMPI_Stencil();
     void rewriteMPI_Region();
 };
 

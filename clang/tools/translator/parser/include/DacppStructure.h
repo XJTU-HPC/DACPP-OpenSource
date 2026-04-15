@@ -112,6 +112,7 @@ public:
     int mode = 0; //用于存储翻译模式,0表示使用新版本，1表示强制用老版本
     bool enableMPI = false;
     bool mpiBroadcastOutputs = true;
+    bool mainAlreadyRewritten = false;
     BufferRegionPlan bufferRegionPlan;
 public:
     const FunctionDecl* node;
@@ -189,6 +190,8 @@ public:
     bool getEnableMPI() const { return this->enableMPI; }
     void setMPIBroadcastOutputs(bool enabled) { this->mpiBroadcastOutputs = enabled; }
     bool getMPIBroadcastOutputs() const { return this->mpiBroadcastOutputs; }
+    void setMainAlreadyRewritten(bool rewritten) { this->mainAlreadyRewritten = rewritten; }
+    bool getMainAlreadyRewritten() const { return this->mainAlreadyRewritten; }
 
 };
 }

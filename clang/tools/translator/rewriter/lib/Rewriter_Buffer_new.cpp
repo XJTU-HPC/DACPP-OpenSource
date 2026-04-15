@@ -1433,6 +1433,7 @@ for (const auto &var : Vars) {
     rewriter->InsertText(dacppFile->node->getBeginLoc(),code);
 
     if (regionApplied && regionPlan.enabled && regionPlan.outerFor && regionPlan.dacExpr) {
+        dacppFile->setMainAlreadyRewritten(true);
         const std::string argText = joinShellCallArgs(regionPlan.dacExpr, dacppFile->getContext());
         std::string initInsert = "    " + regionGenerated.ctxTypeName + " " +
                                  regionGenerated.ctxVarName + ";\n";
