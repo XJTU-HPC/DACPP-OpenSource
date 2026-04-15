@@ -93,30 +93,13 @@ public:
 
     const FunctionDecl* mainFunc = dacppFile->getMainFunction();
     const Stmt* mainBody = dacppFile->getMainBody();
-    clang::ASTContext* ctx = dacppFile->getContext();
-    const ForStmt* targetFor = dacppFile->getForStatement();
 
     if (!mainFunc || !mainBody) {
         llvm::errs() << "rewriteMain: main function not captured.\n";
         return;
     }
 
-    const SourceManager& SM = rewriter->getSourceMgr();
     const LangOptions& LO = rewriter->getLangOpts();
-
-    //===========================
-    // 1. 获取 main 原始代码
-    //===========================
-    std::string mainOriginal =
-        Lexer::getSourceText(
-            CharSourceRange::getTokenRange(mainBody->getSourceRange()),
-            SM, LO
-        ).str();
-
-    if (mainOriginal.empty()) {
-        llvm::errs() << "rewriteMain: main body source empty.\n";
-        return;
-    }
 
     if (dacppFile->hasBufferRegionPlan()) {
         return;

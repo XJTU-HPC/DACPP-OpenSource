@@ -24,6 +24,214 @@
 #include "ASTParse.h"
 
 namespace BUFFER_TEMPLATE {
+
+struct LoopVarAccessInfo {
+    bool reads = false;
+    bool writes = false;
+};
+
+class LoopVarAccessVisitor
+    : public clang::RecursiveASTVisitor<LoopVarAccessVisitor> {
+public:
+    explicit LoopVarAccessVisitor(
+        const std::unordered_map<std::string, int>& trackedNames)
+        : reads_(trackedNames.size(), false),
+          updateReads_(trackedNames.size(), false),
+          writes_(trackedNames.size(), false),
+          trackedNames_(trackedNames) {}
+
+    bool VisitDeclRefExpr(clang::DeclRefExpr* DRE) {
+        if (!DRE) {
+            return true;
+        }
+
+        auto it = trackedNames_.find(DRE->getDecl()->getNameAsString());
+        if (it == trackedNames_.end()) {
+            return true;
+        }
+
+        if (writeDepth_ > 0) {
+            writes_[it->second] = true;
+        } else if (updateReadDepth_ > 0) {
+            updateReads_[it->second] = true;
+        } else {
+            reads_[it->second] = true;
+        }
+        return true;
+    }
+
+    bool TraverseBinaryOperator(clang::BinaryOperator* BO) {
+        if (!BO) {
+            return true;
+        }
+
+        if (BO->isAssignmentOp()) {
+            ++writeDepth_;
+            TraverseStmt(BO->getLHS());
+            --writeDepth_;
+            TraverseStmt(BO->getRHS());
+            return true;
+        }
+
+        return clang::RecursiveASTVisitor<LoopVarAccessVisitor>::TraverseBinaryOperator(BO);
+    }
+
+    bool TraverseCompoundAssignOperator(clang::CompoundAssignOperator* BO) {
+        if (!BO) {
+            return true;
+        }
+
+        ++writeDepth_;
+        TraverseStmt(BO->getLHS());
+        --writeDepth_;
+        ++updateReadDepth_;
+        TraverseStmt(BO->getLHS());
+        --updateReadDepth_;
+        TraverseStmt(BO->getRHS());
+        return true;
+    }
+
+    bool TraverseUnaryOperator(clang::UnaryOperator* UO) {
+        if (!UO) {
+            return true;
+        }
+
+        if (UO->isIncrementDecrementOp()) {
+            ++writeDepth_;
+            TraverseStmt(UO->getSubExpr());
+            --writeDepth_;
+            ++updateReadDepth_;
+            TraverseStmt(UO->getSubExpr());
+            --updateReadDepth_;
+            return true;
+        }
+
+        return clang::RecursiveASTVisitor<LoopVarAccessVisitor>::TraverseUnaryOperator(UO);
+    }
+
+    bool TraverseCXXOperatorCallExpr(clang::CXXOperatorCallExpr* OpCall) {
+        if (!OpCall) {
+            return true;
+        }
+
+        if (OpCall->isAssignmentOp()) {
+            if (OpCall->getNumArgs() > 0) {
+                ++writeDepth_;
+                TraverseStmt(OpCall->getArg(0));
+                --writeDepth_;
+
+                if (OpCall->getOperator() != clang::OO_Equal) {
+                    ++updateReadDepth_;
+                    TraverseStmt(OpCall->getArg(0));
+                    --updateReadDepth_;
+                }
+            }
+
+            for (unsigned argIdx = 1; argIdx < OpCall->getNumArgs(); ++argIdx) {
+                TraverseStmt(OpCall->getArg(argIdx));
+            }
+            return true;
+        }
+
+        if (OpCall->getOperator() == clang::OO_PlusPlus ||
+            OpCall->getOperator() == clang::OO_MinusMinus) {
+            if (OpCall->getNumArgs() > 0) {
+                ++writeDepth_;
+                TraverseStmt(OpCall->getArg(0));
+                --writeDepth_;
+                ++updateReadDepth_;
+                TraverseStmt(OpCall->getArg(0));
+                --updateReadDepth_;
+            }
+
+            for (unsigned argIdx = 1; argIdx < OpCall->getNumArgs(); ++argIdx) {
+                TraverseStmt(OpCall->getArg(argIdx));
+            }
+            return true;
+        }
+
+        return clang::RecursiveASTVisitor<LoopVarAccessVisitor>::TraverseCXXOperatorCallExpr(
+            OpCall);
+    }
+
+    std::vector<bool> reads_;
+    std::vector<bool> updateReads_;
+    std::vector<bool> writes_;
+
+private:
+    const std::unordered_map<std::string, int>& trackedNames_;
+    int writeDepth_ = 0;
+    int updateReadDepth_ = 0;
+};
+
+std::unordered_map<std::string, LoopVarAccessInfo> analyzeLoopVarAccess(
+    const clang::Stmt* stmt,
+    const std::vector<std::pair<std::string, std::string>>& vars) {
+    std::unordered_map<std::string, LoopVarAccessInfo> result;
+    if (!stmt) {
+        return result;
+    }
+
+    std::unordered_map<std::string, int> trackedNames;
+    for (std::size_t idx = 0; idx < vars.size(); ++idx) {
+        trackedNames.emplace(vars[idx].first, static_cast<int>(idx));
+        result.emplace(vars[idx].first, LoopVarAccessInfo{});
+    }
+
+    if (trackedNames.empty()) {
+        return result;
+    }
+
+    LoopVarAccessVisitor visitor(trackedNames);
+    visitor.TraverseStmt(const_cast<clang::Stmt*>(stmt));
+
+    for (std::size_t idx = 0; idx < vars.size(); ++idx) {
+        auto& info = result[vars[idx].first];
+        info.reads = visitor.reads_[idx] || visitor.updateReads_[idx];
+        info.writes = visitor.writes_[idx];
+    }
+
+    return result;
+}
+
+bool shellVarUsesPointerBuffer(dacppTranslator::DacppFile* dacFile,
+                               const std::string& name) {
+    if (!dacFile || dacFile->getNumExpression() <= 0) {
+        return false;
+    }
+
+    auto* expr = dacFile->getExpression(0);
+    auto* shell = expr ? expr->getShell() : nullptr;
+    if (!shell) {
+        return false;
+    }
+
+    for (int count = 0; count < shell->getNumParams(); ++count) {
+        auto* param = shell->getParam(count);
+        if (param && param->getName() == name) {
+            return param->getRw() != dacppTranslator::IOTYPE::READ;
+        }
+    }
+
+    return false;
+}
+
+std::string getLoopAccessorBase(dacppTranslator::DacppFile* dacFile,
+                                const std::string& name) {
+    return shellVarUsesPointerBuffer(dacFile, name) ? "r_" + name + "->"
+                                                    : "r_" + name + ".";
+}
+
+std::string getLoopAccessorMode(const LoopVarAccessInfo& access) {
+    if (access.reads && access.writes) {
+        return "sycl::access::mode::read_write";
+    }
+    if (access.writes) {
+        return "sycl::access::mode::write";
+    }
+    return "sycl::access::mode::read";
+}
+
 // -------------------- max_generate --------------------
 bool max_generate(std::string& reductionText, std::string original,
                   dacppTranslator::DacppFile dacFile) {
@@ -440,6 +648,7 @@ std::string parallelizeNestedFor(
     // ★ 第一步：读取所有外部变量（你之前 collectVarsFromForStatement 已经收集）
     // ================================================================
     auto vars = dacFile->getForStatementVars();
+    const auto accessInfo = analyzeLoopVarAccess(innerFS->getBody(), vars);
 
 
     // ================================================================
@@ -451,82 +660,31 @@ std::string parallelizeNestedFor(
 
 
     for (auto &p : vars) {
-    const std::string& name = p.first;
-    const std::string& type = p.second;
-
-    // 检查该变量是否真的出现在 body 中
-    std::regex wordExpr("\\b" + name + "\\b");
-    if (!std::regex_search(replacedBody, wordExpr)) {
-        continue;   // 不在 body 中 → 完全忽略
-    }
-
-    // 判断是否为 const 类型
-    bool isConst = (type.find("const") != std::string::npos);
-
-    // =========================================================
-    // 1) const 类型：不生成 accessor & d_ptr，不替换成 d_xxx
-    // =========================================================
-    if (isConst) {
-        // const 保持原名，不修改 replacedBody
-        replacedBody = std::regex_replace(replacedBody, wordExpr, name);
-        continue;
-    }
-
-    // =========================================================
-    // 2) 非 const 类型：生成 accessor & d_ptr 并替换为 d_xxx
-    // =========================================================
-
-    // accessor（注意 r_name：表示 buffer 名）
-    // accessorDecl +=
-    //     "    auto acc_" + name +
-    //     " = r_" + name +
-    //     ".get_access<sycl::access::mode::read_write>(h);\n";
-    bool flag = false;//flag 用于标记是否找到写权限
-    int i=0;
-    bool found = false;
-    dacppTranslator::Expression* expr = dacFile->getExpression(i);
-    dacppTranslator::Shell* shell = expr->getShell();
-    for(int count = 0; count < shell->getNumParams(); count++) { 
-        dacppTranslator::Param* param = shell->getParam(count);
-        if (param->getName() == name) { 
-            found = true;
-            if (param->getRw() != dacppTranslator::IOTYPE::READ){
-                flag = true;
-                break;
-            }
+        const std::string& name = p.first;
+        const std::string& type = p.second;
+        auto accessIt = accessInfo.find(name);
+        if (accessIt == accessInfo.end() ||
+            (!accessIt->second.reads && !accessIt->second.writes)) {
+            continue;
         }
-    }
-if (!flag && found){ 
-    // 不write的变量：把 . 换成 ->
-    accessorDecl +=
-        "    auto acc_" + name +
-        " = r_" + name +
-        ".get_access<sycl::access::mode::read>(h);\n";
-} else if(found&&flag){
-    // === 非 const 变量：把 . 换成 -> ===
-    accessorDecl +=
-        "    auto acc_" + name +
-        " = r_" + name +
-        "->get_access<sycl::access::mode::read_write>(h);\n";
-}else{
-    accessorDecl +=
-        "    auto acc_" + name +
-        " = r_" + name +
-        ".get_access<sycl::access::mode::read_write>(h);\n";
-}
-    // 设备指针（注意 template 关键字）
-    ptrDecl +=
-        "      auto* d_" + name +
-        " = acc_" + name +
-        ".template get_multi_ptr<sycl::access::decorated::no>().get();\n";
 
-    // 替换 body 中出现的变量为 d_xxx
-    replacedBody = std::regex_replace(
-        replacedBody,
-        wordExpr,
-        "d_" + name
-    );
-}
+        std::regex wordExpr("\\b" + name + "\\b");
+        const bool isConst = type.find("const") != std::string::npos;
+        if (isConst) {
+            replacedBody = std::regex_replace(replacedBody, wordExpr, name);
+            continue;
+        }
+
+        accessorDecl +=
+            "    auto acc_" + name +
+            " = " + getLoopAccessorBase(dacFile, name) +
+            "get_access<" + getLoopAccessorMode(accessIt->second) + ">(h);\n";
+        ptrDecl +=
+            "      auto* d_" + name +
+            " = acc_" + name +
+            ".template get_multi_ptr<sycl::access::decorated::no>().get();\n";
+        replacedBody = std::regex_replace(replacedBody, wordExpr, "d_" + name);
+    }
 
     // ================================================================
     // ★ 第 X 步：二维下标线性化
@@ -629,6 +787,7 @@ std::string parallelizeSingleFor(const clang::ForStmt* FS,clang::ASTContext* Con
 
     // ★★★ 最关键：从 dacFile 取 forStatementVars
     auto vars = dacFile->getForStatementVars();
+    const auto accessInfo = analyzeLoopVarAccess(FS->getBody(), vars);
 
     std::string accessorDecl;
     std::string ptrDecl;
@@ -636,64 +795,30 @@ std::string parallelizeSingleFor(const clang::ForStmt* FS,clang::ASTContext* Con
     // ====== 根据 body 实际使用的变量，生成 accessor 和设备指针 ======
 
     for (auto &p : vars) {
-    const std::string& name = p.first;
-    const std::string& type = p.second;
-
-    // 检查该变量是否真的出现在 body 中
-    std::regex wordExpr("\\b" + name + "\\b");
-    if (!std::regex_search(replacedBody, wordExpr)) {
-        continue;   // 不在 body 中 → 完全忽略
-    }
-
-    bool flag = true;
-    bool found = false;
-    // 查询 shellVars 中的类型是否包含 write,目前默认只有一个表达式
-        int i=0;
-        dacppTranslator::Expression* expr = dacFile->getExpression(i);
-        dacppTranslator::Shell* shell = expr->getShell();
-
-        for(int count = 0; count < shell->getNumParams(); count++) {
-            if (shell->getParam(count)->getName() == name) {
-                found = true;
-                if (shell->getParam(count)->getRw() == dacppTranslator::IOTYPE::READ){
-                    flag = false;
-                    break;
-                }
-            }
+        const std::string& name = p.first;
+        const std::string& type = p.second;
+        auto accessIt = accessInfo.find(name);
+        if (accessIt == accessInfo.end() ||
+            (!accessIt->second.reads && !accessIt->second.writes)) {
+            continue;
         }
-    if (!flag && found) {
-    // 不进行写的情况下，翻译成.
-    accessorDecl +=
-        "    auto acc_" + name +
-        " = r_" + name +
-        ".get_access<sycl::access::mode::read>(h);\n";
-    } else if(found&&flag){
-    // 进行写的情况下翻译成->
-    accessorDecl +=
-        "    auto acc_" + name +
-        " = r_" + name +
-        "->get_access<sycl::access::mode::read_write>(h);\n";
-    }
-    else{
-    accessorDecl +=
-        "    auto acc_" + name +
-        " = r_" + name +
-        ".get_access<sycl::access::mode::read_write>(h);\n";
-    }
 
+        std::regex wordExpr("\\b" + name + "\\b");
+        const bool isConst = type.find("const") != std::string::npos;
+        if (isConst) {
+            replacedBody = std::regex_replace(replacedBody, wordExpr, name);
+            continue;
+        }
 
-    // 设备指针（注意 template 关键字）
-    ptrDecl +=
-        "      auto* d_" + name +
-        " = acc_" + name +
-        ".template get_multi_ptr<sycl::access::decorated::no>().get();\n";
-
-    // 替换 body 中出现的变量为 d_xxx
-    replacedBody = std::regex_replace(
-        replacedBody,
-        wordExpr,
-        "d_" + name
-    );
+        accessorDecl +=
+            "    auto acc_" + name +
+            " = " + getLoopAccessorBase(dacFile, name) +
+            "get_access<" + getLoopAccessorMode(accessIt->second) + ">(h);\n";
+        ptrDecl +=
+            "      auto* d_" + name +
+            " = acc_" + name +
+            ".template get_multi_ptr<sycl::access::decorated::no>().get();\n";
+        replacedBody = std::regex_replace(replacedBody, wordExpr, "d_" + name);
     }
 
 

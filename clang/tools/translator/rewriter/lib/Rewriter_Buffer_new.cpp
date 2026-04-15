@@ -1001,7 +1001,6 @@ void dacppTranslator::Rewriter::rewriteDac_Buffer() {
                 bindoffset.push_back(info[i].offset);
             }
         }
-        std::cout << "break 0" << std::endl;
         // 计算结构
         code += "void " + calc->getName() + "(";
         for(int count = 0; count < calc->getNumParams(); count++) {
@@ -1338,7 +1337,6 @@ for (const auto &var : Vars) {
 	        // replaces the `<->` expression with the generated shell wrapper call.
 	        // Re-emitting the whole outer loop body inside the wrapper would execute
 	        // time-stepping logic twice (observed in stencil/waveEquation).
-	        std::cout << "break 2" << std::endl;
 	        KernelExecute = BUFFER_TEMPLATE::CodeGen_KernelExecute("Item_Size",AccessorInit,BindingInit,getpos,Accessor_List,Accessor_Pointer_List,CalcEmbed);//注意这里面填的size的大小需要是前面算出来的大小
 	        // std::cout << KernelExecute;
 

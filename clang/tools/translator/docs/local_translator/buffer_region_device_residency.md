@@ -61,10 +61,26 @@
 - `buffer region optimization enabled`
 - 或 `buffer region optimization skipped: ...`
 
+另外，这一轮顺手删除了之前“先把 outer for 里的 inner for 提取出来、但后续并没有真正参与当前 region 路径”的旧遗留代码：
+
+- 移除了 `innerForStatements`
+- 移除了 `collectInnerForStmts()`
+- 移除了对应的 `InnerForCollector`
+- 清掉了一段已经废弃的 `collectVarsFromForStatement()` 备份实现
+
+这些代码和当前真正生效的路径已经脱钩：
+
+- region 路径使用的是 `BufferRegionPlan`
+- sibling loop 收集使用的是 `collectInnerForsExceptDacpp()` / `dfsCollectFors()`
+- 外部变量收集仍然使用当前生效的 `collectVarsFromForStatement()`
+
+所以删除它们不会影响现有功能，只是把“曾经尝试过但没有落到最终流程”的分支清理掉，避免后续继续误导阅读。
+
 ### 重写与代码生成
 
 - `clang/tools/translator/rewriter/include/Rewriter.h`
 - `clang/tools/translator/rewriter/lib/Rewriter_Buffer_new.cpp`
+- `clang/tools/translator/rewriter/lib/buffer_template_new.cpp`
 
 这里完成了 region 路径的主要生成逻辑：
 
@@ -163,7 +179,7 @@
 - 只对需要回写的参数做 D2H
 - `array2Tensor(...)`
 
-## 这次新增的两项优化
+## 这次新增的三项优化
 
 ### 优化 1：移除 region 内每步 `wait()`
 
@@ -256,6 +272,46 @@
   - `matIn`：循环后 host 继续使用，所以要 D2H
   - `matOut`：循环后 host 不再使用，所以不回写
 
+### 优化 3：按 sibling loop 实际读写收紧 accessor mode
+
+之前 sibling loop helper 在生成 accessor 时，主要依赖 shell 参数的静态 RW 属性来猜模式：
+
+- shell 中标成只读，helper 就倾向于生成 `read`
+- shell 中标成可写，helper 就倾向于生成 `read_write`
+- 某些非 shell captured 变量也会沿用偏保守的 `read_write`
+
+这会导致两个问题：
+
+- sibling loop 实际上只写某个 buffer 时，仍然拿到 `read_write`
+- sibling loop 实际上只读某个 buffer 时，如果它在主 `<->` 里是写参数，helper 还是会拿到偏大的权限
+
+现在在 `buffer_template_new.cpp` 里增加了 `LoopVarAccessVisitor` / `analyzeLoopVarAccess(...)`，会直接扫描 sibling loop AST，得到每个外部变量在该 loop 里的真实使用方式：
+
+- 纯读：`read`
+- 纯写：`write`
+- 先读后写 / 复合赋值 / 自增自减：`read_write`
+
+具体生成规则现在是：
+
+- 先用 `collectVarsFromForStatement()` 取到 loop 捕获到的外部变量
+- 再用 `analyzeLoopVarAccess(...)` 判断该变量在 loop body 内是否真的参与读写
+- 如果完全没用到，就不生成 accessor / d_ptr
+- 如果类型里带 `const`，保持原变量名，不生成设备指针替换
+- 如果是普通变量，再根据真实读写集发射 `get_access<...>(h)`
+
+当前 accessor mode 对应关系如下：
+
+- `reads && writes` -> `sycl::access::mode::read_write`
+- `writes && !reads` -> `sycl::access::mode::write`
+- `reads && !writes` -> `sycl::access::mode::read`
+
+这里保留了旧路径里的 buffer 持有形式判定：
+
+- shell 写参数仍然走 `r_name->get_access(...)`
+- shell 只读参数和普通 captured 变量仍然走 `r_name.get_access(...)`
+
+也就是说，这一步只收紧“权限模式”，不改现有 buffer 所有权约定，这样可以同时兼容 region path 和旧的 sibling loop 改写路径。
+
 ## 当前的内存搬运逻辑
 
 这是现在 region 路径的完整搬运策略。
@@ -336,6 +392,8 @@
 - 主 `<->` 不再每步 `wait()`
 - sibling helper 不再每步 `wait()`
 - 只在 `sync()` 末尾统一等待
+- sibling helper 的 accessor 不再统一走保守的 `read_write`
+- sibling helper 会按 loop 实际读写生成 `read / write / read_write`
 
 ## 当前限制
 
@@ -369,8 +427,9 @@
 
 如果下一步继续做，可以优先考虑：
 
-1. sibling loop 访问模式分析再细化
-   - 让 helper accessor 也按真实读写集收紧
+1. sibling loop 访问分析继续增强
+   - 现在已经支持基础的 `read / write / read_write`
+   - 后续可以继续补充更复杂表达式、别名和函数调用场景
 
 2. host liveness / alias 分析继续增强
    - 让 D2H 裁剪覆盖更多“局部 view -> 底层 tensor -> 底层 vector”场景

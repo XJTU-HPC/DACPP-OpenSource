@@ -108,9 +108,6 @@ public:
     /****************main函数相关*****************/
     const clang::FunctionDecl* mainFunctionDecl = nullptr; // main 函数声明
     const clang::Stmt* mainStmt = nullptr;             // main 函数体
-    /*2025.12.3新增，for循环并行化相关*/
-    // 在 DacppFile 类中新增成员
-    std::vector<const clang::ForStmt*> innerForStatements;  // 用于存储 forstatement 内部的所有 for 循环
     std::vector<std::pair<std::string, std::string>> shellVars; // shell参数的变量名及其类型,第一个表示变量名，第二个表示变量类型
     int mode = 0; //用于存储翻译模式,0表示使用新版本，1表示强制用老版本
     bool enableMPI = false;
@@ -185,7 +182,6 @@ public:
     const clang::FunctionDecl* getMainFunction() { return this->mainFunctionDecl; }//获取主函数decl
     void setMainBody(const clang::Stmt* body) { this->mainStmt = body; }//设置主函数体
     const clang::Stmt* getMainBody() { return this->mainStmt; }//获取主函数体
-    void collectInnerForStmts();  // step1 的核心函数
     void analyzeBufferRegionPlan();
     const BufferRegionPlan& getBufferRegionPlan() const { return this->bufferRegionPlan; }
     bool hasBufferRegionPlan() const { return this->bufferRegionPlan.enabled; }

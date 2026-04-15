@@ -23,25 +23,6 @@
 
 using namespace clang;
 
-/*2025.12.3新增*/
-// 递归遍历 a 的 body，搜集除 a 之外的所有 ForStmt
-class InnerForCollector : public clang::RecursiveASTVisitor<InnerForCollector> {
-public:
-    const clang::ForStmt* outer;  // 最外层 for（a）
-    std::vector<const clang::ForStmt*> results;
-
-    InnerForCollector(const clang::ForStmt* outerLoop)
-        : outer(outerLoop) {}
-
-    bool VisitForStmt(const clang::ForStmt* FS) {
-        if (FS == outer)
-            return true;  // 跳过最外层 for
-
-        results.push_back(FS);
-        return true;
-    }
-};
-
 static bool rangeContains(const clang::SourceManager& SM,
                           clang::SourceRange outer,
                           clang::SourceRange inner) {
@@ -400,82 +381,6 @@ void dacppTranslator::DacppFile::collectVarsFromForStatement() {
     }
 }
 
-// void dacppTranslator::DacppFile::collectVarsFromForStatement() {
-//     forStatementVars.clear();
-
-//     clang::ASTContext &Ctx = *Context;
-//     clang::SourceManager &SM = Ctx.getSourceManager();
-
-//     // --------------------------------------
-//     // Step 1：收集 for 循环体内所有被引用的变量（DeclRefExpr）
-//     // --------------------------------------
-//     llvm::SmallVector<const clang::VarDecl*, 16> usedVars;
-
-//     std::function<void(const clang::Stmt*)> collectRefs = [&](const clang::Stmt* S) {
-//         if (!S) return;
-
-//         if (auto* DRE = llvm::dyn_cast<clang::DeclRefExpr>(S)) {
-//             if (auto* VD = llvm::dyn_cast<clang::VarDecl>(DRE->getDecl())) {
-//                 usedVars.push_back(VD);
-//             }
-//         }
-
-//         for (const clang::Stmt* child : S->children())
-//             collectRefs(child);
-//     };
-
-//     collectRefs(forStatement->getBody());
-
-//     // --------------------------------------
-//     // Step 2：收集 for 循环内部声明的所有变量（用于排除重复）
-//     // --------------------------------------
-//     llvm::SmallPtrSet<const clang::VarDecl*, 16> varsDeclaredInside;
-
-//     auto collectInnerDecls = [&](const clang::Stmt* init, const clang::Stmt* body) {
-//         // for (int i = ...; ...)
-//         if (auto* DS = llvm::dyn_cast_or_null<const clang::DeclStmt>(init)) {
-//             for (auto it = DS->decl_begin(); it != DS->decl_end(); ++it)
-//                 if (auto* VD = llvm::dyn_cast<clang::VarDecl>(*it))
-//                     varsDeclaredInside.insert(VD);
-//         }
-
-//         // for(...) { int x = ...; ... }
-//         std::function<void(const clang::Stmt*)> scan = [&](const clang::Stmt* S) {
-//             if (!S) return;
-
-//             if (auto* DS = llvm::dyn_cast<const clang::DeclStmt>(S)) {
-//                 for (auto it = DS->decl_begin(); it != DS->decl_end(); ++it)
-//                     if (auto* VD = llvm::dyn_cast<clang::VarDecl>(*it))
-//                         varsDeclaredInside.insert(VD);
-//             }
-
-//             for (auto* c : S->children()) scan(c);
-//         };
-
-//         scan(body);
-//     };
-
-//     collectInnerDecls(forStatement->getInit(), forStatement->getBody());
-
-//     // --------------------------------------
-//     // Step 3：去重，保留全部在循环中使用的变量
-//     // --------------------------------------
-//     llvm::SmallPtrSet<const clang::VarDecl*, 16> uniqueVars;
-//     for (const clang::VarDecl* VD : usedVars) {
-//         if (!VD) continue;
-//         uniqueVars.insert(VD); // 不再排除循环内声明的变量，也不判断是否在循环外声明
-//     }
-
-//     // --------------------------------------
-//     // Step 4：保存变量（名字 + 类型）
-//     // --------------------------------------
-//     for (const clang::VarDecl* VD : uniqueVars) {
-//         std::string name  = VD->getNameAsString();
-//         std::string type  = VD->getType().getAsString();
-//         forStatementVars.emplace_back(name, type);
-//     }
-// }
-
 //    std::vector<std::pair<std::string, std::string>> forStatementVars; // 记录前文提及的for循环中用到的、但是在for循环外声明的变量的   变量名及其类型,第一个表示变量名，第二个表示变量类型
 std::vector<std::pair<std::string, std::string>> dacppTranslator::DacppFile::getForStatementVars() {
     std::vector<std::pair<std::string, std::string>> result = forStatementVars;
@@ -487,33 +392,6 @@ std::vector<std::pair<std::string, std::string>> dacppTranslator::DacppFile::get
     }
 
     return result;
-}
-
-
-void dacppTranslator::DacppFile::collectInnerForStmts() {
-    // 必要条件：必须已经找到最外层 forStatement
-    if (!this->forStatement) {
-        llvm::errs() << "[DacppFile] collectInnerForStmts failed: forStatement is null.\n";
-        return;
-    }
-    if (!this->Context) {
-        llvm::errs() << "[DacppFile] collectInnerForStmts failed: Context is null.\n";
-        return;
-    }
-
-    innerForStatements.clear();  // 清空旧数据
-
-    InnerForCollector collector(this->forStatement);
-
-    // 遍历 forStatement 的 body（只遍历内部）
-    collector.TraverseStmt(const_cast<clang::Stmt*>(this->forStatement->getBody()));
-
-    innerForStatements = collector.results;
-
-    // Debug 输出（可删）
-    llvm::outs() << "[DacppFile] Found " 
-                 << innerForStatements.size() 
-                 << " inner for-loops inside outer for.\n";
 }
 
 void dacppTranslator::DacppFile::analyzeBufferRegionPlan() {
