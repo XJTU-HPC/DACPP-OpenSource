@@ -29,335 +29,288 @@ const double dt = 0.5f * std::fmin(dx, dy) / c; // 满足稳定性条件
 #include <sycl/sycl.hpp>
 #include "DataReconstructor1.h"
 #include "ParameterGeneration.h"
+#include <mpi.h>
+#include <cstdio>
+#include "MPIPlanner.h"
 
 using namespace sycl;
 
-void waveEq(const double* cur,const double* prev,double* next,int cur_0,int cur_1,int prev_0,int prev_1,int next_0,int next_1,int cur_0_shape,int cur_1_shape,int prev_0_shape,int prev_1_shape,int next_0_shape,int next_1_shape,sycl::accessor<int, 1, sycl::access::mode::read> info_cur_acc, sycl::accessor<int, 1, sycl::access::mode::read> info_prev_acc, sycl::accessor<int, 1, sycl::access::mode::read> info_next_acc) {
+inline void waveEq_mpi_local(dacpp::mpi::View2D<const double> cur, dacpp::mpi::View1D<const double> prev, dacpp::mpi::View1D<double> next) {
     double dt = 0.5F * std::fmin(dx, dy) / c;
-    double u_xx = (cur[(2 + cur_0) * cur_1_shape + (1 + cur_1)] - 2.F * cur[(1 + cur_0) * cur_1_shape + (1 + cur_1)] + cur[(0 + cur_0) * cur_1_shape + (1 + cur_1)]) / (dx * dx);
-    double u_yy = (cur[(1 + cur_0) * cur_1_shape + (2 + cur_1)] - 2.F * cur[(1 + cur_0) * cur_1_shape + (1 + cur_1)] + cur[(1 + cur_0) * cur_1_shape + (0 + cur_1)]) / (dy * dy);
-    next[(0 + next_0) * next_1_shape + (0 + next_1)] = 2.F * cur[(1 + cur_0) * cur_1_shape + (1 + cur_1)] - prev[(0 + prev_0) * prev_1_shape + (0 + prev_1)] + (c * c) * dt * dt * (u_xx + u_yy);
+    double u_xx = (cur[2][1] - 2.F * cur[1][1] + cur[0][1]) / (dx * dx);
+    double u_yy = (cur[1][2] - 2.F * cur[1][1] + cur[1][0]) / (dy * dy);
+    next[0] = 2.F * cur[1][1] - prev[0] + (c * c) * dt * dt * (u_xx + u_yy);
 }
 
-struct __dacpp_ctx_waveEqShell_waveEq {
-    sycl::queue dacpp_q{};
-    ParameterGeneration para_gene_tool;
-    int Item_Size = 0;
-    int dim_x = 1;
-    int dim_y = 1;
-    int local_x = 1;
-    int local_y = 1;
-    int global_x = 1;
-    int global_y = 1;
-    RegularSlice sp1;
-    RegularSlice sp2;
-    Index idx1;
-    Index idx2;
-    Dac_Ops In_Ops;
-    Dac_Ops Out_Ops;
-    DataInfo info_matCur;
-    std::vector<int> info_matCur_Shape;
-    Dac_Ops matCur_Ops;
-    std::vector<double> h_matCur;
-    std::unique_ptr<sycl::buffer<double, 1>> r_matCur;
-    std::vector<int> info_partition_matCur;
-    std::unique_ptr<sycl::buffer<int, 1>> info_partition_matCur_buffer;
-    DataInfo info_matPrev;
-    std::vector<int> info_matPrev_Shape;
-    Dac_Ops matPrev_Ops;
-    std::vector<double> h_matPrev;
-    std::unique_ptr<sycl::buffer<double, 1>> r_matPrev;
-    std::vector<int> info_partition_matPrev;
-    std::unique_ptr<sycl::buffer<int, 1>> info_partition_matPrev_buffer;
-    DataInfo info_matNext;
-    std::vector<int> info_matNext_Shape;
-    Dac_Ops matNext_Ops;
-    std::vector<double> h_matNext;
-    std::unique_ptr<sycl::buffer<double, 1>> r_matNext;
-    std::vector<int> info_partition_matNext;
-    std::unique_ptr<sycl::buffer<int, 1>> info_partition_matNext_buffer;
-};
 
-void __dacpp_init_waveEqShell_waveEq(__dacpp_ctx_waveEqShell_waveEq& ctx, dacpp::Matrix<double> & matCur, dacpp::Matrix<double> & matPrev, dacpp::Matrix<double> & matNext) {
-    ctx.dacpp_q = sycl::queue(sycl::default_selector_v);
-    ctx.info_matCur = DataInfo{};
-    ctx.info_matCur.dim = matCur.getDim();
-    ctx.info_matCur.dimLength.clear();
-    ctx.info_matCur_Shape.assign(ctx.info_matCur.dim, 0);
-    for (int dimIdx = 0; dimIdx < ctx.info_matCur.dim; ++dimIdx) {
-        ctx.info_matCur.dimLength.push_back(matCur.getShape(dimIdx));
-        ctx.info_matCur_Shape[dimIdx] = matCur.getShape(dimIdx);
+void waveEqShell_waveEq(dacpp::Matrix<double> & matCur, dacpp::Matrix<double> & matPrev, dacpp::Matrix<double> & matNext) {
+    int mpi_rank = 0;
+    int mpi_size = 1;
+    MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &mpi_size);
+    sycl::queue q(sycl::default_selector_v);
+    std::vector<int64_t> binding_split_sizes;
+    dacpp::mpi::AccessPattern pattern_cur;
+    pattern_cur.param_id = 0;
+    pattern_cur.name = "cur";
+    pattern_cur.mode = dacpp::mpi::AccessMode::Read;
+    pattern_cur.data_info.dim = matCur.getDim();
+    for (int dim = 0; dim < matCur.getDim(); ++dim) pattern_cur.data_info.dimLength.push_back(matCur.getShape(dim));
+    Dac_Op pattern_cur_op_0;
+    pattern_cur_op_0.setDimId(0);
+    pattern_cur_op_0.size = 3;
+    pattern_cur_op_0.stride = 1;
+    pattern_cur_op_0.SetSplitSize((matCur.getShape(0) - 3) / 1 + 1);
+    pattern_cur.param_ops.push_back(pattern_cur_op_0);
+    pattern_cur.bind_set_id.push_back(0);
+    pattern_cur.bind_offset_expr.push_back("0");
+    pattern_cur.is_index_op.push_back(false);
+    Dac_Op pattern_cur_op_1;
+    pattern_cur_op_1.setDimId(1);
+    pattern_cur_op_1.size = 3;
+    pattern_cur_op_1.stride = 1;
+    pattern_cur_op_1.SetSplitSize((matCur.getShape(1) - 3) / 1 + 1);
+    pattern_cur.param_ops.push_back(pattern_cur_op_1);
+    pattern_cur.bind_set_id.push_back(1);
+    pattern_cur.bind_offset_expr.push_back("0");
+    pattern_cur.is_index_op.push_back(false);
+    pattern_cur.partition_shape = dacpp::mpi::init_partition_shape(pattern_cur);
+    pattern_cur.bind_split_sizes = dacpp::mpi::init_bind_split_sizes(pattern_cur);
+    if (binding_split_sizes.size() < pattern_cur.bind_split_sizes.size()) binding_split_sizes.resize(pattern_cur.bind_split_sizes.size(), 1);
+    for (std::size_t bind_i = 0; bind_i < pattern_cur.bind_split_sizes.size(); ++bind_i) {
+        binding_split_sizes[bind_i] = std::max<int64_t>(binding_split_sizes[bind_i], pattern_cur.bind_split_sizes[bind_i]);
     }
-    ctx.info_matPrev = DataInfo{};
-    ctx.info_matPrev.dim = matPrev.getDim();
-    ctx.info_matPrev.dimLength.clear();
-    ctx.info_matPrev_Shape.assign(ctx.info_matPrev.dim, 0);
-    for (int dimIdx = 0; dimIdx < ctx.info_matPrev.dim; ++dimIdx) {
-        ctx.info_matPrev.dimLength.push_back(matPrev.getShape(dimIdx));
-        ctx.info_matPrev_Shape[dimIdx] = matPrev.getShape(dimIdx);
+    dacpp::mpi::AccessPattern pattern_prev;
+    pattern_prev.param_id = 1;
+    pattern_prev.name = "prev";
+    pattern_prev.mode = dacpp::mpi::AccessMode::Read;
+    pattern_prev.data_info.dim = matPrev.getDim();
+    for (int dim = 0; dim < matPrev.getDim(); ++dim) pattern_prev.data_info.dimLength.push_back(matPrev.getShape(dim));
+    Dac_Op pattern_prev_op_0;
+    pattern_prev_op_0.setDimId(0);
+    pattern_prev_op_0.size = 1;
+    pattern_prev_op_0.stride = 1;
+    pattern_prev_op_0.SetSplitSize(matPrev.getShape(0));
+    pattern_prev.param_ops.push_back(pattern_prev_op_0);
+    pattern_prev.bind_set_id.push_back(0);
+    pattern_prev.bind_offset_expr.push_back("0");
+    pattern_prev.is_index_op.push_back(true);
+    Dac_Op pattern_prev_op_1;
+    pattern_prev_op_1.setDimId(1);
+    pattern_prev_op_1.size = 1;
+    pattern_prev_op_1.stride = 1;
+    pattern_prev_op_1.SetSplitSize(matPrev.getShape(1));
+    pattern_prev.param_ops.push_back(pattern_prev_op_1);
+    pattern_prev.bind_set_id.push_back(1);
+    pattern_prev.bind_offset_expr.push_back("0");
+    pattern_prev.is_index_op.push_back(true);
+    pattern_prev.partition_shape = dacpp::mpi::init_partition_shape(pattern_prev);
+    pattern_prev.bind_split_sizes = dacpp::mpi::init_bind_split_sizes(pattern_prev);
+    if (binding_split_sizes.size() < pattern_prev.bind_split_sizes.size()) binding_split_sizes.resize(pattern_prev.bind_split_sizes.size(), 1);
+    for (std::size_t bind_i = 0; bind_i < pattern_prev.bind_split_sizes.size(); ++bind_i) {
+        binding_split_sizes[bind_i] = std::max<int64_t>(binding_split_sizes[bind_i], pattern_prev.bind_split_sizes[bind_i]);
     }
-    ctx.info_matNext = DataInfo{};
-    ctx.info_matNext.dim = matNext.getDim();
-    ctx.info_matNext.dimLength.clear();
-    ctx.info_matNext_Shape.assign(ctx.info_matNext.dim, 0);
-    for (int dimIdx = 0; dimIdx < ctx.info_matNext.dim; ++dimIdx) {
-        ctx.info_matNext.dimLength.push_back(matNext.getShape(dimIdx));
-        ctx.info_matNext_Shape[dimIdx] = matNext.getShape(dimIdx);
+    dacpp::mpi::AccessPattern pattern_next;
+    pattern_next.param_id = 2;
+    pattern_next.name = "next";
+    pattern_next.mode = dacpp::mpi::AccessMode::Write;
+    pattern_next.data_info.dim = matNext.getDim();
+    for (int dim = 0; dim < matNext.getDim(); ++dim) pattern_next.data_info.dimLength.push_back(matNext.getShape(dim));
+    Dac_Op pattern_next_op_0;
+    pattern_next_op_0.setDimId(0);
+    pattern_next_op_0.size = 1;
+    pattern_next_op_0.stride = 1;
+    pattern_next_op_0.SetSplitSize(matNext.getShape(0));
+    pattern_next.param_ops.push_back(pattern_next_op_0);
+    pattern_next.bind_set_id.push_back(0);
+    pattern_next.bind_offset_expr.push_back("0");
+    pattern_next.is_index_op.push_back(true);
+    Dac_Op pattern_next_op_1;
+    pattern_next_op_1.setDimId(1);
+    pattern_next_op_1.size = 1;
+    pattern_next_op_1.stride = 1;
+    pattern_next_op_1.SetSplitSize(matNext.getShape(1));
+    pattern_next.param_ops.push_back(pattern_next_op_1);
+    pattern_next.bind_set_id.push_back(1);
+    pattern_next.bind_offset_expr.push_back("0");
+    pattern_next.is_index_op.push_back(true);
+    pattern_next.partition_shape = dacpp::mpi::init_partition_shape(pattern_next);
+    pattern_next.bind_split_sizes = dacpp::mpi::init_bind_split_sizes(pattern_next);
+    if (binding_split_sizes.size() < pattern_next.bind_split_sizes.size()) binding_split_sizes.resize(pattern_next.bind_split_sizes.size(), 1);
+    for (std::size_t bind_i = 0; bind_i < pattern_next.bind_split_sizes.size(); ++bind_i) {
+        binding_split_sizes[bind_i] = std::max<int64_t>(binding_split_sizes[bind_i], pattern_next.bind_split_sizes[bind_i]);
     }
-    ctx.sp1 = RegularSlice("sp1", 3, 1);
-    ctx.sp1.setDimId(0);
-    ctx.sp1.SetSplitSize(ctx.para_gene_tool.init_operetor_splitnumber(ctx.sp1, ctx.info_matCur));
-    ctx.sp2 = RegularSlice("sp2", 3, 1);
-    ctx.sp2.setDimId(1);
-    ctx.sp2.SetSplitSize(ctx.para_gene_tool.init_operetor_splitnumber(ctx.sp2, ctx.info_matCur));
-    ctx.idx1 = Index("idx1");
-    ctx.idx1.setDimId(0);
-    ctx.idx1.SetSplitSize(ctx.para_gene_tool.init_operetor_splitnumber(ctx.idx1, ctx.info_matPrev));
-    ctx.idx2 = Index("idx2");
-    ctx.idx2.setDimId(1);
-    ctx.idx2.SetSplitSize(ctx.para_gene_tool.init_operetor_splitnumber(ctx.idx2, ctx.info_matPrev));
-    ctx.matCur_Ops.clear();
-    ctx.sp1.setDimId(0);
-    ctx.matCur_Ops.push_back(ctx.sp1);
-    ctx.sp2.setDimId(1);
-    ctx.matCur_Ops.push_back(ctx.sp2);
-    ctx.matPrev_Ops.clear();
-    ctx.idx1.setDimId(0);
-    ctx.matPrev_Ops.push_back(ctx.idx1);
-    ctx.idx2.setDimId(1);
-    ctx.matPrev_Ops.push_back(ctx.idx2);
-    ctx.matNext_Ops.clear();
-    ctx.idx1.setDimId(0);
-    ctx.matNext_Ops.push_back(ctx.idx1);
-    ctx.idx2.setDimId(1);
-    ctx.matNext_Ops.push_back(ctx.idx2);
-    ctx.In_Ops.clear();
-    ctx.Out_Ops.clear();
-    ctx.sp1.setDimId(0);
-    ctx.In_Ops.push_back(ctx.sp1);
-    ctx.sp2.setDimId(1);
-    ctx.In_Ops.push_back(ctx.sp2);
-    ctx.idx1.setDimId(0);
-    ctx.Out_Ops.push_back(ctx.idx1);
-    ctx.idx2.setDimId(1);
-    ctx.Out_Ops.push_back(ctx.idx2);
-    ctx.Item_Size = ctx.para_gene_tool.init_work_item_size(ctx.In_Ops);
-    sycl::device device = ctx.dacpp_q.get_device();
-    auto max_sizes = device.get_info<sycl::info::device::max_work_item_sizes<3>>();
-    ctx.dim_x = static_cast<int>(sycl::ceil(sycl::sqrt(static_cast<float>(ctx.Item_Size))));
-    ctx.dim_y = static_cast<int>(sycl::ceil(static_cast<float>(ctx.Item_Size) / ctx.dim_x));
-    ctx.local_x = std::min(16, static_cast<int>(max_sizes[0]));
-    ctx.local_y = std::min(16, static_cast<int>(max_sizes[1]));
-    ctx.global_x = ((ctx.dim_x + ctx.local_x - 1) / ctx.local_x) * ctx.local_x;
-    ctx.global_y = ((ctx.dim_y + ctx.local_y - 1) / ctx.local_y) * ctx.local_y;
-    ctx.h_matCur.clear();
-    matCur.tensor2Array(ctx.h_matCur);
-    ctx.r_matCur = std::make_unique<sycl::buffer<double, 1>>(ctx.h_matCur.data(), sycl::range<1>(matCur.getSize()));
-    ctx.info_partition_matCur = ctx.para_gene_tool.init_partition_data_shape(ctx.info_matCur, ctx.matCur_Ops);
-    ctx.info_partition_matCur_buffer = std::make_unique<sycl::buffer<int, 1>>(ctx.info_partition_matCur.data(), sycl::range<1>(ctx.info_partition_matCur.size()));
-    ctx.h_matPrev.clear();
-    matPrev.tensor2Array(ctx.h_matPrev);
-    ctx.r_matPrev = std::make_unique<sycl::buffer<double, 1>>(ctx.h_matPrev.data(), sycl::range<1>(matPrev.getSize()));
-    ctx.info_partition_matPrev = ctx.para_gene_tool.init_partition_data_shape(ctx.info_matPrev, ctx.matPrev_Ops);
-    ctx.info_partition_matPrev_buffer = std::make_unique<sycl::buffer<int, 1>>(ctx.info_partition_matPrev.data(), sycl::range<1>(ctx.info_partition_matPrev.size()));
-    ctx.h_matNext.clear();
-    ctx.r_matNext = std::make_unique<sycl::buffer<double, 1>>(sycl::range<1>(matNext.getSize()));
-    ctx.info_partition_matNext = ctx.para_gene_tool.init_partition_data_shape(ctx.info_matNext, ctx.matNext_Ops);
-    ctx.info_partition_matNext_buffer = std::make_unique<sycl::buffer<int, 1>>(ctx.info_partition_matNext.data(), sycl::range<1>(ctx.info_partition_matNext.size()));
-}
-
-void __dacpp_submit_waveEqShell_waveEq(__dacpp_ctx_waveEqShell_waveEq& ctx) {
-    using namespace sycl;
-    auto& dacpp_q = ctx.dacpp_q;
-    auto& sp1 = ctx.sp1;
-    auto& sp2 = ctx.sp2;
-    auto& idx1 = ctx.idx1;
-    auto& idx2 = ctx.idx2;
-    auto& r_matCur = *ctx.r_matCur;
-    auto& r_matPrev = *ctx.r_matPrev;
-    auto* r_matNext = ctx.r_matNext.get();
-    auto& info_partition_matCur_buffer = *ctx.info_partition_matCur_buffer;
-    auto& info_partition_matPrev_buffer = *ctx.info_partition_matPrev_buffer;
-    auto& info_partition_matNext_buffer = *ctx.info_partition_matNext_buffer;
-    auto* info_matCur_Shape = ctx.info_matCur_Shape.data();
-    auto* info_matPrev_Shape = ctx.info_matPrev_Shape.data();
-    auto* info_matNext_Shape = ctx.info_matNext_Shape.data();
-    const int Item_Size = ctx.Item_Size;
-    sycl::range<2> local(ctx.local_x, ctx.local_y);
-    sycl::range<2> global(ctx.global_x, ctx.global_y);
-    dacpp_q.submit([&](handler &h) {
-
-        accessor<double, 1, access::mode::read> acc_matCur(r_matCur, h);
-        r_matCur.set_final_data(nullptr);
-        
-        accessor<double, 1, access::mode::read> acc_matPrev(r_matPrev, h);
-        r_matPrev.set_final_data(nullptr);
-        
-        accessor<double, 1, sycl::access::mode::discard_write> acc_matNext(*r_matNext, h);
-        auto info_partition_matCur_accessor = info_partition_matCur_buffer.get_access<sycl::access::mode::read>(h);
-        auto info_partition_matPrev_accessor = info_partition_matPrev_buffer.get_access<sycl::access::mode::read>(h);
-        auto info_partition_matNext_accessor = info_partition_matNext_buffer.get_access<sycl::access::mode::read>(h);        h.parallel_for(sycl::nd_range<2>(global, local), [=](sycl::nd_item<2> item) {
-            int gx = item.get_global_id(0);
-            int gy = item.get_global_id(1);
-            int item_id = gx * global[1] + gy;
-            if(item_id >= Item_Size)
-                return;
-            // 索引初始化
-
-            const auto sp1_=(item_id/sp2.split_size+(0))%sp1.split_size;
-            const auto idx1_=(item_id/sp2.split_size+(0))%idx1.split_size;
-            const auto sp2_=(item_id+(0))%sp2.split_size;
-            const auto idx2_=(item_id+(0))%idx2.split_size;            // 获得划分数据单元左上角（第一个元素）的位置
-
-			const auto matCur_0 = sp1_ * sp1.stride;
-			const auto matCur_1 = sp2_ * sp2.stride;
-			const auto matPrev_0 = idx1_ * idx1.stride;
-			const auto matPrev_1 = idx2_ * idx2.stride;
-			const auto matNext_0 = idx1_ * idx1.stride;
-			const auto matNext_1 = idx2_ * idx2.stride;            // 获得accessor指针
-
-            auto* d_matCur = acc_matCur.get_multi_ptr<access::decorated::no>().get();
-            auto* d_matPrev = acc_matPrev.get_multi_ptr<access::decorated::no>().get();
-            auto* d_matNext = acc_matNext.get_multi_ptr<access::decorated::no>().get();            // 嵌入计算
-
-            waveEq(d_matCur,d_matPrev,d_matNext,matCur_0,matCur_1,matPrev_0,matPrev_1,matNext_0,matNext_1,info_matCur_Shape[0],info_matCur_Shape[1],info_matPrev_Shape[0],info_matPrev_Shape[1],info_matNext_Shape[0],info_matNext_Shape[1],info_partition_matCur_accessor,info_partition_matPrev_accessor,info_partition_matNext_accessor);        });
-    });
-}
-
-void __dacpp_submit_region_waveEqShell_waveEq_stmt_0(__dacpp_ctx_waveEqShell_waveEq& ctx) {
-    using namespace sycl;
-    auto& dacpp_q = ctx.dacpp_q;
-    auto* r_matCur = ctx.r_matCur.get();
-    auto* r_matPrev = ctx.r_matPrev.get();
-    auto* r_matNext = ctx.r_matNext.get();
-    auto* info_matCur_Shape = ctx.info_matCur_Shape.data();
-    auto* info_matPrev_Shape = ctx.info_matPrev_Shape.data();
-    auto* info_matNext_Shape = ctx.info_matNext_Shape.data();
-{
-    int __iL = (1);
-    int __iR = (NX-2);
-    int __iN = __iR - __iL +1;
-    int __jL = (1);
-    int __jR = (NY-2);
-    int __jN = __jR - __jL + 1;
-    dacpp_q.submit([&](sycl::handler& h){
-    auto acc_matCur = r_matCur->get_access<sycl::access::mode::read>(h);
-    auto acc_matPrev = r_matPrev->get_access<sycl::access::mode::write>(h);
-    h.parallel_for(sycl::range<2>(__iN, __jN), [=](sycl::id<2> idx){
-      auto* d_matCur = acc_matCur.template get_multi_ptr<sycl::access::decorated::no>().get();
-      auto* d_matPrev = acc_matPrev.template get_multi_ptr<sycl::access::decorated::no>().get();
-      int i = __iL + idx[0];
-      int j = __jL + idx[1];
-      {
-                d_matPrev[(i-1) * (info_matPrev_Shape[0]) + (j-1)]=d_matCur[(i) * (info_matCur_Shape[0]) + (j)];
-            }
-    });
-  });
-}
-}
-
-void __dacpp_submit_region_waveEqShell_waveEq_stmt_1(__dacpp_ctx_waveEqShell_waveEq& ctx) {
-    using namespace sycl;
-    auto& dacpp_q = ctx.dacpp_q;
-    auto* r_matCur = ctx.r_matCur.get();
-    auto* r_matPrev = ctx.r_matPrev.get();
-    auto* r_matNext = ctx.r_matNext.get();
-    auto* info_matCur_Shape = ctx.info_matCur_Shape.data();
-    auto* info_matPrev_Shape = ctx.info_matPrev_Shape.data();
-    auto* info_matNext_Shape = ctx.info_matNext_Shape.data();
-{
-    int __iL = (1);
-    int __iR = (NX-2);
-    int __iN = __iR - __iL +1;
-    int __jL = (1);
-    int __jR = (NY-2);
-    int __jN = __jR - __jL + 1;
-    dacpp_q.submit([&](sycl::handler& h){
-    auto acc_matCur = r_matCur->get_access<sycl::access::mode::write>(h);
-    auto acc_matNext = r_matNext->get_access<sycl::access::mode::read>(h);
-    h.parallel_for(sycl::range<2>(__iN, __jN), [=](sycl::id<2> idx){
-      auto* d_matCur = acc_matCur.template get_multi_ptr<sycl::access::decorated::no>().get();
-      auto* d_matNext = acc_matNext.template get_multi_ptr<sycl::access::decorated::no>().get();
-      int i = __iL + idx[0];
-      int j = __jL + idx[1];
-      {
-                d_matCur[(i) * (info_matCur_Shape[0]) + (j)]=d_matNext[(i-1) * (info_matPrev_Shape[0]) + (j-1)];
-            }
-    });
-  });
-}
-}
-
-void __dacpp_submit_region_waveEqShell_waveEq_stmt_2(__dacpp_ctx_waveEqShell_waveEq& ctx) {
-    using namespace sycl;
-    auto& dacpp_q = ctx.dacpp_q;
-    auto* r_matCur = ctx.r_matCur.get();
-    auto* r_matPrev = ctx.r_matPrev.get();
-    auto* r_matNext = ctx.r_matNext.get();
-    auto* info_matCur_Shape = ctx.info_matCur_Shape.data();
-    auto* info_matPrev_Shape = ctx.info_matPrev_Shape.data();
-    auto* info_matNext_Shape = ctx.info_matNext_Shape.data();
-{
-  int __L = (0);
-  int __R = (NX-1);
-  int __N = __R - __L +1;
-  dacpp_q.submit([&](sycl::handler& h){
-    auto acc_matCur = r_matCur->get_access<sycl::access::mode::write>(h);
-    h.parallel_for(sycl::range<1>(__N), [=](sycl::id<1> idx){
-      auto* d_matCur = acc_matCur.template get_multi_ptr<sycl::access::decorated::no>().get();
-      int i = __L + idx[0];
-      {       
-            d_matCur[(i) * (info_matCur_Shape[0]) + (NY-1)]=0;
-            d_matCur[(i) * (info_matCur_Shape[0]) + (0)]=0;
-        }
-    });
-  });
-}
-}
-
-void __dacpp_submit_region_waveEqShell_waveEq_stmt_3(__dacpp_ctx_waveEqShell_waveEq& ctx) {
-    using namespace sycl;
-    auto& dacpp_q = ctx.dacpp_q;
-    auto* r_matCur = ctx.r_matCur.get();
-    auto* r_matPrev = ctx.r_matPrev.get();
-    auto* r_matNext = ctx.r_matNext.get();
-    auto* info_matCur_Shape = ctx.info_matCur_Shape.data();
-    auto* info_matPrev_Shape = ctx.info_matPrev_Shape.data();
-    auto* info_matNext_Shape = ctx.info_matNext_Shape.data();
-{
-  int __L = (0);
-  int __R = (NY-1);
-  int __N = __R - __L +1;
-  dacpp_q.submit([&](sycl::handler& h){
-    auto acc_matCur = r_matCur->get_access<sycl::access::mode::write>(h);
-    h.parallel_for(sycl::range<1>(__N), [=](sycl::id<1> idx){
-      auto* d_matCur = acc_matCur.template get_multi_ptr<sycl::access::decorated::no>().get();
-      int j = __L + idx[0];
-      {
-            d_matCur[(NX - 1) * (info_matCur_Shape[0]) + (j)]=0;
-            d_matCur[(0) * (info_matCur_Shape[0]) + (j)]=0;
-             // 底部边界
-        }
-    });
-  });
-}
-}
-
-void __dacpp_sync_waveEqShell_waveEq(__dacpp_ctx_waveEqShell_waveEq& ctx, dacpp::Matrix<double> & matCur, dacpp::Matrix<double> & matPrev, dacpp::Matrix<double> & matNext) {
-    using namespace sycl;
-    ctx.dacpp_q.wait();
-    ctx.h_matCur.resize(matCur.getSize());
-    {
-        host_accessor acc(*ctx.r_matCur);
-        for (std::size_t idx = 0; idx < ctx.h_matCur.size(); ++idx) {
-            ctx.h_matCur[idx] = acc[idx];
+    int64_t total_items = 1;
+    for (int64_t split_size : binding_split_sizes) total_items *= split_size;
+    auto item_range = dacpp::mpi::get_rank_item_range(total_items, mpi_rank, mpi_size);
+    const int64_t local_item_count = item_range.size();
+    pattern_cur.bind_split_sizes = binding_split_sizes;
+    pattern_prev.bind_split_sizes = binding_split_sizes;
+    pattern_next.bind_split_sizes = binding_split_sizes;
+    auto pack_cur = dacpp::mpi::build_input_pack_map(item_range, pattern_cur);
+    auto slots_cur = dacpp::mpi::build_item_slots(item_range, pattern_cur, pack_cur);
+    std::vector<double> local_cur(pack_cur.globals.size());
+    int recv_count_cur = 0;
+    std::vector<int> sendcounts_cur;
+    std::vector<int> displs_cur;
+    std::vector<double> sendbuf_cur;
+    if (mpi_rank == 0) {
+        sendcounts_cur.resize(mpi_size);
+        displs_cur.resize(mpi_size);
+        int current_displ = 0;
+        std::vector<double> global_cur;
+        matCur.tensor2Array(global_cur);
+        for (int r = 0; r < mpi_size; ++r) {
+            auto r_range = dacpp::mpi::get_rank_item_range(total_items, r, mpi_size);
+            auto r_pack = dacpp::mpi::build_input_pack_map(r_range, pattern_cur);
+            auto r_values = dacpp::mpi::pack_values_by_globals(global_cur, r_pack.globals);
+            int r_count = static_cast<int>(r_values.size());
+            sendcounts_cur[r] = r_count;
+            displs_cur[r] = current_displ;
+            current_displ += r_count;
+            sendbuf_cur.insert(sendbuf_cur.end(), r_values.begin(), r_values.end());
         }
     }
-    matCur.array2Tensor(ctx.h_matCur);
+    MPI_Scatter(mpi_rank == 0 ? sendcounts_cur.data() : nullptr, 1, MPI_INT, &recv_count_cur, 1, MPI_INT, 0, MPI_COMM_WORLD);
+    local_cur.resize(recv_count_cur);
+    std::vector<int> sendcounts_bytes_cur = sendcounts_cur;
+    std::vector<int> displs_bytes_cur = displs_cur;
+    MPI_Scatterv(mpi_rank == 0 ? sendbuf_cur.data() : nullptr, mpi_rank == 0 ? sendcounts_bytes_cur.data() : nullptr, mpi_rank == 0 ? displs_bytes_cur.data() : nullptr, MPI_DOUBLE, local_cur.data(), recv_count_cur, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+    const int cur_partition_size = static_cast<int>(dacpp::mpi::partition_element_count(pattern_cur));
+    const int cur_cols = pattern_cur.partition_shape[1];
+    auto pack_prev = dacpp::mpi::build_input_pack_map(item_range, pattern_prev);
+    auto slots_prev = dacpp::mpi::build_item_slots(item_range, pattern_prev, pack_prev);
+    std::vector<double> local_prev(pack_prev.globals.size());
+    int recv_count_prev = 0;
+    std::vector<int> sendcounts_prev;
+    std::vector<int> displs_prev;
+    std::vector<double> sendbuf_prev;
+    if (mpi_rank == 0) {
+        sendcounts_prev.resize(mpi_size);
+        displs_prev.resize(mpi_size);
+        int current_displ = 0;
+        std::vector<double> global_prev;
+        matPrev.tensor2Array(global_prev);
+        for (int r = 0; r < mpi_size; ++r) {
+            auto r_range = dacpp::mpi::get_rank_item_range(total_items, r, mpi_size);
+            auto r_pack = dacpp::mpi::build_input_pack_map(r_range, pattern_prev);
+            auto r_values = dacpp::mpi::pack_values_by_globals(global_prev, r_pack.globals);
+            int r_count = static_cast<int>(r_values.size());
+            sendcounts_prev[r] = r_count;
+            displs_prev[r] = current_displ;
+            current_displ += r_count;
+            sendbuf_prev.insert(sendbuf_prev.end(), r_values.begin(), r_values.end());
+        }
+    }
+    MPI_Scatter(mpi_rank == 0 ? sendcounts_prev.data() : nullptr, 1, MPI_INT, &recv_count_prev, 1, MPI_INT, 0, MPI_COMM_WORLD);
+    local_prev.resize(recv_count_prev);
+    std::vector<int> sendcounts_bytes_prev = sendcounts_prev;
+    std::vector<int> displs_bytes_prev = displs_prev;
+    MPI_Scatterv(mpi_rank == 0 ? sendbuf_prev.data() : nullptr, mpi_rank == 0 ? sendcounts_bytes_prev.data() : nullptr, mpi_rank == 0 ? displs_bytes_prev.data() : nullptr, MPI_DOUBLE, local_prev.data(), recv_count_prev, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+    const int prev_partition_size = static_cast<int>(dacpp::mpi::partition_element_count(pattern_prev));
+    auto pack_next = dacpp::mpi::build_output_pack_map(item_range, pattern_next);
+    auto slots_next = dacpp::mpi::build_item_slots(item_range, pattern_next, pack_next);
+    std::vector<double> local_next(pack_next.globals.size());
+    const int next_partition_size = static_cast<int>(dacpp::mpi::partition_element_count(pattern_next));
+    if (local_item_count > 0) {
+        {
+            sycl::buffer<double, 1> buffer_cur(local_cur.data(), sycl::range<1>(local_cur.size()));
+            sycl::buffer<int32_t, 1> slots_buffer_cur(slots_cur.data(), sycl::range<1>(slots_cur.size()));
+            sycl::buffer<double, 1> buffer_prev(local_prev.data(), sycl::range<1>(local_prev.size()));
+            sycl::buffer<int32_t, 1> slots_buffer_prev(slots_prev.data(), sycl::range<1>(slots_prev.size()));
+            sycl::buffer<double, 1> buffer_next(local_next.data(), sycl::range<1>(local_next.size()));
+            sycl::buffer<int32_t, 1> slots_buffer_next(slots_next.data(), sycl::range<1>(slots_next.size()));
+            q.submit([&](sycl::handler& h) {
+                auto acc_cur = buffer_cur.get_access<sycl::access::mode::read>(h);
+                auto slots_acc_cur = slots_buffer_cur.get_access<sycl::access::mode::read>(h);
+                auto acc_prev = buffer_prev.get_access<sycl::access::mode::read>(h);
+                auto slots_acc_prev = slots_buffer_prev.get_access<sycl::access::mode::read>(h);
+                auto acc_next = buffer_next.get_access<sycl::access::mode::read_write>(h);
+                auto slots_acc_next = slots_buffer_next.get_access<sycl::access::mode::read>(h);
+                h.parallel_for(sycl::range<1>(static_cast<std::size_t>(local_item_count)), [=](sycl::id<1> idx) {
+                    const int item_linear = static_cast<int>(idx[0]);
+                    auto* data_cur = acc_cur.template get_multi_ptr<sycl::access::decorated::no>().get();
+                    auto* slots_cur = slots_acc_cur.template get_multi_ptr<sycl::access::decorated::no>().get();
+                    dacpp::mpi::View2D<const double> view_cur{data_cur, slots_cur, item_linear * cur_partition_size, cur_cols};
+                    auto* data_prev = acc_prev.template get_multi_ptr<sycl::access::decorated::no>().get();
+                    auto* slots_prev = slots_acc_prev.template get_multi_ptr<sycl::access::decorated::no>().get();
+                    dacpp::mpi::View1D<const double> view_prev{data_prev, slots_prev, item_linear * prev_partition_size};
+                    auto* data_next = acc_next.template get_multi_ptr<sycl::access::decorated::no>().get();
+                    auto* slots_next = slots_acc_next.template get_multi_ptr<sycl::access::decorated::no>().get();
+                    dacpp::mpi::View1D<double> view_next{data_next, slots_next, item_linear * next_partition_size};
+                    waveEq_mpi_local(view_cur, view_prev, view_next);
+                });
+            });
+            q.wait();
+        }
+    }
+    auto writeback_next = dacpp::mpi::build_writeback_values(local_next, pack_next);
+    const auto& writeback_globals_next = pack_next.writeback_globals.empty() ? pack_next.globals : pack_next.writeback_globals;
+    std::vector<double> synced_next;
+    int send_count_next = static_cast<int>(writeback_globals_next.size());
+    std::vector<int> recvcounts_next;
+    std::vector<int> recvdispls_next;
+    std::vector<int64_t> global_recv_globals_next;
+    std::vector<double> global_recv_values_next;
+    if (mpi_rank == 0) {
+        recvcounts_next.resize(mpi_size);
+        recvdispls_next.resize(mpi_size);
+    }
+    MPI_Gather(&send_count_next, 1, MPI_INT, mpi_rank == 0 ? recvcounts_next.data() : nullptr, 1, MPI_INT, 0, MPI_COMM_WORLD);
+    if (mpi_rank == 0) {
+        int current_displ = 0;
+        for (int r = 0; r < mpi_size; ++r) {
+            recvdispls_next[r] = current_displ;
+            current_displ += recvcounts_next[r];
+        }
+        global_recv_globals_next.resize(current_displ);
+        global_recv_values_next.resize(current_displ);
+    }
+    MPI_Gatherv(const_cast<int64_t*>(writeback_globals_next.data()), send_count_next, MPI_LONG_LONG, mpi_rank == 0 ? global_recv_globals_next.data() : nullptr, mpi_rank == 0 ? recvcounts_next.data() : nullptr, mpi_rank == 0 ? recvdispls_next.data() : nullptr, MPI_LONG_LONG, 0, MPI_COMM_WORLD);
+    std::vector<int> recvcounts_bytes_next = recvcounts_next;
+    std::vector<int> recvdispls_bytes_next = recvdispls_next;
+    MPI_Gatherv(writeback_next.data(), send_count_next, MPI_DOUBLE, mpi_rank == 0 ? global_recv_values_next.data() : nullptr, mpi_rank == 0 ? recvcounts_bytes_next.data() : nullptr, mpi_rank == 0 ? recvdispls_bytes_next.data() : nullptr, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+    if (mpi_rank == 0) {
+        std::vector<double> global_out_next;
+        matNext.tensor2Array(global_out_next);
+        dacpp::mpi::apply_writeback_by_globals(global_recv_values_next, global_recv_globals_next, global_out_next);
+        matNext.array2Tensor(global_out_next);
+        synced_next = global_out_next;
+    }
+    int synced_count_next = 0;
+    if (mpi_rank == 0) {
+        synced_count_next = static_cast<int>(synced_next.size());
+    }
+    MPI_Bcast(&synced_count_next, 1, MPI_INT, 0, MPI_COMM_WORLD);
+    if (mpi_rank != 0) {
+        synced_next.resize(synced_count_next);
+    }
+    if (synced_count_next > 0) {
+        MPI_Bcast(synced_next.data(), synced_count_next, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+    }
+    if (mpi_rank != 0) {
+        matNext.array2Tensor(synced_next);
+    }
 }
-
 
 int main() {
+    int dacpp_mpi_finalize_needed = 0;
+    int dacpp_mpi_initialized = 0;
+    MPI_Initialized(&dacpp_mpi_initialized);
+    if (!dacpp_mpi_initialized) {
+        int dacpp_mpi_argc = 0;
+        char** dacpp_mpi_argv = nullptr;
+        MPI_Init(&dacpp_mpi_argc, &dacpp_mpi_argv);
+        dacpp_mpi_finalize_needed = 1;
+    }
+    int mpi_rank = 0;
+    int mpi_size = 1;
+    MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &mpi_size);
+    if (mpi_rank != 0) {
+        freopen("/dev/null", "w", stdout);
+    }
+
     // 初始化波场
     vector<double> u_prev(NX * NY, 0.0f); // 前一步
     vector<double> u_curr(NX * NY, 0.0f);  // 当前步
@@ -388,20 +341,36 @@ int main() {
     dacpp::Matrix<double> matPrev = u_prev_tensor[{1,NX-1}][{1,NY-1}];
     dacpp::Matrix<double> matNext = u_next_tensor[{1,NX-1}][{1,NY-1}];
     
-        __dacpp_ctx_waveEqShell_waveEq __dacpp_ctx_waveEqShell_waveEq_0;
-    __dacpp_init_waveEqShell_waveEq(__dacpp_ctx_waveEqShell_waveEq_0, matCur, matPrev, matNext);
-for(int i = 0;i < TIME_STEPS; i++) {
-        __dacpp_submit_waveEqShell_waveEq(__dacpp_ctx_waveEqShell_waveEq_0);
-        __dacpp_submit_region_waveEqShell_waveEq_stmt_0(__dacpp_ctx_waveEqShell_waveEq_0);
+    for(int i = 0;i < TIME_STEPS; i++) {
+        waveEqShell_waveEq(matCur, matPrev, matNext);
+        for (int i = 1; i <= NX-2; i++) {
+            for(int j = 1; j <=NY-2; j++){
+                matPrev[i-1][j-1]=matCur[i][j];
+            }
+        }
 
-        __dacpp_submit_region_waveEqShell_waveEq_stmt_1(__dacpp_ctx_waveEqShell_waveEq_0);
+        for (int i = 1; i <= NX-2; i++) {
+            for(int j = 1; j <=NY-2; j++){
+                matCur[i][j]=matNext[i-1][j-1];
+            }
+        }
         // 处理边界条件（绝热边界：导数为零）
-        __dacpp_submit_region_waveEqShell_waveEq_stmt_2(__dacpp_ctx_waveEqShell_waveEq_0);
-        __dacpp_submit_region_waveEqShell_waveEq_stmt_3(__dacpp_ctx_waveEqShell_waveEq_0);
+        for (int i = 0; i <= NX-1; ++i) {       
+            matCur[i][NY-1]=0;
+            matCur[i][0]=0;
+        }
+        for (int j = 0; j <= NY-1; ++j) {
+            matCur[NX - 1][j]=0;
+            matCur[0][j]=0;
+             // 底部边界
+        }
     }
-    __dacpp_sync_waveEqShell_waveEq(__dacpp_ctx_waveEqShell_waveEq_0, matCur, matPrev, matNext);
-
     //
     matCur.print(); 
-    return 0;
+    
+    if (dacpp_mpi_finalize_needed) {
+        MPI_Finalize();
+        dacpp_mpi_finalize_needed = 0;
+    }
+return 0;
 }

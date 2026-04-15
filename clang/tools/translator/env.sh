@@ -168,7 +168,19 @@ resolve_tool() {
 generated_cpp_for() {
     local input="$1"
     local base="${input%.*}"
-    printf '%s\n' "${base}_sycl_usm.cpp"
+    local candidates=(
+        "${base}_sycl_buffer.cpp"
+        "${base}_sycl_usm.cpp"
+        "${base}_sycl_buffer_mpi.cpp"
+    )
+    local candidate
+    for candidate in "${candidates[@]}"; do
+        if [[ -f "$candidate" ]]; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+    printf '%s\n' "${base}_sycl_buffer.cpp"
 }
 
 default_output_for_generated() {

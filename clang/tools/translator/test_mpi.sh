@@ -82,7 +82,7 @@ for test_name in "${NON_STENCIL_TESTS[@]}"; do
     echo "  [Step 2] Translate --mode=buffer --mpi and compile"
     mpi_dac="$work_dir/$(basename "${dac_file%.dac.cpp}").mpi.dac.cpp"
     cp "$dac_file" "$mpi_dac"
-    mpi_sycl="${mpi_dac%.dac.cpp}.dac_sycl_buffer_mpi.cpp"
+    mpi_sycl="${mpi_dac%.dac.cpp}.dac_sycl_buffer.cpp"
     mpi_bin="$work_dir/mpi_bin"
 
     if ! run_in_env "$work_dir/step2.log" "dacpp '$mpi_dac' --mode=buffer --mpi && acpp-compile '$mpi_sycl' '$mpi_bin'"; then
