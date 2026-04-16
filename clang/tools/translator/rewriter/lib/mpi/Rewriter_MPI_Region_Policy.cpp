@@ -115,6 +115,65 @@ MPIRegionTransferPolicy analyzeMPIRegionTransferPolicy(
     return policy;
 }
 
+std::vector<IOTYPE> inferMPIRegionStorageModes(
+    DacppFile* dacppFile,
+    Expression* expr,
+    const std::vector<IOTYPE>& paramModes) {
+    std::vector<IOTYPE> modes = paramModes;
+    if (!dacppFile || !expr) {
+        return modes;
+    }
+
+    Shell* shell = expr->getShell();
+    const auto& plan = dacppFile->getBufferRegionPlan();
+    const int n = static_cast<int>(paramModes.size());
+    if (!shell || !plan.enabled || n <= 0) {
+        return modes;
+    }
+
+    const auto argDecls = collectShellCallArgDeclsMPI(plan.dacExpr, n);
+    std::unordered_map<const clang::ValueDecl*, int> argDeclIndices;
+    for (int paramIdx = 0; paramIdx < n; ++paramIdx) {
+        const clang::ValueDecl* argDecl =
+            argDecls[static_cast<std::size_t>(paramIdx)];
+        if (argDecl) {
+            argDeclIndices.emplace(argDecl, paramIdx);
+        }
+    }
+
+    auto hasRead = [](IOTYPE mode) {
+        return mode == IOTYPE::READ || mode == IOTYPE::READ_WRITE;
+    };
+    auto hasWrite = [](IOTYPE mode) {
+        return mode == IOTYPE::WRITE || mode == IOTYPE::READ_WRITE;
+    };
+    auto makeMode = [](bool reads, bool writes) {
+        if (reads && writes) {
+            return IOTYPE::READ_WRITE;
+        }
+        if (writes) {
+            return IOTYPE::WRITE;
+        }
+        return IOTYPE::READ;
+    };
+
+    for (const clang::ForStmt* siblingFor : plan.siblingForStmts) {
+        const auto siblingSummary =
+            summarizeStmtAccess(siblingFor, argDeclIndices, n);
+        for (int paramIdx = 0; paramIdx < n; ++paramIdx) {
+            const AccessSummary& access =
+                siblingSummary[static_cast<std::size_t>(paramIdx)];
+            const bool reads =
+                hasRead(modes[static_cast<std::size_t>(paramIdx)]) || access.reads;
+            const bool writes =
+                hasWrite(modes[static_cast<std::size_t>(paramIdx)]) || access.writes;
+            modes[static_cast<std::size_t>(paramIdx)] = makeMode(reads, writes);
+        }
+    }
+
+    return modes;
+}
+
 std::string joinShellCallArgsMPI(const clang::BinaryOperator* dacExpr,
                                  clang::ASTContext* context) {
     if (!dacExpr || !context) {

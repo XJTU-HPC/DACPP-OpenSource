@@ -527,16 +527,9 @@ public:
     if (ModeOpt == "buffer" || MpiOpt) {
       dacppFile->analyzeBufferRegionPlan();
       if (dacppFile->hasBufferRegionPlan()) {
-        if (MpiOpt &&
-            !dacppFile->getBufferRegionPlan().siblingForStmts.empty()) {
-          llvm::outs() << "[DACPP] MPI region optimization deferred: "
-                       << "sibling loops are not deviceized yet; "
-                       << "falling back to stable MPI wrapper\n";
-        } else {
-          llvm::outs() << "[DACPP] "
-                       << (MpiOpt ? "MPI" : "buffer")
-                       << " region optimization enabled\n";
-        }
+        llvm::outs() << "[DACPP] "
+                     << (MpiOpt ? "MPI" : "buffer")
+                     << " region optimization enabled\n";
       } else if (!dacppFile->getBufferRegionPlan().disableReason.empty()) {
         llvm::outs() << "[DACPP] "
                      << (MpiOpt ? "MPI" : "buffer")
@@ -548,9 +541,7 @@ public:
     // dacppTranslator::printDacppFileInfo(dacppFile);
 
 if (MpiOpt) {
-    const auto& regionPlan = dacppFile->getBufferRegionPlan();
-    if (dacppFile->hasBufferRegionPlan() &&
-        regionPlan.siblingForStmts.empty()) {
+    if (dacppFile->hasBufferRegionPlan()) {
         rewriter->rewriteMPI_Region();
     } else {
         rewriter->rewriteMPI();

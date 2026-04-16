@@ -3,6 +3,7 @@
 
 #include <set>
 #include <string>
+#include <utility>
 #include <unordered_map>
 #include <vector>
 
@@ -32,6 +33,7 @@ struct MPIRegionGeneratedCode {
     std::string submitName;
     std::string haloName;
     std::string syncName;
+    std::vector<std::pair<const clang::ForStmt*, std::string>> siblingHelpers;
 };
 
 struct MPIRegionTransferPolicy {
@@ -78,8 +80,15 @@ std::string buildMPIRegionCodegen(
     DacppFile* dacppFile,
     Expression* expr,
     const MPIRegionTransferPolicy& transferPolicy);
+std::string buildMPIRegionSiblingCode(DacppFile* dacppFile,
+                                      Expression* expr,
+                                      MPIRegionGeneratedCode& generated);
 
 MPIRegionTransferPolicy analyzeMPIRegionTransferPolicy(
+    DacppFile* dacppFile,
+    Expression* expr,
+    const std::vector<IOTYPE>& paramModes);
+std::vector<IOTYPE> inferMPIRegionStorageModes(
     DacppFile* dacppFile,
     Expression* expr,
     const std::vector<IOTYPE>& paramModes);

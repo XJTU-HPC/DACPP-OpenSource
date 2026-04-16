@@ -60,6 +60,8 @@ std::string buildMPIRegionCodegen(
     Calc* calc = expr->getCalc();
     const auto generated = buildMPIRegionNames(expr);
     const auto paramModes = inferEffectiveParamModes(shell, calc);
+    const auto storageModes =
+        inferMPIRegionStorageModes(dacppFile, expr, paramModes);
     const auto splitMeta = collectSplitBindMeta(shell);
     const std::string shellParamSig = buildShellParamSignature(shell);
 
@@ -111,7 +113,7 @@ std::string buildMPIRegionCodegen(
         const std::string& name = calcParam->getName();
         const std::string& tensorName = shellWrapperParam->getName();
         const std::string patternName = "ctx.pattern_" + name;
-        const IOTYPE mode = paramModes[paramIdx];
+        const IOTYPE mode = storageModes[paramIdx];
 
         code += "    ctx.pattern_" + name + " = dacpp::mpi::AccessPattern();\n";
         code += "    ctx.pattern_" + name + ".param_id = " +
@@ -213,7 +215,7 @@ std::string buildMPIRegionCodegen(
         ShellParam* shellParam = shell->getShellParam(paramIdx);
         Param* calcParam = calc->getParam(paramIdx);
         Param* shellWrapperParam = shell->getParam(paramIdx);
-        const IOTYPE mode = paramModes[paramIdx];
+        const IOTYPE mode = storageModes[paramIdx];
         const std::string& calcName = calcParam->getName();
         const std::string& tensorName = shellWrapperParam->getName();
         const std::string patternName = "ctx.pattern_" + calcName;
@@ -439,6 +441,21 @@ std::string buildMPIRegionCodegen(
     code += ") {\n";
     code += "    ctx.q.wait();\n";
     for (int paramIdx = 0; paramIdx < shell->getNumShellParams(); ++paramIdx) {
+        const IOTYPE mode = storageModes[paramIdx];
+        if (mode == IOTYPE::WRITE || mode == IOTYPE::READ_WRITE) {
+            Param* calcParam = calc->getParam(paramIdx);
+            const std::string& name = calcParam->getName();
+            code += "    if (ctx.local_item_count > 0) {\n";
+            code += "        sycl::host_accessor ha_sync_" + name +
+                    "(*ctx.buf_" + name + ", sycl::read_only);\n";
+            code += "        for (std::size_t i = 0; i < ctx.local_" + name +
+                    ".size(); ++i)\n";
+            code += "            ctx.local_" + name + "[i] = ha_sync_" + name +
+                    "[i];\n";
+            code += "    }\n";
+        }
+    }
+    for (int paramIdx = 0; paramIdx < shell->getNumShellParams(); ++paramIdx) {
         if (!transferPolicy.needsSyncGather[static_cast<std::size_t>(paramIdx)]) {
             continue;
         }
@@ -585,6 +602,7 @@ MPIRegionGeneratedCode buildMPIRegionCode(DacppFile* dacppFile,
         analyzeMPIRegionTransferPolicy(dacppFile, expr, paramModes);
     generated.definitions =
         buildMPIRegionCodegen(dacppFile, expr, transferPolicy);
+    generated.definitions += buildMPIRegionSiblingCode(dacppFile, expr, generated);
     return generated;
 }
 

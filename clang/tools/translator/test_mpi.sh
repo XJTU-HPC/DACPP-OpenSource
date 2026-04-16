@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 
+set -uo pipefail
+
 # Setup environment
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" &> /dev/null && pwd)"
 source "$SCRIPT_DIR/env.sh"
@@ -10,7 +12,7 @@ TMP_DIR="/Volumes/QUQ/working/mpi_tmp"
 rm -rf "$TMP_DIR"
 mkdir -p "$TMP_DIR"
 
-NON_STENCIL_TESTS=(
+MPI_TESTS=(
     "matMul1.0"
     "FOuLa1.0"
     "decay1.0"
@@ -21,7 +23,21 @@ NON_STENCIL_TESTS=(
     "imageAdjustment1.0"
     "vectorAddCombo"
     "gradientSum"
+    "stencil1.0"
+    "waveEquation1.0"
 )
+
+if [[ $# -gt 0 ]]; then
+    MPI_TESTS=("$@")
+fi
+
+pick_dac_source() {
+    find "$1" -maxdepth 1 -type f -name "*.dac.cpp" \
+        ! -name "*.mpi.dac.cpp" \
+        ! -name "*.retranslated.dac.cpp" \
+        ! -name "*.large_dac.cpp" \
+        | sort | head -n 1
+}
 
 # ── 过滤 AdaptiveCpp 运行时警告 ──────────────────────────────────────────────
 clean_output() {
@@ -37,13 +53,13 @@ run_in_env() {
 
 TOTAL=0; PASSED=0; FAILED=0; SKIPPED=0
 
-for test_name in "${NON_STENCIL_TESTS[@]}"; do
+for test_name in "${MPI_TESTS[@]}"; do
     echo "========================================================"
     echo "  Test: $test_name"
     echo "========================================================"
     TOTAL=$((TOTAL + 1))
 
-    dac_file=$(find "$TESTS_DIR/$test_name" -maxdepth 1 -type f -name "*.dac.cpp" | head -n 1)
+    dac_file="$(pick_dac_source "$TESTS_DIR/$test_name")"
     if [[ -z "$dac_file" ]]; then
         echo "[WARN] No .dac.cpp found, skipping."
         SKIPPED=$((SKIPPED + 1))

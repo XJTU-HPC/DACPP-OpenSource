@@ -233,7 +233,7 @@ bash test_mpi.sh
 
 ### 当前 MPI 全量覆盖范围
 
-当前脚本会跑 `tests/` 下这 10 个 non-stencil / 主线 MPI 回归样例：
+当前脚本会跑 `tests/` 下这 12 个 MPI 回归样例：
 
 - `matMul1.0`
 - `FOuLa1.0`
@@ -245,6 +245,8 @@ bash test_mpi.sh
 - `imageAdjustment1.0`
 - `vectorAddCombo`
 - `gradientSum`
+- `stencil1.0`
+- `waveEquation1.0`
 
 ### `test_mpi.sh` 的行为
 
@@ -321,16 +323,19 @@ bash test_mpi.sh
 
 ## 当前主线的真实情况
 
-当前主线里，`--mpi` 仍然统一走 MPI wrapper 主链路，语义上已经稳定覆盖现有回归集。
+当前主线里，`--mpi` 会先判断是否命中 buffer region：
+
+- 命中 buffer region 时走 MPI region 路径
+- 其他情况走稳定 MPI wrapper 路径
 
 需要特别说明的是：
 
 - MPI 的 region 入口已经接回主线
-- 但当前默认实现是一个 `region-safe` 版本
-- 它优先保证编译和语义正确性
-- 还没有把单机 buffer region 那套 device-resident 优化完整搬到 MPI 路径
+- sibling `for` 已经通过 host-side dense bridge 接入 region 生命周期
+- 实现重点放在编译正确性和语义闭环
+- sibling helper 的 dense bridge 仍有进一步收紧和设备化空间
 
-也就是说，当前重点是“默认主线正确、测试全绿”，而不是“MPI region backend 已经做完所有性能优化”
+也就是说，当前重点是“主线正确、region 生命周期闭环、回归可验证”，而不是“所有 MPI region 优化都已设备化”
 
 ## 近期实测结果
 
@@ -351,7 +356,7 @@ bash test_mpi.sh
 ### MPI 全量 suite
 
 ```text
-10 tests | 10 passed | 0 failed | 0 skipped
+12 tests | 12 passed | 0 failed | 0 skipped
 ```
 
 ## 常见排障
@@ -417,4 +422,3 @@ bash test_mpi.sh
 
 - “旧版 `Rewriter_Buffer.cpp` / archive 路径是当前主线”
   当前主线 buffer 路径是 `Rewriter_Buffer_new.cpp`
-

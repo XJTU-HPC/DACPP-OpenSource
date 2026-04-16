@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <cctype>
+#include <regex>
 #include <set>
 #include <string>
 #include <unordered_map>
@@ -16,15 +17,106 @@
 namespace dacppTranslator {
 namespace mpi_rewriter {
 
-// WIP helpers for future sibling-loop lowering on top of the MPI region state.
-// They are compiled so the split stays build-checked, but the current rewrite
-// path still conservatively falls back before these helpers are used.
-
 struct MPISiblingRewriteResult {
     std::string code;
     std::set<std::string> readVars;
     std::set<std::string> writtenVars;
 };
+
+namespace {
+
+std::string replaceWordMPI(std::string text,
+                           const std::string& word,
+                           const std::string& replacement) {
+    if (word.empty()) {
+        return text;
+    }
+    return std::regex_replace(text, std::regex("\\b" + word + "\\b"),
+                              replacement);
+}
+
+std::string buildDenseViewType(ShellParam* shellParam,
+                               Param* calcParam,
+                               bool isConst) {
+    const std::string baseType = calcParam->getBasicType();
+    const std::string qualifiedType = isConst ? ("const " + baseType) : baseType;
+    const int shellRank =
+        shellParam && shellParam->getDimension() > 0 ? shellParam->getDimension()
+                                                     : inferViewRank(shellParam, calcParam);
+    if (shellRank <= 1) {
+        return "dacpp::mpi::DenseVectorView<" + qualifiedType + ">";
+    }
+    return "dacpp::mpi::DenseMatrixView<" + qualifiedType + ">";
+}
+
+std::string buildDenseToLocalCopy(const std::string& calcName,
+                                  const std::string& indent,
+                                  bool onlyDirty) {
+    std::string code;
+    code += indent + "for (std::size_t __dacpp_l = 0; __dacpp_l < ctx.pack_" +
+            calcName + ".globals.size(); ++__dacpp_l) {\n";
+    code += indent + "    const std::size_t __dacpp_g = static_cast<std::size_t>(ctx.pack_" +
+            calcName + ".globals[__dacpp_l]);\n";
+    code += indent + "    if (__dacpp_g < __dacpp_dense_" + calcName +
+            ".size()";
+    if (onlyDirty) {
+        code += " && __dacpp_dirty_" + calcName + "[__dacpp_g]";
+    }
+    code += ") ctx.local_" + calcName + "[__dacpp_l] = __dacpp_dense_" +
+            calcName + "[__dacpp_g];\n";
+    code += indent + "}\n";
+    return code;
+}
+
+std::string buildLocalToDenseCopy(const std::string& calcName,
+                                  const std::string& indent) {
+    std::string code;
+    code += indent + "for (std::size_t __dacpp_l = 0; __dacpp_l < ctx.pack_" +
+            calcName + ".globals.size(); ++__dacpp_l) {\n";
+    code += indent + "    const std::size_t __dacpp_g = static_cast<std::size_t>(ctx.pack_" +
+            calcName + ".globals[__dacpp_l]);\n";
+    code += indent + "    if (__dacpp_g < __dacpp_dense_" + calcName +
+            ".size()) __dacpp_dense_" + calcName + "[__dacpp_g] = ctx.local_" +
+            calcName + "[__dacpp_l];\n";
+    code += indent + "}\n";
+    return code;
+}
+
+std::string buildBufferToLocalCopy(Param* calcParam,
+                                   const std::string& calcName,
+                                   const std::string& indent) {
+    std::string code;
+    code += indent + "if (ctx.buf_" + calcName + ") {\n";
+    code += indent + "    sycl::host_accessor __dacpp_acc_" + calcName +
+            "(*ctx.buf_" + calcName + ", sycl::read_only);\n";
+    code += indent + "    for (std::size_t __dacpp_l = 0; __dacpp_l < ctx.local_" +
+            calcName + ".size(); ++__dacpp_l) {\n";
+    code += indent + "        ctx.local_" + calcName + "[__dacpp_l] = __dacpp_acc_" +
+            calcName + "[__dacpp_l];\n";
+    code += indent + "    }\n";
+    code += indent + "}\n";
+    (void)calcParam;
+    return code;
+}
+
+std::string buildLocalToBufferCopy(Param* calcParam,
+                                   const std::string& calcName,
+                                   const std::string& indent) {
+    std::string code;
+    code += indent + "if (ctx.buf_" + calcName + ") {\n";
+    code += indent + "    sycl::host_accessor __dacpp_acc_w_" + calcName +
+            "(*ctx.buf_" + calcName + ", sycl::write_only);\n";
+    code += indent + "    for (std::size_t __dacpp_l = 0; __dacpp_l < ctx.local_" +
+            calcName + ".size(); ++__dacpp_l) {\n";
+    code += indent + "        __dacpp_acc_w_" + calcName + "[__dacpp_l] = ctx.local_" +
+            calcName + "[__dacpp_l];\n";
+    code += indent + "    }\n";
+    code += indent + "}\n";
+    (void)calcParam;
+    return code;
+}
+
+}  // namespace
 
 std::string getSourceTextMPI(const clang::Stmt* stmt,
                              clang::ASTContext* context) {
@@ -513,6 +605,166 @@ std::string buildMPISiblingDenseSyncCode(Shell* shell,
     code += indent + "    ctx.mpi_sibling_written_" + writtenName +
             ".clear();\n";
     code += indent + "}\n";
+    return code;
+}
+
+std::string buildMPIRegionSiblingCode(DacppFile* dacppFile,
+                                      Expression* expr,
+                                      MPIRegionGeneratedCode& generated) {
+    if (!dacppFile || !expr || !expr->getShell() || !expr->getCalc()) {
+        return "";
+    }
+
+    const auto& plan = dacppFile->getBufferRegionPlan();
+    if (!plan.enabled || plan.siblingForStmts.empty()) {
+        return "";
+    }
+
+    Shell* shell = expr->getShell();
+    Calc* calc = expr->getCalc();
+    clang::ASTContext* context = dacppFile->getContext();
+    if (!context) {
+        return "";
+    }
+
+    const std::string baseName = shell->getName() + "_" + calc->getName();
+    std::vector<std::string> sourceNames(
+        static_cast<std::size_t>(shell->getNumShellParams()));
+
+    const clang::CallExpr* shellCall = nullptr;
+    if (plan.dacExpr) {
+        clang::Expr* shellExpr =
+            dacppTranslator::Expression::shellLHS_p(plan.dacExpr)
+                ? plan.dacExpr->getLHS()
+                : plan.dacExpr->getRHS();
+        shellCall = dacppTranslator::getNode<clang::CallExpr>(shellExpr);
+    }
+
+    for (int paramIdx = 0; paramIdx < shell->getNumShellParams(); ++paramIdx) {
+        std::string sourceName = shell->getParam(paramIdx)->getName();
+        if (shellCall && paramIdx < static_cast<int>(shellCall->getNumArgs())) {
+            const clang::Expr* arg = shellCall->getArg(static_cast<unsigned>(paramIdx));
+            if (const auto* declRef = llvm::dyn_cast_or_null<clang::DeclRefExpr>(
+                    arg ? arg->IgnoreParenImpCasts() : nullptr)) {
+                sourceName = declRef->getDecl()->getNameAsString();
+            } else {
+                const std::string argText = getSourceTextMPI(arg, context);
+                if (!argText.empty() &&
+                    std::regex_match(argText,
+                                     std::regex("[A-Za-z_][A-Za-z0-9_]*"))) {
+                    sourceName = argText;
+                }
+            }
+        }
+        sourceNames[static_cast<std::size_t>(paramIdx)] = sourceName;
+    }
+
+    std::string code;
+    for (std::size_t helperIdx = 0; helperIdx < plan.siblingForStmts.size();
+         ++helperIdx) {
+        const clang::ForStmt* siblingFor = plan.siblingForStmts[helperIdx];
+        if (!siblingFor) {
+            continue;
+        }
+
+        const std::string helperName = "__dacpp_mpi_submit_region_" +
+                                       baseName + "_stmt_" +
+                                       std::to_string(helperIdx);
+        generated.siblingHelpers.emplace_back(siblingFor, helperName);
+
+        code += "void " + helperName + "(" + generated.ctxTypeName +
+                "& ctx) {\n";
+        code += "    ctx.q.wait();\n";
+
+        for (int paramIdx = 0; paramIdx < shell->getNumShellParams(); ++paramIdx) {
+            ShellParam* shellParam = shell->getShellParam(paramIdx);
+            Param* calcParam = calc->getParam(paramIdx);
+            const std::string calcName = calcParam->getName();
+            const std::string sourceName =
+                sourceNames[static_cast<std::size_t>(paramIdx)];
+            const std::string shellName = shell->getParam(paramIdx)->getName();
+            const std::string baseType = calcParam->getBasicType();
+            const std::string mpiType = mpiDatatypeFor(baseType);
+
+            code += buildBufferToLocalCopy(calcParam, calcName, "    ");
+            code += "    std::size_t __dacpp_dense_count_" + calcName +
+                    " = 1;\n";
+            code += "    for (int __dacpp_dim : ctx.pattern_" + calcName +
+                    ".data_info.dimLength) __dacpp_dense_count_" + calcName +
+                    " *= static_cast<std::size_t>(__dacpp_dim);\n";
+            code += "    std::vector<" + baseType + "> __dacpp_dense_" +
+                    calcName + "(__dacpp_dense_count_" + calcName + ", " +
+                    baseType + "{});\n";
+            code += "    std::vector<int> __dacpp_present_" + calcName +
+                    "(__dacpp_dense_count_" + calcName + ", 0);\n";
+            code += buildLocalToDenseCopy(calcName, "    ");
+            code += "    for (std::size_t __dacpp_l = 0; __dacpp_l < ctx.pack_" +
+                    calcName + ".globals.size(); ++__dacpp_l) {\n";
+            code += "        const std::size_t __dacpp_g = static_cast<std::size_t>(ctx.pack_" +
+                    calcName + ".globals[__dacpp_l]);\n";
+            code += "        if (__dacpp_g < __dacpp_present_" + calcName +
+                    ".size()) __dacpp_present_" + calcName +
+                    "[__dacpp_g] = 1;\n";
+            code += "    }\n";
+            code += "    MPI_Datatype __dacpp_mpi_dt_" + calcName + " = " +
+                    mpiType + ";\n";
+            code += "    if (__dacpp_dense_count_" + calcName + " > 0) {\n";
+            code += "        MPI_Allreduce(MPI_IN_PLACE, __dacpp_dense_" +
+                    calcName + ".data(), " +
+                    mpiPayloadCountExpr("__dacpp_dense_count_" + calcName,
+                                        baseType) +
+                    ", __dacpp_mpi_dt_" + calcName +
+                    ", MPI_SUM, MPI_COMM_WORLD);\n";
+            code += "        MPI_Allreduce(MPI_IN_PLACE, __dacpp_present_" +
+                    calcName + ".data(), static_cast<int>(__dacpp_dense_count_" +
+                    calcName + "), MPI_INT, MPI_SUM, MPI_COMM_WORLD);\n";
+            code += "        for (std::size_t __dacpp_g = 0; __dacpp_g < __dacpp_dense_" +
+                    calcName + ".size(); ++__dacpp_g) {\n";
+            code += "            if (__dacpp_present_" + calcName +
+                    "[__dacpp_g] > 1) __dacpp_dense_" + calcName +
+                    "[__dacpp_g] = __dacpp_dense_" + calcName +
+                    "[__dacpp_g] / static_cast<" + baseType +
+                    ">(__dacpp_present_" + calcName + "[__dacpp_g]);\n";
+            code += "        }\n";
+            code += "    }\n";
+            code += "    " + buildDenseViewType(shellParam, calcParam, false) +
+                    " " + sourceName + "(__dacpp_dense_" + calcName +
+                    ", ctx.pattern_" + calcName + ".data_info.dimLength);\n";
+            if (shellName != sourceName) {
+                code += "    auto& " + shellName + " = " + sourceName +
+                        ";\n";
+            }
+            if (calcName != sourceName && calcName != shellName) {
+                code += "    auto& " + calcName + " = " + sourceName +
+                        ";\n";
+            }
+        }
+
+        std::string loopText = getSourceTextMPI(siblingFor, context);
+        for (int paramIdx = 0; paramIdx < shell->getNumShellParams(); ++paramIdx) {
+            const std::string shellName = shell->getParam(paramIdx)->getName();
+            const std::string calcName = calc->getParam(paramIdx)->getName();
+            const std::string sourceName =
+                sourceNames[static_cast<std::size_t>(paramIdx)];
+            if (shellName != sourceName) {
+                loopText = replaceWordMPI(loopText, shellName, sourceName);
+            }
+            if (calcName != sourceName) {
+                loopText = replaceWordMPI(loopText, calcName, sourceName);
+            }
+        }
+        code += "    " + loopText + "\n";
+
+        for (int paramIdx = 0; paramIdx < shell->getNumShellParams(); ++paramIdx) {
+            Param* calcParam = calc->getParam(paramIdx);
+            const std::string calcName = calcParam->getName();
+            code += buildDenseToLocalCopy(calcName, "    ", false);
+            code += buildLocalToBufferCopy(calcParam, calcName, "    ");
+        }
+
+        code += "}\n\n";
+    }
+
     return code;
 }
 

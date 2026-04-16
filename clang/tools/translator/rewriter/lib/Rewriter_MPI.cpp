@@ -128,6 +128,12 @@ void Rewriter::rewriteMPI_Stencil() {
                                     regionCode.ctxVarName + ")";
     rewriter->ReplaceText(regionPlan.dacExpr->getSourceRange(), submitReplacement);
 
+    for (const auto& helper : regionCode.siblingHelpers) {
+        rewriter->ReplaceText(
+            helper.first->getSourceRange(),
+            helper.second + "(" + regionCode.ctxVarName + ");");
+    }
+
     std::string syncInsert = "\n    " + regionCode.syncName + "(" +
                              regionCode.ctxVarName;
     if (!argText.empty()) {

@@ -403,6 +403,174 @@ struct View2D {
     }
 };
 
+// Dense host-side views used by MPI region sibling-loop lowering.  The region
+// path stores rank-local packed arrays; sibling loops are written against the
+// original dense tensor indexing syntax, so these lightweight views provide
+// Vector-style and Matrix-style operator[] access over a dense temporary.
+template <typename T>
+class DenseElementRef {
+public:
+    DenseElementRef(std::vector<T>& data,
+                    std::size_t index,
+                    std::vector<unsigned char>* dirty = nullptr)
+        : data_(data), index_(index), dirty_(dirty) {}
+
+    operator T() const {
+        return data_[index_];
+    }
+
+    DenseElementRef& operator=(const DenseElementRef& other) {
+        return *this = static_cast<T>(other);
+    }
+
+    template <typename U>
+    DenseElementRef& operator=(const U& value) {
+        data_[index_] = static_cast<T>(value);
+        mark_dirty();
+        return *this;
+    }
+
+    template <typename U>
+    DenseElementRef& operator+=(const U& value) {
+        return *this = static_cast<T>(*this) + value;
+    }
+
+    template <typename U>
+    DenseElementRef& operator-=(const U& value) {
+        return *this = static_cast<T>(*this) - value;
+    }
+
+    template <typename U>
+    DenseElementRef& operator*=(const U& value) {
+        return *this = static_cast<T>(*this) * value;
+    }
+
+    template <typename U>
+    DenseElementRef& operator/=(const U& value) {
+        return *this = static_cast<T>(*this) / value;
+    }
+
+    DenseElementRef& operator++() {
+        *this += 1;
+        return *this;
+    }
+
+    T operator++(int) {
+        T old = static_cast<T>(*this);
+        ++(*this);
+        return old;
+    }
+
+    DenseElementRef& operator--() {
+        *this -= 1;
+        return *this;
+    }
+
+    T operator--(int) {
+        T old = static_cast<T>(*this);
+        --(*this);
+        return old;
+    }
+
+private:
+    void mark_dirty() {
+        if (dirty_ && index_ < dirty_->size()) {
+            (*dirty_)[index_] = 1;
+        }
+    }
+
+    std::vector<T>& data_;
+    std::size_t index_ = 0;
+    std::vector<unsigned char>* dirty_ = nullptr;
+};
+
+template <typename T>
+class DenseVectorView {
+public:
+    DenseVectorView(std::vector<T>& data,
+                    std::vector<unsigned char>* dirty = nullptr)
+        : data_(data), dirty_(dirty) {}
+
+    DenseVectorView(std::vector<T>& data,
+                    const std::vector<int>& shape,
+                    std::vector<unsigned char>* dirty = nullptr)
+        : data_(data), dirty_(dirty) {
+        (void)shape;
+    }
+
+    DenseElementRef<T> operator[](int idx) {
+        return DenseElementRef<T>(
+            data_, static_cast<std::size_t>(idx), dirty_);
+    }
+
+    T operator[](int idx) const {
+        return data_[static_cast<std::size_t>(idx)];
+    }
+
+private:
+    std::vector<T>& data_;
+    std::vector<unsigned char>* dirty_ = nullptr;
+};
+
+template <typename T>
+class DenseMatrixRowView {
+public:
+    DenseMatrixRowView(std::vector<T>& data,
+                       std::size_t row_offset,
+                       int cols,
+                       std::vector<unsigned char>* dirty = nullptr)
+        : data_(data), row_offset_(row_offset), cols_(cols), dirty_(dirty) {}
+
+    DenseElementRef<T> operator[](int col) {
+        return DenseElementRef<T>(
+            data_, row_offset_ + static_cast<std::size_t>(col), dirty_);
+    }
+
+    T operator[](int col) const {
+        return data_[row_offset_ + static_cast<std::size_t>(col)];
+    }
+
+private:
+    std::vector<T>& data_;
+    std::size_t row_offset_ = 0;
+    int cols_ = 0;
+    std::vector<unsigned char>* dirty_ = nullptr;
+};
+
+template <typename T>
+class DenseMatrixView {
+public:
+    DenseMatrixView(std::vector<T>& data,
+                    const std::vector<int>& shape,
+                    std::vector<unsigned char>* dirty = nullptr)
+        : data_(data), shape_(shape), dirty_(dirty) {}
+
+    DenseMatrixRowView<T> operator[](int row) {
+        return DenseMatrixRowView<T>(
+            data_,
+            static_cast<std::size_t>(row) * static_cast<std::size_t>(cols()),
+            cols(),
+            dirty_);
+    }
+
+    const DenseMatrixRowView<T> operator[](int row) const {
+        return DenseMatrixRowView<T>(
+            const_cast<std::vector<T>&>(data_),
+            static_cast<std::size_t>(row) * static_cast<std::size_t>(cols()),
+            cols(),
+            dirty_);
+    }
+
+private:
+    int cols() const {
+        return shape_.size() > 1 ? shape_[1] : 1;
+    }
+
+    std::vector<T>& data_;
+    const std::vector<int>& shape_;
+    std::vector<unsigned char>* dirty_ = nullptr;
+};
+
 // ---------------------------------------------------------------------------
 // Halo exchange support for MPI stencil optimization
 // ---------------------------------------------------------------------------

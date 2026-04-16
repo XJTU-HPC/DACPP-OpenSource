@@ -1,118 +1,85 @@
-# DACPP Translator MPI Handoff
+# DACPP Translator MPI 交接说明
 
-这份文档是 `clang/tools/translator` 里 MPI 翻译路径的正式交接说明。
+这份文档说明 `clang/tools/translator` 中 MPI 翻译路径的入口、分支、代码生成结构、运行时状态、测试范围与后续工作接口。阅读它可以直接建立对当前主线的整体认知，不需要再沿着历史演进记录倒推。
 
-它回答四个核心问题：
+## 1. 总览
 
-1. 这个 MPI 路径现在在做什么
-2. 代码真正从哪里进入、如何分支
-3. 数据是如何分配、分发、同步的
-4. 下一个模型应该从哪里继续接手
+MPI 翻译路径由两条实现线组成：
 
-## 1. 项目状态概览
+- 通用 wrapper 路径
+- buffer region 路径
 
-MPI 翻译路径现在有两条实现线：
+两条路径都建立在 item-space / pack-map 的 planner 语义上，差别在于执行生命周期：
 
-- 稳定主线：基于 item-space / pack-map 的通用 MPI wrapper
-- region 路线：面向时间推进类程序的 `init -> submit -> halo -> sync` MPI region 骨架
+- wrapper 路径按一次 `<->` 调用完成 scatter、局部执行和 gather
+- region 路径把时间推进类程序展开为 `init -> submit -> halo -> sibling helpers -> sync`
 
-真正默认生效的行为是：
+## 2. 入口与路由
 
-- 命中 buffer region，且没有 sibling loops
-  - 走 `rewriteMPI_Region()`
-- 其他情况
-  - 走 `rewriteMPI()`
+入口文件是 [translator.cpp](/Volumes/QUQ/working/dacpp/clang/tools/translator/translator.cpp)。
 
-因此可以直接把当前实现理解成：
-
-- 无 sibling loops 的 region 已经走 region 翻译路径
-- 有 sibling loops 的 region 仍然走稳定 wrapper 路径
-
-## 2. 入口与分支决策
-
-### 2.1 入口文件
-
-MPI 路径由 [translator.cpp](/Volumes/QUQ/working/dacpp/clang/tools/translator/translator.cpp) 驱动。
-
-主流程是：
+MPI 翻译阶段会：
 
 1. 识别 `--mpi`
-2. 注入：
-   - `<mpi.h>`
-   - `<cstdio>`
-   - `"MPIPlanner.h"`
-3. 执行 `analyzeBufferRegionPlan()`
-4. 根据 region plan 选择：
-   - `rewriteMPI_Region()`
-   - 或 `rewriteMPI()`
-5. 再交给通用 `rewriteMain()` 做后续收尾
+2. 注入 `<mpi.h>`、`<cstdio>`、`"MPIPlanner.h"`
+3. 调用 `analyzeBufferRegionPlan()`
+4. 根据 `hasBufferRegionPlan()` 选择路径
+5. 最后执行 `rewriteMain()`
 
-### 2.2 实际分支条件
+路由规则是：
 
-MPI 分支判断的核心条件是：
+- `hasBufferRegionPlan()` 为真时调用 `rewriteMPI_Region()`
+- 否则调用 `rewriteMPI()`
 
-- `hasBufferRegionPlan() && siblingForStmts.empty()`
-  - 调用 `rewriteMPI_Region()`
-- 否则
-  - 调用 `rewriteMPI()`
+[Rewriter_MPI.cpp](/Volumes/QUQ/working/dacpp/clang/tools/translator/rewriter/lib/Rewriter_MPI.cpp) 中：
 
-当存在 sibling loops 时，`translator.cpp` 会打印：
+- `rewriteMPI()` 对应通用 wrapper 路径
+- `rewriteMPI_Stencil()` 承担 region 主体实现
+- `rewriteMPI_Region()` 直接转发到 `rewriteMPI_Stencil()`
 
-`MPI region optimization deferred: sibling loops are not deviceized yet; falling back to stable MPI wrapper`
+## 3. 通用 Wrapper 路径
 
-这条信息可以直接视为当前 sibling 策略的外部行为说明。
+wrapper 路径的目标是按 rank 的真实访问集合分发与回收数据，而不是按 tensor 物理空间做规则切块。
 
-## 3. 两条 MPI 翻译路径
+核心流程是：
 
-### 3.1 稳定主线：通用 MPI wrapper
+1. 从 shell / split / binding 构造 `AccessPattern`
+2. 合并出统一 `binding_split_sizes`
+3. 计算全局 `total_items`
+4. 用 `get_rank_item_range(...)` 给每个 rank 分配 item range
+5. 根据参数读写模式构造 pack-map
+6. root 只打包该 rank 真正访问的元素
+7. rank 在局部 packed 数组上通过 `View1D` / `View2D` 执行 SYCL kernel
+8. 写参数只按真实写回位置 gather 回 root
+9. 对需要所有 rank 同步的 tensor 执行 broadcast
 
-稳定主线由 `rewriteMPI()` 生成。
+该路径的主要代码位于：
 
-这条路径的核心思想不是按物理 tensor 简单切块，而是：
+- [Rewriter_MPI_Wrapper_Codegen.cpp](/Volumes/QUQ/working/dacpp/clang/tools/translator/rewriter/lib/mpi/Rewriter_MPI_Wrapper_Codegen.cpp)
 
-1. 基于 shell / binding / split 建立 item-space
-2. 给每个 rank 分配连续 `item_range`
-3. 对每个参数根据读写模式构造 pack-map
-4. root 只打包并发送该 rank 真正会访问的数据
-5. rank 在压缩后的局部数组上通过 `slots + View1D/View2D` 执行 SYCL kernel
-6. 最终只把需要写回的元素按全局索引 gather 回 root
+它适用于：
 
-这条路径优化的是：
+- 无 buffer region 的 MPI 样例
+- region 条件不满足的程序
 
-- 真实访问的数据集合
+## 4. Region 路径
 
-不是：
+region 路径面向时间推进类程序和带 sibling `for` 的 buffer region。
 
-- 几何意义上的整块规则子域
+生成代码的骨架为：
 
-### 3.2 稳定主线已经完成的关键能力
+```cpp
+__dacpp_mpi_ctx_<shell>_<calc> ctx;
+__dacpp_mpi_init_<shell>_<calc>(ctx, tensors...);
+for (...) {
+    __dacpp_mpi_submit_<shell>_<calc>(ctx);
+    __dacpp_mpi_halo_<shell>_<calc>(ctx);
+    __dacpp_mpi_submit_region_<shell>_<calc>_stmt_*(ctx);
+}
+__dacpp_mpi_sync_<shell>_<calc>(ctx, tensors...);
+```
 
-稳定主线已经具备：
-
-- 基于 AST 推导参数真实读写模式
-- 基于 binding / split 统一规划 item-space
-- 基于 pack-map 的精确 scatter / gather
-- 压缩局部数组上的 `View1D / View2D` 本地执行
-- 仅对需要写回的参数执行 gather / writeback
-- 必要时对结果做广播
-- 对无标准 MPI datatype 的类型回退到 `MPI_BYTE`，并按字节数传输
-
-### 3.3 Region 路线
-
-region 路线由 `rewriteMPI_Region()` 生成，实际入口在 [Rewriter_MPI.cpp](/Volumes/QUQ/working/dacpp/clang/tools/translator/rewriter/lib/Rewriter_MPI.cpp) 里。
-
-它面向的执行模型是：
-
-`循环前 init 一次 -> 每步 submit -> halo -> 最后 sync`
-
-设计目标是：
-
-1. 在 region 生命周期开始时完成一次性分发
-2. 让本地 `local_* / buf_* / pack_*` 常驻
-3. 每步只做 kernel 提交和 halo 交换
-4. region 结束时统一 gather / writeback
-
-这条路径已经具备完整骨架：
+这条路径把程序拆成五个阶段：
 
 - `ctx`
 - `init`
@@ -120,170 +87,165 @@ region 路线由 `rewriteMPI_Region()` 生成，实际入口在 [Rewriter_MPI.cp
 - `halo`
 - `sync`
 
-## 4. 数据如何分配与分发
+sibling `for` 以 `__dacpp_mpi_submit_region_*` helper 形式插入循环体中。
 
-### 4.1 稳定主线的分配方式
+region 主代码由 [Rewriter_MPI_Region_Codegen.cpp](/Volumes/QUQ/working/dacpp/clang/tools/translator/rewriter/lib/mpi/Rewriter_MPI_Region_Codegen.cpp) 生成。
 
-稳定主线的分配过程是：
+### 4.1 ctx
 
-1. 从 shell / split / binding 构建 `AccessPattern`
-2. 合并出统一的 `binding_split_sizes`
-3. 计算全局 `total_items`
-4. 使用 `get_rank_item_range(total_items, mpi_rank, mpi_size)` 给每个 rank 分连续 item range
+`ctx` 是 region 生命周期的权威状态容器，包含：
 
-所以每个 rank 拿到的是：
+- MPI 基本信息：`mpi_rank`、`mpi_size`
+- 设备队列：`sycl::queue q`
+- item-space 信息：`total_items`、`local_item_count`、`binding_split_sizes`
+- halo 标志：`has_halo`
+- 每个参数的：
+  - `pattern_*`
+  - `pack_*`
+  - `slots_*`
+  - `local_*`
+  - `buf_*`
+  - `slots_buf_*`
+  - 视图辅助字段
+  - `halo_*`
 
-- 一段逻辑 item 区间
+### 4.2 init
 
-不是：
+`init` 阶段负责：
 
-- 一段简单线性的 tensor 物理区间
+- 初始化 `AccessPattern`
+- 合并绑定维度的 split size
+- 计算本 rank 的 `item_range`
+- 构造 `pack_*` 与 `slots_*`
+- 完成一次性 scatter
+- 构造 `local_*` 和 `buf_*`
+- 为每个参数执行 `computeParamHalo(...)`
 
-### 4.2 稳定主线的分发方式
+init / sync 的传输策略由 [Rewriter_MPI_Region_Policy.cpp](/Volumes/QUQ/working/dacpp/clang/tools/translator/rewriter/lib/mpi/Rewriter_MPI_Region_Policy.cpp) 决定：
 
-对每个参数，按模式构造 pack-map：
+- `analyzeMPIRegionTransferPolicy(...)`
+- `inferMPIRegionStorageModes(...)`
 
-- `READ` 使用 `build_input_pack_map`
-- `WRITE` 使用 `build_output_pack_map`
-- `READ_WRITE` 使用 `build_rw_pack_map`
+### 4.3 submit
 
-root 对每个 rank 的处理流程是：
+`submit` 只负责提交一次本地 SYCL kernel，不做主机侧同步。它在局部 packed 数组上为每个参数构造 `View1D` / `View2D`，再调用 `calc_mpi_local(...)`。
 
-1. 根据该 rank 的 pack-map 算出真正需要的全局索引
-2. 使用 `pack_values_by_globals(...)` 打包
-3. 使用 `MPI_Scatter` / `MPI_Scatterv` 仅发送这部分 payload
+### 4.4 halo
 
-因此当前的数据分发本质是：
+`halo` 阶段负责 kernel 后的邻居同步：
 
-- 按访问需求精确分发
+1. `ctx.q.wait()`
+2. 对写参数执行 D2H，把 `buf_*` 同步回 `local_*`
+3. 调用 `exchangeHalo(...)`
+4. 把更新后的 `local_*` 写回 `buf_*`
 
-### 4.3 Region 路线的目标分发方式
-
-region 路线的目标模型是：
-
-- `init` 阶段完成一次性 scatter
-- 本地 `local_*` 从一开始就持有 interior + halo
-- 后续每步不再做 root scatter / gather
-- 每步只执行局部 kernel 和 halo exchange
-
-## 5. Halo 运行时支持
-
-Halo 运行时位于：
-
-- [MPIPlanner.h](/Volumes/QUQ/working/dacpp/clang/tools/translator/dpcppLib/include/MPIPlanner.h)
-
-核心数据结构：
+该阶段依赖 [MPIPlanner.h](/Volumes/QUQ/working/dacpp/clang/tools/translator/dpcppLib/include/MPIPlanner.h) 中的 halo runtime：
 
 - `HaloRegion`
 - `ParamHalo`
-
-核心函数：
-
 - `computeParamHalo(...)`
 - `exchangeHalo(...)`
 
-### 5.1 Halo 组织方式
+halo 的语义是：
 
-Halo 是按以下维度组织的：
+- `recv halo = my_inputs ∩ neighbor_outputs`
+- `send halo = my_outputs ∩ neighbor_inputs`
 
-- 参数
-- 邻居方向
+邻居集合按一维 item-space 连续分区计算，只覆盖 `rank - 1` 与 `rank + 1`。
 
-也就是：
+### 4.5 sync
 
-- 外层按参数划分
-- 内层按左右邻居划分
+`sync` 在外层循环结束后执行：
 
-### 5.2 Halo 计算语义
+- 等待设备队列完成
+- 对需要写回的参数执行 D2H
+- 收集 `writeback_globals` 与写回值
+- `MPI_Gather` / `MPI_Gatherv`
+- root 执行 `apply_writeback_by_globals(...)`
+- 按 tensor 需求执行 `MPI_Bcast`
 
-对 rank `r`：
+## 5. Sibling Loops
 
-- `my_inputs`
-  - 本 rank 读取到的全局位置
-- `my_outputs`
-  - 本 rank 写出的全局位置
+region 内的 sibling `for` 通过 [Rewriter_MPI_Region_Sibling.cpp](/Volumes/QUQ/working/dacpp/clang/tools/translator/rewriter/lib/mpi/Rewriter_MPI_Region_Sibling.cpp) 生成 helper。
 
-对邻居 rank：
+每个 helper 的流程是：
 
-- `recv halo`
-  - 我需要读，但由邻居生产的数据
-- `send halo`
-  - 我生产，且邻居需要读取的数据
+1. `ctx.q.wait()`
+2. 从 `ctx.buf_*` 回收 `ctx.local_*`
+3. 基于 `ctx.pack_*` 和全局维度重建 dense temporary
+4. 通过 `MPI_Allreduce` 合并 dense 数值数组与 present 标记数组
+5. 创建 `DenseVectorView` / `DenseMatrixView`
+6. 按原 sibling `for` 的源码执行 host-side 更新
+7. 把 dense temporary 同步回 `ctx.local_*`
+8. 再同步回 `ctx.buf_*`
 
-### 5.3 Region 路线里已经接上的 halo 部分
-
-在 region 代码生成中，halo 已经真正接入：
-
-- `ctx` 中保存 `halo_<param>`
-- `init` 阶段生成 `computeParamHalo(...)`
-- `halo` 阶段执行：
-  - `q.wait()`
-  - D2H：把 `buf_*` 同步回 `local_*`
-  - `exchangeHalo(...)`
-  - H2D：把更新后的 `local_*` 写回 `buf_*`
-
-## 6. Sibling loops
-
-### 6.1 当前处理策略
-
-sibling loops 是 region 路线尚未接通的部分。
-
-当前策略是：
-
-- 如果 region 内存在 sibling loops
-  - 直接回退到稳定 wrapper 路径
-
-### 6.2 难点
-
-region 路线里，权威状态不再是原始 host tensor，而是：
+这条路径解决的是 region 状态闭环问题。因为 region 路径中的真实状态位于：
 
 - `ctx.local_*`
-- `ctx.pack_*`
 - `ctx.buf_*`
+- `ctx.pack_*`
 
-因此 sibling loop 如果继续直接操作原始 tensor，会与 region 生命周期脱节：
+如果 sibling loop 直接操作原始 host tensor，就无法自然并入 `submit -> halo -> sync` 生命周期。
 
-- kernel 更新发生在 `ctx.buf_*`
-- halo 更新发生在 `ctx.local_*`
-- host 侧直接操作原 tensor 无法自然并入 region 状态
+### 5.1 Dense Bridge 的语义边界
 
-### 6.3 已有 sibling helper
+helper 中的 dense bridge 使用：
 
-下面这些 helper 已经拆到独立模块中并参与编译：
+- 数值数组上的 `MPI_Allreduce(..., MPI_SUM)`
+- present 计数数组上的 `MPI_Allreduce(..., MPI_SUM)`
+- `present > 1` 的位置按出现次数平均
 
-- `rewriteMPISiblingBody(...)`
-- `buildMPISiblingDenseSyncCode(...)`
-- `rewriteMPIIndexExpr(...)`
-- `parseForLoopBoundsMPI(...)`
+这种规则适用于重复位置上副本值一致的场景，目标是优先保证翻译语义闭环和回归通过。更进一步的设备化 sibling lowering、只同步真实写入位置的稀疏 bridge、按邻居增量同步的数据路径属于后续优化方向。
 
-它们的目标方向是：
+## 6. Runtime / Planner
 
-- 从 AST / 源码层重写 sibling loop
-- 建立 host-side dense / sparse bridge
-- 再同步回 region 局部状态
+[MPIPlanner.h](/Volumes/QUQ/working/dacpp/clang/tools/translator/dpcppLib/include/MPIPlanner.h) 提供 MPI 路径公用的 planner 与运行时支撑。
 
-这些 helper 目前属于：
+### 6.1 Item-space 与 pack-map
 
-- 已编译校验
-- 尚未接入主 rewrite 流程
+核心结构与函数包括：
+
+- `ItemRange`
+- `AccessPattern`
+- `PackMap`
+- `get_rank_item_range(...)`
+- `collect_positions_for_item(...)`
+- `build_input_pack_map(...)`
+- `build_output_pack_map(...)`
+- `build_rw_pack_map(...)`
+- `build_item_slots(...)`
+- `build_writeback_values(...)`
+- `apply_writeback_by_globals(...)`
+
+### 6.2 Packed Local Views
+
+提交 kernel 时使用：
+
+- `View1D`
+- `View2D`
+
+它们把 packed local array 映射成 calc 需要的局部访问视图。
+
+### 6.3 Dense Host Views
+
+sibling helper 使用：
+
+- `DenseElementRef`
+- `DenseVectorView`
+- `DenseMatrixView`
+
+这组视图负责在 dense temporary 上保留原 sibling loop 的 `tensor[idx]` / `tensor[i][j]` 访问语义。
 
 ## 7. 代码结构
 
 ### 7.1 公开入口
 
+- [translator.cpp](/Volumes/QUQ/working/dacpp/clang/tools/translator/translator.cpp)
 - [Rewriter_MPI.cpp](/Volumes/QUQ/working/dacpp/clang/tools/translator/rewriter/lib/Rewriter_MPI.cpp)
-
-公开入口只保留：
-
-- `Rewriter::rewriteMPI()`
-- `Rewriter::rewriteMPI_Stencil()`
-- `Rewriter::rewriteMPI_Region()`
-
-### 7.2 已接入 CMake 的 MPI 模块
-
-当前参与构建的 MPI 模块是：
-
 - [Rewriter_MPI_Common.h](/Volumes/QUQ/working/dacpp/clang/tools/translator/rewriter/include/Rewriter_MPI_Common.h)
+
+### 7.2 已接入构建的 MPI 模块
+
 - [Rewriter_MPI_Analysis.cpp](/Volumes/QUQ/working/dacpp/clang/tools/translator/rewriter/lib/mpi/Rewriter_MPI_Analysis.cpp)
 - [Rewriter_MPI_Types.cpp](/Volumes/QUQ/working/dacpp/clang/tools/translator/rewriter/lib/mpi/Rewriter_MPI_Types.cpp)
 - [Rewriter_MPI_Pattern.cpp](/Volumes/QUQ/working/dacpp/clang/tools/translator/rewriter/lib/mpi/Rewriter_MPI_Pattern.cpp)
@@ -292,180 +254,92 @@ region 路线里，权威状态不再是原始 host tensor，而是：
 - [Rewriter_MPI_Region_Codegen.cpp](/Volumes/QUQ/working/dacpp/clang/tools/translator/rewriter/lib/mpi/Rewriter_MPI_Region_Codegen.cpp)
 - [Rewriter_MPI_Region_Sibling.cpp](/Volumes/QUQ/working/dacpp/clang/tools/translator/rewriter/lib/mpi/Rewriter_MPI_Region_Sibling.cpp)
 
-### 7.3 模块职责
+### 7.3 参考源码
 
-#### `Analysis`
-
-负责：
-
-- AST 读写分析
-- return 收集
-- broadcast 判定
-
-#### `Types`
-
-负责：
-
-- MPI datatype 映射
-- payload 计数
-- 视图类型推导
-
-#### `Pattern`
-
-负责：
-
-- split / binding 元数据整理
-- pattern 初始化代码
-- local calc wrapper
-- pack builder 表达式
-
-#### `Wrapper_Codegen`
-
-负责：
-
-- 稳定主线 `rewriteMPI()` 的 wrapper 生成
-
-#### `Region_Policy`
-
-负责：
-
-- region init / sync 的传输策略分析
-- shell call 参数提取
-
-#### `Region_Codegen`
-
-负责：
-
-- region `ctx / init / submit / halo / sync` 主代码生成
-
-#### `Region_Sibling`
-
-负责：
-
-- sibling loop WIP helper
-
-### 7.4 参考源文件
-
-以下两个文件保留在工作区里，方便对照阅读，但不参与当前构建：
+以下文件保留在工作区中供对照阅读，但不属于当前主线构建输入：
 
 - [Rewriter_MPI_Wrapper.cpp](/Volumes/QUQ/working/dacpp/clang/tools/translator/rewriter/lib/mpi/Rewriter_MPI_Wrapper.cpp)
 - [Rewriter_MPI_Region.cpp](/Volumes/QUQ/working/dacpp/clang/tools/translator/rewriter/lib/mpi/Rewriter_MPI_Region.cpp)
 
-## 8. 当前行为总结
+## 8. 生成代码核对结果
 
-### 8.1 `rewriteMPI()`
+对以下样例执行 `dacpp ... --mode=buffer --mpi` 后，生成文件中都可以看到完整 region 生命周期：
 
-这是稳定 wrapper 路径，适用于：
+- `stencil1.0`
+- `waveEquation1.0`
+- `MDP1.0`
 
-- 无 region
-- region 条件不满足
-- region 内存在 sibling loops
+核对项包括：
 
-### 8.2 `rewriteMPI_Region()`
+- `__dacpp_mpi_ctx_*`
+- `__dacpp_mpi_init_*`
+- `__dacpp_mpi_submit_*`
+- `__dacpp_mpi_halo_*`
+- `__dacpp_mpi_sync_*`
+- `__dacpp_mpi_submit_region_*`
 
-这是 region 路径入口。
+主函数中的调用顺序也与 region 设计一致：
 
-它由 `rewriteMPI_Stencil()` 驱动，生成真正的 region 代码，并在以下条件下被调用：
+- 循环前 `ctx` 与 `init`
+- 循环内 `submit -> halo -> sibling helpers`
+- 循环后 `sync`
 
-- 命中 buffer region
-- `siblingForStmts.empty()`
+## 9. 回归范围
 
-## 9. 已完成能力
+[test_mpi.sh](/Volumes/QUQ/working/dacpp/clang/tools/translator/test_mpi.sh) 运行 12 个 MPI 样例：
 
-已经完成并影响当前行为的能力包括：
+- `matMul1.0`
+- `FOuLa1.0`
+- `decay1.0`
+- `DFT1.0`
+- `liuliang1.0`
+- `MDP1.0`
+- `mandel1.0`
+- `imageAdjustment1.0`
+- `vectorAddCombo`
+- `gradientSum`
+- `stencil1.0`
+- `waveEquation1.0`
 
-- AST 真实读写模式推导
-- item-space / binding 统一规划
-- pack-map 驱动的精确 scatter / gather
-- 本地 `View1D / View2D` 紧凑执行
-- root 写回后的选择性广播
-- 非标准 MPI 类型的字节传输兜底
-- `mainAlreadyRewritten` 状态显式化
-- region `ctx / init / submit / halo / sync` 骨架
-- `MPIPlanner.h` 中的 halo runtime 支持
-- sibling loops 的保守 fallback
-- MPI 代码从大文件拆分为可独立构建的子模块
+脚本行为是：
 
-## 10. 推荐继续工作
+1. 为每个样例复制源文件到 `/Volumes/QUQ/working/mpi_tmp/<test>`
+2. 生成 baseline：`dacpp ... --mode=buffer`
+3. 编译并执行 baseline
+4. 生成 MPI 版本：`dacpp ... --mode=buffer --mpi`
+5. 编译并执行 `mpirun -np 2`
+6. 清洗 AdaptiveCpp 运行时警告并对比输出
 
-### 10.1 第一优先级：完成 sibling loops 的 region 策略
+脚本会过滤：
 
-需要在以下方向中选定一条并完成落地：
+- `*.mpi.dac.cpp`
+- `*.retranslated.dac.cpp`
+- `*.large_dac.cpp`
 
-- 路线 A：把 sibling loops 直接翻译成 region 专用 helper
-- 路线 B：建立 host bridge，再把结果同步回 `ctx.local_* / ctx.buf_*`
+以避免误选源输入。
 
-无论选哪条，都必须围绕 region 的真实状态容器实现。
-
-### 10.2 第二优先级：移除 sibling fallback
-
-当 sibling loops 稳定接入 region 生命周期后，可以移除：
-
-- “有 sibling loops 就走稳定 wrapper”
-
-### 10.3 第三优先级：继续细拆 region 子模块
-
-最适合继续下拆的是：
-
-- [Rewriter_MPI_Region_Codegen.cpp](/Volumes/QUQ/working/dacpp/clang/tools/translator/rewriter/lib/mpi/Rewriter_MPI_Region_Codegen.cpp)
-- [Rewriter_MPI_Region_Sibling.cpp](/Volumes/QUQ/working/dacpp/clang/tools/translator/rewriter/lib/mpi/Rewriter_MPI_Region_Sibling.cpp)
-
-建议的继续拆分方向：
-
-- `region-ctx`
-- `region-init`
-- `region-submit`
-- `region-halo-sync`
-- `region-sibling-rewrite`
-- `region-sibling-sync`
-
-## 11. 推荐接手顺序
-
-如果下一个模型刚进入这个目录，推荐按下面顺序建立上下文：
-
-1. 先读：
-   - [translator.cpp](/Volumes/QUQ/working/dacpp/clang/tools/translator/translator.cpp)
-   - [Rewriter_MPI.cpp](/Volumes/QUQ/working/dacpp/clang/tools/translator/rewriter/lib/Rewriter_MPI.cpp)
-2. 再读：
-   - [Rewriter_MPI_Region_Codegen.cpp](/Volumes/QUQ/working/dacpp/clang/tools/translator/rewriter/lib/mpi/Rewriter_MPI_Region_Codegen.cpp)
-   - [Rewriter_MPI_Region_Policy.cpp](/Volumes/QUQ/working/dacpp/clang/tools/translator/rewriter/lib/mpi/Rewriter_MPI_Region_Policy.cpp)
-   - [Rewriter_MPI_Region_Sibling.cpp](/Volumes/QUQ/working/dacpp/clang/tools/translator/rewriter/lib/mpi/Rewriter_MPI_Region_Sibling.cpp)
-   - [MPIPlanner.h](/Volumes/QUQ/working/dacpp/clang/tools/translator/dpcppLib/include/MPIPlanner.h)
-3. 再看：
-   - [plan.md](/Volumes/QUQ/working/dacpp/clang/tools/translator/docs/plan.md)
-4. 然后决定继续方向：
-   - sibling loops
-   - region 细拆
-   - MPI 回归修复
-
-## 12. 构建与回归
-
-### 12.1 构建
-
-已确认通过：
+## 10. 推荐的验证顺序
 
 ```bash
-cmake --build /Volumes/QUQ/working/dacpp/build --target translator -j8
-```
+cd /Volumes/QUQ/working/dacpp
+cmake --build build --target translator -j8
 
-### 12.2 MPI 回归
-
-建议继续执行：
-
-```bash
 cd /Volumes/QUQ/working/dacpp/clang/tools/translator
+bash test_local.sh
+INCLUDE_EXTENDED_LOCAL_TESTS=1 bash test_local.sh
 bash test_mpi.sh
 ```
 
-重点关注：
+## 11. 后续工作
 
-- `tests/liuliang1.0/liuliang.dac.cpp`
-- `tests/MDP1.0/mdp.dac.cpp`
+主线后续工作集中在以下方向：
 
-## 13. 一句话理解这套 MPI 实现
+- sibling loop 设备化，直接在 `ctx.buf_*` 上执行
+- dense bridge 稀疏化，只同步真实读写位置
+- 按 halo / neighbor 信息收紧 sibling 需要的数据同步
+- 扩展 region 计划接受的 sibling 语法与控制流边界
+- 进一步拆分 region codegen 模块，细化 `ctx / init / submit / halo / sync / sibling`
 
-这套实现可以直接理解成：
+## 12. 一句话理解
 
-- 用稳定的 item-space / pack-map wrapper 保证通用正确性
-- 用 region 路线把时间推进类程序推进到“一次 init、每步 halo、最终 sync”的执行模型
-- 目前决定 region 覆盖范围的关键因素，是 sibling loops 何时稳定并入 region 生命周期
+这套 MPI 实现把通用程序维持在稳定的 wrapper 主线，把时间推进类 region 程序推进到一次初始化、循环内 halo 同步、结束统一回写的执行模型，并用 host-side dense bridge 把 sibling loop 并入同一条 region 生命周期。
