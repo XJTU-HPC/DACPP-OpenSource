@@ -251,7 +251,12 @@ sibling helper 使用：
 - [Rewriter_MPI_Pattern.cpp](/Volumes/QUQ/working/dacpp/clang/tools/translator/rewriter/lib/mpi/Rewriter_MPI_Pattern.cpp)
 - [Rewriter_MPI_Wrapper_Codegen.cpp](/Volumes/QUQ/working/dacpp/clang/tools/translator/rewriter/lib/mpi/Rewriter_MPI_Wrapper_Codegen.cpp)
 - [Rewriter_MPI_Region_Policy.cpp](/Volumes/QUQ/working/dacpp/clang/tools/translator/rewriter/lib/mpi/Rewriter_MPI_Region_Policy.cpp)
-- [Rewriter_MPI_Region_Codegen.cpp](/Volumes/QUQ/working/dacpp/clang/tools/translator/rewriter/lib/mpi/Rewriter_MPI_Region_Codegen.cpp)
+- [Rewriter_MPI_Region_Codegen.cpp](/Volumes/QUQ/working/dacpp/clang/tools/translator/rewriter/lib/mpi/Rewriter_MPI_Region_Codegen.cpp) — 薄编排层，调用以下 5 个模块
+- [Rewriter_MPI_Region_Ctx.cpp](/Volumes/QUQ/working/dacpp/clang/tools/translator/rewriter/lib/mpi/Rewriter_MPI_Region_Ctx.cpp)
+- [Rewriter_MPI_Region_Init.cpp](/Volumes/QUQ/working/dacpp/clang/tools/translator/rewriter/lib/mpi/Rewriter_MPI_Region_Init.cpp)
+- [Rewriter_MPI_Region_Submit.cpp](/Volumes/QUQ/working/dacpp/clang/tools/translator/rewriter/lib/mpi/Rewriter_MPI_Region_Submit.cpp)
+- [Rewriter_MPI_Region_Halo.cpp](/Volumes/QUQ/working/dacpp/clang/tools/translator/rewriter/lib/mpi/Rewriter_MPI_Region_Halo.cpp)
+- [Rewriter_MPI_Region_Sync.cpp](/Volumes/QUQ/working/dacpp/clang/tools/translator/rewriter/lib/mpi/Rewriter_MPI_Region_Sync.cpp)
 - [Rewriter_MPI_Region_Sibling.cpp](/Volumes/QUQ/working/dacpp/clang/tools/translator/rewriter/lib/mpi/Rewriter_MPI_Region_Sibling.cpp)
 
 ### 7.3 参考源码
@@ -332,13 +337,27 @@ bash test_mpi.sh
 
 ## 11. 后续工作
 
+### 已完成
+
+- region codegen 模块拆分：`Rewriter_MPI_Region_Codegen.cpp` 中的 `buildMPIRegionCodegen()` 已拆分为 5 个独立模块：
+  - `Rewriter_MPI_Region_Ctx.cpp` — ctx 结构体生成
+  - `Rewriter_MPI_Region_Init.cpp` — init 函数生成
+  - `Rewriter_MPI_Region_Submit.cpp` — submit 函数生成
+  - `Rewriter_MPI_Region_Halo.cpp` — halo 函数生成
+  - `Rewriter_MPI_Region_Sync.cpp` — sync 函数生成
+  - `Rewriter_MPI_Region_Codegen.cpp` 退化为薄编排层，仅调用上述 5 个模块并拼接
+- sibling 语法扩展：
+  - 允许 `if` 语句出现在 sibling 循环体内（`isSupportedRegionLoop` 不再拒绝 `if`）
+  - `BufferRegionPlan.siblingForStmts` 已泛化为 `siblingStmts`（`vector<const Stmt*>`），接受任意语句类型
+  - 允许非 shell 捕获的只读变量在 sibling 中使用，通过 `capturedNonShellVars` 自动在 init 中广播
+
+### 待完成
+
 主线后续工作集中在以下方向：
 
 - sibling loop 设备化，直接在 `ctx.buf_*` 上执行
 - dense bridge 稀疏化，只同步真实读写位置
 - 按 halo / neighbor 信息收紧 sibling 需要的数据同步
-- 扩展 region 计划接受的 sibling 语法与控制流边界
-- 进一步拆分 region codegen 模块，细化 `ctx / init / submit / halo / sync / sibling`
 
 ## 12. 一句话理解
 

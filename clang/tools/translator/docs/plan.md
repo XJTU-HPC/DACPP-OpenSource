@@ -233,10 +233,19 @@ helper 的工作方式是：
 
 ## 后续工作
 
+### 已完成
+
+- region codegen 模块拆分：`ctx / init / submit / halo / sync` 各自独立为 `Rewriter_MPI_Region_{Ctx,Init,Submit,Halo,Sync}.cpp`，`Rewriter_MPI_Region_Codegen.cpp` 退化为薄编排层
+- sibling 语法扩展：
+  - 允许 `if` 语句出现在 sibling 循环体内
+  - 允许非 `for` 循环语句（表达式语句、声明语句等）作为 sibling
+  - 允许非 shell 捕获的只读变量在 sibling 中使用（自动广播到所有 rank）
+
+### 待完成
+
 后续优化方向集中在三类问题：
 
 - sibling loop 设备化，直接操作 `ctx.buf_*`
 - dense bridge 收紧为稀疏同步或邻居级同步
-- 扩展 region 计划可接受的 sibling 语法边界
 
 这些工作都建立在现有 region 生命周期、planner runtime 与 12 样例回归基础之上。

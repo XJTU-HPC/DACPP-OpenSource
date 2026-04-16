@@ -101,9 +101,9 @@ MPIRegionTransferPolicy analyzeMPIRegionTransferPolicy(
         }
     }
 
-    for (const clang::ForStmt* siblingFor : plan.siblingForStmts) {
+    for (const clang::Stmt* siblingStmt : plan.siblingStmts) {
         const auto siblingSummary =
-            summarizeStmtAccess(siblingFor, argDeclIndices, n);
+            summarizeStmtAccess(siblingStmt, argDeclIndices, n);
         for (int paramIdx = 0; paramIdx < n; ++paramIdx) {
             const AccessSummary& access =
                 siblingSummary[static_cast<std::size_t>(paramIdx)];
