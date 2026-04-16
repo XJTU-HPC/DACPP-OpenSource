@@ -34,6 +34,11 @@ set(REWRITER_SOURCES
   rewriter/lib/mpi/Rewriter_MPI_Wrapper_Codegen.cpp
   rewriter/lib/mpi/Rewriter_MPI_Region_Policy.cpp
   rewriter/lib/mpi/Rewriter_MPI_Region_Codegen.cpp
+  rewriter/lib/mpi/Rewriter_MPI_Region_Ctx.cpp
+  rewriter/lib/mpi/Rewriter_MPI_Region_Init.cpp
+  rewriter/lib/mpi/Rewriter_MPI_Region_Submit.cpp
+  rewriter/lib/mpi/Rewriter_MPI_Region_Halo.cpp
+  rewriter/lib/mpi/Rewriter_MPI_Region_Sync.cpp
   rewriter/lib/mpi/Rewriter_MPI_Region_Sibling.cpp
   rewriter/lib/Multiple_template.cpp
 )

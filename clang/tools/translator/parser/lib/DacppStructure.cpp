@@ -59,7 +59,7 @@ static bool isSupportedRegionLoop(const clang::ForStmt* FS,
     }
 
     static const std::vector<std::string> kRejectedKeywords = {
-        "if", "while", "switch", "return", "break", "continue", "goto"
+        "while", "switch", "return", "break", "continue", "goto"
     };
     for (const auto& keyword : kRejectedKeywords) {
         if (containsWord(loopText, keyword)) {
@@ -452,35 +452,81 @@ void dacppTranslator::DacppFile::analyzeBufferRegionPlan() {
         shellVarNames.insert(entry.first);
     }
 
-    std::vector<const clang::ForStmt*> siblingFors;
+    std::vector<const clang::Stmt*> siblingStmts;
     for (std::size_t idx = static_cast<std::size_t>(dacStmtIndex + 1); idx < body->size(); ++idx) {
         const auto* stmt = body->body_begin()[idx];
-        const auto* siblingFor = llvm::dyn_cast_or_null<clang::ForStmt>(stmt);
-        if (!siblingFor) {
-            bufferRegionPlan.disableReason = "only sibling for-loops are supported after <->";
-            return;
-        }
-        if (!isSupportedRegionLoop(siblingFor, this->Context)) {
-            bufferRegionPlan.disableReason = "sibling loop contains unsupported control flow";
+        if (!stmt) {
+            bufferRegionPlan.disableReason = "unexpected null statement after <->";
             return;
         }
 
+        // For-loops: check for unsupported control flow inside
+        const auto* siblingFor = llvm::dyn_cast_or_null<clang::ForStmt>(stmt);
+        if (siblingFor) {
+            if (!isSupportedRegionLoop(siblingFor, this->Context)) {
+                bufferRegionPlan.disableReason = "sibling loop contains unsupported control flow";
+                return;
+            }
+        } else {
+            // Non-for-loop sibling statements: reject if they contain
+            // unsupported control flow or another <-> expression
+            const std::string stmtText = Lexer::getSourceText(
+                CharSourceRange::getTokenRange(stmt->getSourceRange()),
+                this->Context->getSourceManager(),
+                this->Context->getLangOpts()).str();
+            if (stmtText.empty() || stmtText.find("<->") != std::string::npos) {
+                bufferRegionPlan.disableReason = "sibling statement contains unsupported syntax";
+                return;
+            }
+            static const std::vector<std::string> kRejectedKeywordsForStmt = {
+                "while", "switch", "return", "break", "continue", "goto"
+            };
+            for (const auto& keyword : kRejectedKeywordsForStmt) {
+                if (containsWord(stmtText, keyword)) {
+                    bufferRegionPlan.disableReason = "sibling statement contains unsupported control flow";
+                    return;
+                }
+            }
+        }
+
         const std::string loopText = Lexer::getSourceText(
-            CharSourceRange::getTokenRange(siblingFor->getSourceRange()),
+            CharSourceRange::getTokenRange(stmt->getSourceRange()),
+            this->Context->getSourceManager(),
+            this->Context->getLangOpts()).str();
+        std::set<std::string> foundNonShellVars;
+        for (const auto& captured : this->getForStatementVars()) {
+            if (shellVarNames.count(captured.first) != 0) {
+                continue;
+            }
+            if (containsWord(loopText, captured.first)) {
+                foundNonShellVars.insert(captured.first);
+            }
+        }
+
+        siblingStmts.push_back(stmt);
+    }
+
+    // Collect non-shell captured variables (union across all sibling statements)
+    std::set<std::string> allNonShellVarNames;
+    for (const auto* stmt : siblingStmts) {
+        const std::string stmtText = Lexer::getSourceText(
+            CharSourceRange::getTokenRange(stmt->getSourceRange()),
             this->Context->getSourceManager(),
             this->Context->getLangOpts()).str();
         for (const auto& captured : this->getForStatementVars()) {
             if (shellVarNames.count(captured.first) != 0) {
                 continue;
             }
-            if (containsWord(loopText, captured.first)) {
-                bufferRegionPlan.disableReason =
-                    "sibling loop uses non-shell captured state";
-                return;
+            if (containsWord(stmtText, captured.first)) {
+                allNonShellVarNames.insert(captured.first);
             }
         }
-
-        siblingFors.push_back(siblingFor);
+    }
+    std::vector<std::pair<std::string, std::string>> capturedNonShellVars;
+    for (const auto& captured : this->getForStatementVars()) {
+        if (allNonShellVarNames.count(captured.first) != 0) {
+            capturedNonShellVars.push_back(captured);
+        }
     }
 
     bufferRegionPlan.enabled = true;
@@ -488,6 +534,7 @@ void dacppTranslator::DacppFile::analyzeBufferRegionPlan() {
     bufferRegionPlan.parentFunction = this->node;
     bufferRegionPlan.outerFor = this->forStatement;
     bufferRegionPlan.dacExpr = dacExpr;
-    bufferRegionPlan.siblingForStmts = std::move(siblingFors);
+    bufferRegionPlan.siblingStmts = std::move(siblingStmts);
     bufferRegionPlan.capturedVars = this->getForStatementVars();
+    bufferRegionPlan.capturedNonShellVars = std::move(capturedNonShellVars);
 }

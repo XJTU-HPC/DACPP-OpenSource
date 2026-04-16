@@ -294,6 +294,37 @@ MPISiblingRewriteResult rewriteMPISiblingBody(
         return result;
     }
 
+    if (const auto* ifStmt = llvm::dyn_cast<clang::IfStmt>(stmt)) {
+        result.code += "if (";
+        auto condResult = rewriteMPISiblingBody(
+            ifStmt->getCond(), context, declToName, writtenNames, loopVar, false);
+        result.code += condResult.code;
+        result.code += ") ";
+        result.readVars = condResult.readVars;
+        result.writtenVars = condResult.writtenVars;
+
+        auto thenResult = rewriteMPISiblingBody(
+            ifStmt->getThen(), context, declToName, writtenNames, loopVar, false);
+        result.code += thenResult.code;
+        result.readVars.insert(thenResult.readVars.begin(),
+                               thenResult.readVars.end());
+        result.writtenVars.insert(thenResult.writtenVars.begin(),
+                                  thenResult.writtenVars.end());
+
+        if (ifStmt->getElse()) {
+            result.code += " else ";
+            auto elseResult = rewriteMPISiblingBody(
+                ifStmt->getElse(), context, declToName, writtenNames, loopVar, false);
+            result.code += elseResult.code;
+            result.readVars.insert(elseResult.readVars.begin(),
+                                   elseResult.readVars.end());
+            result.writtenVars.insert(elseResult.writtenVars.begin(),
+                                      elseResult.writtenVars.end());
+        }
+        result.code += "\n";
+        return result;
+    }
+
     if (const auto* opCall = llvm::dyn_cast<clang::CXXOperatorCallExpr>(stmt)) {
         if (opCall->isAssignmentOp() && opCall->getNumArgs() >= 2) {
             const clang::Expr* lhs = opCall->getArg(0);
@@ -616,7 +647,7 @@ std::string buildMPIRegionSiblingCode(DacppFile* dacppFile,
     }
 
     const auto& plan = dacppFile->getBufferRegionPlan();
-    if (!plan.enabled || plan.siblingForStmts.empty()) {
+    if (!plan.enabled || plan.siblingStmts.empty()) {
         return "";
     }
 
@@ -660,17 +691,19 @@ std::string buildMPIRegionSiblingCode(DacppFile* dacppFile,
     }
 
     std::string code;
-    for (std::size_t helperIdx = 0; helperIdx < plan.siblingForStmts.size();
+    for (std::size_t helperIdx = 0; helperIdx < plan.siblingStmts.size();
          ++helperIdx) {
-        const clang::ForStmt* siblingFor = plan.siblingForStmts[helperIdx];
-        if (!siblingFor) {
+        const clang::Stmt* siblingStmt = plan.siblingStmts[helperIdx];
+        if (!siblingStmt) {
             continue;
         }
+
+        const clang::ForStmt* siblingFor = llvm::dyn_cast_or_null<clang::ForStmt>(siblingStmt);
 
         const std::string helperName = "__dacpp_mpi_submit_region_" +
                                        baseName + "_stmt_" +
                                        std::to_string(helperIdx);
-        generated.siblingHelpers.emplace_back(siblingFor, helperName);
+        generated.siblingHelpers.emplace_back(siblingStmt, helperName);
 
         code += "void " + helperName + "(" + generated.ctxTypeName +
                 "& ctx) {\n";
@@ -740,20 +773,27 @@ std::string buildMPIRegionSiblingCode(DacppFile* dacppFile,
             }
         }
 
-        std::string loopText = getSourceTextMPI(siblingFor, context);
+        std::string stmtText = getSourceTextMPI(siblingStmt, context);
+
+        // Create local aliases for non-shell captured variables from ctx
+        for (const auto& var : plan.capturedNonShellVars) {
+            code += "    " + var.second + " " + var.first + " = ctx." +
+                    var.first + ";\n";
+        }
+
         for (int paramIdx = 0; paramIdx < shell->getNumShellParams(); ++paramIdx) {
             const std::string shellName = shell->getParam(paramIdx)->getName();
             const std::string calcName = calc->getParam(paramIdx)->getName();
             const std::string sourceName =
                 sourceNames[static_cast<std::size_t>(paramIdx)];
             if (shellName != sourceName) {
-                loopText = replaceWordMPI(loopText, shellName, sourceName);
+                stmtText = replaceWordMPI(stmtText, shellName, sourceName);
             }
             if (calcName != sourceName) {
-                loopText = replaceWordMPI(loopText, calcName, sourceName);
+                stmtText = replaceWordMPI(stmtText, calcName, sourceName);
             }
         }
-        code += "    " + loopText + "\n";
+        code += "    " + stmtText + "\n";
 
         for (int paramIdx = 0; paramIdx < shell->getNumShellParams(); ++paramIdx) {
             Param* calcParam = calc->getParam(paramIdx);

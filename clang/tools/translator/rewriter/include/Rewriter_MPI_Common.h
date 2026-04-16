@@ -33,7 +33,7 @@ struct MPIRegionGeneratedCode {
     std::string submitName;
     std::string haloName;
     std::string syncName;
-    std::vector<std::pair<const clang::ForStmt*, std::string>> siblingHelpers;
+    std::vector<std::pair<const clang::Stmt*, std::string>> siblingHelpers;
 };
 
 struct MPIRegionTransferPolicy {
@@ -95,6 +95,44 @@ std::vector<IOTYPE> inferMPIRegionStorageModes(
 
 MPIRegionGeneratedCode buildMPIRegionCode(DacppFile* dacppFile,
                                           Expression* expr);
+
+// --- Fine-grained region codegen (split from buildMPIRegionCodegen) ---
+std::string buildMPIRegionCtxCode(DacppFile* dacppFile,
+                                  Shell* shell,
+                                  Calc* calc,
+                                  const MPIRegionGeneratedCode& generated);
+
+std::string buildMPIRegionInitCode(
+    DacppFile* dacppFile,
+    Shell* shell,
+    Calc* calc,
+    const MPIRegionGeneratedCode& generated,
+    const std::vector<IOTYPE>& storageModes,
+    const MPIRegionTransferPolicy& transferPolicy,
+    const std::unordered_map<std::string, SplitBindMeta>& splitMeta,
+    const std::string& shellParamSig);
+
+std::string buildMPIRegionSubmitCode(Shell* shell,
+                                     Calc* calc,
+                                     const MPIRegionGeneratedCode& generated,
+                                     const std::vector<IOTYPE>& paramModes);
+
+std::string buildMPIRegionHaloCode(Shell* shell,
+                                   Calc* calc,
+                                   const MPIRegionGeneratedCode& generated,
+                                   const std::vector<IOTYPE>& paramModes);
+
+std::string buildMPIRegionSyncCode(
+    DacppFile* dacppFile,
+    Shell* shell,
+    Calc* calc,
+    const MPIRegionGeneratedCode& generated,
+    const std::vector<IOTYPE>& storageModes,
+    const MPIRegionTransferPolicy& transferPolicy,
+    const std::string& shellParamSig);
+
+std::string buildShellParamSignature(Shell* shell);
+
 std::string joinShellCallArgsMPI(const clang::BinaryOperator* dacExpr,
                                  clang::ASTContext* context);
 

@@ -38,7 +38,7 @@ struct BufferRegionGeneratedCode {
     std::string submitName;
     std::string initName;
     std::string syncName;
-    std::vector<std::pair<const clang::ForStmt*, std::string>> siblingHelpers;
+    std::vector<std::pair<const clang::Stmt*, std::string>> siblingHelpers;
 };
 
 struct AccessSummary {
@@ -503,9 +503,9 @@ BufferRegionTransferPolicy analyzeBufferRegionTransferPolicy(
         policy.writtenInRegion[static_cast<std::size_t>(paramIdx)] = writtenInRegion;
     }
 
-    for (const clang::ForStmt* siblingFor : plan.siblingForStmts) {
+    for (const clang::Stmt* siblingStmt : plan.siblingStmts) {
         const auto siblingSummary =
-            summarizeStmtAccess(siblingFor, argDeclIndices, paramCount);
+            summarizeStmtAccess(siblingStmt, argDeclIndices, paramCount);
         for (int paramIdx = 0; paramIdx < paramCount; ++paramIdx) {
             bool needsInitCopy = policy.needsInitCopy[static_cast<std::size_t>(paramIdx)];
             bool writtenInRegion = policy.writtenInRegion[static_cast<std::size_t>(paramIdx)];
@@ -893,17 +893,30 @@ BufferRegionGeneratedCode buildOptimizedBufferRegionCode(
     code += "    });\n";
     code += "}\n\n";
 
-    for (std::size_t helperIdx = 0; helperIdx < plan.siblingForStmts.size(); ++helperIdx) {
+    for (std::size_t helperIdx = 0; helperIdx < plan.siblingStmts.size(); ++helperIdx) {
         const std::string helperName = "__dacpp_submit_region_" + baseName +
                                        "_stmt_" + std::to_string(helperIdx);
-        generated.siblingHelpers.emplace_back(plan.siblingForStmts[helperIdx], helperName);
+        generated.siblingHelpers.emplace_back(plan.siblingStmts[helperIdx], helperName);
         code += "void " + helperName + "(" + generated.ctxTypeName + "& ctx) {\n";
         code += "    using namespace sycl;\n";
         code += "    auto& dacpp_q = ctx.dacpp_q;\n";
         code += buildRegionBufferAliases(shell, effectiveParamModes, false);
         code += buildRegionShapeAliases(shell);
-        code += BUFFER_TEMPLATE::parallelizeSingleFor(
-            plan.siblingForStmts[helperIdx], dacppFile->getContext(), dacppFile);
+        const auto* siblingFor = llvm::dyn_cast_or_null<clang::ForStmt>(plan.siblingStmts[helperIdx]);
+        if (siblingFor) {
+            code += BUFFER_TEMPLATE::parallelizeSingleFor(
+                siblingFor, dacppFile->getContext(), dacppFile);
+        } else {
+            // Non-for-loop sibling: emit source text directly
+            const auto* siblingStmt = plan.siblingStmts[helperIdx];
+            if (siblingStmt && dacppFile->getContext()) {
+                std::string stmtText = clang::Lexer::getSourceText(
+                    clang::CharSourceRange::getTokenRange(siblingStmt->getSourceRange()),
+                    dacppFile->getContext()->getSourceManager(),
+                    dacppFile->getContext()->getLangOpts()).str();
+                code += "    " + stmtText + "\n";
+            }
+        }
         code += "}\n\n";
     }
 

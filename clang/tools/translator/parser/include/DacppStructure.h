@@ -25,8 +25,9 @@ struct BufferRegionPlan {
     const clang::FunctionDecl* parentFunction = nullptr;
     const clang::ForStmt* outerFor = nullptr;
     const clang::BinaryOperator* dacExpr = nullptr;
-    std::vector<const clang::ForStmt*> siblingForStmts;
+    std::vector<const clang::Stmt*> siblingStmts;
     std::vector<std::pair<std::string, std::string>> capturedVars;
+    std::vector<std::pair<std::string, std::string>> capturedNonShellVars;
     std::string disableReason;
 };
 
