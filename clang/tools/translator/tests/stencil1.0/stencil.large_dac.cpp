@@ -11,12 +11,12 @@ namespace dacpp {
 
 
 // 网格参数
-const int NX = 8192*8;           // x方向网格数量
-const int NY = 8192*8;           // y方向网格数量
+const int NX = 512;           // x方向网格数量
+const int NY = 512;           // y方向网格数量
 const double Lx = 10.0f;       // x方向长度
 const double Ly = 10.0f;       // y方向长度
 const double alpha = 0.01f;    // 热扩散系数
-const int TIME_STEPS = 100;  // 时间步数
+const int TIME_STEPS = 50;  // 时间步数
 // 空间步长
 const double dx = Lx / (NX - 1);
 const double dy = Ly / (NY - 1);

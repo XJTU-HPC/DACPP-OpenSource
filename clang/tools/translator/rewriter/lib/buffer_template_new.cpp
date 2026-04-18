@@ -232,6 +232,17 @@ std::string getLoopAccessorMode(const LoopVarAccessInfo& access) {
     return "sycl::access::mode::read";
 }
 
+std::string getLinearized2DStrideExpr(const std::string& name,
+                                      const std::string& type) {
+    // Sibling-loop lowering linearizes matrix-style indexing manually.
+    // DACPP matrices are row-major, so the stride for `a[i][j]` is the
+    // column extent rather than shape[0].
+    if (type.find("Matrix<") != std::string::npos) {
+        return "info_" + name + "_Shape[1]";
+    }
+    return "info_" + name + "_Shape[0]";
+}
+
 // -------------------- max_generate --------------------
 bool max_generate(std::string& reductionText, std::string original,
                   dacppTranslator::DacppFile dacFile) {
@@ -700,7 +711,7 @@ std::string parallelizeNestedFor(
         const std::string& type = p.second;
         bool isConst = (type.find("const") != std::string::npos);
         if (isConst) continue;
-        stride.push_back("info_" + name+"_Shape[0]");
+        stride.push_back(getLinearized2DStrideExpr(name, type));
         // 之前生成了 d_name，因此这里加入 d_name
         std::string dname = "d_" + name;
 
@@ -837,7 +848,7 @@ std::string parallelizeSingleFor(const clang::ForStmt* FS,clang::ASTContext* Con
         const std::string& type = p.second;
         bool isConst = (type.find("const") != std::string::npos);
         if (isConst) continue;
-        stride.push_back("info_" + name+"_Shape[0]");
+        stride.push_back(getLinearized2DStrideExpr(name, type));
         std::string dname = "d_" + name;
         std::regex w("\\b" + dname + "\\b");
         if (std::regex_search(replacedBody, w))

@@ -13,6 +13,7 @@ rm -rf "$TMP_DIR"
 mkdir -p "$TMP_DIR"
 
 MPI_TESTS=(
+    "mpiDenseCoverSibling1.0"
     "matMul1.0"
     "FOuLa1.0"
     "decay1.0"
@@ -27,16 +28,88 @@ MPI_TESTS=(
     "waveEquation1.0"
 )
 
-if [[ $# -gt 0 ]]; then
-    MPI_TESTS=("$@")
+USE_LARGE_CASES=0
+POSITIONAL_ARGS=()
+
+for arg in "$@"; do
+    case "$arg" in
+        --large)
+            USE_LARGE_CASES=1
+            ;;
+        -h|--help)
+            echo "Usage: bash test_mpi.sh [--large] [test_name ...]"
+            exit 0
+            ;;
+        *)
+            POSITIONAL_ARGS+=("$arg")
+            ;;
+    esac
+done
+
+if [[ ${#POSITIONAL_ARGS[@]} -gt 0 ]]; then
+    MPI_TESTS=("${POSITIONAL_ARGS[@]}")
 fi
 
 pick_dac_source() {
-    find "$1" -maxdepth 1 -type f -name "*.dac.cpp" \
+    local source_dir="$1"
+    local preferred_src fallback_src
+
+    fallback_src="$(find "$source_dir" -maxdepth 1 -type f -name "*.large_dac.cpp" | sort | head -n 1)"
+    preferred_src="$(find "$source_dir" -maxdepth 1 -type f -name "*.dac.cpp" \
         ! -name "*.mpi.dac.cpp" \
         ! -name "*.retranslated.dac.cpp" \
         ! -name "*.large_dac.cpp" \
-        | sort | head -n 1
+        | sort | head -n 1)"
+
+    if [[ "$USE_LARGE_CASES" == "1" ]]; then
+        preferred_src="$fallback_src"
+        fallback_src="$(find "$source_dir" -maxdepth 1 -type f -name "*.dac.cpp" \
+            ! -name "*.mpi.dac.cpp" \
+            ! -name "*.retranslated.dac.cpp" \
+            ! -name "*.large_dac.cpp" \
+            | sort | head -n 1)"
+    fi
+
+    if [[ -n "$preferred_src" ]]; then
+        printf '%s\n' "$preferred_src"
+        return
+    fi
+
+    if [[ -n "$fallback_src" ]]; then
+        printf '%s\n' "$fallback_src"
+    fi
+}
+
+generated_cpp_path_for() {
+    local source_file="$1"
+    local base_name
+    base_name="$(basename "$source_file")"
+    if [[ "$base_name" == *.large_dac.cpp ]]; then
+        printf '%s/%s\n' "$(dirname "$source_file")" "${base_name%.cpp}_sycl_buffer.cpp"
+        return
+    fi
+
+    if [[ "$base_name" == *.dac.cpp ]]; then
+        printf '%s/%s\n' "$(dirname "$source_file")" "${base_name%.cpp}_sycl_buffer.cpp"
+        return
+    fi
+
+    printf '%s/%s.dac_sycl_buffer.cpp\n' "$(dirname "$source_file")" "${base_name%.*}"
+}
+
+mpi_dac_path_for() {
+    local source_file="$1"
+    local dir_name
+    local base_name
+    dir_name="$(dirname "$source_file")"
+    base_name="$(basename "$source_file")"
+
+    if [[ "$base_name" == *.dac.cpp ]]; then
+        printf '%s/%s.mpi.dac.cpp\n' "$dir_name" "${base_name%.dac.cpp}"
+        return
+    fi
+
+    printf '%s/%s.mpi.dac.cpp\n' "$dir_name" "${base_name%.*}"
 }
 
 # ── 过滤 AdaptiveCpp 运行时警告 ──────────────────────────────────────────────
@@ -72,7 +145,7 @@ for test_name in "${MPI_TESTS[@]}"; do
     # Copy files
     base_dac="$work_dir/$(basename "$dac_file")"
     cp "$dac_file" "$base_dac"
-    base_sycl="${base_dac%.dac.cpp}.dac_sycl_buffer.cpp"
+    base_sycl="$(generated_cpp_path_for "$base_dac")"
     base_bin="$work_dir/base_bin"
 
     # Step 1: Translate Baseline (Non-MPI, mode=buffer)
@@ -96,9 +169,9 @@ for test_name in "${MPI_TESTS[@]}"; do
 
     # Step 2: Translate MPI
     echo "  [Step 2] Translate --mode=buffer --mpi and compile"
-    mpi_dac="$work_dir/$(basename "${dac_file%.dac.cpp}").mpi.dac.cpp"
+    mpi_dac="$(mpi_dac_path_for "$base_dac")"
     cp "$dac_file" "$mpi_dac"
-    mpi_sycl="${mpi_dac%.dac.cpp}.dac_sycl_buffer.cpp"
+    mpi_sycl="$(generated_cpp_path_for "$mpi_dac")"
     mpi_bin="$work_dir/mpi_bin"
 
     if ! run_in_env "$work_dir/step2.log" "dacpp '$mpi_dac' --mode=buffer --mpi && acpp-compile '$mpi_sycl' '$mpi_bin'"; then

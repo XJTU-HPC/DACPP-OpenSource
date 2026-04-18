@@ -41,8 +41,26 @@ fi
 # Default to a fast local smoke suite.
 LOCAL_TEST_TIMEOUT_SEC="${LOCAL_TEST_TIMEOUT_SEC:-120}"
 
-if [[ $# -gt 0 ]]; then
-    LOCAL_TESTS=("$@")
+USE_LARGE_CASES=0
+POSITIONAL_ARGS=()
+
+for arg in "$@"; do
+    case "$arg" in
+        --large)
+            USE_LARGE_CASES=1
+            ;;
+        -h|--help)
+            echo "Usage: bash test_local.sh [--large] [test_name ...]"
+            exit 0
+            ;;
+        *)
+            POSITIONAL_ARGS+=("$arg")
+            ;;
+    esac
+done
+
+if [[ ${#POSITIONAL_ARGS[@]} -gt 0 ]]; then
+    LOCAL_TESTS=("${POSITIONAL_ARGS[@]}")
 fi
 
 rm -rf "$TMP_DIR"
@@ -74,24 +92,104 @@ PY
 }
 
 pick_dac_source() {
-    find "$1" -maxdepth 1 -type f -name "*.dac.cpp" \
+    local source_dir="$1"
+    local preferred_src fallback_src
+
+    fallback_src="$(find "$source_dir" -maxdepth 1 -type f -name "*.large_dac.cpp" | sort | head -n 1)"
+    preferred_src="$(find "$source_dir" -maxdepth 1 -type f -name "*.dac.cpp" \
         ! -name "*.mpi.dac.cpp" \
         ! -name "*.retranslated.dac.cpp" \
         ! -name "*.large_dac.cpp" \
-        | sort | head -n 1
+        | sort | head -n 1)"
+
+    if [[ "$USE_LARGE_CASES" == "1" ]]; then
+        preferred_src="$fallback_src"
+        fallback_src="$(find "$source_dir" -maxdepth 1 -type f -name "*.dac.cpp" \
+            ! -name "*.mpi.dac.cpp" \
+            ! -name "*.retranslated.dac.cpp" \
+            ! -name "*.large_dac.cpp" \
+            | sort | head -n 1)"
+    fi
+
+    if [[ -n "$preferred_src" ]]; then
+        printf '%s\n' "$preferred_src"
+        return
+    fi
+
+    if [[ -n "$fallback_src" ]]; then
+        printf '%s\n' "$fallback_src"
+    fi
 }
 
 pick_standard_reference() {
-    find "$1" -maxdepth 1 -type f -name "*.StandardSycl.cpp" \
+    local source_dir="$1"
+    local preferred_ref fallback_ref
+
+    fallback_ref="$(find "$source_dir" -maxdepth 1 -type f -name "*.large_StandardSycl.cpp" | sort | head -n 1)"
+    preferred_ref="$(find "$source_dir" -maxdepth 1 -type f -name "*.StandardSycl.cpp" \
         ! -name "*.MPI_StandardSycl.cpp" \
         ! -name "*.large_StandardSycl.cpp" \
-        | sort | head -n 1
+        | sort | head -n 1)"
+
+    if [[ "$USE_LARGE_CASES" == "1" ]]; then
+        preferred_ref="$fallback_ref"
+        fallback_ref="$(find "$source_dir" -maxdepth 1 -type f -name "*.StandardSycl.cpp" \
+            ! -name "*.MPI_StandardSycl.cpp" \
+            ! -name "*.large_StandardSycl.cpp" \
+            | sort | head -n 1)"
+    fi
+
+    if [[ -n "$preferred_ref" ]]; then
+        printf '%s\n' "$preferred_ref"
+        return
+    fi
+
+    if [[ -n "$fallback_ref" ]]; then
+        printf '%s\n' "$fallback_ref"
+    fi
 }
 
 pick_serial_reference() {
-    find "$1" -maxdepth 1 -type f -name "*.serial.cpp" \
+    local source_dir="$1"
+    local preferred_ref fallback_ref
+
+    fallback_ref="$(find "$source_dir" -maxdepth 1 -type f -name "*.large_serial.cpp" | sort | head -n 1)"
+    preferred_ref="$(find "$source_dir" -maxdepth 1 -type f -name "*.serial.cpp" \
         ! -name "*.large_serial.cpp" \
-        | sort | head -n 1
+        | sort | head -n 1)"
+
+    if [[ "$USE_LARGE_CASES" == "1" ]]; then
+        preferred_ref="$fallback_ref"
+        fallback_ref="$(find "$source_dir" -maxdepth 1 -type f -name "*.serial.cpp" \
+            ! -name "*.large_serial.cpp" \
+            | sort | head -n 1)"
+    fi
+
+    if [[ -n "$preferred_ref" ]]; then
+        printf '%s\n' "$preferred_ref"
+        return
+    fi
+
+    if [[ -n "$fallback_ref" ]]; then
+        printf '%s\n' "$fallback_ref"
+    fi
+}
+
+generated_cpp_path_for() {
+    local source_file="$1"
+    local base_name
+    base_name="$(basename "$source_file")"
+    if [[ "$base_name" == *.large_dac.cpp ]]; then
+        printf '%s/%s\n' "$(dirname "$source_file")" "${base_name%.cpp}_sycl_buffer.cpp"
+        return
+    fi
+
+    if [[ "$base_name" == *.dac.cpp ]]; then
+        printf '%s/%s\n' "$(dirname "$source_file")" "${base_name%.cpp}_sycl_buffer.cpp"
+        return
+    fi
+
+    printf '%s/%s.dac_sycl_buffer.cpp\n' "$(dirname "$source_file")" "${base_name%.*}"
 }
 
 adapt_standard_reference() {
@@ -248,7 +346,7 @@ for test_name in "${LOCAL_TESTS[@]}"; do
         continue
     fi
 
-    generated_cpp="${dac_file%.dac.cpp}.dac_sycl_buffer.cpp"
+    generated_cpp="$(generated_cpp_path_for "$dac_file")"
     generated_bin="$work_dir/generated_bin"
 
     echo "  [Step 1] Translate --mode=buffer"

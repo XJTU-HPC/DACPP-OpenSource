@@ -37,7 +37,7 @@ int main(){
 	a=1.0;
 	h=1.0/m;  //空间步长
 	tau=1.0/n;  //时间步长
-	r=a*tau/(h*h);  //网比
+	r=0.25;  // 与 DAC 样例保持一致，large 用例固定网比
 
     vector<double> x(m+1,0);
     vector<double> t(n+1,0);
