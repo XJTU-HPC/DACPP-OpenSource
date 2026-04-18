@@ -845,6 +845,151 @@ private:
 };
 
 // ---------------------------------------------------------------------------
+// Item-reach analysis for fast neighbor filtering
+// ---------------------------------------------------------------------------
+
+/// Result of item-reach analysis for an AccessPattern.
+struct ItemReachResult {
+    /// Maximum number of items away that the pattern can reach.
+    /// -1 means "unbounded" (e.g. broadcast patterns → fall back to full
+    /// enumeration).
+    int64_t max_item_reach = -1;
+};
+
+/// Compute the maximum item-space reach of an access pattern.
+///
+/// For stencil patterns, this determines how far in item-space a rank's
+/// data dependencies extend.  Combined with items-per-rank, this yields a
+/// tight rank window so that computeParamHalo() only checks plausible
+/// neighbors instead of all P ranks.
+///
+/// Returns -1 (unbounded) for broadcast/all-to-all patterns where every
+/// rank may be a neighbor.
+inline ItemReachResult computeItemReach(const AccessPattern& pattern) {
+    const auto bind_splits =
+        pattern.bind_split_sizes.empty()
+            ? init_bind_split_sizes(pattern)
+            : pattern.bind_split_sizes;
+
+    if (bind_splits.empty()) {
+        return {-1};
+    }
+
+    // Per-bind-id reach in bind-index space.
+    const int max_bind =
+        *std::max_element(pattern.bind_set_id.begin(),
+                          pattern.bind_set_id.end());
+    if (max_bind < 0) {
+        // No binds at all — reach is 0.
+        return {0};
+    }
+
+    std::vector<int64_t> per_bind_reach(
+        static_cast<std::size_t>(max_bind + 1), 0);
+
+    for (int op_idx = 0; op_idx < pattern.param_ops.size; ++op_idx) {
+        const Dac_Op& op = pattern.param_ops[op_idx];
+        if (op.dimId < 0 || op.dimId >= pattern.data_info.dim) {
+            continue;
+        }
+        if (op_idx >= static_cast<int>(pattern.bind_set_id.size())) {
+            continue;
+        }
+        const int bind_id = pattern.bind_set_id[op_idx];
+        if (bind_id < 0) {
+            continue;
+        }
+
+        const bool is_index =
+            op_idx < static_cast<int>(pattern.is_index_op.size()) &&
+            pattern.is_index_op[op_idx];
+
+        // Detect broadcast: IndexSplit whose split_size covers the full
+        // dimension length means every item accesses every position in
+        // that dimension → unbounded reach.
+        if (is_index) {
+            const int64_t split_sz =
+                bind_splits[static_cast<std::size_t>(bind_id)];
+            const int dim_len =
+                op.dimId < static_cast<int>(pattern.data_info.dim)
+                    ? pattern.data_info.dimLength[op.dimId]
+                    : 0;
+            if (split_sz >= dim_len && dim_len > 1) {
+                return {-1};
+            }
+            // Index op: each item accesses exactly one position.
+            // No inter-item reach contribution.
+            continue;
+        }
+
+        // RegularSlice: partition extends by op.size positions with stride
+        // op.stride.  Two items with bind indices b1, b2 access overlapping
+        // positions iff |b1 - b2| * stride < size, i.e.
+        // |b1 - b2| < ceil(size / stride).
+        const int64_t reach_in_bind =
+            (op.size + op.stride - 1) / op.stride - 1;
+        auto& slot = per_bind_reach[static_cast<std::size_t>(bind_id)];
+        slot = std::max(slot, reach_in_bind);
+    }
+
+    // Convert per-bind-index reach to item-space reach.
+    // decode_item_id uses cumulative divisors: for bind dimension B,
+    // the item-space stride is product(bind_splits[B+1:]).
+    int64_t item_stride = 1;
+    for (int B = max_bind; B >= 0; --B) {
+        const int64_t split_sz =
+            bind_splits[static_cast<std::size_t>(B)] <= 0
+                ? 1
+                : bind_splits[static_cast<std::size_t>(B)];
+        per_bind_reach[static_cast<std::size_t>(B)] *= item_stride;
+        item_stride *= split_sz;
+    }
+
+    int64_t max_reach = 0;
+    for (int64_t r : per_bind_reach) {
+        max_reach = std::max(max_reach, r);
+    }
+    return {max_reach};
+}
+
+/// Rank window [lo, hi] (inclusive) for neighbor enumeration.
+/// lo < 0 means "unbounded" — fall back to full enumeration.
+struct RankWindow {
+    int lo;
+    int hi;
+};
+
+/// Convert an item-space reach into a rank window.
+inline RankWindow computeRankWindow(int64_t item_reach,
+                                    int64_t total_items,
+                                    int mpi_rank,
+                                    int mpi_size) {
+    if (item_reach < 0) {
+        return {-1, -1};  // unbounded
+    }
+    if (mpi_size <= 1) {
+        return {0, 0};
+    }
+
+    const int64_t min_items = total_items / mpi_size;
+    if (min_items <= 0) {
+        // More ranks than items — degenerate, fall back.
+        return {-1, -1};
+    }
+
+    // Ceiling-division to get rank reach, plus 1 to account for the
+    // uneven distribution in get_rank_item_range().
+    const int64_t rank_reach =
+        (item_reach + min_items - 1) / min_items + 1;
+
+    return {
+        static_cast<int>(
+            std::max<int64_t>(0, static_cast<int64_t>(mpi_rank) - rank_reach)),
+        static_cast<int>(std::min<int64_t>(
+            mpi_size - 1, static_cast<int64_t>(mpi_rank) + rank_reach))};
+}
+
+// ---------------------------------------------------------------------------
 // Halo exchange support for MPI stencil optimization
 // ---------------------------------------------------------------------------
 
@@ -924,15 +1069,26 @@ inline ParamHalo computeParamHalo(
     }
 
     // Data-driven neighbor discovery: instead of assuming only rank±1 are
-    // neighbors, iterate over ALL ranks and check for actual data overlap.
-    // A rank is a halo neighbor iff its output globals intersect with my
-    // input globals (recv direction) or its input globals intersect with
-    // my output globals (send direction).  This correctly handles:
+    // neighbors, iterate over candidate ranks and check for actual data
+    // overlap.  A rank is a halo neighbor iff its output globals intersect
+    // with my input globals (recv direction) or its input globals intersect
+    // with my output globals (send direction).  This correctly handles:
     //   - multi-dimensional binds with non-adjacent spatial neighbors
     //   - non-unit strides (e.g. interleaved access patterns)
     //   - full-dimension broadcast access ([{}] patterns → all-to-all)
     //   - large stencil offsets that span multiple rank boundaries
-    for (int nb_rank = 0; nb_rank < mpi_size; ++nb_rank) {
+    //
+    // Optimization: for stencil patterns the item-space reach is bounded,
+    // so we compute a rank window and only enumerate nearby ranks rather
+    // than all P ranks.  Unbounded patterns (broadcast) fall back to full
+    // enumeration.
+    const auto reach_result = computeItemReach(pattern);
+    const auto win = computeRankWindow(
+        reach_result.max_item_reach, total_items, mpi_rank, mpi_size);
+    const int nb_lo = (win.lo < 0) ? 0 : win.lo;
+    const int nb_hi = (win.hi < 0) ? (mpi_size - 1) : win.hi;
+
+    for (int nb_rank = nb_lo; nb_rank <= nb_hi; ++nb_rank) {
         if (nb_rank == mpi_rank) continue;
 
         HaloRegion region;
