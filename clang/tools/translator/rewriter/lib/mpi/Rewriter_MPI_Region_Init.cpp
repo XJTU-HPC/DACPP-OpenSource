@@ -293,6 +293,11 @@ std::string buildMPIRegionInitCode(
                 code += "            std::copy(__dacpp_global_" + calcName +
                         ".begin(), __dacpp_global_" + calcName +
                         ".end(), ctx.local_" + calcName + ".begin());\n";
+                code += "        } else if (ctx.mpi_rank == 0) {\n";
+                code += "            throw std::runtime_error(\"MPI dense init: size mismatch for " +
+                        calcName + " — global_size=\" + std::to_string(__dacpp_global_" +
+                        calcName + ".size()) + \", local_size=\" + std::to_string(ctx.local_" +
+                        calcName + ".size()));\n";
                 code += "        }\n";
                 code += "    }\n";
                 code += "    if (!ctx.local_" + calcName + ".empty()) {\n";
@@ -406,7 +411,8 @@ std::string buildMPIRegionInitCode(
                 " = dacpp::mpi::computeParamHalo(\n";
         code += "            ctx.pattern_" + name + ", ctx.pattern_" + name +
                 ".mode,\n";
-        code += "            my_range, ctx.total_items, ctx.mpi_rank, ctx.mpi_size);\n";
+        code += "            my_range, ctx.total_items, ctx.mpi_rank, ctx.mpi_size,\n";
+        code += "            ctx.pack_" + name + ");\n";
     }
     code += "    }\n";
 

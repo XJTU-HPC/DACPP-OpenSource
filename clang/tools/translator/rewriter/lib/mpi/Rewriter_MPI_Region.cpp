@@ -828,7 +828,8 @@ MPIRegionGeneratedCode buildMPIRegionCode(
         const std::string& name = calc->getParam(paramIdx)->getName();
         code += "        ctx.halo_" + name + " = dacpp::mpi::computeParamHalo(\n";
         code += "            ctx.pattern_" + name + ", ctx.pattern_" + name + ".mode,\n";
-        code += "            my_range, ctx.total_items, ctx.mpi_rank, ctx.mpi_size);\n";
+        code += "            my_range, ctx.total_items, ctx.mpi_rank, ctx.mpi_size,\n";
+        code += "            ctx.pack_" + name + ");\n";
     }
     code += "    }\n";
 

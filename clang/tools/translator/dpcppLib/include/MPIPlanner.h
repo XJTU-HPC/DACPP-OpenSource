@@ -868,7 +868,20 @@ struct ParamHalo {
 
 /// Compute halo regions for a single parameter on the current rank.
 /// The caller provides the parameter's AccessPattern, its effective mode,
-/// and the current rank's item range.
+/// the current rank's item range, and the actual PackMap (ctx.pack_*)
+/// that defines the real local data layout.
+///
+/// IMPORTANT: The slot mapping uses ctx_pack.g2l directly, ensuring
+/// consistency with exchangeHalo() which reads/writes ctx.local_*.
+/// This avoids the bug where a separately-built PackMap has different
+/// slot numbering than ctx.pack_* (especially when sibling dense-cover
+/// packs expand ctx.pack_* to a full global dense layout).
+///
+/// Neighbor strategy: data-driven discovery over all ranks.
+/// For each rank, the function checks actual global position overlap
+/// (recv = my_input ∩ neighbor_output, send = my_output ∩ neighbor_input).
+/// This correctly handles multi-dimensional binds, non-unit strides,
+/// full-dimension broadcasts, and large stencil offsets.
 ///
 /// Algorithm:
 ///   For each neighbor (rank-1, rank+1):
@@ -880,7 +893,8 @@ inline ParamHalo computeParamHalo(
     ItemRange my_range,
     int64_t total_items,
     int mpi_rank,
-    int mpi_size)
+    int mpi_size,
+    const PackMap& ctx_pack)
 {
     ParamHalo halo;
 
@@ -909,14 +923,22 @@ inline ParamHalo computeParamHalo(
         std::sort(my_output_globals.begin(), my_output_globals.end());
     }
 
-    for (int delta : {-1, 1}) {
-        const int neighbor = mpi_rank + delta;
-        if (neighbor < 0 || neighbor >= mpi_size) continue;
+    // Data-driven neighbor discovery: instead of assuming only rank±1 are
+    // neighbors, iterate over ALL ranks and check for actual data overlap.
+    // A rank is a halo neighbor iff its output globals intersect with my
+    // input globals (recv direction) or its input globals intersect with
+    // my output globals (send direction).  This correctly handles:
+    //   - multi-dimensional binds with non-adjacent spatial neighbors
+    //   - non-unit strides (e.g. interleaved access patterns)
+    //   - full-dimension broadcast access ([{}] patterns → all-to-all)
+    //   - large stencil offsets that span multiple rank boundaries
+    for (int nb_rank = 0; nb_rank < mpi_size; ++nb_rank) {
+        if (nb_rank == mpi_rank) continue;
 
         HaloRegion region;
-        region.neighbor_rank = neighbor;
+        region.neighbor_rank = nb_rank;
 
-        ItemRange nb_range = get_rank_item_range(total_items, neighbor, mpi_size);
+        ItemRange nb_range = get_rank_item_range(total_items, nb_rank, mpi_size);
 
         // Collect neighbor's input and output positions.
         std::vector<int64_t> nb_input_globals;
@@ -938,9 +960,10 @@ inline ParamHalo computeParamHalo(
             std::sort(nb_output_globals.begin(), nb_output_globals.end());
         }
 
-        // Build the pack map's g2l for local slot lookup.
-        // We need a unified g2l that covers all positions in my input pack.
-        PackMap my_pack = make_pack_map_from_globals(my_input_globals);
+        // Use ctx_pack.g2l directly for local slot lookup.
+        // This ensures slot numbering matches the actual layout of ctx.local_*,
+        // which is critical when sibling dense-cover packs expand ctx.pack_*
+        // to a full global dense layout.
 
         // Recv: positions I read that the neighbor produces (writes).
         // recv = my_input_globals ∩ nb_output_globals
@@ -951,16 +974,23 @@ inline ParamHalo computeParamHalo(
                 nb_output_globals.begin(), nb_output_globals.end(),
                 std::back_inserter(recv_globals));
             for (auto g : recv_globals) {
-                auto it = my_pack.g2l.find(g);
-                if (it != my_pack.g2l.end()) {
+                auto it = ctx_pack.g2l.find(g);
+                if (it != ctx_pack.g2l.end()) {
                     region.recv_globals.push_back(g);
                     region.recv_local_slots.push_back(it->second);
+                } else {
+                    throw std::runtime_error(
+                        "computeParamHalo: recv global " + std::to_string(g) +
+                        " not found in ctx_pack.g2l — pack layout mismatch");
                 }
             }
         }
 
         // Send: positions I produce that the neighbor reads.
         // send = my_output_globals ∩ nb_input_globals
+        // We use ctx_pack.g2l (not an input-only pack) so that WRITE-mode
+        // globals that exist in the output but not in a standalone input pack
+        // are still correctly mapped to local slots.
         if (mode != AccessMode::Read) {
             std::vector<int64_t> send_globals;
             std::set_intersection(
@@ -968,10 +998,14 @@ inline ParamHalo computeParamHalo(
                 nb_input_globals.begin(), nb_input_globals.end(),
                 std::back_inserter(send_globals));
             for (auto g : send_globals) {
-                auto it = my_pack.g2l.find(g);
-                if (it != my_pack.g2l.end()) {
+                auto it = ctx_pack.g2l.find(g);
+                if (it != ctx_pack.g2l.end()) {
                     region.send_globals.push_back(g);
                     region.send_local_slots.push_back(it->second);
+                } else {
+                    throw std::runtime_error(
+                        "computeParamHalo: send global " + std::to_string(g) +
+                        " not found in ctx_pack.g2l — pack layout mismatch");
                 }
             }
         }
