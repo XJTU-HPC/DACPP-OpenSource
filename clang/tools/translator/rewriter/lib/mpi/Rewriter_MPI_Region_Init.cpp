@@ -1,9 +1,103 @@
+#include <algorithm>
 #include <string>
+#include <unordered_map>
+#include <vector>
 
 #include "Rewriter_MPI_Common.h"
 
 namespace dacppTranslator {
 namespace mpi_rewriter {
+
+namespace {
+
+std::vector<bool> collectSiblingWrittenParams(DacppFile* dacppFile,
+                                              Shell* shell) {
+    std::vector<bool> written(
+        static_cast<std::size_t>(shell ? shell->getNumShellParams() : 0), false);
+    if (!dacppFile || !shell) {
+        return written;
+    }
+    const auto& plan = dacppFile->getBufferRegionPlan();
+    if (!plan.enabled || !plan.dacExpr) {
+        return written;
+    }
+
+    const auto* shellCall = dacppTranslator::getNode<clang::CallExpr>(
+        dacppTranslator::Expression::shellLHS_p(plan.dacExpr)
+            ? plan.dacExpr->getLHS()
+            : plan.dacExpr->getRHS());
+    std::unordered_map<const clang::ValueDecl*, int> argDeclIndices;
+    if (shellCall) {
+        for (int paramIdx = 0;
+             paramIdx < std::min<int>(shell->getNumShellParams(),
+                                      static_cast<int>(shellCall->getNumArgs()));
+             ++paramIdx) {
+            const clang::Expr* arg = shellCall->getArg(static_cast<unsigned>(paramIdx));
+            if (const auto* declRef = llvm::dyn_cast_or_null<clang::DeclRefExpr>(
+                    arg ? arg->IgnoreParenImpCasts() : nullptr)) {
+                argDeclIndices.emplace(declRef->getDecl(), paramIdx);
+            }
+        }
+    }
+
+    for (const clang::Stmt* siblingStmt : plan.siblingStmts) {
+        const auto summary = summarizeStmtAccess(
+            siblingStmt, argDeclIndices, shell->getNumShellParams());
+        for (int paramIdx = 0; paramIdx < shell->getNumShellParams(); ++paramIdx) {
+            if (summary[static_cast<std::size_t>(paramIdx)].writes) {
+                written[static_cast<std::size_t>(paramIdx)] = true;
+            }
+        }
+    }
+    return written;
+}
+
+}  // namespace
+
+std::vector<std::string> buildMPIRegionSiblingLookupInitCode(
+    Shell* shell,
+    Calc* calc,
+    const MPIRegionGeneratedCode& generated) {
+    std::vector<std::string> snippets;
+    if (!shell || !calc) {
+        return snippets;
+    }
+
+    snippets.reserve(static_cast<std::size_t>(shell->getNumShellParams()));
+    for (int paramIdx = 0; paramIdx < shell->getNumShellParams(); ++paramIdx) {
+        const std::string& name = calc->getParam(paramIdx)->getName();
+        std::string code;
+        code += "    std::size_t __dacpp_total_dense_" + name + " = 1;\n";
+        code += "    for (int __dacpp_dim : ctx.pattern_" + name +
+                ".data_info.dimLength) {\n";
+        code += "        __dacpp_total_dense_" + name +
+                " *= static_cast<std::size_t>(std::max(0, __dacpp_dim));\n";
+        code += "    }\n";
+        code += "    ctx.global_to_local_" + name + ".assign(\n";
+        code += "        __dacpp_total_dense_" + name + ", -1);\n";
+        code += "    for (const auto& __dacpp_g2l_entry : ctx.pack_" + name +
+                ".g2l) {\n";
+        code += "        if (__dacpp_g2l_entry.first >= 0 &&\n";
+        code += "            static_cast<std::size_t>(__dacpp_g2l_entry.first) < ctx.global_to_local_" +
+                name + ".size()) {\n";
+        code += "            ctx.global_to_local_" + name +
+                "[static_cast<std::size_t>(__dacpp_g2l_entry.first)] =\n";
+        code += "                __dacpp_g2l_entry.second;\n";
+        code += "        }\n";
+        code += "    }\n";
+        code += "    if (!ctx.global_to_local_" + name + ".empty()) {\n";
+        code += "        ctx.global_to_local_buf_" + name +
+                " = std::make_unique<sycl::buffer<int32_t, 1>>(\n";
+        code += "            ctx.global_to_local_" + name +
+                ".data(), sycl::range<1>(ctx.global_to_local_" + name +
+                ".size()));\n";
+        code += "    }\n";
+        snippets.push_back(std::move(code));
+    }
+
+    (void)generated;
+    return snippets;
+}
 
 std::string buildMPIRegionInitCode(
     DacppFile* dacppFile,
@@ -134,6 +228,8 @@ std::string buildMPIRegionInitCode(
         code += "    ctx.pattern_" + name +
                 ".bind_split_sizes = ctx.binding_split_sizes;\n";
     }
+    const std::vector<bool> siblingWrittenParams =
+        collectSiblingWrittenParams(dacppFile, shell);
 
     for (int paramIdx = 0; paramIdx < shell->getNumShellParams(); ++paramIdx) {
         ShellParam* shellParam = shell->getShellParam(paramIdx);
@@ -144,9 +240,37 @@ std::string buildMPIRegionInitCode(
         const std::string& tensorName = shellWrapperParam->getName();
         const std::string patternName = "ctx.pattern_" + calcName;
         const std::string mpiType = mpiDatatypeFor(calcParam->getBasicType());
+        const bool needsSiblingDenseCover =
+            siblingWrittenParams[static_cast<std::size_t>(paramIdx)];
 
-        code += "    ctx.pack_" + calcName + " = " +
+        code += "    auto __dacpp_base_pack_" + calcName + " = " +
                 buildPackBuilderExpr(mode, patternName) + ";\n";
+        if (needsSiblingDenseCover) {
+            code += "    {\n";
+            code += "        std::size_t __dacpp_dense_count_" + calcName +
+                    " = 1;\n";
+            code += "        for (int __dacpp_dim : " + patternName +
+                    ".data_info.dimLength) {\n";
+            code += "            __dacpp_dense_count_" + calcName +
+                    " *= static_cast<std::size_t>(std::max(0, __dacpp_dim));\n";
+            code += "        }\n";
+            code += "        std::vector<int64_t> __dacpp_all_globals_" + calcName +
+                    "(__dacpp_dense_count_" + calcName + ");\n";
+            code += "        for (std::size_t __dacpp_g = 0; __dacpp_g < __dacpp_dense_count_" +
+                    calcName + "; ++__dacpp_g) {\n";
+            code += "            __dacpp_all_globals_" + calcName +
+                    "[__dacpp_g] = static_cast<int64_t>(__dacpp_g);\n";
+            code += "        }\n";
+            code += "        ctx.pack_" + calcName +
+                    " = dacpp::mpi::make_pack_map_from_globals(std::move(__dacpp_all_globals_" +
+                    calcName + "));\n";
+            code += "        ctx.pack_" + calcName +
+                    ".writeback_globals = ctx.pack_" + calcName + ".globals;\n";
+            code += "    }\n";
+        } else {
+            code += "    ctx.pack_" + calcName + " = std::move(__dacpp_base_pack_" +
+                    calcName + ");\n";
+        }
         code += "    ctx.slots_" + calcName +
                 " = dacpp::mpi::build_item_slots(item_range, " + patternName +
                 ", ctx.pack_" + calcName + ");\n";
@@ -154,6 +278,30 @@ std::string buildMPIRegionInitCode(
                 ".resize(ctx.pack_" + calcName + ".globals.size());\n";
 
         if (transferPolicy.needsInitScatter[static_cast<std::size_t>(paramIdx)]) {
+            if (needsSiblingDenseCover) {
+                const std::string payloadDenseCount = mpiPayloadCountExpr(
+                    "static_cast<int>(ctx.local_" + calcName + ".size())",
+                    calcParam->getBasicType());
+                code += "    {\n";
+                code += "    if (ctx.mpi_rank == 0) {\n";
+                code += "        std::vector<" + calcParam->getBasicType() +
+                        "> __dacpp_global_" + calcName + ";\n";
+                code += "        " + tensorName + ".tensor2Array(__dacpp_global_" +
+                        calcName + ");\n";
+                code += "        if (__dacpp_global_" + calcName + ".size() == ctx.local_" +
+                        calcName + ".size()) {\n";
+                code += "            std::copy(__dacpp_global_" + calcName +
+                        ".begin(), __dacpp_global_" + calcName +
+                        ".end(), ctx.local_" + calcName + ".begin());\n";
+                code += "        }\n";
+                code += "    }\n";
+                code += "    if (!ctx.local_" + calcName + ".empty()) {\n";
+                code += "        MPI_Bcast(ctx.local_" + calcName + ".data(), " +
+                        payloadDenseCount + ", " + mpiType +
+                        ", 0, MPI_COMM_WORLD);\n";
+                code += "    }\n";
+                code += "    }\n";
+            } else {
             const std::string payloadRecvCount = mpiPayloadCountExpr(
                 "recv_count_" + calcName, calcParam->getBasicType());
             code += "    {\n";
@@ -220,6 +368,7 @@ std::string buildMPIRegionInitCode(
                         ", 0, MPI_COMM_WORLD);\n";
             }
             code += "    }\n";
+            }
         }
 
         code += "    ctx." + calcName +
@@ -240,6 +389,11 @@ std::string buildMPIRegionInitCode(
                 calcName + ".data(), sycl::range<1>(ctx.slots_" + calcName +
                 ".size()));\n";
         code += "    }\n";
+    }
+
+    for (const auto& snippet :
+         buildMPIRegionSiblingLookupInitCode(shell, calc, generated)) {
+        code += snippet;
     }
 
     code += "    ctx.has_halo = (ctx.mpi_size > 1 && ctx.local_item_count > 0);\n";

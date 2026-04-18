@@ -1,6 +1,6 @@
 # DACPP Translator MPI 交接说明
 
-这份文档说明 `clang/tools/translator` 中 MPI 翻译路径的入口、分支、代码生成结构、运行时状态、测试范围与后续工作接口。阅读它可以直接建立对当前主线的整体认知，不需要再沿着历史演进记录倒推。
+这份文档说明 `clang/tools/translator` 中 MPI 翻译路径的入口、分支、代码生成结构、运行时状态与测试范围。阅读它可以直接建立对当前主线的整体认知。
 
 ## 1. 总览
 
@@ -172,12 +172,12 @@ region 内的 sibling `for` 通过 [Rewriter_MPI_Region_Sibling.cpp](/Volumes/QU
 
 1. `ctx.q.wait()`
 2. 从 `ctx.buf_*` 回收 `ctx.local_*`
-3. 基于 `ctx.pack_*` 和全局维度重建 dense temporary
-4. 通过 `MPI_Allreduce` 合并 dense 数值数组与 present 标记数组
-5. 创建 `DenseVectorView` / `DenseMatrixView`
-6. 按原 sibling `for` 的源码执行 host-side 更新
-7. 把 dense temporary 同步回 `ctx.local_*`
-8. 再同步回 `ctx.buf_*`
+3. 对存在 sibling 写入的参数构造全局可覆盖 `pack_*`，并在 init 阶段广播全局初值
+4. 依赖 `global_to_local_*` 查表构造 packed 访问视图，读参数走 dense fallback，写参数附带 `dirty` 与 `dense_shadow`
+5. 在设备侧提交 sibling kernel，直接以原语义索引访问 packed 视图
+6. 从 `dirty` 位图提取真实写入全局索引，并跨 rank 合并去重
+7. 对真实写入索引执行稀疏 `MPI_Allreduce` 值同步与 present 计数归一
+8. 把稀疏同步结果写回 `ctx.local_*`，再回写 `ctx.buf_*`
 
 这条路径解决的是 region 状态闭环问题。因为 region 路径中的真实状态位于：
 
@@ -185,17 +185,18 @@ region 内的 sibling `for` 通过 [Rewriter_MPI_Region_Sibling.cpp](/Volumes/QU
 - `ctx.buf_*`
 - `ctx.pack_*`
 
-如果 sibling loop 直接操作原始 host tensor，就无法自然并入 `submit -> halo -> sync` 生命周期。
+`PackedElementRef` 负责统一读写语义：
 
-### 5.1 Dense Bridge 的语义边界
+- 命中本地 slot 时读写 `ctx.buf_*` 对应位置
+- 未命中本地 slot 时读取 dense fallback
+- 所有写入同步更新 `dense_shadow` 并标记 `dirty`
 
-helper 中的 dense bridge 使用：
+稀疏同步采用：
 
-- 数值数组上的 `MPI_Allreduce(..., MPI_SUM)`
-- present 计数数组上的 `MPI_Allreduce(..., MPI_SUM)`
-- `present > 1` 的位置按出现次数平均
-
-这种规则适用于重复位置上副本值一致的场景，目标是优先保证翻译语义闭环和回归通过。更进一步的设备化 sibling lowering、只同步真实写入位置的稀疏 bridge、按邻居增量同步的数据路径属于后续优化方向。
+- 索引集合：`MPI_Allgatherv`
+- 数值归并：`MPI_Allreduce(..., MPI_SUM)`
+- present 计数：`MPI_Allreduce(..., MPI_SUM)`
+- 多 rank 重叠写位置按 `sum / present` 归一
 
 ## 6. Runtime / Planner
 
@@ -235,6 +236,16 @@ sibling helper 使用：
 - `DenseMatrixView`
 
 这组视图负责在 dense temporary 上保留原 sibling loop 的 `tensor[idx]` / `tensor[i][j]` 访问语义。
+
+### 6.4 Packed Sibling Views
+
+设备侧 sibling helper 使用：
+
+- `PackedElementRef`
+- `PackedVectorView`
+- `PackedMatrixView`
+
+这组视图支持全局索引覆盖、fallback 读取、dirty 标记与 shadow 写入。
 
 ## 7. 代码结构
 
@@ -335,30 +346,12 @@ INCLUDE_EXTENDED_LOCAL_TESTS=1 bash test_local.sh
 bash test_mpi.sh
 ```
 
-## 11. 后续工作
+## 11. 当前状态总结
 
-### 已完成
+这套 MPI 实现维持稳定的 wrapper 主线，并在 region 路径上提供：
 
-- region codegen 模块拆分：`Rewriter_MPI_Region_Codegen.cpp` 中的 `buildMPIRegionCodegen()` 已拆分为 5 个独立模块：
-  - `Rewriter_MPI_Region_Ctx.cpp` — ctx 结构体生成
-  - `Rewriter_MPI_Region_Init.cpp` — init 函数生成
-  - `Rewriter_MPI_Region_Submit.cpp` — submit 函数生成
-  - `Rewriter_MPI_Region_Halo.cpp` — halo 函数生成
-  - `Rewriter_MPI_Region_Sync.cpp` — sync 函数生成
-  - `Rewriter_MPI_Region_Codegen.cpp` 退化为薄编排层，仅调用上述 5 个模块并拼接
-- sibling 语法扩展：
-  - 允许 `if` 语句出现在 sibling 循环体内（`isSupportedRegionLoop` 不再拒绝 `if`）
-  - `BufferRegionPlan.siblingForStmts` 已泛化为 `siblingStmts`（`vector<const Stmt*>`），接受任意语句类型
-  - 允许非 shell 捕获的只读变量在 sibling 中使用，通过 `capturedNonShellVars` 自动在 init 中广播
-
-### 待完成
-
-主线后续工作集中在以下方向：
-
-- sibling loop 设备化，直接在 `ctx.buf_*` 上执行
-- dense bridge 稀疏化，只同步真实读写位置
-- 按 halo / neighbor 信息收紧 sibling 需要的数据同步
-
-## 12. 一句话理解
-
-这套 MPI 实现把通用程序维持在稳定的 wrapper 主线，把时间推进类 region 程序推进到一次初始化、循环内 halo 同步、结束统一回写的执行模型，并用 host-side dense bridge 把 sibling loop 并入同一条 region 生命周期。
+- 一次 init、循环内 `submit -> halo -> sibling helper`、循环后 sync 的完整生命周期
+- sibling 设备侧执行（直接作用于 `ctx.buf_*`）
+- 存在 sibling 写入参数时的全局可覆盖 pack
+- 基于 `dirty` 位图的稀疏同步，只归并真实写入全局索引
+- 全量 MPI 与 local 回归通过的代码生成主线

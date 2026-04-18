@@ -146,25 +146,31 @@ helper 的工作方式是：
 
 1. `ctx.q.wait()`
 2. 把 `buf_*` 同步回 `local_*`
-3. 根据 `pack_*` 将 rank 本地 packed 数据重建为 dense temporary
-4. 用 `MPI_Allreduce` 合并 dense 视图与 present mask
-5. 在 host 侧执行原 sibling loop 源码
-6. 把 dense temporary 写回 `ctx.local_*`
-7. 再写回 `ctx.buf_*`
+3. 为参与 sibling 写入的参数构造“全局索引可覆盖”的 `pack_*` 与 `global_to_local_*` 查表
+4. 为 sibling 中读参数构造只读 dense fallback，为写参数构造 `dirty` 位图与 `dense_shadow`
+5. 直接在设备侧提交 sibling kernel，访问视图使用 `PackedVectorView` / `PackedMatrixView`
+6. 从 `dirty` 位图提取真实写入的全局索引集合，跨 rank 合并去重
+7. 仅对真实写入索引执行稀疏 `MPI_Allreduce`，把结果写回 `ctx.local_*`
+8. 将同步后的 `ctx.local_*` 回写 `ctx.buf_*`
 
 这条路径依赖 [MPIPlanner.h](/Volumes/QUQ/working/dacpp/clang/tools/translator/dpcppLib/include/MPIPlanner.h) 中的：
 
-- `DenseVectorView`
-- `DenseMatrixView`
-- `DenseElementRef`
+- `PackedElementRef`
+- `PackedVectorView`
+- `PackedMatrixView`
 
-这种实现把 sibling loop 接入了 region 生命周期，重点是保持语义闭环。dense temporary 的合并方式使用：
+其中 `PackedElementRef` 统一了三类语义：
 
-- 数值数组上的 `MPI_Allreduce(..., MPI_SUM)`
-- presence 数组上的 `MPI_Allreduce(..., MPI_SUM)`
-- `presence > 1` 的位置按出现次数做平均
+- 命中本地 slot 时直接读写 `ctx.buf_*` 对应数据
+- 未命中本地 slot 时读 fallback dense 值
+- 写路径同时更新 `dense_shadow` 并打 `dirty` 标记
 
-这个合并规则适用于 pack 重叠位置上的同值副本。更细粒度的设备化 sibling lowering、稀疏同步与邻居级增量同步属于下一阶段优化方向。
+稀疏同步阶段使用：
+
+- 索引集合上的 `MPI_Allgatherv`（收集各 rank 真实写入位置）
+- 值数组上的 `MPI_Allreduce(..., MPI_SUM)`
+- present 计数上的 `MPI_Allreduce(..., MPI_SUM)`
+- `present > 1` 的位置按出现次数求平均
 
 ## 代码模块
 
@@ -231,21 +237,9 @@ helper 的工作方式是：
 5. 编译并运行 `mpirun -np 2`
 6. 清洗 AdaptiveCpp 警告并比对输出
 
-## 后续工作
+## 当前实现要点
 
-### 已完成
-
-- region codegen 模块拆分：`ctx / init / submit / halo / sync` 各自独立为 `Rewriter_MPI_Region_{Ctx,Init,Submit,Halo,Sync}.cpp`，`Rewriter_MPI_Region_Codegen.cpp` 退化为薄编排层
-- sibling 语法扩展：
-  - 允许 `if` 语句出现在 sibling 循环体内
-  - 允许非 `for` 循环语句（表达式语句、声明语句等）作为 sibling
-  - 允许非 shell 捕获的只读变量在 sibling 中使用（自动广播到所有 rank）
-
-### 待完成
-
-后续优化方向集中在三类问题：
-
-- sibling loop 设备化，直接操作 `ctx.buf_*`
-- dense bridge 收紧为稀疏同步或邻居级同步
-
-这些工作都建立在现有 region 生命周期、planner runtime 与 12 样例回归基础之上。
+- region codegen 使用 `ctx / init / submit / halo / sync` 五段式生成与拼接
+- sibling helper 支持设备侧执行与 dirty 稀疏同步
+- sibling 写参数使用全局可覆盖 pack，保证全局索引写入语义稳定
+- `sync` 阶段沿用 `writeback_globals` 进行最终 gather/writeback/broadcast

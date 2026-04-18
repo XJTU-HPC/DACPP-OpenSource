@@ -83,6 +83,10 @@ std::string buildMPIRegionCodegen(
 std::string buildMPIRegionSiblingCode(DacppFile* dacppFile,
                                       Expression* expr,
                                       MPIRegionGeneratedCode& generated);
+std::vector<std::string> buildMPIRegionSiblingLookupInitCode(
+    Shell* shell,
+    Calc* calc,
+    const MPIRegionGeneratedCode& generated);
 
 MPIRegionTransferPolicy analyzeMPIRegionTransferPolicy(
     DacppFile* dacppFile,

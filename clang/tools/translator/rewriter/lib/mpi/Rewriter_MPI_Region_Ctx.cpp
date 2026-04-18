@@ -36,6 +36,9 @@ std::string buildMPIRegionCtxCode(DacppFile* dacppFile,
                 ", 1>> buf_" + name + ";\n";
         code += "    std::unique_ptr<sycl::buffer<int32_t, 1>> slots_buf_" +
                 name + ";\n";
+        code += "    std::vector<int32_t> global_to_local_" + name + ";\n";
+        code += "    std::unique_ptr<sycl::buffer<int32_t, 1>> global_to_local_buf_" +
+                name + ";\n";
         code += "    int " + name + "_partition_size = 0;\n";
         if (inferViewRank(shellParam, calcParam) > 1) {
             code += "    int " + name + "_cols = 0;\n";
