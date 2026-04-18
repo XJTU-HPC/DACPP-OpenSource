@@ -56,11 +56,11 @@ std::string buildMPIRegionSyncCode(
         code += "    {\n";
         code += "    auto wb_" + calcName +
                 " = dacpp::mpi::build_writeback_values(ctx.local_" + calcName +
-                ", ctx.pack_" + calcName + ");\n";
+                ", ctx.runtime_pack_" + calcName + ");\n";
         code += "    const auto& wb_globals_" + calcName +
-                " = ctx.pack_" + calcName +
-                ".writeback_globals.empty() ? ctx.pack_" + calcName +
-                ".globals : ctx.pack_" + calcName + ".writeback_globals;\n";
+                " = ctx.runtime_pack_" + calcName +
+                ".writeback_globals.empty() ? ctx.runtime_pack_" + calcName +
+                ".globals : ctx.runtime_pack_" + calcName + ".writeback_globals;\n";
         if (needsBcast) {
             code += "    std::vector<" + calcParam->getBasicType() +
                     "> synced_" + calcName + ";\n";

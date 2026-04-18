@@ -73,18 +73,11 @@ std::vector<std::string> buildMPIRegionSiblingLookupInitCode(
         code += "        __dacpp_total_dense_" + name +
                 " *= static_cast<std::size_t>(std::max(0, __dacpp_dim));\n";
         code += "    }\n";
-        code += "    ctx.global_to_local_" + name + ".assign(\n";
-        code += "        __dacpp_total_dense_" + name + ", -1);\n";
-        code += "    for (const auto& __dacpp_g2l_entry : ctx.pack_" + name +
-                ".g2l) {\n";
-        code += "        if (__dacpp_g2l_entry.first >= 0 &&\n";
-        code += "            static_cast<std::size_t>(__dacpp_g2l_entry.first) < ctx.global_to_local_" +
-                name + ".size()) {\n";
-        code += "            ctx.global_to_local_" + name +
-                "[static_cast<std::size_t>(__dacpp_g2l_entry.first)] =\n";
-        code += "                __dacpp_g2l_entry.second;\n";
-        code += "        }\n";
-        code += "    }\n";
+        code += "    ctx.global_to_local_" + name +
+                " = dacpp::mpi::build_dense_global_to_local_lut(\n";
+        code += "        ctx.runtime_pack_" + name +
+                ", __dacpp_total_dense_" + name +
+                ", \"buildMPIRegionSiblingLookupInitCode\");\n";
         code += "    if (!ctx.global_to_local_" + name + ".empty()) {\n";
         code += "        ctx.global_to_local_buf_" + name +
                 " = std::make_unique<sycl::buffer<int32_t, 1>>(\n";
@@ -243,7 +236,7 @@ std::string buildMPIRegionInitCode(
         const bool needsSiblingDenseCover =
             siblingWrittenParams[static_cast<std::size_t>(paramIdx)];
 
-        code += "    auto __dacpp_base_pack_" + calcName + " = " +
+        code += "    ctx.item_pack_" + calcName + " = " +
                 buildPackBuilderExpr(mode, patternName) + ";\n";
         if (needsSiblingDenseCover) {
             code += "    {\n";
@@ -254,28 +247,19 @@ std::string buildMPIRegionInitCode(
             code += "            __dacpp_dense_count_" + calcName +
                     " *= static_cast<std::size_t>(std::max(0, __dacpp_dim));\n";
             code += "        }\n";
-            code += "        std::vector<int64_t> __dacpp_all_globals_" + calcName +
-                    "(__dacpp_dense_count_" + calcName + ");\n";
-            code += "        for (std::size_t __dacpp_g = 0; __dacpp_g < __dacpp_dense_count_" +
-                    calcName + "; ++__dacpp_g) {\n";
-            code += "            __dacpp_all_globals_" + calcName +
-                    "[__dacpp_g] = static_cast<int64_t>(__dacpp_g);\n";
-            code += "        }\n";
-            code += "        ctx.pack_" + calcName +
-                    " = dacpp::mpi::make_pack_map_from_globals(std::move(__dacpp_all_globals_" +
-                    calcName + "));\n";
-            code += "        ctx.pack_" + calcName +
-                    ".writeback_globals = ctx.pack_" + calcName + ".globals;\n";
+            code += "        ctx.runtime_pack_" + calcName +
+                    " = dacpp::mpi::make_dense_cover_pack(__dacpp_dense_count_" +
+                    calcName + ");\n";
             code += "    }\n";
         } else {
-            code += "    ctx.pack_" + calcName + " = std::move(__dacpp_base_pack_" +
-                    calcName + ");\n";
+            code += "    ctx.runtime_pack_" + calcName +
+                    " = ctx.item_pack_" + calcName + ";\n";
         }
         code += "    ctx.slots_" + calcName +
                 " = dacpp::mpi::build_item_slots(item_range, " + patternName +
-                ", ctx.pack_" + calcName + ");\n";
+                ", ctx.runtime_pack_" + calcName + ");\n";
         code += "    ctx.local_" + calcName +
-                ".resize(ctx.pack_" + calcName + ".globals.size());\n";
+                ".resize(ctx.runtime_pack_" + calcName + ".globals.size());\n";
 
         if (transferPolicy.needsInitScatter[static_cast<std::size_t>(paramIdx)]) {
             if (needsSiblingDenseCover) {
@@ -294,7 +278,7 @@ std::string buildMPIRegionInitCode(
                         ".begin(), __dacpp_global_" + calcName +
                         ".end(), ctx.local_" + calcName + ".begin());\n";
                 code += "        } else if (ctx.mpi_rank == 0) {\n";
-                code += "            throw std::runtime_error(\"MPI dense init: size mismatch for " +
+                code += "            throw std::runtime_error(\"MPI dense init(runtime_pack): size mismatch for " +
                         calcName + " — global_size=\" + std::to_string(__dacpp_global_" +
                         calcName + ".size()) + \", local_size=\" + std::to_string(ctx.local_" +
                         calcName + ".size()));\n";
@@ -412,7 +396,7 @@ std::string buildMPIRegionInitCode(
         code += "            ctx.pattern_" + name + ", ctx.pattern_" + name +
                 ".mode,\n";
         code += "            my_range, ctx.total_items, ctx.mpi_rank, ctx.mpi_size,\n";
-        code += "            ctx.pack_" + name + ");\n";
+        code += "            ctx.runtime_pack_" + name + ");\n";
     }
     code += "    }\n";
 

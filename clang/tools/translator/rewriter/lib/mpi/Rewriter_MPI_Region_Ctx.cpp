@@ -29,7 +29,8 @@ std::string buildMPIRegionCtxCode(DacppFile* dacppFile,
         const std::string& name = calcParam->getName();
         const std::string& baseType = calcParam->getBasicType();
         code += "    dacpp::mpi::AccessPattern pattern_" + name + ";\n";
-        code += "    dacpp::mpi::PackMap pack_" + name + ";\n";
+        code += "    dacpp::mpi::PackMap item_pack_" + name + ";\n";
+        code += "    dacpp::mpi::PackMap runtime_pack_" + name + ";\n";
         code += "    std::vector<int32_t> slots_" + name + ";\n";
         code += "    std::vector<" + baseType + "> local_" + name + ";\n";
         code += "    std::unique_ptr<sycl::buffer<" + baseType +

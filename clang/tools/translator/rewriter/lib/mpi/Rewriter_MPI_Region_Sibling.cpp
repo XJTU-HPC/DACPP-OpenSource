@@ -70,9 +70,9 @@ std::string buildDenseToLocalCopy(const std::string& calcName,
                                   const std::string& indent,
                                   bool onlyDirty) {
     std::string code;
-    code += indent + "for (std::size_t __dacpp_l = 0; __dacpp_l < ctx.pack_" +
+    code += indent + "for (std::size_t __dacpp_l = 0; __dacpp_l < ctx.runtime_pack_" +
             calcName + ".globals.size(); ++__dacpp_l) {\n";
-    code += indent + "    const std::size_t __dacpp_g = static_cast<std::size_t>(ctx.pack_" +
+    code += indent + "    const std::size_t __dacpp_g = static_cast<std::size_t>(ctx.runtime_pack_" +
             calcName + ".globals[__dacpp_l]);\n";
     code += indent + "    if (__dacpp_g < __dacpp_dense_" + calcName +
             ".size()";
@@ -88,9 +88,9 @@ std::string buildDenseToLocalCopy(const std::string& calcName,
 std::string buildLocalToDenseCopy(const std::string& calcName,
                                   const std::string& indent) {
     std::string code;
-    code += indent + "for (std::size_t __dacpp_l = 0; __dacpp_l < ctx.pack_" +
+    code += indent + "for (std::size_t __dacpp_l = 0; __dacpp_l < ctx.runtime_pack_" +
             calcName + ".globals.size(); ++__dacpp_l) {\n";
-    code += indent + "    const std::size_t __dacpp_g = static_cast<std::size_t>(ctx.pack_" +
+    code += indent + "    const std::size_t __dacpp_g = static_cast<std::size_t>(ctx.runtime_pack_" +
             calcName + ".globals[__dacpp_l]);\n";
     code += indent + "    if (__dacpp_g < __dacpp_dense_" + calcName +
             ".size()) __dacpp_dense_" + calcName + "[__dacpp_g] = ctx.local_" +
@@ -229,15 +229,16 @@ std::string buildSiblingLoopDeviceCode(
                     calcName + "(__dacpp_lookup_size_" + calcName + ", " +
                     calcParam->getBasicType() + "{});\n";
         }
-        code += "        for (int64_t __dacpp_g64 : ctx.pack_" + calcName + ".globals" +
+        code += "        for (int64_t __dacpp_g64 : ctx.runtime_pack_" + calcName + ".globals" +
                 ") {\n";
         code += "            const std::size_t __dacpp_g = static_cast<std::size_t>(__dacpp_g64);\n";
-        code += "            auto __dacpp_it = ctx.pack_" + calcName +
-                ".g2l.find(__dacpp_g64);\n";
+        code += "            const int32_t __dacpp_slot = (__dacpp_g < __dacpp_lookup_size_" +
+                calcName + ") ? ctx.global_to_local_" + calcName +
+                "[__dacpp_g] : -1;\n";
         code += "            if (__dacpp_g < __dacpp_lookup_size_" + calcName +
-                " && __dacpp_it != ctx.pack_" + calcName + ".g2l.end()) {\n";
+                " && __dacpp_slot >= 0) {\n";
         code += "                __dacpp_dense_read_" + calcName + "[__dacpp_g] = ctx.local_" +
-                calcName + "[static_cast<std::size_t>(__dacpp_it->second)];\n";
+                calcName + "[static_cast<std::size_t>(__dacpp_slot)];\n";
         if (access.writes) {
             code += "                __dacpp_dense_shadow_" + calcName +
                     "[__dacpp_g] = __dacpp_dense_read_" + calcName +
@@ -249,7 +250,7 @@ std::string buildSiblingLoopDeviceCode(
                 " = " + mpiDatatypeFor(calcParam->getBasicType()) + ";\n";
         code += "        std::vector<int> __dacpp_present_read_" + calcName +
                 "(__dacpp_lookup_size_" + calcName + ", 0);\n";
-        code += "        for (int64_t __dacpp_g64 : ctx.pack_" + calcName + ".globals" +
+        code += "        for (int64_t __dacpp_g64 : ctx.runtime_pack_" + calcName + ".globals" +
                 ") {\n";
         code += "            const std::size_t __dacpp_g = static_cast<std::size_t>(__dacpp_g64);\n";
         code += "            if (__dacpp_g < __dacpp_lookup_size_" + calcName +
@@ -997,13 +998,14 @@ std::string buildMPISiblingSparseSyncCode(Shell* shell,
     code += indent + "        }\n";
     code += indent + "        for (std::size_t __dacpp_i = 0; __dacpp_i < __dacpp_sync_count_" +
             writtenName + "; ++__dacpp_i) {\n";
-    code += indent + "            auto __dacpp_it = ctx.pack_" + writtenName +
-            ".g2l.find(static_cast<int64_t>(__dacpp_all_written_idx_" +
-            writtenName + "[__dacpp_i]));\n";
-    code += indent + "            if (__dacpp_it != ctx.pack_" + writtenName +
-            ".g2l.end()) {\n";
+    code += indent + "            const std::size_t __dacpp_g = static_cast<std::size_t>(__dacpp_all_written_idx_" +
+            writtenName + "[__dacpp_i]);\n";
+    code += indent + "            const int32_t __dacpp_slot = (__dacpp_g < ctx.global_to_local_" +
+            writtenName + ".size()) ? ctx.global_to_local_" + writtenName +
+            "[__dacpp_g] : -1;\n";
+    code += indent + "            if (__dacpp_slot >= 0) {\n";
     code += indent + "                ctx.local_" + writtenName +
-            "[static_cast<std::size_t>(__dacpp_it->second)] = __dacpp_sparse_values_" +
+            "[static_cast<std::size_t>(__dacpp_slot)] = __dacpp_sparse_values_" +
             writtenName + "[__dacpp_i];\n";
     code += indent + "            }\n";
     code += indent + "        }\n";
@@ -1137,9 +1139,9 @@ std::string buildMPIRegionSiblingCode(DacppFile* dacppFile,
                 code += "    std::vector<int> __dacpp_present_" + calcName +
                         "(__dacpp_dense_count_" + calcName + ", 0);\n";
                 code += buildLocalToDenseCopy(calcName, "    ");
-                code += "    for (std::size_t __dacpp_l = 0; __dacpp_l < ctx.pack_" +
+                code += "    for (std::size_t __dacpp_l = 0; __dacpp_l < ctx.runtime_pack_" +
                         calcName + ".globals.size(); ++__dacpp_l) {\n";
-                code += "        const std::size_t __dacpp_g = static_cast<std::size_t>(ctx.pack_" +
+                code += "        const std::size_t __dacpp_g = static_cast<std::size_t>(ctx.runtime_pack_" +
                         calcName + ".globals[__dacpp_l]);\n";
                 code += "        if (__dacpp_g < __dacpp_present_" + calcName +
                         ".size()) __dacpp_present_" + calcName +
