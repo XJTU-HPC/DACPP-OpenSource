@@ -12,7 +12,8 @@ std::string buildMPIRegionSyncCode(
     const MPIRegionGeneratedCode& generated,
     const std::vector<IOTYPE>& storageModes,
     const MPIRegionTransferPolicy& transferPolicy,
-    const std::string& shellParamSig) {
+    const std::string& shellParamSig,
+    const clang::BinaryOperator* dacExpr) {
     if (!shell || !calc) {
         return "";
     }
@@ -36,7 +37,7 @@ std::string buildMPIRegionSyncCode(
         const std::string& calcName = calcParam->getName();
         const std::string& tensorName = shellWrapperParam->getName();
         const std::string mpiType = mpiDatatypeFor(calcParam->getBasicType());
-        const bool needsBcast = tensorNeedsBroadcast(dacppFile, tensorName);
+        const bool needsBcast = tensorNeedsBroadcast(dacppFile, tensorName, dacExpr);
 
         code += "    {\n";
         code += "        dacpp::mpi::writeback_region_output(" + tensorName +

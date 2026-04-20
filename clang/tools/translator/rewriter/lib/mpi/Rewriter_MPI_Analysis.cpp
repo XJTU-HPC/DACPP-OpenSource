@@ -21,6 +21,10 @@ public:
     int InsideDacExpr = 0;
     bool SeenCurrentDacExpr = false;
 
+    // Read/write tracking — mirrors ParamAccessVisitor logic.
+    int WriteDepth = 0;
+    int UpdateReadDepth = 0;
+
     TensorUseVisitor(std::string name,
                      const std::vector<const clang::BinaryOperator*>& dacExprs,
                      const clang::BinaryOperator* currentDacExpr)
@@ -66,9 +70,107 @@ public:
 
         if (DRE->getDecl() && DRE->getDecl()->getNameAsString() == TargetName &&
             InsideDacExpr == 0 && SeenCurrentDacExpr) {
-            NeedsBcast = true;
+            // Pure read, or compound-assignment read (e.g. +=) → needs bcast.
+            // Pure write (e.g. =) with no read → does NOT need bcast.
+            if (WriteDepth == 0 || UpdateReadDepth > 0) {
+                NeedsBcast = true;
+            }
         }
         return true;
+    }
+
+    bool TraverseBinaryOperator(clang::BinaryOperator* BO) {
+        if (!BO) {
+            return true;
+        }
+
+        if (BO->isAssignmentOp()) {
+            ++WriteDepth;
+            TraverseStmt(BO->getLHS());
+            --WriteDepth;
+            TraverseStmt(BO->getRHS());
+            return true;
+        }
+
+        return clang::RecursiveASTVisitor<TensorUseVisitor>::TraverseBinaryOperator(BO);
+    }
+
+    bool TraverseCompoundAssignOperator(clang::CompoundAssignOperator* BO) {
+        if (!BO) {
+            return true;
+        }
+
+        ++WriteDepth;
+        TraverseStmt(BO->getLHS());
+        --WriteDepth;
+        ++UpdateReadDepth;
+        TraverseStmt(BO->getLHS());
+        --UpdateReadDepth;
+        TraverseStmt(BO->getRHS());
+        return true;
+    }
+
+    bool TraverseUnaryOperator(clang::UnaryOperator* UO) {
+        if (!UO) {
+            return true;
+        }
+
+        if (UO->isIncrementDecrementOp()) {
+            ++WriteDepth;
+            TraverseStmt(UO->getSubExpr());
+            --WriteDepth;
+            ++UpdateReadDepth;
+            TraverseStmt(UO->getSubExpr());
+            --UpdateReadDepth;
+            return true;
+        }
+
+        return clang::RecursiveASTVisitor<TensorUseVisitor>::TraverseUnaryOperator(UO);
+    }
+
+    bool TraverseCXXOperatorCallExpr(clang::CXXOperatorCallExpr* OpCall) {
+        if (!OpCall) {
+            return true;
+        }
+
+        if (OpCall->isAssignmentOp()) {
+            if (OpCall->getNumArgs() > 0) {
+                ++WriteDepth;
+                TraverseStmt(OpCall->getArg(0));
+                --WriteDepth;
+
+                if (OpCall->getOperator() != clang::OO_Equal) {
+                    ++UpdateReadDepth;
+                    TraverseStmt(OpCall->getArg(0));
+                    --UpdateReadDepth;
+                }
+            }
+
+            for (unsigned argIdx = 1; argIdx < OpCall->getNumArgs(); ++argIdx) {
+                TraverseStmt(OpCall->getArg(argIdx));
+            }
+            return true;
+        }
+
+        if (OpCall->getOperator() == clang::OO_PlusPlus ||
+            OpCall->getOperator() == clang::OO_MinusMinus) {
+            if (OpCall->getNumArgs() > 0) {
+                ++WriteDepth;
+                TraverseStmt(OpCall->getArg(0));
+                --WriteDepth;
+
+                ++UpdateReadDepth;
+                TraverseStmt(OpCall->getArg(0));
+                --UpdateReadDepth;
+            }
+
+            for (unsigned argIdx = 1; argIdx < OpCall->getNumArgs(); ++argIdx) {
+                TraverseStmt(OpCall->getArg(argIdx));
+            }
+            return true;
+        }
+
+        return clang::RecursiveASTVisitor<TensorUseVisitor>::TraverseCXXOperatorCallExpr(OpCall);
     }
 };
 

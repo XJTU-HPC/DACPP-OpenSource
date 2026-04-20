@@ -87,7 +87,8 @@ std::string buildPrelude(DacppFile* dacppFile);
 std::string buildMPIRegionCodegen(
     DacppFile* dacppFile,
     Expression* expr,
-    const MPIRegionTransferPolicy& transferPolicy);
+    const MPIRegionTransferPolicy& transferPolicy,
+    const clang::BinaryOperator* dacExpr = nullptr);
 std::string buildMPIRegionSiblingCode(DacppFile* dacppFile,
                                       Expression* expr,
                                       MPIRegionGeneratedCode& generated);
@@ -141,7 +142,8 @@ std::string buildMPIRegionSyncCode(
     const MPIRegionGeneratedCode& generated,
     const std::vector<IOTYPE>& storageModes,
     const MPIRegionTransferPolicy& transferPolicy,
-    const std::string& shellParamSig);
+    const std::string& shellParamSig,
+    const clang::BinaryOperator* dacExpr = nullptr);
 
 std::string buildShellParamSignature(Shell* shell);
 

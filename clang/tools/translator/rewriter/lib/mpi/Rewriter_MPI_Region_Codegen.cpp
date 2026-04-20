@@ -51,7 +51,8 @@ std::string buildShellParamSignature(Shell* shell) {
 std::string buildMPIRegionCodegen(
     DacppFile* dacppFile,
     Expression* expr,
-    const MPIRegionTransferPolicy& transferPolicy) {
+    const MPIRegionTransferPolicy& transferPolicy,
+    const clang::BinaryOperator* dacExpr) {
     if (!expr || !expr->getShell() || !expr->getCalc()) {
         return "";
     }
@@ -75,7 +76,7 @@ std::string buildMPIRegionCodegen(
     code += buildMPIRegionHaloCode(shell, calc, generated, paramModes);
     code += buildMPIRegionSyncCode(dacppFile, shell, calc, generated,
                                    storageModes, transferPolicy,
-                                   shellParamSig);
+                                   shellParamSig, dacExpr);
 
     return code;
 }
@@ -93,7 +94,7 @@ MPIRegionGeneratedCode buildMPIRegionCode(DacppFile* dacppFile,
     const auto transferPolicy =
         analyzeMPIRegionTransferPolicy(dacppFile, expr, paramModes);
     generated.definitions =
-        buildMPIRegionCodegen(dacppFile, expr, transferPolicy);
+        buildMPIRegionCodegen(dacppFile, expr, transferPolicy, expr->getDacExpr());
     generated.definitions += buildMPIRegionSiblingCode(dacppFile, expr, generated);
     return generated;
 }
