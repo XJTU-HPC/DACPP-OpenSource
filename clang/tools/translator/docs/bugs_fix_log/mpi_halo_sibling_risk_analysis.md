@@ -12,7 +12,7 @@
 - `rewriter/lib/mpi/Rewriter_MPI_Pattern.cpp`
 - `rewriter/lib/mpi/Rewriter_MPI_Region_Init.cpp`
 - `rewriter/lib/mpi/Rewriter_MPI_Region_Halo.cpp`
-- `rewriter/lib/mpi/Rewriter_MPI_Region.cpp`
+- `rewriter/lib/mpi/Rewriter_MPI_Region_Codegen.cpp`
 - `rewriter/lib/mpi/Rewriter_MPI_Region_Sibling.cpp`
 
 重点关注三个事实：

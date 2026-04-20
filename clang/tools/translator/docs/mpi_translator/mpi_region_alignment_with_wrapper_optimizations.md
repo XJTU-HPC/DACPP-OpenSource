@@ -40,7 +40,7 @@ wrapper 主线已经切到 `PackPlan`：
 
 ### 2.2 region 路径
 
-region 当前主线不是 [Rewriter_MPI_Region.cpp](/Volumes/QUQ/working/dacpp/clang/tools/translator/rewriter/lib/mpi/Rewriter_MPI_Region.cpp) 里的旧式拼接骨架，而是：
+region 当前主线不是旧式 monolithic 拼接骨架，而是拆分后的这些文件：
 
 - [Rewriter_MPI_Region_Codegen.cpp](/Volumes/QUQ/working/dacpp/clang/tools/translator/rewriter/lib/mpi/Rewriter_MPI_Region_Codegen.cpp)
 - [Rewriter_MPI_Region_Init.cpp](/Volumes/QUQ/working/dacpp/clang/tools/translator/rewriter/lib/mpi/Rewriter_MPI_Region_Init.cpp)
@@ -396,7 +396,7 @@ sibling 依赖：
   - [Rewriter_MPI_Region_Init.cpp](/Volumes/QUQ/working/dacpp/clang/tools/translator/rewriter/lib/mpi/Rewriter_MPI_Region_Init.cpp)
   - [Rewriter_MPI_Region_Sync.cpp](/Volumes/QUQ/working/dacpp/clang/tools/translator/rewriter/lib/mpi/Rewriter_MPI_Region_Sync.cpp)
 - 可忽略的旧路径：
-  - [Rewriter_MPI_Region.cpp](/Volumes/QUQ/working/dacpp/clang/tools/translator/rewriter/lib/mpi/Rewriter_MPI_Region.cpp)
+  - 旧版 `Rewriter_MPI_Region.cpp` monolithic 实现已删除，当前以 `Rewriter_MPI_Region_Codegen.cpp` 及其 helper 文件为准。
 
 ## 10. 一句话结论
 

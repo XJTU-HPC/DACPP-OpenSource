@@ -1,0 +1,466 @@
+#ifndef DACPP_MPI_COMMON_H
+#define DACPP_MPI_COMMON_H
+
+#include <algorithm>
+#include <atomic>
+#include <cctype>
+#include <cstdint>
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
+#include <memory>
+#include <stdexcept>
+#include <string>
+#include <type_traits>
+#include <unordered_map>
+#include <unordered_set>
+#include <utility>
+#include <vector>
+
+#include <mpi.h>
+#include <sycl/sycl.hpp>
+
+#include "DataReconstructor.new.h"
+#include "dacInfo.h"
+
+namespace dacpp {
+namespace mpi {
+
+struct ItemRange {
+    int64_t begin = 0;
+    int64_t end = 0;
+
+    int64_t size() const {
+        return end - begin;
+    }
+};
+
+enum class AccessMode {
+    Read,
+    Write,
+    ReadWrite
+};
+
+enum class PackLayoutKind {
+    ItemDerived,
+    DenseCover
+};
+
+inline const char* pack_layout_kind_name(PackLayoutKind kind) {
+    switch (kind) {
+    case PackLayoutKind::ItemDerived:
+        return "item-derived";
+    case PackLayoutKind::DenseCover:
+        return "dense-cover";
+    }
+    return "unknown";
+}
+
+struct LinearSegment {
+    int64_t global_begin = 0;
+    int64_t len = 0;
+    int64_t local_begin = 0;
+};
+
+struct PackMap {
+    PackLayoutKind layout_kind = PackLayoutKind::ItemDerived;
+    std::size_t dense_extent = 0;
+    std::vector<int64_t> globals;
+    std::unordered_map<int64_t, int32_t> g2l;
+    std::vector<LinearSegment> segments;
+
+    std::vector<int64_t> writeback_globals;
+    std::vector<LinearSegment> writeback_segments;
+};
+
+struct PackPlan {
+    PackMap pack;
+    std::vector<int32_t> slots;
+};
+
+struct VectorIntHash {
+    std::size_t operator()(const std::vector<int>& values) const {
+        std::size_t seed = values.size();
+        for (int value : values) {
+            seed ^= std::hash<int>{}(value) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+        }
+        return seed;
+    }
+};
+
+struct CollectPositionsProfile {
+    std::atomic<long long> calls{0};
+    std::atomic<long long> nanos{0};
+};
+
+inline bool profilingEnabled() {
+    static const bool enabled = []() {
+        const char* value = std::getenv("DACPP_MPI_PROFILE");
+        return value && std::string(value) != "0";
+    }();
+    return enabled;
+}
+
+inline CollectPositionsProfile& getCollectPositionsProfile() {
+    static CollectPositionsProfile profile;
+    return profile;
+}
+
+inline void resetCollectPositionsProfile() {
+    auto& profile = getCollectPositionsProfile();
+    profile.calls.store(0, std::memory_order_relaxed);
+    profile.nanos.store(0, std::memory_order_relaxed);
+}
+
+inline void recordCollectPositionsSample(long long nanos) {
+    if (!profilingEnabled()) {
+        return;
+    }
+    auto& profile = getCollectPositionsProfile();
+    profile.calls.fetch_add(1, std::memory_order_relaxed);
+    profile.nanos.fetch_add(nanos, std::memory_order_relaxed);
+}
+
+inline void reportCollectPositionsProfile(const char* label,
+                                          MPI_Comm comm = MPI_COMM_WORLD) {
+    if (!profilingEnabled()) {
+        return;
+    }
+
+    int rank = 0;
+    int size = 1;
+    MPI_Comm_rank(comm, &rank);
+    MPI_Comm_size(comm, &size);
+
+    auto& profile = getCollectPositionsProfile();
+    const long long local_calls = profile.calls.load(std::memory_order_relaxed);
+    const long long local_nanos = profile.nanos.load(std::memory_order_relaxed);
+
+    long long total_calls = 0;
+    long long total_nanos = 0;
+    MPI_Reduce(&local_calls, &total_calls, 1, MPI_LONG_LONG, MPI_SUM, 0, comm);
+    MPI_Reduce(&local_nanos, &total_nanos, 1, MPI_LONG_LONG, MPI_SUM, 0, comm);
+
+    std::vector<long long> all_nanos;
+    if (rank == 0) {
+        all_nanos.resize(size);
+    }
+    MPI_Gather(&local_nanos, 1, MPI_LONG_LONG,
+               rank == 0 ? all_nanos.data() : nullptr,
+               1, MPI_LONG_LONG, 0, comm);
+
+    if (rank != 0) {
+        return;
+    }
+
+    int max_rank = 0;
+    long long max_nanos = size > 0 ? all_nanos[0] : 0;
+    for (int idx = 1; idx < size; ++idx) {
+        if (all_nanos[idx] > max_nanos) {
+            max_nanos = all_nanos[idx];
+            max_rank = idx;
+        }
+    }
+
+    std::fprintf(stderr,
+                 "[DACPP][PROFILE][%s] collect_positions_for_item total_calls(sum): %lld\n",
+                 label ? label : "wrapper",
+                 total_calls);
+    std::fprintf(stderr,
+                 "[DACPP][PROFILE][%s] collect_positions_for_item total_ms(sum): %.3f\n",
+                 label ? label : "wrapper",
+                 static_cast<double>(total_nanos) / 1.0e6);
+    std::fprintf(stderr,
+                 "[DACPP][PROFILE][%s] collect_positions_for_item max_rank_ms: %.3f (rank=%d)\n",
+                 label ? label : "wrapper",
+                 static_cast<double>(max_nanos) / 1.0e6,
+                 max_rank);
+}
+
+struct AccessPattern {
+    int param_id = -1;
+    std::string name;
+    AccessMode mode = AccessMode::Read;
+
+    DataInfo data_info;
+    Dac_Ops param_ops;
+    std::vector<int> partition_shape;
+
+    std::vector<int> bind_set_id;
+    std::vector<std::string> bind_offset_expr;
+    std::vector<bool> is_index_op;
+    std::vector<int64_t> bind_split_sizes;
+};
+
+inline ItemRange get_rank_item_range(int64_t total_items, int rank, int mpi_size) {
+    const int64_t base = total_items / mpi_size;
+    const int64_t rem = total_items % mpi_size;
+    const int64_t begin = static_cast<int64_t>(rank) * base + std::min<int64_t>(rank, rem);
+    const int64_t end = begin + base + (rank < rem ? 1 : 0);
+    return ItemRange{begin, end};
+}
+
+inline int64_t linearize(const std::vector<int>& pos, const DataInfo& info) {
+    if (static_cast<int>(pos.size()) != info.dim) {
+        throw std::runtime_error("linearize: position rank mismatch");
+    }
+
+    int64_t linear = 0;
+    for (int dim = 0; dim < info.dim; ++dim) {
+        linear = linear * info.dimLength[dim] + pos[dim];
+    }
+    return linear;
+}
+
+inline std::vector<int> decode_item_id(int64_t item_id,
+                                       const std::vector<int64_t>& split_sizes) {
+    std::vector<int> result(split_sizes.size(), 0);
+    int64_t divisor = 1;
+
+    for (int idx = static_cast<int>(split_sizes.size()) - 1; idx >= 0; --idx) {
+        const int64_t split = split_sizes[idx] <= 0 ? 1 : split_sizes[idx];
+        result[idx] = static_cast<int>((item_id / divisor) % split);
+        divisor *= split;
+    }
+    return result;
+}
+
+inline int64_t eval_bind_offset_expr(const std::string& expr) {
+    std::string compact;
+    compact.reserve(expr.size());
+    for (char ch : expr) {
+        if (!std::isspace(static_cast<unsigned char>(ch)) && ch != '(' && ch != ')') {
+            compact.push_back(ch);
+        }
+    }
+
+    if (compact.empty()) {
+        return 0;
+    }
+
+    bool simple = true;
+    for (char ch : compact) {
+        if (!std::isdigit(static_cast<unsigned char>(ch)) && ch != '+' && ch != '-') {
+            simple = false;
+            break;
+        }
+    }
+    if (!simple) {
+        return 0;
+    }
+
+    int64_t value = 0;
+    std::size_t idx = 0;
+    while (idx < compact.size()) {
+        int sign = 1;
+        while (idx < compact.size() && (compact[idx] == '+' || compact[idx] == '-')) {
+            if (compact[idx] == '-') {
+                sign = -sign;
+            }
+            ++idx;
+        }
+
+        if (idx >= compact.size() || !std::isdigit(static_cast<unsigned char>(compact[idx]))) {
+            continue;
+        }
+
+        int64_t number = 0;
+        while (idx < compact.size() && std::isdigit(static_cast<unsigned char>(compact[idx]))) {
+            number = number * 10 + (compact[idx] - '0');
+            ++idx;
+        }
+        value += sign * number;
+    }
+
+    return value;
+}
+
+inline std::vector<int> init_partition_shape(const AccessPattern& pattern) {
+    std::vector<int> shape = pattern.data_info.dimLength;
+    for (int op_idx = 0; op_idx < pattern.param_ops.size; ++op_idx) {
+        const Dac_Op& op = pattern.param_ops[op_idx];
+        if (op.dimId < 0 || op.dimId >= static_cast<int>(shape.size())) {
+            continue;
+        }
+        if (op_idx < static_cast<int>(pattern.is_index_op.size()) && pattern.is_index_op[op_idx]) {
+            shape[op.dimId] = 1;
+        } else {
+            shape[op.dimId] = op.size;
+        }
+    }
+    return shape;
+}
+
+inline std::vector<int64_t> init_bind_split_sizes(const AccessPattern& pattern) {
+    int max_bind = -1;
+    for (int bind_id : pattern.bind_set_id) {
+        max_bind = std::max(max_bind, bind_id);
+    }
+    std::vector<int64_t> split_sizes(max_bind + 1, 1);
+    for (int op_idx = 0; op_idx < pattern.param_ops.size; ++op_idx) {
+        if (op_idx >= static_cast<int>(pattern.bind_set_id.size())) {
+            continue;
+        }
+        const int bind_id = pattern.bind_set_id[op_idx];
+        if (bind_id < 0) {
+            continue;
+        }
+        if (split_sizes[bind_id] == 1) {
+            split_sizes[bind_id] = pattern.param_ops[op_idx].split_size;
+        }
+    }
+    return split_sizes;
+}
+
+inline int64_t partition_element_count(const AccessPattern& pattern) {
+    const std::vector<int> shape =
+        pattern.partition_shape.empty() ? init_partition_shape(pattern) : pattern.partition_shape;
+    int64_t count = 1;
+    for (int dim_len : shape) {
+        count *= dim_len;
+    }
+    return count;
+}
+
+struct SimpleStrideRange {
+    bool valid = false;
+    int64_t start = 0;
+    int64_t stride = 0;
+    int64_t count = 0;
+};
+
+inline SimpleStrideRange try_build_simple_stride_range(
+    const std::vector<int>& base_pos,
+    const AccessPattern& pattern,
+    const std::vector<int>& part_shape) {
+    SimpleStrideRange result;
+    if (pattern.data_info.dim <= 0 ||
+        static_cast<int>(base_pos.size()) != pattern.data_info.dim ||
+        static_cast<int>(part_shape.size()) != pattern.data_info.dim) {
+        return result;
+    }
+
+    int varying_dim = -1;
+    int64_t count = 1;
+    for (int dim = 0; dim < pattern.data_info.dim; ++dim) {
+        if (part_shape[dim] > 1) {
+            if (varying_dim >= 0) {
+                return result;
+            }
+            varying_dim = dim;
+            count = part_shape[dim];
+        }
+    }
+
+    if (varying_dim < 0) {
+        result.valid = true;
+        result.start = linearize(base_pos, pattern.data_info);
+        result.stride = 0;
+        result.count = 1;
+        return result;
+    }
+
+    const int64_t stride = [&]() {
+        int64_t s = 1;
+        for (int dim = varying_dim + 1; dim < pattern.data_info.dim; ++dim) {
+            s *= pattern.data_info.dimLength[dim];
+        }
+        return s;
+    }();
+
+    result.valid = true;
+    result.start = linearize(base_pos, pattern.data_info);
+    result.stride = stride;
+    result.count = count;
+    return result;
+}
+
+inline std::vector<int64_t> collect_positions_for_item(int64_t item_id,
+                                                       const AccessPattern& pattern) {
+    const auto profile_begin = profilingEnabled()
+        ? std::chrono::steady_clock::now()
+        : std::chrono::steady_clock::time_point{};
+    const std::vector<int> part_shape =
+        pattern.partition_shape.empty() ? init_partition_shape(pattern) : pattern.partition_shape;
+    const std::vector<int64_t> bind_splits =
+        pattern.bind_split_sizes.empty() ? init_bind_split_sizes(pattern) : pattern.bind_split_sizes;
+    const std::vector<int> bind_indices = decode_item_id(item_id, bind_splits);
+
+    std::vector<int> base_pos(pattern.data_info.dim, 0);
+    for (int op_idx = 0; op_idx < pattern.param_ops.size; ++op_idx) {
+        const Dac_Op& op = pattern.param_ops[op_idx];
+        if (op.dimId < 0 || op.dimId >= pattern.data_info.dim) {
+            continue;
+        }
+
+        int bind_id = 0;
+        if (op_idx < static_cast<int>(pattern.bind_set_id.size()) && pattern.bind_set_id[op_idx] >= 0) {
+            bind_id = pattern.bind_set_id[op_idx];
+        }
+
+        int64_t bind_index = 0;
+        if (bind_id < static_cast<int>(bind_indices.size())) {
+            bind_index = bind_indices[bind_id];
+        }
+
+        int64_t offset = 0;
+        if (op_idx < static_cast<int>(pattern.bind_offset_expr.size())) {
+            offset = eval_bind_offset_expr(pattern.bind_offset_expr[op_idx]);
+        }
+
+        const bool is_index =
+            op_idx < static_cast<int>(pattern.is_index_op.size()) && pattern.is_index_op[op_idx];
+        if (is_index) {
+            base_pos[op.dimId] = static_cast<int>(bind_index + offset);
+        } else {
+            base_pos[op.dimId] = static_cast<int>(bind_index * op.stride + offset);
+        }
+    }
+
+    int64_t elem_count = 1;
+    for (int dim_len : part_shape) {
+        elem_count *= dim_len;
+    }
+
+    std::vector<int64_t> globals;
+    globals.reserve(elem_count);
+
+    const SimpleStrideRange simple_range =
+        try_build_simple_stride_range(base_pos, pattern, part_shape);
+    if (simple_range.valid) {
+        for (int64_t idx = 0; idx < simple_range.count; ++idx) {
+            globals.push_back(simple_range.start + idx * simple_range.stride);
+        }
+        if (profilingEnabled()) {
+            const auto profile_end = std::chrono::steady_clock::now();
+            const long long nanos = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                profile_end - profile_begin).count();
+            recordCollectPositionsSample(nanos);
+        }
+        return globals;
+    }
+
+    for (int64_t linear_idx = 0; linear_idx < elem_count; ++linear_idx) {
+        std::vector<int> global_pos = base_pos;
+        int64_t carry = linear_idx;
+        for (int dim = pattern.data_info.dim - 1; dim >= 0; --dim) {
+            const int width = part_shape[dim];
+            const int offset = static_cast<int>(carry % width);
+            carry /= width;
+            global_pos[dim] += offset;
+        }
+        globals.push_back(linearize(global_pos, pattern.data_info));
+    }
+    if (profilingEnabled()) {
+        const auto profile_end = std::chrono::steady_clock::now();
+        const long long nanos = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            profile_end - profile_begin).count();
+        recordCollectPositionsSample(nanos);
+    }
+    return globals;
+}
+
+}  // namespace mpi
+}  // namespace dacpp
+
+#endif
