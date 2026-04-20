@@ -22,7 +22,8 @@ void Rewriter::rewriteMPI() {
         if (generatedWrappers.insert(wrapperName).second) {
             generated += mpi_rewriter::buildLocalCalcCode(shell, calc);
             generated += "\n";
-            generated += mpi_rewriter::buildWrapperCode(dacppFile, shell, calc);
+            generated += mpi_rewriter::buildWrapperCode(
+                dacppFile, shell, calc, expr->getDacExpr());
             generated += "\n";
 
             rewriter->RemoveText(shell->getShellLoc()->getSourceRange());

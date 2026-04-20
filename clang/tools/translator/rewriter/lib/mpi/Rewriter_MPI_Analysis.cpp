@@ -15,18 +15,26 @@ class TensorUseVisitor : public clang::RecursiveASTVisitor<TensorUseVisitor> {
 public:
     std::string TargetName;
     const std::vector<const clang::BinaryOperator*>& DacExprs;
+    const clang::BinaryOperator* CurrentDacExpr = nullptr;
 
     bool NeedsBcast = false;
     int InsideDacExpr = 0;
+    bool SeenCurrentDacExpr = false;
 
-    TensorUseVisitor(std::string name, const std::vector<const clang::BinaryOperator*>& dacExprs)
-        : TargetName(std::move(name)), DacExprs(dacExprs) {}
+    TensorUseVisitor(std::string name,
+                     const std::vector<const clang::BinaryOperator*>& dacExprs,
+                     const clang::BinaryOperator* currentDacExpr)
+        : TargetName(std::move(name)),
+          DacExprs(dacExprs),
+          CurrentDacExpr(currentDacExpr),
+          SeenCurrentDacExpr(currentDacExpr == nullptr) {}
 
     bool TraverseStmt(clang::Stmt* S) {
         if (!S) {
             return true;
         }
 
+        const bool isCurrentDacExpr = CurrentDacExpr && S == CurrentDacExpr;
         bool isDacExpr = false;
         for (auto* expr : DacExprs) {
             if (S == expr) {
@@ -44,6 +52,9 @@ public:
         if (isDacExpr) {
             --InsideDacExpr;
         }
+        if (isCurrentDacExpr) {
+            SeenCurrentDacExpr = true;
+        }
 
         return result;
     }
@@ -54,7 +65,7 @@ public:
         }
 
         if (DRE->getDecl() && DRE->getDecl()->getNameAsString() == TargetName &&
-            InsideDacExpr == 0) {
+            InsideDacExpr == 0 && SeenCurrentDacExpr) {
             NeedsBcast = true;
         }
         return true;
@@ -215,14 +226,16 @@ std::vector<AccessSummary> summarizeStmtAccess(
     return summary;
 }
 
-bool tensorNeedsBroadcast(DacppFile* dacppFile, const std::string& tensorName) {
+bool tensorNeedsBroadcast(DacppFile* dacppFile,
+                          const std::string& tensorName,
+                          const clang::BinaryOperator* currentDacExpr) {
     if (!dacppFile) {
         return false;
     }
 
     bool needsBcast = dacppFile->getMPIBroadcastOutputs();
     if (dacppFile->getMainBody()) {
-        TensorUseVisitor visitor(tensorName, dacppFile->dacExprs);
+        TensorUseVisitor visitor(tensorName, dacppFile->dacExprs, currentDacExpr);
         visitor.TraverseStmt(const_cast<clang::Stmt*>(dacppFile->getMainBody()));
         needsBcast = visitor.NeedsBcast;
     }

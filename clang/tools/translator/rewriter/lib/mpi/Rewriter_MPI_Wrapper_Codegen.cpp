@@ -5,7 +5,10 @@
 namespace dacppTranslator {
 namespace mpi_rewriter {
 
-std::string buildWrapperCode(DacppFile* dacppFile, Shell* shell, Calc* calc) {
+std::string buildWrapperCode(DacppFile* dacppFile,
+                             Shell* shell,
+                             Calc* calc,
+                             const clang::BinaryOperator* dacExpr) {
     const std::string wrapperName = shell->getName() + "_" + calc->getName();
     const auto paramModes = inferEffectiveParamModes(shell, calc);
 
@@ -30,6 +33,8 @@ std::string buildWrapperCode(DacppFile* dacppFile, Shell* shell, Calc* calc) {
     code += "    int mpi_size = 1;\n";
     code += "    MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);\n";
     code += "    MPI_Comm_size(MPI_COMM_WORLD, &mpi_size);\n";
+    code += "    dacpp::mpi::resetCollectPositionsProfile();\n";
+    code += "    auto dacpp_wrapper_start = std::chrono::steady_clock::now();\n";
     code += "    sycl::queue q(sycl::default_selector_v);\n";
     code += "    std::vector<int64_t> binding_split_sizes;\n";
     code += buildPatternInitCode(shell, calc, splitMeta, paramModes);
@@ -57,10 +62,10 @@ std::string buildWrapperCode(DacppFile* dacppFile, Shell* shell, Calc* calc) {
         const std::string wbName = "writeback_" + calcName;
         const std::string mpiType = mpiDatatypeFor(calcParam->getBasicType());
 
-        code += "    auto " + packName + " = " +
-                buildPackBuilderExpr(mode, patternName) + ";\n";
-        code += "    auto " + slotsName + " = dacpp::mpi::build_item_slots(item_range, " +
-                patternName + ", " + packName + ");\n";
+        code += "    auto plan_" + calcName + " = " +
+                buildPackPlanBuilderExpr(mode, "item_range", patternName) + ";\n";
+        code += "    auto& " + packName + " = plan_" + calcName + ".pack;\n";
+        code += "    auto& " + slotsName + " = plan_" + calcName + ".slots;\n";
         code += "    std::vector<" + calcParam->getBasicType() + "> " + localName + "(" +
                 packName + ".globals.size());\n";
 
@@ -68,6 +73,25 @@ std::string buildWrapperCode(DacppFile* dacppFile, Shell* shell, Calc* calc) {
             code += "    int recv_count_" + calcName + " = 0;\n";
             code += "    std::vector<int> sendcounts_" + calcName + ";\n";
             code += "    std::vector<int> displs_" + calcName + ";\n";
+            code += "    int local_global_count_" + calcName + " = static_cast<int>(" +
+                    packName + ".globals.size());\n";
+            code += "    std::vector<int> global_counts_" + calcName + ";\n";
+            code += "    std::vector<int> global_displs_" + calcName + ";\n";
+            code += "    std::vector<int64_t> gathered_globals_" + calcName + ";\n";
+            code += "    if (mpi_rank == 0) {\n";
+            code += "        global_counts_" + calcName + ".resize(mpi_size);\n";
+            code += "        global_displs_" + calcName + ".resize(mpi_size);\n";
+            code += "    }\n";
+            code += "    MPI_Gather(&local_global_count_" + calcName + ", 1, MPI_INT, mpi_rank == 0 ? global_counts_" + calcName + ".data() : nullptr, 1, MPI_INT, 0, MPI_COMM_WORLD);\n";
+            code += "    if (mpi_rank == 0) {\n";
+            code += "        int current_global_displ = 0;\n";
+            code += "        for (int r = 0; r < mpi_size; ++r) {\n";
+            code += "            global_displs_" + calcName + "[r] = current_global_displ;\n";
+            code += "            current_global_displ += global_counts_" + calcName + "[r];\n";
+            code += "        }\n";
+            code += "        gathered_globals_" + calcName + ".resize(current_global_displ);\n";
+            code += "    }\n";
+            code += "    MPI_Gatherv(const_cast<int64_t*>(" + packName + ".globals.data()), local_global_count_" + calcName + ", MPI_LONG_LONG, mpi_rank == 0 ? gathered_globals_" + calcName + ".data() : nullptr, mpi_rank == 0 ? global_counts_" + calcName + ".data() : nullptr, mpi_rank == 0 ? global_displs_" + calcName + ".data() : nullptr, MPI_LONG_LONG, 0, MPI_COMM_WORLD);\n";
             code += "    std::vector<" + calcParam->getBasicType() + "> sendbuf_" + calcName + ";\n";
             code += "    if (mpi_rank == 0) {\n";
             code += "        sendcounts_" + calcName + ".resize(mpi_size);\n";
@@ -76,9 +100,8 @@ std::string buildWrapperCode(DacppFile* dacppFile, Shell* shell, Calc* calc) {
             code += "        std::vector<" + calcParam->getBasicType() + "> " + globalName + ";\n";
             code += "        " + tensorName + ".tensor2Array(" + globalName + ");\n";
             code += "        for (int r = 0; r < mpi_size; ++r) {\n";
-            code += "            auto r_range = dacpp::mpi::get_rank_item_range(total_items, r, mpi_size);\n";
-            code += "            auto r_pack = " + buildRemotePackBuilderExpr(mode, "r_range", patternName) + ";\n";
-            code += "            auto r_values = dacpp::mpi::pack_values_by_globals(" + globalName + ", r_pack.globals);\n";
+            code += "            std::vector<int64_t> r_globals(gathered_globals_" + calcName + ".begin() + global_displs_" + calcName + "[r], gathered_globals_" + calcName + ".begin() + global_displs_" + calcName + "[r] + global_counts_" + calcName + "[r]);\n";
+            code += "            auto r_values = dacpp::mpi::pack_values_by_globals_parallel(" + globalName + ", r_globals);\n";
             code += "            int r_count = static_cast<int>(r_values.size());\n";
             code += "            sendcounts_" + calcName + "[r] = r_count;\n";
             code += "            displs_" + calcName + "[r] = current_displ;\n";
@@ -181,9 +204,9 @@ std::string buildWrapperCode(DacppFile* dacppFile, Shell* shell, Calc* calc) {
         const std::string globalName = "global_out_" + calcName;
         const std::string wbName = "writeback_" + calcName;
         const std::string mpiType = mpiDatatypeFor(calcParam->getBasicType());
-        bool needsBcast = tensorNeedsBroadcast(dacppFile, tensorName);
+        bool needsBcast = tensorNeedsBroadcast(dacppFile, tensorName, dacExpr);
 
-        code += "    auto " + wbName + " = dacpp::mpi::build_writeback_values(" + localName + ", " + packName + ");\n";
+        code += "    auto " + wbName + " = dacpp::mpi::build_writeback_values_parallel(" + localName + ", " + packName + ");\n";
         code += "    const auto& writeback_globals_" + calcName + " = " + packName + ".writeback_globals.empty() ? " + packName + ".globals : " + packName + ".writeback_globals;\n";
         if (needsBcast) {
             code += "    std::vector<" + calcParam->getBasicType() + "> synced_" + calcName + ";\n";
@@ -251,6 +274,14 @@ std::string buildWrapperCode(DacppFile* dacppFile, Shell* shell, Calc* calc) {
         }
     }
 
+    code += "    auto dacpp_wrapper_end = std::chrono::steady_clock::now();\n";
+    code += "    double dacpp_wrapper_local_ms = std::chrono::duration<double, std::milli>(dacpp_wrapper_end - dacpp_wrapper_start).count();\n";
+    code += "    double dacpp_wrapper_max_ms = 0.0;\n";
+    code += "    MPI_Reduce(&dacpp_wrapper_local_ms, &dacpp_wrapper_max_ms, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);\n";
+    code += "    if (mpi_rank == 0 && dacpp::mpi::profilingEnabled()) {\n";
+    code += "        std::fprintf(stderr, \"[DACPP][PROFILE][%s] wrapper_total_ms(max): %.3f\\n\", \"" + wrapperName + "\", dacpp_wrapper_max_ms);\n";
+    code += "    }\n";
+    code += "    dacpp::mpi::reportCollectPositionsProfile(\"" + wrapperName + "\", MPI_COMM_WORLD);\n";
     code += "}\n";
     return code;
 }

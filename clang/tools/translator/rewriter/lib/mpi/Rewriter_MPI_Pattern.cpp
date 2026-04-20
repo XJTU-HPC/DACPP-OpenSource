@@ -178,6 +178,21 @@ std::string buildPackBuilderExpr(IOTYPE mode, const std::string& patternName) {
     return "dacpp::mpi::build_rw_pack_map(item_range, " + patternName + ")";
 }
 
+std::string buildPackPlanBuilderExpr(IOTYPE mode,
+                                     const std::string& rangeName,
+                                     const std::string& patternName) {
+    if (mode == IOTYPE::READ) {
+        return "dacpp::mpi::build_input_pack_plan(" + rangeName + ", " +
+               patternName + ")";
+    }
+    if (mode == IOTYPE::WRITE) {
+        return "dacpp::mpi::build_output_pack_plan(" + rangeName + ", " +
+               patternName + ")";
+    }
+    return "dacpp::mpi::build_rw_pack_plan(" + rangeName + ", " +
+           patternName + ")";
+}
+
 std::string buildRemotePackBuilderExpr(IOTYPE mode,
                                        const std::string& rangeName,
                                        const std::string& patternName) {
@@ -195,9 +210,15 @@ std::string buildPrelude(DacppFile* dacppFile) {
     std::set<std::string> seenHeaders;
     for (int idx = 0; idx < dacppFile->getNumHeaderFile(); ++idx) {
         const std::string header = dacppFile->getHeaderFile(idx)->getName();
-        if (seenHeaders.insert(header).second) {
-            code += "#include " + header + "\n";
-        }
+    if (seenHeaders.insert(header).second) {
+        code += "#include " + header + "\n";
+    }
+}
+    if (seenHeaders.insert("<chrono>").second) {
+        code += "#include <chrono>\n";
+    }
+    if (seenHeaders.insert("<cstdio>").second) {
+        code += "#include <cstdio>\n";
     }
     code += "\n";
 

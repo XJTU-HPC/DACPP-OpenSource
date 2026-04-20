@@ -2,8 +2,12 @@
 #define DACPP_MPI_PLANNER_H
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cstdint>
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -14,6 +18,7 @@
 #include <vector>
 
 #include <mpi.h>
+#include <sycl/sycl.hpp>
 
 #include "DataReconstructor.new.h"
 #include "dacInfo.h"
@@ -67,6 +72,110 @@ struct PackMap {
     std::vector<int64_t> writeback_globals;
     std::vector<LinearSegment> writeback_segments;
 };
+
+struct PackPlan {
+    PackMap pack;
+    std::vector<int32_t> slots;
+};
+
+struct VectorIntHash {
+    std::size_t operator()(const std::vector<int>& values) const {
+        std::size_t seed = values.size();
+        for (int value : values) {
+            seed ^= std::hash<int>{}(value) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+        }
+        return seed;
+    }
+};
+
+struct CollectPositionsProfile {
+    std::atomic<long long> calls{0};
+    std::atomic<long long> nanos{0};
+};
+
+inline bool profilingEnabled() {
+    static const bool enabled = []() {
+        const char* value = std::getenv("DACPP_MPI_PROFILE");
+        return value && std::string(value) != "0";
+    }();
+    return enabled;
+}
+
+inline CollectPositionsProfile& getCollectPositionsProfile() {
+    static CollectPositionsProfile profile;
+    return profile;
+}
+
+inline void resetCollectPositionsProfile() {
+    auto& profile = getCollectPositionsProfile();
+    profile.calls.store(0, std::memory_order_relaxed);
+    profile.nanos.store(0, std::memory_order_relaxed);
+}
+
+inline void recordCollectPositionsSample(long long nanos) {
+    if (!profilingEnabled()) {
+        return;
+    }
+    auto& profile = getCollectPositionsProfile();
+    profile.calls.fetch_add(1, std::memory_order_relaxed);
+    profile.nanos.fetch_add(nanos, std::memory_order_relaxed);
+}
+
+inline void reportCollectPositionsProfile(const char* label,
+                                          MPI_Comm comm = MPI_COMM_WORLD) {
+    if (!profilingEnabled()) {
+        return;
+    }
+
+    int rank = 0;
+    int size = 1;
+    MPI_Comm_rank(comm, &rank);
+    MPI_Comm_size(comm, &size);
+
+    auto& profile = getCollectPositionsProfile();
+    const long long local_calls = profile.calls.load(std::memory_order_relaxed);
+    const long long local_nanos = profile.nanos.load(std::memory_order_relaxed);
+
+    long long total_calls = 0;
+    long long total_nanos = 0;
+    MPI_Reduce(&local_calls, &total_calls, 1, MPI_LONG_LONG, MPI_SUM, 0, comm);
+    MPI_Reduce(&local_nanos, &total_nanos, 1, MPI_LONG_LONG, MPI_SUM, 0, comm);
+
+    std::vector<long long> all_nanos;
+    if (rank == 0) {
+        all_nanos.resize(size);
+    }
+    MPI_Gather(&local_nanos, 1, MPI_LONG_LONG,
+               rank == 0 ? all_nanos.data() : nullptr,
+               1, MPI_LONG_LONG, 0, comm);
+
+    if (rank != 0) {
+        return;
+    }
+
+    int max_rank = 0;
+    long long max_nanos = size > 0 ? all_nanos[0] : 0;
+    for (int idx = 1; idx < size; ++idx) {
+        if (all_nanos[idx] > max_nanos) {
+            max_nanos = all_nanos[idx];
+            max_rank = idx;
+        }
+    }
+
+    std::fprintf(stderr,
+                 "[DACPP][PROFILE][%s] collect_positions_for_item total_calls(sum): %lld\n",
+                 label ? label : "wrapper",
+                 total_calls);
+    std::fprintf(stderr,
+                 "[DACPP][PROFILE][%s] collect_positions_for_item total_ms(sum): %.3f\n",
+                 label ? label : "wrapper",
+                 static_cast<double>(total_nanos) / 1.0e6);
+    std::fprintf(stderr,
+                 "[DACPP][PROFILE][%s] collect_positions_for_item max_rank_ms: %.3f (rank=%d)\n",
+                 label ? label : "wrapper",
+                 static_cast<double>(max_nanos) / 1.0e6,
+                 max_rank);
+}
 
 struct AccessPattern {
     int param_id = -1;
@@ -213,8 +322,64 @@ inline int64_t partition_element_count(const AccessPattern& pattern) {
     return count;
 }
 
+struct SimpleStrideRange {
+    bool valid = false;
+    int64_t start = 0;
+    int64_t stride = 0;
+    int64_t count = 0;
+};
+
+inline SimpleStrideRange try_build_simple_stride_range(
+    const std::vector<int>& base_pos,
+    const AccessPattern& pattern,
+    const std::vector<int>& part_shape) {
+    SimpleStrideRange result;
+    if (pattern.data_info.dim <= 0 ||
+        static_cast<int>(base_pos.size()) != pattern.data_info.dim ||
+        static_cast<int>(part_shape.size()) != pattern.data_info.dim) {
+        return result;
+    }
+
+    int varying_dim = -1;
+    int64_t count = 1;
+    for (int dim = 0; dim < pattern.data_info.dim; ++dim) {
+        if (part_shape[dim] > 1) {
+            if (varying_dim >= 0) {
+                return result;
+            }
+            varying_dim = dim;
+            count = part_shape[dim];
+        }
+    }
+
+    if (varying_dim < 0) {
+        result.valid = true;
+        result.start = linearize(base_pos, pattern.data_info);
+        result.stride = 0;
+        result.count = 1;
+        return result;
+    }
+
+    const int64_t stride = [&]() {
+        int64_t s = 1;
+        for (int dim = varying_dim + 1; dim < pattern.data_info.dim; ++dim) {
+            s *= pattern.data_info.dimLength[dim];
+        }
+        return s;
+    }();
+
+    result.valid = true;
+    result.start = linearize(base_pos, pattern.data_info);
+    result.stride = stride;
+    result.count = count;
+    return result;
+}
+
 inline std::vector<int64_t> collect_positions_for_item(int64_t item_id,
                                                        const AccessPattern& pattern) {
+    const auto profile_begin = profilingEnabled()
+        ? std::chrono::steady_clock::now()
+        : std::chrono::steady_clock::time_point{};
     const std::vector<int> part_shape =
         pattern.partition_shape.empty() ? init_partition_shape(pattern) : pattern.partition_shape;
     const std::vector<int64_t> bind_splits =
@@ -260,6 +425,21 @@ inline std::vector<int64_t> collect_positions_for_item(int64_t item_id,
     std::vector<int64_t> globals;
     globals.reserve(elem_count);
 
+    const SimpleStrideRange simple_range =
+        try_build_simple_stride_range(base_pos, pattern, part_shape);
+    if (simple_range.valid) {
+        for (int64_t idx = 0; idx < simple_range.count; ++idx) {
+            globals.push_back(simple_range.start + idx * simple_range.stride);
+        }
+        if (profilingEnabled()) {
+            const auto profile_end = std::chrono::steady_clock::now();
+            const long long nanos = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                profile_end - profile_begin).count();
+            recordCollectPositionsSample(nanos);
+        }
+        return globals;
+    }
+
     for (int64_t linear_idx = 0; linear_idx < elem_count; ++linear_idx) {
         std::vector<int> global_pos = base_pos;
         int64_t carry = linear_idx;
@@ -270,6 +450,12 @@ inline std::vector<int64_t> collect_positions_for_item(int64_t item_id,
             global_pos[dim] += offset;
         }
         globals.push_back(linearize(global_pos, pattern.data_info));
+    }
+    if (profilingEnabled()) {
+        const auto profile_end = std::chrono::steady_clock::now();
+        const long long nanos = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            profile_end - profile_begin).count();
+        recordCollectPositionsSample(nanos);
     }
     return globals;
 }
@@ -421,6 +607,109 @@ inline std::vector<int32_t> build_item_slots(ItemRange range,
     return slots;
 }
 
+inline std::vector<int> build_item_bind_key(int64_t item_id,
+                                            const AccessPattern& pattern) {
+    const std::vector<int64_t> bind_splits =
+        pattern.bind_split_sizes.empty() ? init_bind_split_sizes(pattern)
+                                         : pattern.bind_split_sizes;
+    const std::vector<int> bind_indices = decode_item_id(item_id, bind_splits);
+
+    std::vector<int> key(bind_splits.size(), 0);
+    std::vector<bool> used(bind_splits.size(), false);
+    for (int op_idx = 0; op_idx < pattern.param_ops.size; ++op_idx) {
+        if (op_idx >= static_cast<int>(pattern.bind_set_id.size())) {
+            continue;
+        }
+        const int bind_id = pattern.bind_set_id[op_idx];
+        if (bind_id < 0 || bind_id >= static_cast<int>(key.size())) {
+            continue;
+        }
+        key[bind_id] =
+            bind_id < static_cast<int>(bind_indices.size()) ? bind_indices[bind_id] : 0;
+        used[bind_id] = true;
+    }
+
+    for (std::size_t idx = 0; idx < key.size(); ++idx) {
+        if (!used[idx]) {
+            key[idx] = -1;
+        }
+    }
+    return key;
+}
+
+inline PackPlan build_pack_plan(ItemRange range,
+                                const AccessPattern& pattern,
+                                bool include_writeback) {
+    PackPlan plan;
+    const int64_t item_count = range.size();
+    const int64_t elem_count = partition_element_count(pattern);
+    plan.slots.reserve(item_count * elem_count);
+
+    std::vector<std::vector<int64_t>> unique_positions;
+    std::vector<int32_t> item_key_indices;
+    item_key_indices.reserve(static_cast<std::size_t>(std::max<int64_t>(item_count, 0)));
+
+    std::unordered_map<std::vector<int>, int32_t, VectorIntHash> key_to_index;
+    key_to_index.reserve(static_cast<std::size_t>(std::max<int64_t>(item_count, 0)));
+
+    for (int64_t item = range.begin; item < range.end; ++item) {
+        const std::vector<int> key = build_item_bind_key(item, pattern);
+        auto it = key_to_index.find(key);
+        if (it == key_to_index.end()) {
+            const int32_t key_index = static_cast<int32_t>(unique_positions.size());
+            it = key_to_index.emplace(key, key_index).first;
+            unique_positions.push_back(collect_positions_for_item(item, pattern));
+        }
+        item_key_indices.push_back(it->second);
+    }
+
+    std::vector<int64_t> globals;
+    globals.reserve(unique_positions.size() * static_cast<std::size_t>(elem_count));
+    for (const auto& positions : unique_positions) {
+        globals.insert(globals.end(), positions.begin(), positions.end());
+    }
+
+    plan.pack = make_pack_map_from_globals(std::move(globals));
+    if (include_writeback) {
+        plan.pack.writeback_globals = plan.pack.globals;
+        plan.pack.writeback_segments = plan.pack.segments;
+    }
+
+    std::vector<std::vector<int32_t>> key_slots;
+    key_slots.reserve(unique_positions.size());
+    for (const auto& positions : unique_positions) {
+        std::vector<int32_t> slots_for_key;
+        slots_for_key.reserve(positions.size());
+        for (int64_t global_idx : positions) {
+            slots_for_key.push_back(
+                lookup_local_slot_or_throw(plan.pack, global_idx, "build_pack_plan"));
+        }
+        key_slots.push_back(std::move(slots_for_key));
+    }
+
+    for (int32_t key_index : item_key_indices) {
+        const auto& slots_for_key = key_slots[static_cast<std::size_t>(key_index)];
+        plan.slots.insert(plan.slots.end(), slots_for_key.begin(), slots_for_key.end());
+    }
+
+    return plan;
+}
+
+inline PackPlan build_input_pack_plan(ItemRange range,
+                                      const AccessPattern& pattern) {
+    return build_pack_plan(range, pattern, false);
+}
+
+inline PackPlan build_output_pack_plan(ItemRange range,
+                                       const AccessPattern& pattern) {
+    return build_pack_plan(range, pattern, true);
+}
+
+inline PackPlan build_rw_pack_plan(ItemRange range,
+                                   const AccessPattern& pattern) {
+    return build_pack_plan(range, pattern, true);
+}
+
 template <typename T>
 inline std::vector<T> pack_values_by_globals(const std::vector<T>& global_data,
                                              const std::vector<int64_t>& globals) {
@@ -428,6 +717,46 @@ inline std::vector<T> pack_values_by_globals(const std::vector<T>& global_data,
     packed.reserve(globals.size());
     for (int64_t global_idx : globals) {
         packed.push_back(global_data[static_cast<std::size_t>(global_idx)]);
+    }
+    return packed;
+}
+
+template <typename T>
+inline std::vector<T> pack_values_by_globals_parallel(
+    const std::vector<T>& global_data,
+    const std::vector<int64_t>& globals,
+    std::size_t threshold = 1 << 18) {
+    if (globals.size() < threshold) {
+        return pack_values_by_globals(global_data, globals);
+    }
+
+    std::vector<T> packed(globals.size());
+    if (globals.empty()) {
+        return packed;
+    }
+
+    sycl::queue q(sycl::default_selector_v);
+    {
+        sycl::buffer<T, 1> global_buf(
+            const_cast<T*>(global_data.data()),
+            sycl::range<1>(global_data.size()));
+        sycl::buffer<int64_t, 1> globals_buf(
+            const_cast<int64_t*>(globals.data()),
+            sycl::range<1>(globals.size()));
+        sycl::buffer<T, 1> packed_buf(
+            packed.data(),
+            sycl::range<1>(packed.size()));
+
+        q.submit([&](sycl::handler& h) {
+            auto global_acc = global_buf.template get_access<sycl::access::mode::read>(h);
+            auto globals_acc = globals_buf.template get_access<sycl::access::mode::read>(h);
+            auto packed_acc = packed_buf.template get_access<sycl::access::mode::write>(h);
+            h.parallel_for(sycl::range<1>(globals.size()), [=](sycl::id<1> idx) {
+                const std::size_t i = idx[0];
+                packed_acc[i] = global_acc[static_cast<std::size_t>(globals_acc[i])];
+            });
+        });
+        q.wait();
     }
     return packed;
 }
@@ -452,6 +781,56 @@ inline std::vector<T> build_writeback_values(const std::vector<T>& local_data,
         values.push_back(local_data[static_cast<std::size_t>(
             lookup_local_slot_or_throw(
                 pack, global_idx, "build_writeback_values"))]);
+    }
+    return values;
+}
+
+template <typename T>
+inline std::vector<T> build_writeback_values_parallel(
+    const std::vector<T>& local_data,
+    const PackMap& pack,
+    std::size_t threshold = 1 << 18) {
+    const std::vector<int64_t>& globals =
+        pack.writeback_globals.empty() ? pack.globals : pack.writeback_globals;
+    if (globals.size() < threshold) {
+        return build_writeback_values(local_data, pack);
+    }
+
+    std::vector<int32_t> local_slots;
+    local_slots.reserve(globals.size());
+    for (int64_t global_idx : globals) {
+        local_slots.push_back(
+            lookup_local_slot_or_throw(
+                pack, global_idx, "build_writeback_values_parallel"));
+    }
+
+    std::vector<T> values(globals.size());
+    if (globals.empty()) {
+        return values;
+    }
+
+    sycl::queue q(sycl::default_selector_v);
+    {
+        sycl::buffer<T, 1> local_buf(
+            const_cast<T*>(local_data.data()),
+            sycl::range<1>(local_data.size()));
+        sycl::buffer<int32_t, 1> slots_buf(
+            local_slots.data(),
+            sycl::range<1>(local_slots.size()));
+        sycl::buffer<T, 1> values_buf(
+            values.data(),
+            sycl::range<1>(values.size()));
+
+        q.submit([&](sycl::handler& h) {
+            auto local_acc = local_buf.template get_access<sycl::access::mode::read>(h);
+            auto slots_acc = slots_buf.template get_access<sycl::access::mode::read>(h);
+            auto values_acc = values_buf.template get_access<sycl::access::mode::write>(h);
+            h.parallel_for(sycl::range<1>(values.size()), [=](sycl::id<1> idx) {
+                const std::size_t i = idx[0];
+                values_acc[i] = local_acc[static_cast<std::size_t>(slots_acc[i])];
+            });
+        });
+        q.wait();
     }
     return values;
 }

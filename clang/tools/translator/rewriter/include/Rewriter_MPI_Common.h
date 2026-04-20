@@ -52,7 +52,9 @@ std::string mpiPayloadCountExpr(const std::string& elemCountExpr,
                                 const std::string& type);
 std::string toPlannerMode(IOTYPE mode);
 std::string toAccessorMode(IOTYPE mode);
-bool tensorNeedsBroadcast(DacppFile* dacppFile, const std::string& tensorName);
+bool tensorNeedsBroadcast(DacppFile* dacppFile,
+                          const std::string& tensorName,
+                          const clang::BinaryOperator* currentDacExpr = nullptr);
 
 std::vector<IOTYPE> inferEffectiveParamModes(Shell* shell, Calc* calc);
 int inferViewRank(ShellParam* shellParam, Param* calcParam);
@@ -71,10 +73,16 @@ std::string buildPatternInitCode(
 
 std::string buildLocalCalcCode(Shell* shell, Calc* calc);
 std::string buildPackBuilderExpr(IOTYPE mode, const std::string& patternName);
+std::string buildPackPlanBuilderExpr(IOTYPE mode,
+                                     const std::string& rangeName,
+                                     const std::string& patternName);
 std::string buildRemotePackBuilderExpr(IOTYPE mode,
                                        const std::string& rangeName,
                                        const std::string& patternName);
-std::string buildWrapperCode(DacppFile* dacppFile, Shell* shell, Calc* calc);
+std::string buildWrapperCode(DacppFile* dacppFile,
+                             Shell* shell,
+                             Calc* calc,
+                             const clang::BinaryOperator* dacExpr = nullptr);
 std::string buildPrelude(DacppFile* dacppFile);
 std::string buildMPIRegionCodegen(
     DacppFile* dacppFile,
