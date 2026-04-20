@@ -722,6 +722,18 @@ inline std::vector<T> pack_values_by_globals(const std::vector<T>& global_data,
 }
 
 template <typename T>
+inline std::vector<T> pack_values_by_globals_range(const std::vector<T>& global_data,
+                                                   const int64_t* globals,
+                                                   std::size_t count) {
+    std::vector<T> packed;
+    packed.reserve(count);
+    for (std::size_t idx = 0; idx < count; ++idx) {
+        packed.push_back(global_data[static_cast<std::size_t>(globals[idx])]);
+    }
+    return packed;
+}
+
+template <typename T>
 inline std::vector<T> pack_values_by_globals_parallel(
     const std::vector<T>& global_data,
     const std::vector<int64_t>& globals,
@@ -752,6 +764,47 @@ inline std::vector<T> pack_values_by_globals_parallel(
             auto globals_acc = globals_buf.template get_access<sycl::access::mode::read>(h);
             auto packed_acc = packed_buf.template get_access<sycl::access::mode::write>(h);
             h.parallel_for(sycl::range<1>(globals.size()), [=](sycl::id<1> idx) {
+                const std::size_t i = idx[0];
+                packed_acc[i] = global_acc[static_cast<std::size_t>(globals_acc[i])];
+            });
+        });
+        q.wait();
+    }
+    return packed;
+}
+
+template <typename T>
+inline std::vector<T> pack_values_by_globals_parallel_range(
+    const std::vector<T>& global_data,
+    const int64_t* globals,
+    std::size_t count,
+    std::size_t threshold = 1 << 18) {
+    if (count < threshold) {
+        return pack_values_by_globals_range(global_data, globals, count);
+    }
+
+    std::vector<T> packed(count);
+    if (count == 0) {
+        return packed;
+    }
+
+    sycl::queue q(sycl::default_selector_v);
+    {
+        sycl::buffer<T, 1> global_buf(
+            const_cast<T*>(global_data.data()),
+            sycl::range<1>(global_data.size()));
+        sycl::buffer<int64_t, 1> globals_buf(
+            const_cast<int64_t*>(globals),
+            sycl::range<1>(count));
+        sycl::buffer<T, 1> packed_buf(
+            packed.data(),
+            sycl::range<1>(packed.size()));
+
+        q.submit([&](sycl::handler& h) {
+            auto global_acc = global_buf.template get_access<sycl::access::mode::read>(h);
+            auto globals_acc = globals_buf.template get_access<sycl::access::mode::read>(h);
+            auto packed_acc = packed_buf.template get_access<sycl::access::mode::write>(h);
+            h.parallel_for(sycl::range<1>(count), [=](sycl::id<1> idx) {
                 const std::size_t i = idx[0];
                 packed_acc[i] = global_acc[static_cast<std::size_t>(globals_acc[i])];
             });

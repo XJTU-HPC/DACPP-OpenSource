@@ -12,6 +12,11 @@ out of the active `translator` code path.
 - the legacy template-based MPI generator pair
   `archive/rewriter/include/mpi_template.h` and
   `archive/rewriter/lib/mpi_template.cpp`
+- the legacy monolithic MPI wrapper
+  `archive/rewriter/lib/Rewriter_MPI_Wrapper.cpp`, replaced by the split-out
+  `Rewriter_MPI_Wrapper_Codegen.cpp` (wrapper codegen),
+  `Rewriter_MPI_Analysis.cpp` (AST analysis), and shared utilities kept in
+  the active `Rewriter_MPI_Wrapper.cpp` under `rewriter/lib/mpi/`
 - a stale generated backup test artifact
 
 ## What To Read First Instead

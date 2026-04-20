@@ -70,7 +70,6 @@ std::string buildWrapperCode(DacppFile* dacppFile,
                 packName + ".globals.size());\n";
 
         if (mode != IOTYPE::WRITE) {
-            code += "    int recv_count_" + calcName + " = 0;\n";
             code += "    std::vector<int> sendcounts_" + calcName + ";\n";
             code += "    std::vector<int> displs_" + calcName + ";\n";
             code += "    int local_global_count_" + calcName + " = static_cast<int>(" +
@@ -100,8 +99,8 @@ std::string buildWrapperCode(DacppFile* dacppFile,
             code += "        std::vector<" + calcParam->getBasicType() + "> " + globalName + ";\n";
             code += "        " + tensorName + ".tensor2Array(" + globalName + ");\n";
             code += "        for (int r = 0; r < mpi_size; ++r) {\n";
-            code += "            std::vector<int64_t> r_globals(gathered_globals_" + calcName + ".begin() + global_displs_" + calcName + "[r], gathered_globals_" + calcName + ".begin() + global_displs_" + calcName + "[r] + global_counts_" + calcName + "[r]);\n";
-            code += "            auto r_values = dacpp::mpi::pack_values_by_globals_parallel(" + globalName + ", r_globals);\n";
+            code += "            const int64_t* r_globals_ptr = gathered_globals_" + calcName + ".data() + global_displs_" + calcName + "[r];\n";
+            code += "            auto r_values = dacpp::mpi::pack_values_by_globals_parallel_range(" + globalName + ", r_globals_ptr, static_cast<std::size_t>(global_counts_" + calcName + "[r]));\n";
             code += "            int r_count = static_cast<int>(r_values.size());\n";
             code += "            sendcounts_" + calcName + "[r] = r_count;\n";
             code += "            displs_" + calcName + "[r] = current_displ;\n";
@@ -109,21 +108,22 @@ std::string buildWrapperCode(DacppFile* dacppFile,
             code += "            sendbuf_" + calcName + ".insert(sendbuf_" + calcName + ".end(), r_values.begin(), r_values.end());\n";
             code += "        }\n";
             code += "    }\n";
-            code += "    MPI_Scatter(mpi_rank == 0 ? sendcounts_" + calcName + ".data() : nullptr, 1, MPI_INT, &recv_count_" + calcName + ", 1, MPI_INT, 0, MPI_COMM_WORLD);\n";
-            code += "    " + localName + ".resize(recv_count_" + calcName + ");\n";
-            code += "    std::vector<int> sendcounts_bytes_" + calcName + " = sendcounts_" + calcName + ";\n";
-            code += "    std::vector<int> displs_bytes_" + calcName + " = displs_" + calcName + ";\n";
+            code += "    " + localName + ".resize(static_cast<std::size_t>(local_global_count_" + calcName + "));\n";
             if (usesByteTransport(calcParam->getBasicType())) {
+                code += "    std::vector<int> sendcounts_bytes_" + calcName + " = sendcounts_" + calcName + ";\n";
+                code += "    std::vector<int> displs_bytes_" + calcName + " = displs_" + calcName + ";\n";
                 code += "    if (mpi_rank == 0) {\n";
                 code += "        for (int r = 0; r < mpi_size; ++r) {\n";
                 code += "            sendcounts_bytes_" + calcName + "[r] *= sizeof(" + calcParam->getBasicType() + ");\n";
                 code += "            displs_bytes_" + calcName + "[r] *= sizeof(" + calcParam->getBasicType() + ");\n";
                 code += "        }\n";
                 code += "    }\n";
+                std::string payloadRecvCount =
+                    mpiPayloadCountExpr("local_global_count_" + calcName, calcParam->getBasicType());
+                code += "    MPI_Scatterv(mpi_rank == 0 ? sendbuf_" + calcName + ".data() : nullptr, mpi_rank == 0 ? sendcounts_bytes_" + calcName + ".data() : nullptr, mpi_rank == 0 ? displs_bytes_" + calcName + ".data() : nullptr, " + mpiType + ", " + localName + ".data(), " + payloadRecvCount + ", " + mpiType + ", 0, MPI_COMM_WORLD);\n";
+            } else {
+                code += "    MPI_Scatterv(mpi_rank == 0 ? sendbuf_" + calcName + ".data() : nullptr, mpi_rank == 0 ? sendcounts_" + calcName + ".data() : nullptr, mpi_rank == 0 ? displs_" + calcName + ".data() : nullptr, " + mpiType + ", " + localName + ".data(), local_global_count_" + calcName + ", " + mpiType + ", 0, MPI_COMM_WORLD);\n";
             }
-            std::string payloadRecvCount =
-                mpiPayloadCountExpr("recv_count_" + calcName, calcParam->getBasicType());
-            code += "    MPI_Scatterv(mpi_rank == 0 ? sendbuf_" + calcName + ".data() : nullptr, mpi_rank == 0 ? sendcounts_bytes_" + calcName + ".data() : nullptr, mpi_rank == 0 ? displs_bytes_" + calcName + ".data() : nullptr, " + mpiType + ", " + localName + ".data(), " + payloadRecvCount + ", " + mpiType + ", 0, MPI_COMM_WORLD);\n";
         }
 
         code += "    const int " + calcName + "_partition_size = static_cast<int>(dacpp::mpi::partition_element_count(" +
@@ -208,9 +208,6 @@ std::string buildWrapperCode(DacppFile* dacppFile,
 
         code += "    auto " + wbName + " = dacpp::mpi::build_writeback_values_parallel(" + localName + ", " + packName + ");\n";
         code += "    const auto& writeback_globals_" + calcName + " = " + packName + ".writeback_globals.empty() ? " + packName + ".globals : " + packName + ".writeback_globals;\n";
-        if (needsBcast) {
-            code += "    std::vector<" + calcParam->getBasicType() + "> synced_" + calcName + ";\n";
-        }
         code += "    int send_count_" + calcName + " = static_cast<int>(writeback_globals_" + calcName + ".size());\n";
         code += "    std::vector<int> recvcounts_" + calcName + ";\n";
         code += "    std::vector<int> recvdispls_" + calcName + ";\n";
@@ -231,45 +228,44 @@ std::string buildWrapperCode(DacppFile* dacppFile,
         code += "        global_recv_values_" + calcName + ".resize(current_displ);\n";
         code += "    }\n";
         code += "    MPI_Gatherv(const_cast<int64_t*>(writeback_globals_" + calcName + ".data()), send_count_" + calcName + ", MPI_LONG_LONG, mpi_rank == 0 ? global_recv_globals_" + calcName + ".data() : nullptr, mpi_rank == 0 ? recvcounts_" + calcName + ".data() : nullptr, mpi_rank == 0 ? recvdispls_" + calcName + ".data() : nullptr, MPI_LONG_LONG, 0, MPI_COMM_WORLD);\n";
-        code += "    std::vector<int> recvcounts_bytes_" + calcName + " = recvcounts_" + calcName + ";\n";
-        code += "    std::vector<int> recvdispls_bytes_" + calcName + " = recvdispls_" + calcName + ";\n";
         if (usesByteTransport(calcParam->getBasicType())) {
+            code += "    std::vector<int> recvcounts_bytes_" + calcName + " = recvcounts_" + calcName + ";\n";
+            code += "    std::vector<int> recvdispls_bytes_" + calcName + " = recvdispls_" + calcName + ";\n";
             code += "    if (mpi_rank == 0) {\n";
             code += "        for (int r = 0; r < mpi_size; ++r) {\n";
             code += "            recvcounts_bytes_" + calcName + "[r] *= sizeof(" + calcParam->getBasicType() + ");\n";
             code += "            recvdispls_bytes_" + calcName + "[r] *= sizeof(" + calcParam->getBasicType() + ");\n";
             code += "        }\n";
             code += "    }\n";
+            std::string payloadSendCount2 =
+                mpiPayloadCountExpr("send_count_" + calcName, calcParam->getBasicType());
+            code += "    MPI_Gatherv(" + wbName + ".data(), " + payloadSendCount2 + ", " + mpiType + ", mpi_rank == 0 ? global_recv_values_" + calcName + ".data() : nullptr, mpi_rank == 0 ? recvcounts_bytes_" + calcName + ".data() : nullptr, mpi_rank == 0 ? recvdispls_bytes_" + calcName + ".data() : nullptr, " + mpiType + ", 0, MPI_COMM_WORLD);\n";
+        } else {
+            code += "    MPI_Gatherv(" + wbName + ".data(), send_count_" + calcName + ", " + mpiType + ", mpi_rank == 0 ? global_recv_values_" + calcName + ".data() : nullptr, mpi_rank == 0 ? recvcounts_" + calcName + ".data() : nullptr, mpi_rank == 0 ? recvdispls_" + calcName + ".data() : nullptr, " + mpiType + ", 0, MPI_COMM_WORLD);\n";
         }
-        std::string payloadSendCount2 =
-            mpiPayloadCountExpr("send_count_" + calcName, calcParam->getBasicType());
-        code += "    MPI_Gatherv(" + wbName + ".data(), " + payloadSendCount2 + ", " + mpiType + ", mpi_rank == 0 ? global_recv_values_" + calcName + ".data() : nullptr, mpi_rank == 0 ? recvcounts_bytes_" + calcName + ".data() : nullptr, mpi_rank == 0 ? recvdispls_bytes_" + calcName + ".data() : nullptr, " + mpiType + ", 0, MPI_COMM_WORLD);\n";
         code += "    if (mpi_rank == 0) {\n";
         code += "        std::vector<" + calcParam->getBasicType() + "> " + globalName + ";\n";
         code += "        " + tensorName + ".tensor2Array(" + globalName + ");\n";
         code += "        dacpp::mpi::apply_writeback_by_globals(global_recv_values_" + calcName + ", global_recv_globals_" + calcName + ", " + globalName + ");\n";
         code += "        " + tensorName + ".array2Tensor(" + globalName + ");\n";
+            if (needsBcast) {
+                const std::string bcastCountExpr =
+                    mpiPayloadCountExpr(tensorName + ".getSize()", calcParam->getBasicType());
+                code += "        if (!" + globalName + ".empty()) {\n";
+                code += "            MPI_Bcast(" + globalName + ".data(), " + bcastCountExpr + ", " + mpiType + ", 0, MPI_COMM_WORLD);\n";
+                code += "        }\n";
+            }
+        code += "    } else ";
         if (needsBcast) {
-            code += "        synced_" + calcName + " = " + globalName + ";\n";
-        }
-        code += "    }\n";
-        if (needsBcast) {
-            const std::string payloadSyncedCount =
-                mpiPayloadCountExpr("synced_count_" + calcName, calcParam->getBasicType());
-            code += "    int synced_count_" + calcName + " = 0;\n";
-            code += "    if (mpi_rank == 0) {\n";
-            code += "        synced_count_" + calcName + " = static_cast<int>(synced_" + calcName + ".size());\n";
+            code += "{\n";
+            code += "        std::vector<" + calcParam->getBasicType() + "> " + globalName + "(static_cast<std::size_t>(" + tensorName + ".getSize()));\n";
+            code += "        if (!" + globalName + ".empty()) {\n";
+            code += "            MPI_Bcast(" + globalName + ".data(), " + mpiPayloadCountExpr(tensorName + ".getSize()", calcParam->getBasicType()) + ", " + mpiType + ", 0, MPI_COMM_WORLD);\n";
+            code += "        }\n";
+            code += "        " + tensorName + ".array2Tensor(" + globalName + ");\n";
             code += "    }\n";
-            code += "    MPI_Bcast(&synced_count_" + calcName + ", 1, MPI_INT, 0, MPI_COMM_WORLD);\n";
-            code += "    if (mpi_rank != 0) {\n";
-            code += "        synced_" + calcName + ".resize(synced_count_" + calcName + ");\n";
-            code += "    }\n";
-            code += "    if (synced_count_" + calcName + " > 0) {\n";
-            code += "        MPI_Bcast(synced_" + calcName + ".data(), " + payloadSyncedCount + ", " + mpiType +
-                    ", 0, MPI_COMM_WORLD);\n";
-            code += "    }\n";
-            code += "    if (mpi_rank != 0) {\n";
-            code += "        " + tensorName + ".array2Tensor(synced_" + calcName + ");\n";
+        } else {
+            code += "{\n";
             code += "    }\n";
         }
     }
