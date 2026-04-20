@@ -182,8 +182,8 @@ for test_name in "${MPI_TESTS[@]}"; do
     fi
 
     # Step 3: Run MPI and Compare
-    echo "  [Step 3] Run MPI (mpirun -np 2) and compare"
-    DYLD_LIBRARY_PATH="$ACPP_ROOT/lib" mpirun -np 2 "$mpi_bin" > "$work_dir/mpi.out" 2>&1
+    echo "  [Step 3] Run MPI (mpirun -np 4) and compare"
+    DYLD_LIBRARY_PATH="$ACPP_ROOT/lib" mpirun -np 4 "$mpi_bin" > "$work_dir/mpi.out" 2>&1
     if [[ $? -ne 0 ]]; then
         echo "[FAIL] MPI execution failed."
         head -n 20 "$work_dir/mpi.out"

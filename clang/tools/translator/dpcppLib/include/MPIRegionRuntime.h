@@ -170,9 +170,11 @@ inline void init_region_param_storage(Tensor& tensor,
         state.pattern.partition_shape.size() > 1 ? state.pattern.partition_shape[1]
                                                  : 0;
 
-    if (item_range.size() > 0) {
+    if (!state.local.empty()) {
         state.buf = std::make_unique<sycl::buffer<T, 1>>(
             state.local.data(), sycl::range<1>(state.local.size()));
+    }
+    if (!state.slots.empty()) {
         state.slots_buf = std::make_unique<sycl::buffer<int32_t, 1>>(
             state.slots.data(), sycl::range<1>(state.slots.size()));
     }
