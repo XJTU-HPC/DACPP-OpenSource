@@ -25,11 +25,11 @@ std::string buildMPIRegionSubmitCode(Shell* shell,
         Param* calcParam = calc->getParam(paramIdx);
         ShellParam* shellParam = shell->getShellParam(paramIdx);
         const std::string& name = calcParam->getName();
-        code += "    const int " + name + "_partition_size = ctx." + name +
-                "_partition_size;\n";
+        code += "    const int " + name + "_partition_size = ctx.state_" + name +
+                ".partition_size;\n";
         if (inferViewRank(shellParam, calcParam) > 1) {
-            code += "    const int " + name + "_cols = ctx." + name +
-                    "_cols;\n";
+            code += "    const int " + name + "_cols = ctx.state_" + name +
+                    ".cols;\n";
         }
     }
     code += "    {\n";
@@ -37,11 +37,11 @@ std::string buildMPIRegionSubmitCode(Shell* shell,
     for (int paramIdx = 0; paramIdx < shell->getNumShellParams(); ++paramIdx) {
         Param* calcParam = calc->getParam(paramIdx);
         const std::string& name = calcParam->getName();
-        code += "            auto acc_" + name + " = ctx.buf_" + name +
+        code += "            auto acc_" + name + " = ctx.state_" + name + ".buf" +
                 "->get_access<" + toAccessorMode(paramModes[paramIdx]) +
                 ">(h);\n";
         code += "            auto slots_acc_" + name +
-                " = ctx.slots_buf_" + name +
+                " = ctx.state_" + name + ".slots_buf" +
                 "->get_access<sycl::access::mode::read>(h);\n";
     }
     code +=

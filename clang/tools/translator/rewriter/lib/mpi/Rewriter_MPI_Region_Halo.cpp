@@ -32,20 +32,9 @@ std::string buildMPIRegionHaloCode(Shell* shell,
         const std::string mpiType = mpiDatatypeFor(baseType);
 
         code += "    {\n";
-        code += "        sycl::host_accessor ha_" + name + "(*ctx.buf_" + name +
-                ", sycl::read_only);\n";
-        code += "        for (std::size_t i = 0; i < ctx.local_" + name +
-                ".size(); ++i)\n";
-        code += "            ctx.local_" + name + "[i] = ha_" + name + "[i];\n";
         code += "        MPI_Datatype mpi_dt_" + name + " = " + mpiType + ";\n";
-        code += "        dacpp::mpi::exchangeHalo(ctx.local_" + name +
-                ", ctx.halo_" + name + ", &mpi_dt_" + name + ");\n";
-        code += "        sycl::host_accessor ha_w_" + name + "(*ctx.buf_" +
-                name + ", sycl::write_only);\n";
-        code += "        for (std::size_t i = 0; i < ctx.local_" + name +
-                ".size(); ++i)\n";
-        code += "            ha_w_" + name + "[i] = ctx.local_" + name +
-                "[i];\n";
+        code += "        dacpp::mpi::exchange_halo_buffered(ctx.state_" + name +
+                ", &mpi_dt_" + name + ");\n";
         code += "    }\n";
     }
     code += "}\n\n";

@@ -24,27 +24,11 @@ std::string buildMPIRegionCtxCode(DacppFile* dacppFile,
     code += "    std::vector<int64_t> binding_split_sizes;\n";
     code += "    bool has_halo = false;\n";
     for (int paramIdx = 0; paramIdx < shell->getNumShellParams(); ++paramIdx) {
-        ShellParam* shellParam = shell->getShellParam(paramIdx);
         Param* calcParam = calc->getParam(paramIdx);
         const std::string& name = calcParam->getName();
         const std::string& baseType = calcParam->getBasicType();
-        code += "    dacpp::mpi::AccessPattern pattern_" + name + ";\n";
-        code += "    dacpp::mpi::PackMap item_pack_" + name + ";\n";
-        code += "    dacpp::mpi::PackMap runtime_pack_" + name + ";\n";
-        code += "    std::vector<int32_t> slots_" + name + ";\n";
-        code += "    std::vector<" + baseType + "> local_" + name + ";\n";
-        code += "    std::unique_ptr<sycl::buffer<" + baseType +
-                ", 1>> buf_" + name + ";\n";
-        code += "    std::unique_ptr<sycl::buffer<int32_t, 1>> slots_buf_" +
-                name + ";\n";
-        code += "    std::vector<int32_t> global_to_local_" + name + ";\n";
-        code += "    std::unique_ptr<sycl::buffer<int32_t, 1>> global_to_local_buf_" +
-                name + ";\n";
-        code += "    int " + name + "_partition_size = 0;\n";
-        if (inferViewRank(shellParam, calcParam) > 1) {
-            code += "    int " + name + "_cols = 0;\n";
-        }
-        code += "    dacpp::mpi::ParamHalo halo_" + name + ";\n";
+        code += "    dacpp::mpi::RegionParamState<" + baseType +
+                "> state_" + name + ";\n";
     }
 
     // Add non-shell captured variable fields

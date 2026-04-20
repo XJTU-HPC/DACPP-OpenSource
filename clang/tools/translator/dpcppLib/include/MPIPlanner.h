@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
@@ -1307,5 +1308,7 @@ inline void exchangeHalo(std::vector<T>& local_data,
 
 }  // namespace mpi
 }  // namespace dacpp
+
+#include "MPIRegionRuntime.h"
 
 #endif
