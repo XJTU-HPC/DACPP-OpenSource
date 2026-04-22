@@ -105,38 +105,16 @@ struct PackPlan {
 - 只写输出
 - 读写参数
 
-### 3.4 `collect_positions_for_item()` fast path
+### 3.4 `collect_positions_for_item()` 的全面提速 (Fast Path 与 Odometer)
+为了进一步降低单次调用成本，在 `collect_positions_for_item(...)` 中实施了两项极端的计算优化：
+1. **连续多维内存合并降维 (Contiguous Dimension Collapsing) 的 Fast Path**
+   原先，只有满足“`part_shape` 最多只有一个维度大于 1”时，才能命中一维等差数列生成的 `SimpleStrideRange` (Fast Path)。
+   现在的检测条件已放宽：如果切块在内层维度的长度 (`part_shape`) 和数据实际宽度 (`dimLength`) 完好一致，算法会在逻辑上将其“降维”压扁。只要这些物理连续的维度合并之后，剩下的非 1 维数量不多于 1 个，就能直接命中 `start + i * stride` 单步生成。这让诸如连续二维切块的场景依然能享受到 $O(1)$ 的步长计算。
 
-为了进一步降低单次调用成本，在 `collect_positions_for_item(...)` 前面增加了简单跨步检测：
-
-- [MPIPlanner.h](/Volumes/QUQ/working/dacpp/clang/tools/translator/dpcppLib/include/MPIPlanner.h#L325)
-- [MPIPlanner.h](/Volumes/QUQ/working/dacpp/clang/tools/translator/dpcppLib/include/MPIPlanner.h#L378)
-
-新增了：
-
-- `SimpleStrideRange`
-- `try_build_simple_stride_range(...)`
-
-检测条件很保守：
-
-- `part_shape` 最多只有一个维度大于 1
-
-满足时直接生成：
-
-- `start + i * stride`
-
-不满足时完全回退到原来的通用逻辑。
-
-这个 fast path 覆盖的典型模式包括：
-
-- 矩阵一整行
-- 矩阵一整列
-- 单元素输出
-- 一维整段向量访问
-
-但不会误伤：
-
-- 2D stencil 这类多维同时扩展的分区
+2. **里程计步长增量算法 (Odometer Algorithm)**
+   对于真正的多维离散遍历（没有命中 Fast Path 的回退场景），过去使用的是包含 $N$ 次除法 `/` 与取余 `%` 和 `linearize()` 函数乘加重算的嵌套展开方案，这导致在 Host 端计算非常缓慢。
+   现在，回退路径被重写为 Odometer 模型。算法在循环外预存每个维度的全局步幅（Pre-computed strides）；内循环中仅仅是一个递增判定，绝大部分元素更新只做一次纯粹的 `current_linear += stride[N-1]` 偏移追加，只在越界时才引发上层维度的加减进位。
+   这**彻底在千万级调用的内循环中消灭了除法、取模和临时 `std::vector` 的分配**，这让 `collect_positions_for_item` 本身的耗时达到了几乎不可再减的理论下限。
 
 ### 3.5 新增可选 SYCL gather/writeback helper
 

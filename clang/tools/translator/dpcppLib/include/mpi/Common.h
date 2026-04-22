@@ -340,19 +340,21 @@ inline SimpleStrideRange try_build_simple_stride_range(
         return result;
     }
 
-    int varying_dim = -1;
+    int d_first = -1;
+    int d_last = -1;
     int64_t count = 1;
+
     for (int dim = 0; dim < pattern.data_info.dim; ++dim) {
         if (part_shape[dim] > 1) {
-            if (varying_dim >= 0) {
-                return result;
+            if (d_first < 0) {
+                d_first = dim;
             }
-            varying_dim = dim;
-            count = part_shape[dim];
+            d_last = dim;
+            count *= part_shape[dim];
         }
     }
 
-    if (varying_dim < 0) {
+    if (d_first < 0) {
         result.valid = true;
         result.start = linearize(base_pos, pattern.data_info);
         result.stride = 0;
@@ -360,13 +362,22 @@ inline SimpleStrideRange try_build_simple_stride_range(
         return result;
     }
 
-    const int64_t stride = [&]() {
-        int64_t s = 1;
-        for (int dim = varying_dim + 1; dim < pattern.data_info.dim; ++dim) {
-            s *= pattern.data_info.dimLength[dim];
+    bool contiguous = true;
+    for (int dim = d_first + 1; dim <= d_last; ++dim) {
+        if (part_shape[dim] != pattern.data_info.dimLength[dim]) {
+            contiguous = false;
+            break;
         }
-        return s;
-    }();
+    }
+
+    if (!contiguous) {
+        return result;
+    }
+
+    int64_t stride = 1;
+    for (int dim = d_last + 1; dim < pattern.data_info.dim; ++dim) {
+        stride *= pattern.data_info.dimLength[dim];
+    }
 
     result.valid = true;
     result.start = linearize(base_pos, pattern.data_info);
@@ -440,16 +451,25 @@ inline std::vector<int64_t> collect_positions_for_item(int64_t item_id,
         return globals;
     }
 
-    for (int64_t linear_idx = 0; linear_idx < elem_count; ++linear_idx) {
-        std::vector<int> global_pos = base_pos;
-        int64_t carry = linear_idx;
+    std::vector<int64_t> element_strides(pattern.data_info.dim, 1);
+    for (int dim = pattern.data_info.dim - 2; dim >= 0; --dim) {
+        element_strides[dim] = element_strides[dim + 1] * pattern.data_info.dimLength[dim + 1];
+    }
+
+    int64_t current_linear = linearize(base_pos, pattern.data_info);
+    std::vector<int> current_pos(pattern.data_info.dim, 0);
+
+    for (int64_t idx = 0; idx < elem_count; ++idx) {
+        globals.push_back(current_linear);
+
         for (int dim = pattern.data_info.dim - 1; dim >= 0; --dim) {
-            const int width = part_shape[dim];
-            const int offset = static_cast<int>(carry % width);
-            carry /= width;
-            global_pos[dim] += offset;
+            if (++current_pos[dim] < part_shape[dim]) {
+                current_linear += element_strides[dim];
+                break;
+            }
+            current_pos[dim] = 0;
+            current_linear -= element_strides[dim] * static_cast<int64_t>(part_shape[dim] - 1);
         }
-        globals.push_back(linearize(global_pos, pattern.data_info));
     }
     if (profilingEnabled()) {
         const auto profile_end = std::chrono::steady_clock::now();

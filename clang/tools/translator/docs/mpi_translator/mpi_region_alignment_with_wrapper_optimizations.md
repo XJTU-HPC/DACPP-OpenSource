@@ -1,408 +1,422 @@
 # MPI Region 对齐 Wrapper 优化说明
 
-本文档用于把已经在 MPI wrapper 路径中落地的性能优化，对齐到 MPI region 路径，方便后续实现和评审时统一目标、边界与优先级。
+更新日期：2026-04-20
 
-重点不是重新解释 wrapper 做了什么，而是回答这三个问题：
+本文档记录当前 MPI wrapper 优化已经落到什么程度、MPI region 还差哪些点，以及后续如果要把优化继续对齐到 region，推荐从哪里下手。
 
-- wrapper 已经优化到了哪里
-- region 当前还停在哪一步
-- region 应该怎样最小风险地跟进
+这份文档只描述当前仓库的真实状态，不再沿用旧版 monolithic MPI 文件或拆分前的 `MPIPlanner.h` 行号引用。
 
-## 1. 背景
+## 1. 当前结论
 
-在非 stencil 的矩阵乘法场景中，wrapper 路径的主要瓶颈并不在 kernel，而在 host 侧的数据组织：
+当前状态可以先概括成三句话：
 
-- `collect_positions_for_item()` 被重复调用
-- `build_input_pack_map(...)` 和 `build_item_slots(...)` 对同一批 item 分别遍历
-- root 为每个 rank 重新构造远端 pack
-- writeback / gather / scatter 前后还存在额外 host 组织成本
+- wrapper 主线的 host 侧冗余优化已经落地，并且已经通过当前非 stencil 样例回归验证。
+- planner/runtime 头文件已经拆分到 `dpcppLib/include/mpi/` 下，`MPIPlanner.h` 和 `MPIRegionRuntime.h` 现在只是兼容入口。
+- region 还没有完整对齐 wrapper 的 host 去重链路，尤其是 `PackPlan`、root 侧远端 pack 重算消除、以及输出广播路径收紧这几项。
 
-这条链路已经在 wrapper 路径上做过一轮优化，核心收益来自：
+## 2. 代码入口已经发生的变化
 
-- 用 `PackPlan` 合并 pack 和 slots 构建
-- 按 bind-key 复用同一类 item 的 positions
-- root 直接收集各 rank 的 `pack.globals`，不再重算远端 pack
-- 对规则 gather/writeback 增加可选 SYCL 并行 helper
-- 在 `collect_positions_for_item()` 内增加 stride fast path
+### 2.1 planner/runtime 头文件已拆分
 
-这些优化中的大部分并不依赖 wrapper 特有语义，理论上都可以复用到 region。
+当前实际实现不再集中塞在一个超大 `MPIPlanner.h` 里，而是拆成了下面几个子头：
 
-## 2. 当前代码状态
+- [MPIPlanner.h](/Volumes/QUQ/working/dacpp/clang/tools/translator/dpcppLib/include/MPIPlanner.h)
+- [MPIRegionRuntime.h](/Volumes/QUQ/working/dacpp/clang/tools/translator/dpcppLib/include/MPIRegionRuntime.h)
+- [Common.h](/Volumes/QUQ/working/dacpp/clang/tools/translator/dpcppLib/include/mpi/Common.h)
+- [Pack.h](/Volumes/QUQ/working/dacpp/clang/tools/translator/dpcppLib/include/mpi/Pack.h)
+- [Views.h](/Volumes/QUQ/working/dacpp/clang/tools/translator/dpcppLib/include/mpi/Views.h)
+- [Halo.h](/Volumes/QUQ/working/dacpp/clang/tools/translator/dpcppLib/include/mpi/Halo.h)
+- [RegionRuntime.h](/Volumes/QUQ/working/dacpp/clang/tools/translator/dpcppLib/include/mpi/RegionRuntime.h)
 
-### 2.1 wrapper 路径
+其中：
 
-wrapper 主线已经切到 `PackPlan`：
+- `MPIPlanner.h` 现在只是 umbrella include
+- `MPIRegionRuntime.h` 现在也只是 umbrella include
+- 实际 planner 逻辑主要在 `Common.h` 和 `Pack.h`
+- 实际 region runtime 逻辑在 `RegionRuntime.h`
 
-- `PackPlan` 与 `build_input_pack_plan(...)` / `build_output_pack_plan(...)` / `build_rw_pack_plan(...)` 位于 [MPIPlanner.h](/Volumes/QUQ/working/dacpp/clang/tools/translator/dpcppLib/include/MPIPlanner.h#L640)
-- wrapper codegen 使用 `plan.pack + plan.slots`，位于 [Rewriter_MPI_Wrapper_Codegen.cpp](/Volumes/QUQ/working/dacpp/clang/tools/translator/rewriter/lib/mpi/Rewriter_MPI_Wrapper_Codegen.cpp#L65)
-- root 侧已改为 `Gather/Gatherv pack.globals`，不再调用远端 `build_input_pack_map(...)`，位于 [Rewriter_MPI_Wrapper_Codegen.cpp](/Volumes/QUQ/working/dacpp/clang/tools/translator/rewriter/lib/mpi/Rewriter_MPI_Wrapper_Codegen.cpp#L72)
-- `collect_positions_for_item()` 的 stride fast path 位于 [MPIPlanner.h](/Volumes/QUQ/working/dacpp/clang/tools/translator/dpcppLib/include/MPIPlanner.h#L325)
+因此后续 region 对齐 wrapper 优化时，建议直接看 `dpcppLib/include/mpi/` 下的子头，而不是继续围着旧的单文件心智模型转。
 
-### 2.2 region 路径
+### 2.2 当前活跃 codegen 路径
 
-region 当前主线不是旧式 monolithic 拼接骨架，而是拆分后的这些文件：
+wrapper 当前主线：
+
+- [Rewriter_MPI_Wrapper_Codegen.cpp](/Volumes/QUQ/working/dacpp/clang/tools/translator/rewriter/lib/mpi/Rewriter_MPI_Wrapper_Codegen.cpp)
+
+region 当前主线：
 
 - [Rewriter_MPI_Region_Codegen.cpp](/Volumes/QUQ/working/dacpp/clang/tools/translator/rewriter/lib/mpi/Rewriter_MPI_Region_Codegen.cpp)
 - [Rewriter_MPI_Region_Init.cpp](/Volumes/QUQ/working/dacpp/clang/tools/translator/rewriter/lib/mpi/Rewriter_MPI_Region_Init.cpp)
 - [Rewriter_MPI_Region_Submit.cpp](/Volumes/QUQ/working/dacpp/clang/tools/translator/rewriter/lib/mpi/Rewriter_MPI_Region_Submit.cpp)
 - [Rewriter_MPI_Region_Halo.cpp](/Volumes/QUQ/working/dacpp/clang/tools/translator/rewriter/lib/mpi/Rewriter_MPI_Region_Halo.cpp)
 - [Rewriter_MPI_Region_Sync.cpp](/Volumes/QUQ/working/dacpp/clang/tools/translator/rewriter/lib/mpi/Rewriter_MPI_Region_Sync.cpp)
+- [Rewriter_MPI_Region_Sibling.cpp](/Volumes/QUQ/working/dacpp/clang/tools/translator/rewriter/lib/mpi/Rewriter_MPI_Region_Sibling.cpp)
+- [Rewriter_MPI_Region_Policy.cpp](/Volumes/QUQ/working/dacpp/clang/tools/translator/rewriter/lib/mpi/Rewriter_MPI_Region_Policy.cpp)
 
-当前 region runtime 入口在：
+旧版 `Rewriter_MPI_Region.cpp` monolithic 实现已经删除，不再参与任何活跃构建或代码生成。
 
-- [MPIRegionRuntime.h](/Volumes/QUQ/working/dacpp/clang/tools/translator/dpcppLib/include/MPIRegionRuntime.h)
+## 3. wrapper 目前已经落地的优化
 
-其中初始化与回收的关键路径是：
+### 3.1 `PackPlan` 已经替代 `PackMap + build_item_slots`
 
-- `init_region_param_storage(...)` 位于 [MPIRegionRuntime.h](/Volumes/QUQ/working/dacpp/clang/tools/translator/dpcppLib/include/MPIRegionRuntime.h#L76)
-- `writeback_region_output(...)` 位于 [MPIRegionRuntime.h](/Volumes/QUQ/working/dacpp/clang/tools/translator/dpcppLib/include/MPIRegionRuntime.h#L229)
+当前 wrapper 已经改成：
 
-## 3. wrapper 与 region 的关键差异
+- 在 [Pack.h](/Volumes/QUQ/working/dacpp/clang/tools/translator/dpcppLib/include/mpi/Pack.h) 中定义 `PackPlan`
+- 通过 `build_input_pack_plan(...)` / `build_output_pack_plan(...)` / `build_rw_pack_plan(...)` 一次性拿到 `pack + slots`
+- 在 [Rewriter_MPI_Wrapper_Codegen.cpp](/Volumes/QUQ/working/dacpp/clang/tools/translator/rewriter/lib/mpi/Rewriter_MPI_Wrapper_Codegen.cpp) 中直接生成 `plan.pack` 和 `plan.slots`
 
-当前 wrapper 和 region 的 planner/runtime 差异主要在下面几项。
+`PackPlan` 背后的关键点不是“把两段代码写进一个函数”，而是：
 
-### 3.1 pack/slots 构建方式不同
+- 对 item 按 bind-key 去重
+- 相同 bind-key 的 item 复用同一份 `collect_positions_for_item(...)` 结果
+- 从而减少矩阵乘法这类规则访问中的重复位置展开
 
-wrapper 已经是：
+### 3.2 root 不再重算每个 rank 的远端 pack
 
-- `build_*_pack_plan(...)`
-- 单次构建得到 `pack + slots`
-- 同 bind-key 复用 `collect_positions_for_item()`
+当前 wrapper 已经改成：
 
-region 现在仍然是：
+- 各 rank 直接上报本地 `pack.globals`
+- root 用 `MPI_Gather` + `MPI_Gatherv` 收齐这些 globals
+- root 侧再用 `pack_values_by_globals_parallel_range(...)` 从全局 tensor 抽值
 
-- 先构建 `item_pack`
-- 再用 `runtime_pack` 调 `build_item_slots(...)`
+这意味着 wrapper 已经消除了过去那种：
 
-对应代码在 [MPIRegionRuntime.h](/Volumes/QUQ/working/dacpp/clang/tools/translator/dpcppLib/include/MPIRegionRuntime.h#L82)：
+- root 按 rank 循环重跑 `build_input_pack_map(...)`
+- 每个远端 rank 的访问集合再算一遍
 
-```cpp
-state.item_pack =
-    detail::build_pack_for_mode(item_range, state.pattern, state.pattern.mode);
-...
-state.slots =
-    build_item_slots(item_range, state.pattern, state.runtime_pack);
-```
+的路径。
 
-这意味着 region 还保留着 wrapper 已经消掉的“双遍历 item + 重复算 positions”。
+### 3.3 `collect_positions_for_item()` 全面提速 (Fast Path 与 Odometer)
 
-### 3.2 root 侧远端 pack 重算仍然存在
+当前这部分在 [Common.h](/Volumes/QUQ/working/dacpp/clang/tools/translator/dpcppLib/include/mpi/Common.h) 里，并在最新版本中得到了决定性的增强：
 
-在 region 的 `init_region_param_storage(...)` 中，root 仍然按 rank 循环重算远端 pack：
+对于规则访问的 Fast Path 已经能涵盖：
+- 一整行、一整列、单个元素、一维连续段
+- **多维连续分块（新增降维合并检测）**
 
-- [MPIRegionRuntime.h](/Volumes/QUQ/working/dacpp/clang/tools/translator/dpcppLib/include/MPIRegionRuntime.h#L121)
+对于不满足 Fast Path 从而完全回退到通用逻辑的复杂多维展开，已经升级为：
+- **无除模运算的 Odometer (步长增量里程计) 算法**，在 Host 端达到了极致的生成效率。
 
-```cpp
-for (int rank = 0; rank < mpi_size; ++rank) {
-    const auto rank_range =
-        get_rank_item_range(total_items, rank, mpi_size);
-    const auto rank_pack = detail::build_pack_for_mode(
-        rank_range, state.pattern, state.pattern.mode);
-    auto rank_values =
-        pack_values_by_globals(global_values, rank_pack.globals);
-    ...
-}
-```
+这部分是 planner/runtime 公共层优化，所以 region 也已经自动吃到了这些红利。
+
+### 3.4 wrapper 已增加规则 gather/writeback 的可选 SYCL helper
+
+当前公共 helper 已存在于 [Pack.h](/Volumes/QUQ/working/dacpp/clang/tools/translator/dpcppLib/include/mpi/Pack.h)：
+
+- `pack_values_by_globals_parallel(...)`
+- `pack_values_by_globals_parallel_range(...)`
+- `build_writeback_values_parallel(...)`
+
+wrapper 当前已经用上的是：
+
+- root 输入打包：`pack_values_by_globals_parallel_range(...)`
+- writeback：`build_writeback_values_parallel(...)`
+
+这些 helper 仍然保持：
+
+- 小规模走 host 串行路径
+- 超阈值时才走 SYCL `parallel_for`
+- 结果回到 host 后再进入 MPI
+
+也就是说，这些优化并不依赖 GPU-aware MPI。
+
+### 3.5 wrapper 已收紧完整输出广播路径
+
+wrapper 现在已经做了下面这些收紧：
+
+- 不再生成 `synced_count_*`
+- 非 root 不再先收一个 count 再分配
+- 直接按 `tensor.getSize()` 分配完整输出缓冲
+- 再直接 `MPI_Bcast(...)`
+- 之后执行 `array2Tensor(...)`
+
+同时 wrapper 里：
+
+- `READ` 参数分发不再生成 `MPI_Scatter(... recv_count_...)`
+- root 打包输入时不再构造 `std::vector<int64_t> r_globals(...)` 临时切片
+- 非 `MPI_BYTE` 类型不再生成 `sendcounts_bytes_*` / `recvcounts_bytes_*`
+- `MPI_BYTE` 类型仍保留 bytes 计数数组，这是预期行为
+
+### 3.6 wrapper 已带 profiling 输出
+
+当前 wrapper 会打印：
+
+- `wrapper_total_ms(max)`
+- `collect_positions_for_item total_calls(sum)`
+- `collect_positions_for_item total_ms(sum)`
+- `collect_positions_for_item max_rank_ms`
+
+因此 wrapper 现在不仅“代码结构上更干净”，还具备持续做性能 AB 的基础。
+
+## 4. region 当前还停在哪一步
+
+当前 region runtime 入口是：
+
+- [RegionRuntime.h](/Volumes/QUQ/working/dacpp/clang/tools/translator/dpcppLib/include/mpi/RegionRuntime.h)
+
+它和 wrapper 的关键差异主要有四类。
+
+### 4.1 region 仍保留 `item_pack + build_item_slots(...)` 的双遍历
+
+当前 `init_region_param_storage(...)` 仍然是：
+
+1. 先按 `state.pattern.mode` 构建 `item_pack`
+2. 如果没有预配置 `runtime_pack`，让 `runtime_pack = item_pack`
+3. 再基于 `runtime_pack` 调 `build_item_slots(...)`
+
+也就是说，region 还保留着 wrapper 已经消掉的这段成本：
+
+- `build_*_pack_map(...)` 一轮 item 遍历
+- `build_item_slots(...)` 再来一轮 item 遍历
+- `collect_positions_for_item(...)` 重复计算
+
+### 4.2 region root 侧仍然重算远端 pack
+
+当前 `init_region_param_storage(...)` 在非 dense-cover 的 scatter 路径里，root 仍然会：
+
+1. 枚举每个 rank
+2. 重新根据 `rank_range` 调 `build_pack_for_mode(...)`
+3. 再用 `rank_pack.globals` 打包输入
 
 这正是 wrapper 已经通过 `Gather/Gatherv pack.globals` 干掉的那部分。
 
-### 3.3 region 存在 item_pack/runtime_pack 双 pack 语义
+### 4.3 region 还没切到并行 gather/writeback helper
 
-region 不像 wrapper 只有一个 pack。它有：
+当前 region 仍然使用：
 
-- `item_pack`：由 item-space 真正访问集合导出
-- `runtime_pack`：实际 local storage 采用的 pack
+- `pack_values_by_globals(...)`
+- `build_writeback_values(...)`
 
-对应结构在 [MPIRegionRuntime.h](/Volumes/QUQ/working/dacpp/clang/tools/translator/dpcppLib/include/MPIRegionRuntime.h#L12)。
+还没有切到：
 
-这点很重要，因为 region 的 sibling 场景可能把 `runtime_pack` 扩成 dense cover：
+- `pack_values_by_globals_parallel(...)`
+- `pack_values_by_globals_parallel_range(...)`
+- `build_writeback_values_parallel(...)`
 
-- [Rewriter_MPI_Region_Init.cpp](/Volumes/QUQ/working/dacpp/clang/tools/translator/rewriter/lib/mpi/Rewriter_MPI_Region_Init.cpp#L223)
+因此即便公共 helper 已经存在，region 目前还没有实际吃到这一块收益。
 
-也就是说，wrapper 的 `PackPlan = 访问计划 = 存储布局`，但 region 不一定成立。
+### 4.4 region 完整输出广播仍然保留 `synced_count`
 
-因此 region 对齐 wrapper 优化时，不能简单把 `item_pack` 删除掉，而是要区分：
+当前 `writeback_region_output(...)` 仍然是旧路径：
 
-- 哪些优化作用在 item positions 生成阶段
-- 哪些优化作用在实际 runtime storage 打包阶段
+- root 先构造 `synced_values`
+- 广播 `synced_count`
+- 非 root 按 `synced_count` 分配
+- 再广播整块数据
 
-## 4. 可以直接复用到 region 的优化
+这和 wrapper 现在“直接按 `tensor.getSize()` 广播完整输出”的路径还不一致。
 
-下面这些优化原则上可以直接迁移，收益明确，语义风险也较低。
+## 5. region 和 wrapper 的一个核心语义差别
 
-### 4.1 `collect_positions_for_item()` stride fast path
-
-这项已经在 runtime 公共层实现了：
-
-- [MPIPlanner.h](/Volumes/QUQ/working/dacpp/clang/tools/translator/dpcppLib/include/MPIPlanner.h#L378)
-
-因此 region 已经自动吃到这部分收益，不需要额外 codegen 改造。
-
-这意味着：
-
-- matmul 这种一行 / 一列 / 单点的模式
-- 以及一维整段访问的模式
-
-在 region/runtime 共用 planner 时都会变快。
-
-### 4.2 `pack_values_by_globals_parallel(...)`
-
-该 helper 已经在 runtime 层可用：
-
-- [MPIPlanner.h](/Volumes/QUQ/working/dacpp/clang/tools/translator/dpcppLib/include/MPIPlanner.h#L725)
-
-region 目前 `init_region_param_storage(...)` 仍调用串行版 `pack_values_by_globals(...)`：
-
-- [MPIRegionRuntime.h](/Volumes/QUQ/working/dacpp/clang/tools/translator/dpcppLib/include/MPIRegionRuntime.h#L132)
-
-这部分可以低风险切换为：
-
-- 小规模保持 host 路径
-- 超阈值时走 `pack_values_by_globals_parallel(...)`
-
-前提仍然和 wrapper 一样：
-
-- kernel 结果必须回到 host 后再喂给 MPI
-- 不假设 GPU-aware MPI
-
-### 4.3 `build_writeback_values_parallel(...)`
-
-该 helper 也已经在 runtime 层可用：
-
-- [MPIPlanner.h](/Volumes/QUQ/working/dacpp/clang/tools/translator/dpcppLib/include/MPIPlanner.h#L789)
-
-region 当前 `writeback_region_output(...)` 仍然调用串行版：
-
-- [MPIRegionRuntime.h](/Volumes/QUQ/working/dacpp/clang/tools/translator/dpcppLib/include/MPIRegionRuntime.h#L237)
-
-```cpp
-auto writeback_values = build_writeback_values(state.local, state.runtime_pack);
-```
-
-这部分同样可以直接切到并行 helper，并保持阈值控制。
-
-## 5. 需要改造后才能迁移到 region 的优化
-
-下面这些优化不能直接照搬，需要针对 region 的 `item_pack/runtime_pack` 双语义做设计。
-
-### 5.1 `PackPlan` 合并 pack + slots
-
-wrapper 的核心收益之一来自 `PackPlan`：
-
-- [MPIPlanner.h](/Volumes/QUQ/working/dacpp/clang/tools/translator/dpcppLib/include/MPIPlanner.h#L640)
-
-但 region 不能直接“把 `build_pack_plan()` 的结果当成 runtime pack”，因为 region 可能有这两种情况：
-
-- `runtime_pack == item_pack`
-- `runtime_pack` 被 sibling 扩成 dense cover
-
-因此 region 要复用 `PackPlan`，推荐拆成两层：
-
-1. item access plan
-2. runtime storage plan
-
-更具体地说：
-
-- 当 `runtime_pack == item_pack` 时，region 应直接使用 `PackPlan`
-- 当 `runtime_pack` 是 dense cover 或其他扩展布局时，region 仍需要：
-  - 用 item-side positions 生成逻辑访问顺序
-  - 但 slots 要基于 `runtime_pack` 做 lookup
-
-推荐新增一个更贴近 region 的 runtime helper：
-
-```cpp
-build_region_item_plan(item_range, pattern)
-```
-
-它至少返回：
+region 不能直接照搬 wrapper 的实现，最核心的原因是它有双 pack 语义：
 
 - `item_pack`
-- `item_positions_by_key` 或等价缓存
-- `slots_for_runtime_pack(runtime_pack)`
+- `runtime_pack`
 
-如果不想新开类型，也可以在 `PackPlan` 基础上新增一个 helper：
+当前 `RegionParamState` 里这两个字段都还在：
 
-```cpp
-build_slots_from_cached_positions(cached_positions, runtime_pack)
-```
+- `item_pack` 表示 item-space 真正访问到的集合
+- `runtime_pack` 表示实际 local storage 的布局
+
+这在 sibling dense-cover 场景里尤其关键，因为 region 可能会把：
+
+- `runtime_pack` 扩成 dense cover
+
+而这时：
+
+- `item_pack != runtime_pack`
+
+所以 region 的对齐方向不能是“把 wrapper 的 `PackPlan` 直接替换进去完事”，而是要拆开看：
+
+- 哪些优化作用在 item positions 生成阶段
+- 哪些优化作用在 runtime storage 布局阶段
+- 哪些 lookup 一定要继续以 `runtime_pack` 为准
+
+## 6. region 已经自动吃到的优化
+
+### 6.1 `collect_positions_for_item()` fast path
+
+这项已经在公共 planner 层里了，所以 region 已经自动获得收益。
+
+### 6.2 头文件拆分带来的维护收益
+
+虽然这不是性能优化，但现在 planner/runtime 被拆到：
+
+- `Common.h`
+- `Pack.h`
+- `Views.h`
+- `Halo.h`
+- `RegionRuntime.h`
+
+之后，后续 region 对齐 wrapper 时可以更明确地只改：
+
+- `Pack.h`
+- `RegionRuntime.h`
+
+而不是继续在一个超大单头里滚动修改。
+
+## 7. region 下一步最值得对齐的点
+
+### 7.1 先做 runtime 层低风险替换
+
+优先建议先在 [RegionRuntime.h](/Volumes/QUQ/working/dacpp/clang/tools/translator/dpcppLib/include/mpi/RegionRuntime.h) 做三项：
+
+1. `pack_values_by_globals(...)` 切到并行 helper
+2. `build_writeback_values(...)` 切到并行 helper
+3. 完整输出广播改成 wrapper 现在的直接 `tensor.getSize()` 路径
+
+这三项的共同特点是：
+
+- 不需要改 region codegen 主体
+- 不碰 halo/sibling 的主体语义
+- 风险明显低于直接改 `item_pack/runtime_pack` 规划模型
+
+### 7.2 再消掉 root 远端 pack 重算
+
+第二阶段建议把 region 的 init scatter 改成 wrapper 同款思路：
+
+1. 每个 rank 上报实际用于 scatter 的 `runtime_pack.globals`
+2. root 收集所有 rank 的 globals
+3. root 基于这些 globals 做 gather
+4. 删除 root 侧按 rank 重建 `build_pack_for_mode(...)`
+
+这里要特别注意：
+
+- region 要上报的是 `runtime_pack.globals`
+- 不是简单默认 `item_pack.globals`
+
+因为 dense-cover sibling 场景下：
+
+- root 如果只按 `item_pack.globals` 发值
+- local runtime storage 可能不完整
+
+### 7.3 最后再引入 region 版 plan
+
+最后才建议做最关键但也最容易出语义问题的一步：
+
+- 把 region 从 `build_pack_for_mode(...) + build_item_slots(...)`
+- 升级为“共享 positions 缓存 + 按 runtime_pack 映射 slots”
+
+更合适的方向不是直接复用 wrapper 的 `PackPlan` 成品，而是引入一个更贴近 region 的模型，至少能表达：
+
+- item positions 的缓存
+- item-side pack
+- runtime-pack-side slots
+
+一个实用的中间方案是：
+
+- 先保留 `PackPlan` 作为公共基础结构
+- 再补一个基于缓存 positions 构建 runtime slots 的 helper
 
 这样可以做到：
 
 - item positions 只算一次
-- `item_pack` 和 `runtime_pack` 分别按需要生成
-- dense cover sibling 场景仍成立
+- `item_pack` 仍然保留
+- `runtime_pack` 仍然是 sibling / halo / sync 的权威布局
 
-### 5.2 root 收集各 rank `pack.globals` 替代远端重算
+## 8. 迁移时必须守住的约束
 
-wrapper 已经实现这条链路，但 region 目前仍然把远端 pack 重算放在 runtime 里。
+### 8.1 halo 的 slot lookup 仍然必须对齐 `runtime_pack`
 
-region 迁移这项优化时要注意：
+当前 halo 计算最终依赖 `ctx_pack.g2l` 去查 local slot。
 
-- root 应该收集的是实际用于 init scatter 的 `runtime_pack.globals`
-- 不是简单默认 `item_pack.globals`
-
-原因是 sibling dense-cover 场景下：
-
-- `runtime_pack.globals` 可能是 dense cover
-- root 如果只按 `item_pack.globals` 发初值，会导致运行期 local storage 不完整
-
-因此 region 的 root gather 逻辑应该围绕 `state.runtime_pack.globals` 来做。
-
-建议直接在 `init_region_param_storage(...)` 中改造，而不是在 codegen 层重写一套。这样可以复用 runtime helper，也更容易统一 wrapper/region planner 语义。
-
-## 6. 不建议直接搬到 region 的点
-
-有几项 wrapper 优化思路，region 不能简单照搬，或者当前不值得优先做。
-
-### 6.1 把不规则 pack-map 构建搬到 SYCL device
-
-不建议。
-
-原因和 wrapper 一样：
-
-- `sort + unique`
-- `unordered_map g2l`
-- 变长 `positions`
-- bind-key 去重缓存
-
-这些都更适合先留在 host 侧。
-
-region 比 wrapper 还复杂，因为还叠加了：
-
-- dense cover runtime pack
-- sibling lookup
-- halo pack/layout 依赖
-
-### 6.2 直接把 region 全部改成 wrapper 模式
-
-不建议。
-
-region 的生命周期是：
-
-- `init`
-- `submit`
-- `halo`
-- `sibling`
-- `sync`
-
-它本身就需要跨多轮迭代保持 local state，因此不能退化成“每次 `<->` 一次性 scatter + gather”的 wrapper 模式。
-
-正确方向应该是：
-
-- 共用 planner/runtime 优化
-- 保留 region 自己的状态机和 sibling/halo 语义
-
-## 7. 推荐的 region 对齐顺序
-
-为了降低风险，建议按下面顺序推进。
-
-### Phase 1: runtime helper 低风险替换
-
-目标：
-
-- 先拿到收益最稳的改造
-- 不改 region codegen 结构
-
-建议改动：
-
-1. 在 `writeback_region_output(...)` 中切到 `build_writeback_values_parallel(...)`
-2. 在 `init_region_param_storage(...)` 中切到 `pack_values_by_globals_parallel(...)`
-3. 保持阈值控制，默认 host 路径不变
-
-涉及文件：
-
-- [MPIRegionRuntime.h](/Volumes/QUQ/working/dacpp/clang/tools/translator/dpcppLib/include/MPIRegionRuntime.h)
-
-### Phase 2: 去掉 root 远端 pack 重算
-
-目标：
-
-- 对齐 wrapper 的 `opt2`
-- 消除 region init 中对远端 `build_pack_for_mode(...)` 的重复计算
-
-建议改动：
-
-1. 每个 rank 上报 `state.runtime_pack.globals.size()`
-2. `MPI_Gatherv` 收集各 rank 的 `runtime_pack.globals`
-3. root 根据收集到的 globals 做 `pack_values_by_globals[_parallel](...)`
-4. 删除 root 侧 `for rank -> build_pack_for_mode(...)`
-
-涉及文件：
-
-- [MPIRegionRuntime.h](/Volumes/QUQ/working/dacpp/clang/tools/translator/dpcppLib/include/MPIRegionRuntime.h#L76)
-
-### Phase 3: 引入 region 版 plan，复用 positions 缓存
-
-目标：
-
-- 对齐 wrapper 的 `opt1`
-- 消除 region 中 `build_pack_for_mode(...) + build_item_slots(...)` 的双遍历
-
-推荐实现方式：
-
-1. 保留 `PackPlan` 作为公共基础结构
-2. 新增 region 专用 helper，显式区分：
-   - item positions
-   - item-derived pack
-   - runtime-pack-based slots
-3. 当 `runtime_pack == item_pack` 时走最简路径
-4. 当 `runtime_pack` 为 dense cover 时，直接基于缓存 positions 重新映射 slots
-
-优先修改 runtime，而不是先动 codegen。
-
-原因是当前 region 主线已经把大部分初始化收敛到 `init_region_param_storage(...)`，在 runtime 层做更容易保持 wrapper / region 一致。
-
-## 8. 对 halo 与 sibling 的影响
-
-### 8.1 halo
-
-当前 halo 计算使用的是 `ctx_pack`：
-
-- [MPIPlanner.h](/Volumes/QUQ/working/dacpp/clang/tools/translator/dpcppLib/include/MPIPlanner.h#L1501)
-
-而 region 在调用时传的是 `runtime_pack`：
-
-- [Rewriter_MPI_Region_Init.cpp](/Volumes/QUQ/working/dacpp/clang/tools/translator/rewriter/lib/mpi/Rewriter_MPI_Region_Init.cpp#L263)
-
-因此 region 若引入 item-plan 缓存，必须保持：
+因此 region 如果引入 item-plan 缓存，必须继续保证：
 
 - halo 的 local slot lookup 仍然对齐 `runtime_pack`
 
-这一点不能退回到 `item_pack`，否则 dense cover sibling 场景会错位。
+不能偷懒退回 `item_pack`，否则 dense-cover sibling 场景会错位。
 
-### 8.2 sibling
+### 8.2 sibling 仍然以 `runtime_pack` 为权威布局
 
-sibling 依赖：
+sibling 逻辑依赖：
 
 - `runtime_pack`
 - `global_to_local`
-- `dense_fallback`
-- `dense_shadow`
-- dirty 稀疏同步
+- dense fallback / dense shadow
+- dirty sparse sync
 
-因此 region 的优化原则是：
+所以 region 的优化原则只能是：
 
-- 可以减少 item positions 的重复生成
-- 不能破坏 `runtime_pack` 作为 sibling 实际布局的权威性
+- 减少 item positions 的重复生成
+- 减少 root 远端 pack 重算
+- 减少规则 gather/writeback 的 host 成本
 
-## 9. 推荐的实现落点
+不能破坏 `runtime_pack` 作为实际存储布局的权威性。
 
-如果要正式把 wrapper 优化继续推到 region，建议优先从这些文件入手：
+### 8.3 `MPI_BYTE` 分支不能误删
 
-- runtime 公共层：
-  - [MPIRegionRuntime.h](/Volumes/QUQ/working/dacpp/clang/tools/translator/dpcppLib/include/MPIRegionRuntime.h)
-  - [MPIPlanner.h](/Volumes/QUQ/working/dacpp/clang/tools/translator/dpcppLib/include/MPIPlanner.h)
+wrapper 当前只在 `MPI_BYTE` 才生成 bytes 计数数组。
+
+region 后续对齐时也应该保持同样原则：
+
+- 标准 MPI datatype 不额外生成 bytes 计数数组
+- `MPI_BYTE` 继续保留 bytes 路径
+
+### 8.4 仍然不假设 GPU-aware MPI
+
+无论 wrapper 还是 region，目前这些 helper 的设计前提都还是：
+
+- gather/writeback 可以用 SYCL 提速
+- 但 MPI 收发仍然基于 host memory
+
+后续 region 对齐时也不建议把不规则 pack-map 生成、变长 positions 构建、`unordered_map g2l` 等逻辑强行搬到 device。
+
+## 9. 当前验证状态
+
+### 9.1 wrapper 生成代码已静态确认
+
+已经重新翻译并静态检查过代表性 wrapper 样例，确认当前生成代码里：
+
+- 已使用 `build_*_pack_plan(...)`
+- 已使用 `pack_values_by_globals_parallel_range(...)`
+- 已去掉 `recv_count_*`
+- 已去掉 `synced_count_*`
+- 已去掉 root 侧 `std::vector<int64_t> r_globals(...)`
+- 非 `MPI_BYTE` 类型不再生成 bytes 计数数组
+
+### 9.2 当前非 stencil 回归已通过
+
+已通过的非 stencil MPI 回归包括：
+
+- `matMul1.0`
+- `gradientSum`
+- `DFT1.0`
+- `decay1.0`
+- `FOuLa1.0`
+- `MDP1.0`
+- `mandel1.0`
+- `imageAdjustment1.0`
+- `vectorAddCombo`
+- `liuliang1.0`
+- `oddeven0.1`
+- `jacobi1.0`
+
+这里面：
+
+- wrapper 路径样例验证了 wrapper 主线优化没有回退
+- `liuliang1.0`、`jacobi1.0` 这类样例也顺带验证了公共 planner/runtime 变更没有破坏 region 路径
+
+但要注意，这不等于 region 已经吃到了 wrapper 的全部 host 去重优化，只说明当前公共层拆分和清理没有引入功能回归。
+
+## 10. 推荐的实现落点
+
+如果下一步要正式把 wrapper 优化继续推到 region，建议优先从这些文件入手：
+
+- 公共 planner/runtime：
+  - [Common.h](/Volumes/QUQ/working/dacpp/clang/tools/translator/dpcppLib/include/mpi/Common.h)
+  - [Pack.h](/Volumes/QUQ/working/dacpp/clang/tools/translator/dpcppLib/include/mpi/Pack.h)
+  - [RegionRuntime.h](/Volumes/QUQ/working/dacpp/clang/tools/translator/dpcppLib/include/mpi/RegionRuntime.h)
 - region codegen 主线：
   - [Rewriter_MPI_Region_Init.cpp](/Volumes/QUQ/working/dacpp/clang/tools/translator/rewriter/lib/mpi/Rewriter_MPI_Region_Init.cpp)
   - [Rewriter_MPI_Region_Sync.cpp](/Volumes/QUQ/working/dacpp/clang/tools/translator/rewriter/lib/mpi/Rewriter_MPI_Region_Sync.cpp)
-- 可忽略的旧路径：
-  - 旧版 `Rewriter_MPI_Region.cpp` monolithic 实现已删除，当前以 `Rewriter_MPI_Region_Codegen.cpp` 及其 helper 文件为准。
+  - [Rewriter_MPI_Region_Sibling.cpp](/Volumes/QUQ/working/dacpp/clang/tools/translator/rewriter/lib/mpi/Rewriter_MPI_Region_Sibling.cpp)
 
-## 10. 一句话结论
+## 11. 一句话结论
 
-region 已经自动吃到 `collect_positions_for_item()` 的 fast path，但还没有吃到 wrapper 的两项核心 host 优化：
+当前 region 已经自动吃到了公共 planner 的 fast path，但还没有吃到 wrapper 最关键的三类 host 侧优化：
 
-- `PackPlan` 合并 pack + slots
+- `PackPlan` 带来的 item positions 去重
 - root 侧远端 pack 重算消除
+- 完整输出广播与规则 gather/writeback 路径的进一步收紧
 
-下一步最合理的方向不是“把 region 改成 wrapper”，而是把 wrapper 已验证有效的 planner/runtime 去重能力，按 `item_pack/runtime_pack` 双语义重新落到 region runtime 里。
+下一步最稳妥的方向不是“把 region 改成 wrapper”，而是把 wrapper 已验证有效的 planner/runtime 去重能力，按 `item_pack/runtime_pack` 双语义重新落到 region runtime 里。
