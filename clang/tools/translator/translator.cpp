@@ -524,15 +524,15 @@ public:
     rewriter->setRewriter(clangRewriter);
     rewriter->setDacppFile(dacppFile);
 
-    if (ModeOpt == "buffer" || MpiOpt) {
+    if (ModeOpt == "buffer") {
       dacppFile->analyzeBufferRegionPlan();
       if (dacppFile->hasBufferRegionPlan()) {
         llvm::outs() << "[DACPP] "
-                     << (MpiOpt ? "MPI" : "buffer")
+                     << "buffer"
                      << " region optimization enabled\n";
       } else if (!dacppFile->getBufferRegionPlan().disableReason.empty()) {
         llvm::outs() << "[DACPP] "
-                     << (MpiOpt ? "MPI" : "buffer")
+                     << "buffer"
                      << " region optimization skipped: "
                      << dacppFile->getBufferRegionPlan().disableReason << "\n";
       }
@@ -541,11 +541,7 @@ public:
     // dacppTranslator::printDacppFileInfo(dacppFile);
 
 if (MpiOpt) {
-    if (dacppFile->hasBufferRegionPlan()) {
-        rewriter->rewriteMPI_Region();
-    } else {
-        rewriter->rewriteMPI();
-    }
+    rewriter->rewriteMPI();
 } else if (ModeOpt == "usm") {
   //  rewriter->rewriteDac_Usm();
 } else if (ModeOpt == "buffer") {

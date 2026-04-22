@@ -4,7 +4,5 @@
 #include "mpi/Common.h"
 #include "mpi/Pack.h"
 #include "mpi/Views.h"
-#include "mpi/Halo.h"
-#include "mpi/RegionRuntime.h"
 
 #endif

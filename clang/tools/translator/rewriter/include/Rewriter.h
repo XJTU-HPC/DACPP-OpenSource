@@ -218,8 +218,6 @@ public:
 
 
     void rewriteMPI();
-    void rewriteMPI_Stencil();
-    void rewriteMPI_Region();
 };
 
 // namespace dacppTranslator
