@@ -711,14 +711,15 @@ std::string parallelizeNestedFor(
         const std::string& type = p.second;
         bool isConst = (type.find("const") != std::string::npos);
         if (isConst) continue;
-        stride.push_back(getLinearized2DStrideExpr(name, type));
         // 之前生成了 d_name，因此这里加入 d_name
         std::string dname = "d_" + name;
 
-        // 只有 body 中出现才需要加入
+        // 只有 body 中出现才需要加入，stride 和 dvars 必须保持对齐
         std::regex w("\\b" + dname + "\\b");
-        if (std::regex_search(replacedBody, w))
+        if (std::regex_search(replacedBody, w)) {
             dvars.push_back(dname);
+            stride.push_back(getLinearized2DStrideExpr(name, type));
+        }
     }
     bool star = false;
     // 进行二维访问替换
@@ -848,11 +849,12 @@ std::string parallelizeSingleFor(const clang::ForStmt* FS,clang::ASTContext* Con
         const std::string& type = p.second;
         bool isConst = (type.find("const") != std::string::npos);
         if (isConst) continue;
-        stride.push_back(getLinearized2DStrideExpr(name, type));
         std::string dname = "d_" + name;
         std::regex w("\\b" + dname + "\\b");
-        if (std::regex_search(replacedBody, w))
+        if (std::regex_search(replacedBody, w)) {
             dvars.push_back(dname);
+            stride.push_back(getLinearized2DStrideExpr(name, type));
+        }
     }
     bool star = false;
     replacedBody = linearize2D(replacedBody, dvars, stride,star);
@@ -1959,7 +1961,6 @@ const char *KERNEL_EXECUTE_Template2 = R"~~~(
 //2025.12.4修改：对于只读的数据，将buffer的访问模式修改为只读 然后禁止数据写回操作。对于只写的数据，访问模式设置为覆盖写 同时注意 写成这样*r_matC。
 const char* ACCESSOR_LIST_K_read =  R"~~~(
         accessor<{{TYPE}}, 1, access::mode::read> acc_{{NAME}}(r_{{NAME}}, h);
-        r_{{NAME}}.set_final_data(nullptr);
         )~~~";
 const char* ACCESSOR_LIST_K_write =  R"~~~(
         accessor<{{TYPE}}, 1, sycl::access::mode::discard_write> acc_{{NAME}}(*r_{{NAME}}, h);)~~~";

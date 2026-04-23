@@ -708,7 +708,7 @@ BufferRegionGeneratedCode buildOptimizedBufferRegionCode(
 
     std::string code;
     code += "struct " + generated.ctxTypeName + " {\n";
-    code += "    sycl::queue dacpp_q{};\n";
+    code += "    sycl::queue dacpp_q{sycl::default_selector_v, {sycl::property::queue::in_order()}};\n";
     code += "    ParameterGeneration para_gene_tool;\n";
     code += "    int Item_Size = 0;\n";
     code += "    int dim_x = 1;\n";
@@ -748,7 +748,7 @@ BufferRegionGeneratedCode buildOptimizedBufferRegionCode(
         code += ", " + shellParamSignature;
     }
     code += ") {\n";
-    code += "    ctx.dacpp_q = sycl::queue(sycl::default_selector_v);\n";
+    code += "    ctx.dacpp_q = sycl::queue(sycl::default_selector_v, {sycl::property::queue::in_order()});\n";
     for (int paramIdx = 0; paramIdx < shell->getNumParams(); ++paramIdx) {
         auto* param = shell->getParam(paramIdx);
         const std::string& name = param->getName();
@@ -848,6 +848,9 @@ BufferRegionGeneratedCode buildOptimizedBufferRegionCode(
             code += "    ctx.r_" + name + " = std::make_unique<sycl::buffer<" + type +
                     ", 1>>(ctx.h_" + name + ".data(), sycl::range<1>(" + name +
                     ".getSize()));\n";
+            if (effectiveParamModes[paramIdx] == dacppTranslator::IOTYPE::READ) {
+                code += "    ctx.r_" + name + "->set_final_data(nullptr);\n";
+            }
         } else {
             code += "    ctx.r_" + name + " = std::make_unique<sycl::buffer<" + type +
                     ", 1>>(sycl::range<1>(" + name + ".getSize()));\n";
