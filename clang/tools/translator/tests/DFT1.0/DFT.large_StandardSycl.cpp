@@ -8,7 +8,7 @@ using namespace sycl;
 using namespace std;
 
 int main() {
-    constexpr int N = 8192;
+    constexpr int N = 65536;
 
     // --- 准备输入：这里以实数序列示例（imag = 0），可按需修改 ---
     std::vector<double> in_real(N), in_imag(N);

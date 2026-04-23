@@ -4,8 +4,8 @@
 
 using namespace sycl;
 
-constexpr size_t NUM_NEURONS = 1024;
-constexpr size_t INPUT_SIZE  = 512;
+constexpr size_t NUM_NEURONS = 8192;
+constexpr size_t INPUT_SIZE  = 4096;
 
 int main() {
     std::vector<float> host_grads(NUM_NEURONS * INPUT_SIZE);

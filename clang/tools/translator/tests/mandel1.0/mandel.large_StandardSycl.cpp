@@ -7,8 +7,8 @@
 using namespace sycl;
 using namespace std;
 
-const int row_count = 16;
-const int col_count = 16;
+const int row_count = 4096;
+const int col_count = 4096;
 const int max_iterations = 1000;
 
 // 初始化复数点向量

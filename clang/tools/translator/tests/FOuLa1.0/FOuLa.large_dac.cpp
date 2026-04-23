@@ -44,8 +44,8 @@ calc void pde(dacpp::Vector<double>& u_kin,
 
 
 int main() {
-    int n = 5000; //时间域n等分
-    int m = 30; //空间域m等分
+    int n = 100000; //时间域n等分
+    int m = 2000; //空间域m等分
     double r = 0.25;
     double a = 1.0;
     double h = 1.0 / m; //空间步长

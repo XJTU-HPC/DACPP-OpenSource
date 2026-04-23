@@ -4,7 +4,7 @@
 
 using namespace sycl;
 
-const int N = 1024;
+const int N = 65536;
 
 // 一个 kernel：比较 array[i] 和 array[i+1]，必要时交换
 void oddEvenSortSYCL(std::vector<int> &arr) {

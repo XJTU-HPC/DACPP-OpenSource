@@ -8,7 +8,7 @@ using namespace std;
 
 const double dt = 0.1;
 const double T = 5.0;
-const size_t numIsotopes = 10000;
+const size_t numIsotopes = 1000000;
 
 int main() {
     queue q{default_selector_v};

@@ -4,8 +4,8 @@
 #include <iomanip>
 #include <algorithm>
 
-const int WIDTH = 250;       // 路段长度
-const int TIME_STEPS = 500;  // 时间步数
+const int WIDTH = 4000;       // 路段长度
+const int TIME_STEPS = 5000;  // 时间步数
 const double DELTA_T = 0.01; // 时间步长
 const double DELTA_X = 1.0;  // 空间步长
 

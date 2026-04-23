@@ -10,8 +10,8 @@ namespace dacpp {
     typedef std::vector<std::any> list;
 }
 
-const int NUM_NEURONS = 1024;
-const int INPUT_SIZE  = 512;
+const int NUM_NEURONS = 8192;
+const int INPUT_SIZE  = 4096;
  
 shell dacpp::list gradSumShell(dacpp::Matrix<float>& matGrads READ,
                                dacpp::Matrix<float>& matNeuronSum WRITE) {

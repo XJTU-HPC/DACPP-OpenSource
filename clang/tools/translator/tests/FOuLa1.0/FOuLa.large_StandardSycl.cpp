@@ -32,8 +32,8 @@ int main(){
     auto start = std::chrono::high_resolution_clock::now();
 	int n,m;
 	double a,h,tau,r;
-	n=5000;  //时间域n等分
-	m=30;    //空间域m等分
+	n=100000;  //时间域n等分
+	m=2000;    //空间域m等分
 	a=1.0;
 	h=1.0/m;  //空间步长
 	tau=1.0/n;  //时间步长

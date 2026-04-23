@@ -10,7 +10,7 @@ namespace dacpp {
 
 const double dt = 0.1;       // 时间步长
 const double T = 5.0;       // 总时间
-const size_t numIsotopes = 10000; // 设定大量同位素（例如，10000个）
+const size_t numIsotopes = 1000000; // 设定大量同位素
 shell dacpp::list DECAY(const dacpp::Vector<double>& N0s,
                         const dacpp::Vector<double>& lambdas,
                         dacpp::Vector<double>& local_A,

@@ -11,7 +11,7 @@ namespace dacpp {
 
 using namespace std;
 using Complex = std::complex<double>;  // 复数类型别名
-const int N = 8192;
+const int N = 65536;
 
 
 shell dacpp::list DFT(const dacpp::Vector<std::complex<double>>& input,

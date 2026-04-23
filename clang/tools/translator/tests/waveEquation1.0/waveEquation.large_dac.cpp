@@ -8,12 +8,12 @@ namespace dacpp {
     typedef std::vector<std::any> list;
 }
 // 网格参数
-const int NX = 512;    // x方向网格数量
-const int NY = 512;    // y方向网格数量
+const int NX = 2048;    // x方向网格数量
+const int NY = 2048;    // y方向网格数量
 const double Lx = 10.0f; // x方向长度
 const double Ly = 10.0f; // y方向长度
 const double c = 1.0f;   // 波速
-const int TIME_STEPS = 50; // 时间步数
+const int TIME_STEPS = 500; // 时间步数
 // 网格步长
 const double dx = Lx / (NX - 1);
 const double dy = Ly / (NY - 1);
