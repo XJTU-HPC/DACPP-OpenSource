@@ -119,9 +119,9 @@ void matrixMultiply_shell_matrixMultiply_calc(const dacpp::Matrix<int> & matA, c
     pattern_dotProduct.bind_split_sizes = binding_split_sizes;
     auto plan_vecA = dacpp::mpi::build_input_pack_plan(item_range, pattern_vecA);
     auto& pack_vecA = plan_vecA.pack;
-    auto& slots_vecA = plan_vecA.slots;
+    auto& slots_vecA = plan_vecA.compact_slots;
+    auto& key_offsets_vecA = plan_vecA.item_key_offsets;
     std::vector<int> local_vecA(pack_vecA.globals.size());
-    int recv_count_vecA = 0;
     std::vector<int> sendcounts_vecA;
     std::vector<int> displs_vecA;
     int local_global_count_vecA = static_cast<int>(pack_vecA.globals.size());
@@ -150,8 +150,8 @@ void matrixMultiply_shell_matrixMultiply_calc(const dacpp::Matrix<int> & matA, c
         std::vector<int> global_vecA;
         matA.tensor2Array(global_vecA);
         for (int r = 0; r < mpi_size; ++r) {
-            std::vector<int64_t> r_globals(gathered_globals_vecA.begin() + global_displs_vecA[r], gathered_globals_vecA.begin() + global_displs_vecA[r] + global_counts_vecA[r]);
-            auto r_values = dacpp::mpi::pack_values_by_globals_parallel(global_vecA, r_globals);
+            const int64_t* r_globals_ptr = gathered_globals_vecA.data() + global_displs_vecA[r];
+            auto r_values = dacpp::mpi::pack_values_by_globals_parallel_range(global_vecA, r_globals_ptr, static_cast<std::size_t>(global_counts_vecA[r]));
             int r_count = static_cast<int>(r_values.size());
             sendcounts_vecA[r] = r_count;
             displs_vecA[r] = current_displ;
@@ -159,17 +159,14 @@ void matrixMultiply_shell_matrixMultiply_calc(const dacpp::Matrix<int> & matA, c
             sendbuf_vecA.insert(sendbuf_vecA.end(), r_values.begin(), r_values.end());
         }
     }
-    MPI_Scatter(mpi_rank == 0 ? sendcounts_vecA.data() : nullptr, 1, MPI_INT, &recv_count_vecA, 1, MPI_INT, 0, MPI_COMM_WORLD);
-    local_vecA.resize(recv_count_vecA);
-    std::vector<int> sendcounts_bytes_vecA = sendcounts_vecA;
-    std::vector<int> displs_bytes_vecA = displs_vecA;
-    MPI_Scatterv(mpi_rank == 0 ? sendbuf_vecA.data() : nullptr, mpi_rank == 0 ? sendcounts_bytes_vecA.data() : nullptr, mpi_rank == 0 ? displs_bytes_vecA.data() : nullptr, MPI_INT, local_vecA.data(), recv_count_vecA, MPI_INT, 0, MPI_COMM_WORLD);
+    local_vecA.resize(static_cast<std::size_t>(local_global_count_vecA));
+    MPI_Scatterv(mpi_rank == 0 ? sendbuf_vecA.data() : nullptr, mpi_rank == 0 ? sendcounts_vecA.data() : nullptr, mpi_rank == 0 ? displs_vecA.data() : nullptr, MPI_INT, local_vecA.data(), local_global_count_vecA, MPI_INT, 0, MPI_COMM_WORLD);
     const int vecA_partition_size = static_cast<int>(dacpp::mpi::partition_element_count(pattern_vecA));
     auto plan_vecB = dacpp::mpi::build_input_pack_plan(item_range, pattern_vecB);
     auto& pack_vecB = plan_vecB.pack;
-    auto& slots_vecB = plan_vecB.slots;
+    auto& slots_vecB = plan_vecB.compact_slots;
+    auto& key_offsets_vecB = plan_vecB.item_key_offsets;
     std::vector<int> local_vecB(pack_vecB.globals.size());
-    int recv_count_vecB = 0;
     std::vector<int> sendcounts_vecB;
     std::vector<int> displs_vecB;
     int local_global_count_vecB = static_cast<int>(pack_vecB.globals.size());
@@ -198,8 +195,8 @@ void matrixMultiply_shell_matrixMultiply_calc(const dacpp::Matrix<int> & matA, c
         std::vector<int> global_vecB;
         matB.tensor2Array(global_vecB);
         for (int r = 0; r < mpi_size; ++r) {
-            std::vector<int64_t> r_globals(gathered_globals_vecB.begin() + global_displs_vecB[r], gathered_globals_vecB.begin() + global_displs_vecB[r] + global_counts_vecB[r]);
-            auto r_values = dacpp::mpi::pack_values_by_globals_parallel(global_vecB, r_globals);
+            const int64_t* r_globals_ptr = gathered_globals_vecB.data() + global_displs_vecB[r];
+            auto r_values = dacpp::mpi::pack_values_by_globals_parallel_range(global_vecB, r_globals_ptr, static_cast<std::size_t>(global_counts_vecB[r]));
             int r_count = static_cast<int>(r_values.size());
             sendcounts_vecB[r] = r_count;
             displs_vecB[r] = current_displ;
@@ -207,43 +204,50 @@ void matrixMultiply_shell_matrixMultiply_calc(const dacpp::Matrix<int> & matA, c
             sendbuf_vecB.insert(sendbuf_vecB.end(), r_values.begin(), r_values.end());
         }
     }
-    MPI_Scatter(mpi_rank == 0 ? sendcounts_vecB.data() : nullptr, 1, MPI_INT, &recv_count_vecB, 1, MPI_INT, 0, MPI_COMM_WORLD);
-    local_vecB.resize(recv_count_vecB);
-    std::vector<int> sendcounts_bytes_vecB = sendcounts_vecB;
-    std::vector<int> displs_bytes_vecB = displs_vecB;
-    MPI_Scatterv(mpi_rank == 0 ? sendbuf_vecB.data() : nullptr, mpi_rank == 0 ? sendcounts_bytes_vecB.data() : nullptr, mpi_rank == 0 ? displs_bytes_vecB.data() : nullptr, MPI_INT, local_vecB.data(), recv_count_vecB, MPI_INT, 0, MPI_COMM_WORLD);
+    local_vecB.resize(static_cast<std::size_t>(local_global_count_vecB));
+    MPI_Scatterv(mpi_rank == 0 ? sendbuf_vecB.data() : nullptr, mpi_rank == 0 ? sendcounts_vecB.data() : nullptr, mpi_rank == 0 ? displs_vecB.data() : nullptr, MPI_INT, local_vecB.data(), local_global_count_vecB, MPI_INT, 0, MPI_COMM_WORLD);
     const int vecB_partition_size = static_cast<int>(dacpp::mpi::partition_element_count(pattern_vecB));
     auto plan_dotProduct = dacpp::mpi::build_output_pack_plan(item_range, pattern_dotProduct);
     auto& pack_dotProduct = plan_dotProduct.pack;
-    auto& slots_dotProduct = plan_dotProduct.slots;
+    auto& slots_dotProduct = plan_dotProduct.compact_slots;
+    auto& key_offsets_dotProduct = plan_dotProduct.item_key_offsets;
     std::vector<int> local_dotProduct(pack_dotProduct.globals.size());
     const int dotProduct_partition_size = static_cast<int>(dacpp::mpi::partition_element_count(pattern_dotProduct));
     if (local_item_count > 0) {
         {
             sycl::buffer<int, 1> buffer_vecA(local_vecA.data(), sycl::range<1>(local_vecA.size()));
             sycl::buffer<int32_t, 1> slots_buffer_vecA(slots_vecA.data(), sycl::range<1>(slots_vecA.size()));
+            sycl::buffer<int32_t, 1> key_offsets_buffer_vecA(key_offsets_vecA.data(), sycl::range<1>(key_offsets_vecA.size()));
             sycl::buffer<int, 1> buffer_vecB(local_vecB.data(), sycl::range<1>(local_vecB.size()));
             sycl::buffer<int32_t, 1> slots_buffer_vecB(slots_vecB.data(), sycl::range<1>(slots_vecB.size()));
+            sycl::buffer<int32_t, 1> key_offsets_buffer_vecB(key_offsets_vecB.data(), sycl::range<1>(key_offsets_vecB.size()));
             sycl::buffer<int, 1> buffer_dotProduct(local_dotProduct.data(), sycl::range<1>(local_dotProduct.size()));
             sycl::buffer<int32_t, 1> slots_buffer_dotProduct(slots_dotProduct.data(), sycl::range<1>(slots_dotProduct.size()));
+            sycl::buffer<int32_t, 1> key_offsets_buffer_dotProduct(key_offsets_dotProduct.data(), sycl::range<1>(key_offsets_dotProduct.size()));
             q.submit([&](sycl::handler& h) {
                 auto acc_vecA = buffer_vecA.get_access<sycl::access::mode::read>(h);
                 auto slots_acc_vecA = slots_buffer_vecA.get_access<sycl::access::mode::read>(h);
+                auto key_offsets_acc_vecA = key_offsets_buffer_vecA.get_access<sycl::access::mode::read>(h);
                 auto acc_vecB = buffer_vecB.get_access<sycl::access::mode::read>(h);
                 auto slots_acc_vecB = slots_buffer_vecB.get_access<sycl::access::mode::read>(h);
+                auto key_offsets_acc_vecB = key_offsets_buffer_vecB.get_access<sycl::access::mode::read>(h);
                 auto acc_dotProduct = buffer_dotProduct.get_access<sycl::access::mode::read_write>(h);
                 auto slots_acc_dotProduct = slots_buffer_dotProduct.get_access<sycl::access::mode::read>(h);
+                auto key_offsets_acc_dotProduct = key_offsets_buffer_dotProduct.get_access<sycl::access::mode::read>(h);
                 h.parallel_for(sycl::range<1>(static_cast<std::size_t>(local_item_count)), [=](sycl::id<1> idx) {
                     const int item_linear = static_cast<int>(idx[0]);
                     auto* data_vecA = acc_vecA.template get_multi_ptr<sycl::access::decorated::no>().get();
                     auto* slots_vecA = slots_acc_vecA.template get_multi_ptr<sycl::access::decorated::no>().get();
-                    dacpp::mpi::View1D<const int> view_vecA{data_vecA, slots_vecA, item_linear * vecA_partition_size};
+                    auto* key_offsets_vecA = key_offsets_acc_vecA.template get_multi_ptr<sycl::access::decorated::no>().get();
+                    dacpp::mpi::View1D<const int> view_vecA{data_vecA, slots_vecA, key_offsets_vecA[item_linear]};
                     auto* data_vecB = acc_vecB.template get_multi_ptr<sycl::access::decorated::no>().get();
                     auto* slots_vecB = slots_acc_vecB.template get_multi_ptr<sycl::access::decorated::no>().get();
-                    dacpp::mpi::View1D<const int> view_vecB{data_vecB, slots_vecB, item_linear * vecB_partition_size};
+                    auto* key_offsets_vecB = key_offsets_acc_vecB.template get_multi_ptr<sycl::access::decorated::no>().get();
+                    dacpp::mpi::View1D<const int> view_vecB{data_vecB, slots_vecB, key_offsets_vecB[item_linear]};
                     auto* data_dotProduct = acc_dotProduct.template get_multi_ptr<sycl::access::decorated::no>().get();
                     auto* slots_dotProduct = slots_acc_dotProduct.template get_multi_ptr<sycl::access::decorated::no>().get();
-                    dacpp::mpi::View1D<int> view_dotProduct{data_dotProduct, slots_dotProduct, item_linear * dotProduct_partition_size};
+                    auto* key_offsets_dotProduct = key_offsets_acc_dotProduct.template get_multi_ptr<sycl::access::decorated::no>().get();
+                    dacpp::mpi::View1D<int> view_dotProduct{data_dotProduct, slots_dotProduct, key_offsets_dotProduct[item_linear]};
                     matrixMultiply_calc_mpi_local(view_vecA, view_vecB, view_dotProduct);
                 });
             });
@@ -252,7 +256,6 @@ void matrixMultiply_shell_matrixMultiply_calc(const dacpp::Matrix<int> & matA, c
     }
     auto writeback_dotProduct = dacpp::mpi::build_writeback_values_parallel(local_dotProduct, pack_dotProduct);
     const auto& writeback_globals_dotProduct = pack_dotProduct.writeback_globals.empty() ? pack_dotProduct.globals : pack_dotProduct.writeback_globals;
-    std::vector<int> synced_dotProduct;
     int send_count_dotProduct = static_cast<int>(writeback_globals_dotProduct.size());
     std::vector<int> recvcounts_dotProduct;
     std::vector<int> recvdispls_dotProduct;
@@ -273,29 +276,21 @@ void matrixMultiply_shell_matrixMultiply_calc(const dacpp::Matrix<int> & matA, c
         global_recv_values_dotProduct.resize(current_displ);
     }
     MPI_Gatherv(const_cast<int64_t*>(writeback_globals_dotProduct.data()), send_count_dotProduct, MPI_LONG_LONG, mpi_rank == 0 ? global_recv_globals_dotProduct.data() : nullptr, mpi_rank == 0 ? recvcounts_dotProduct.data() : nullptr, mpi_rank == 0 ? recvdispls_dotProduct.data() : nullptr, MPI_LONG_LONG, 0, MPI_COMM_WORLD);
-    std::vector<int> recvcounts_bytes_dotProduct = recvcounts_dotProduct;
-    std::vector<int> recvdispls_bytes_dotProduct = recvdispls_dotProduct;
-    MPI_Gatherv(writeback_dotProduct.data(), send_count_dotProduct, MPI_INT, mpi_rank == 0 ? global_recv_values_dotProduct.data() : nullptr, mpi_rank == 0 ? recvcounts_bytes_dotProduct.data() : nullptr, mpi_rank == 0 ? recvdispls_bytes_dotProduct.data() : nullptr, MPI_INT, 0, MPI_COMM_WORLD);
+    MPI_Gatherv(writeback_dotProduct.data(), send_count_dotProduct, MPI_INT, mpi_rank == 0 ? global_recv_values_dotProduct.data() : nullptr, mpi_rank == 0 ? recvcounts_dotProduct.data() : nullptr, mpi_rank == 0 ? recvdispls_dotProduct.data() : nullptr, MPI_INT, 0, MPI_COMM_WORLD);
     if (mpi_rank == 0) {
         std::vector<int> global_out_dotProduct;
         matC.tensor2Array(global_out_dotProduct);
         dacpp::mpi::apply_writeback_by_globals(global_recv_values_dotProduct, global_recv_globals_dotProduct, global_out_dotProduct);
         matC.array2Tensor(global_out_dotProduct);
-        synced_dotProduct = global_out_dotProduct;
-    }
-    int synced_count_dotProduct = 0;
-    if (mpi_rank == 0) {
-        synced_count_dotProduct = static_cast<int>(synced_dotProduct.size());
-    }
-    MPI_Bcast(&synced_count_dotProduct, 1, MPI_INT, 0, MPI_COMM_WORLD);
-    if (mpi_rank != 0) {
-        synced_dotProduct.resize(synced_count_dotProduct);
-    }
-    if (synced_count_dotProduct > 0) {
-        MPI_Bcast(synced_dotProduct.data(), synced_count_dotProduct, MPI_INT, 0, MPI_COMM_WORLD);
-    }
-    if (mpi_rank != 0) {
-        matC.array2Tensor(synced_dotProduct);
+        if (!global_out_dotProduct.empty()) {
+            MPI_Bcast(global_out_dotProduct.data(), matC.getSize(), MPI_INT, 0, MPI_COMM_WORLD);
+        }
+    } else {
+        std::vector<int> global_out_dotProduct(static_cast<std::size_t>(matC.getSize()));
+        if (!global_out_dotProduct.empty()) {
+            MPI_Bcast(global_out_dotProduct.data(), matC.getSize(), MPI_INT, 0, MPI_COMM_WORLD);
+        }
+        matC.array2Tensor(global_out_dotProduct);
     }
     auto dacpp_wrapper_end = std::chrono::steady_clock::now();
     double dacpp_wrapper_local_ms = std::chrono::duration<double, std::milli>(dacpp_wrapper_end - dacpp_wrapper_start).count();

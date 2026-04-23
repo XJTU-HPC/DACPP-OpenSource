@@ -56,13 +56,9 @@ std::string buildPatternInitCode(
     const std::vector<IOTYPE>& paramModes);
 
 std::string buildLocalCalcCode(Shell* shell, Calc* calc);
-std::string buildPackBuilderExpr(IOTYPE mode, const std::string& patternName);
 std::string buildPackPlanBuilderExpr(IOTYPE mode,
                                      const std::string& rangeName,
                                      const std::string& patternName);
-std::string buildRemotePackBuilderExpr(IOTYPE mode,
-                                       const std::string& rangeName,
-                                       const std::string& patternName);
 std::string buildWrapperCode(DacppFile* dacppFile,
                              Shell* shell,
                              Calc* calc,

@@ -75,7 +75,8 @@ struct PackMap {
 
 struct PackPlan {
     PackMap pack;
-    std::vector<int32_t> slots;
+    std::vector<int32_t> compact_slots;
+    std::vector<int32_t> item_key_offsets;
 };
 
 struct VectorIntHash {

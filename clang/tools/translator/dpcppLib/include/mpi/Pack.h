@@ -112,47 +112,6 @@ inline std::vector<int32_t> build_dense_global_to_local_lut(
     return lut;
 }
 
-inline PackMap build_input_pack_map(ItemRange range, const AccessPattern& pattern) {
-    std::vector<int64_t> globals;
-    for (int64_t item = range.begin; item < range.end; ++item) {
-        const auto item_globals = collect_positions_for_item(item, pattern);
-        globals.insert(globals.end(), item_globals.begin(), item_globals.end());
-    }
-    return make_pack_map_from_globals(std::move(globals));
-}
-
-inline PackMap build_output_pack_map(ItemRange range, const AccessPattern& pattern) {
-    PackMap pack = build_input_pack_map(range, pattern);
-    pack.writeback_globals = pack.globals;
-    pack.writeback_segments = pack.segments;
-    return pack;
-}
-
-inline PackMap build_rw_pack_map(ItemRange range, const AccessPattern& pattern) {
-    PackMap pack = build_input_pack_map(range, pattern);
-    pack.writeback_globals = pack.globals;
-    pack.writeback_segments = pack.segments;
-    return pack;
-}
-
-inline std::vector<int32_t> build_item_slots(ItemRange range,
-                                             const AccessPattern& pattern,
-                                             const PackMap& pack) {
-    std::vector<int32_t> slots;
-    const int64_t item_count = range.size();
-    const int64_t elem_count = partition_element_count(pattern);
-    slots.reserve(item_count * elem_count);
-
-    for (int64_t item = range.begin; item < range.end; ++item) {
-        const auto globals = collect_positions_for_item(item, pattern);
-        for (int64_t global_idx : globals) {
-            slots.push_back(
-                lookup_local_slot_or_throw(pack, global_idx, "build_item_slots"));
-        }
-    }
-    return slots;
-}
-
 inline std::vector<int> build_item_bind_key(int64_t item_id,
                                             const AccessPattern& pattern) {
     const std::vector<int64_t> bind_splits =
@@ -189,7 +148,6 @@ inline PackPlan build_pack_plan(ItemRange range,
     PackPlan plan;
     const int64_t item_count = range.size();
     const int64_t elem_count = partition_element_count(pattern);
-    plan.slots.reserve(item_count * elem_count);
 
     std::vector<std::vector<int64_t>> unique_positions;
     std::vector<int32_t> item_key_indices;
@@ -233,9 +191,16 @@ inline PackPlan build_pack_plan(ItemRange range,
         key_slots.push_back(std::move(slots_for_key));
     }
 
+    plan.compact_slots.reserve(unique_positions.size() * static_cast<std::size_t>(elem_count));
+    for (const auto& slots_for_key : key_slots) {
+        plan.compact_slots.insert(plan.compact_slots.end(),
+                                   slots_for_key.begin(), slots_for_key.end());
+    }
+
+    plan.item_key_offsets.reserve(item_key_indices.size());
     for (int32_t key_index : item_key_indices) {
-        const auto& slots_for_key = key_slots[static_cast<std::size_t>(key_index)];
-        plan.slots.insert(plan.slots.end(), slots_for_key.begin(), slots_for_key.end());
+        plan.item_key_offsets.push_back(
+            key_index * static_cast<int32_t>(elem_count));
     }
 
     return plan;

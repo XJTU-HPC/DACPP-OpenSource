@@ -65,7 +65,8 @@ std::string buildWrapperCode(DacppFile* dacppFile,
         code += "    auto plan_" + calcName + " = " +
                 buildPackPlanBuilderExpr(mode, "item_range", patternName) + ";\n";
         code += "    auto& " + packName + " = plan_" + calcName + ".pack;\n";
-        code += "    auto& " + slotsName + " = plan_" + calcName + ".slots;\n";
+        code += "    auto& " + slotsName + " = plan_" + calcName + ".compact_slots;\n";
+        code += "    auto& key_offsets_" + calcName + " = plan_" + calcName + ".item_key_offsets;\n";
         code += "    std::vector<" + calcParam->getBasicType() + "> " + localName + "(" +
                 packName + ".globals.size());\n";
 
@@ -144,6 +145,8 @@ std::string buildWrapperCode(DacppFile* dacppFile,
                 "(" + localName + ".data(), sycl::range<1>(" + localName + ".size()));\n";
         code += "            sycl::buffer<int32_t, 1> slots_buffer_" + name + "(" + slotsName +
                 ".data(), sycl::range<1>(" + slotsName + ".size()));\n";
+        code += "            sycl::buffer<int32_t, 1> key_offsets_buffer_" + name +
+                "(key_offsets_" + name + ".data(), sycl::range<1>(key_offsets_" + name + ".size()));\n";
     }
     code += "            q.submit([&](sycl::handler& h) {\n";
     for (int paramIdx = 0; paramIdx < shell->getNumShellParams(); ++paramIdx) {
@@ -153,6 +156,8 @@ std::string buildWrapperCode(DacppFile* dacppFile,
                 toAccessorMode(paramModes[paramIdx]) + ">(h);\n";
         code += "                auto slots_acc_" + name +
                 " = slots_buffer_" + name + ".get_access<sycl::access::mode::read>(h);\n";
+        code += "                auto key_offsets_acc_" + name +
+                " = key_offsets_buffer_" + name + ".get_access<sycl::access::mode::read>(h);\n";
     }
     code += "                h.parallel_for(sycl::range<1>(static_cast<std::size_t>(local_item_count)), [=](sycl::id<1> idx) {\n";
     code += "                    const int item_linear = static_cast<int>(idx[0]);\n";
@@ -166,14 +171,17 @@ std::string buildWrapperCode(DacppFile* dacppFile,
         code += "                    auto* slots_" + name +
                 " = slots_acc_" + name +
                 ".template get_multi_ptr<sycl::access::decorated::no>().get();\n";
+        code += "                    auto* key_offsets_" + name +
+                " = key_offsets_acc_" + name +
+                ".template get_multi_ptr<sycl::access::decorated::no>().get();\n";
         if (inferViewRank(shellParam, calcParam) <= 1) {
             code += "                    " + toViewType(shellParam, calcParam, paramModes[paramIdx]) + " view_" + name +
-                    "{data_" + name + ", slots_" + name + ", item_linear * " + name +
-                    "_partition_size};\n";
+                    "{data_" + name + ", slots_" + name + ", key_offsets_" + name +
+                    "[item_linear]};\n";
         } else {
             code += "                    " + toViewType(shellParam, calcParam, paramModes[paramIdx]) + " view_" + name +
-                    "{data_" + name + ", slots_" + name + ", item_linear * " + name +
-                    "_partition_size, " + name + "_cols};\n";
+                    "{data_" + name + ", slots_" + name + ", key_offsets_" + name +
+                    "[item_linear], " + name + "_cols};\n";
         }
     }
     code += "                    " + calc->getName() + "_mpi_local(";

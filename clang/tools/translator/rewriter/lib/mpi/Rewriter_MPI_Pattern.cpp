@@ -168,16 +168,6 @@ std::string buildLocalCalcCode(Shell* shell, Calc* calc) {
     return code;
 }
 
-std::string buildPackBuilderExpr(IOTYPE mode, const std::string& patternName) {
-    if (mode == IOTYPE::READ) {
-        return "dacpp::mpi::build_input_pack_map(item_range, " + patternName + ")";
-    }
-    if (mode == IOTYPE::WRITE) {
-        return "dacpp::mpi::build_output_pack_map(item_range, " + patternName + ")";
-    }
-    return "dacpp::mpi::build_rw_pack_map(item_range, " + patternName + ")";
-}
-
 std::string buildPackPlanBuilderExpr(IOTYPE mode,
                                      const std::string& rangeName,
                                      const std::string& patternName) {
@@ -191,18 +181,6 @@ std::string buildPackPlanBuilderExpr(IOTYPE mode,
     }
     return "dacpp::mpi::build_rw_pack_plan(" + rangeName + ", " +
            patternName + ")";
-}
-
-std::string buildRemotePackBuilderExpr(IOTYPE mode,
-                                       const std::string& rangeName,
-                                       const std::string& patternName) {
-    if (mode == IOTYPE::READ) {
-        return "dacpp::mpi::build_input_pack_map(" + rangeName + ", " + patternName + ")";
-    }
-    if (mode == IOTYPE::WRITE) {
-        return "dacpp::mpi::build_output_pack_map(" + rangeName + ", " + patternName + ")";
-    }
-    return "dacpp::mpi::build_rw_pack_map(" + rangeName + ", " + patternName + ")";
 }
 
 std::string buildPrelude(DacppFile* dacppFile) {
