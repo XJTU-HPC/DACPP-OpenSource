@@ -37,8 +37,18 @@ inline PackMap make_pack_map_from_globals(
     pack.dense_extent = dense_extent;
     pack.globals = std::move(globals);
     pack.segments = build_segments(pack.globals);
-    for (std::size_t idx = 0; idx < pack.globals.size(); ++idx) {
-        pack.g2l.emplace(pack.globals[idx], static_cast<int32_t>(idx));
+
+    // Dense or near-dense packs are common for matrix rows/columns after
+    // compaction.  Segment lookup avoids building a large hash table in those
+    // cases; keep the hash only for highly fragmented layouts.
+    const bool fragmented =
+        pack.segments.size() > 64 &&
+        pack.segments.size() * 4 > pack.globals.size();
+    if (fragmented) {
+        pack.g2l.reserve(pack.globals.size());
+        for (std::size_t idx = 0; idx < pack.globals.size(); ++idx) {
+            pack.g2l.emplace(pack.globals[idx], static_cast<int32_t>(idx));
+        }
     }
     return pack;
 }
@@ -50,17 +60,40 @@ inline PackMap make_dense_cover_pack(std::size_t dense_size) {
     }
     PackMap pack = make_pack_map_from_globals(
         std::move(globals), PackLayoutKind::DenseCover, dense_size);
-    pack.writeback_globals = pack.globals;
-    pack.writeback_segments = pack.segments;
     return pack;
 }
 
 inline int32_t try_lookup_local_slot(const PackMap& pack, int64_t global_idx) {
-    const auto it = pack.g2l.find(global_idx);
-    if (it == pack.g2l.end()) {
-        return -1;
+    if (pack.layout_kind == PackLayoutKind::DenseCover &&
+        global_idx >= 0 &&
+        static_cast<std::size_t>(global_idx) < pack.dense_extent) {
+        return static_cast<int32_t>(global_idx);
     }
-    return it->second;
+
+    if (!pack.g2l.empty()) {
+        const auto it = pack.g2l.find(global_idx);
+        if (it != pack.g2l.end()) {
+            return it->second;
+        }
+    }
+
+    auto it = std::upper_bound(
+        pack.segments.begin(),
+        pack.segments.end(),
+        global_idx,
+        [](int64_t value, const LinearSegment& segment) {
+            return value < segment.global_begin;
+        });
+    if (it != pack.segments.begin()) {
+        --it;
+        if (global_idx >= it->global_begin &&
+            global_idx < it->global_begin + it->len) {
+            return static_cast<int32_t>(
+                it->local_begin + (global_idx - it->global_begin));
+        }
+    }
+
+    return -1;
 }
 
 inline int32_t lookup_local_slot_or_throw(const PackMap& pack,
@@ -95,19 +128,21 @@ inline std::vector<int32_t> build_dense_global_to_local_lut(
     }
 
     std::vector<int32_t> lut(dense_size, -1);
-    for (const auto& g2l_entry : pack.g2l) {
-        if (g2l_entry.first < 0 ||
-            static_cast<std::size_t>(g2l_entry.first) >= dense_size) {
+    for (std::size_t local_idx = 0; local_idx < pack.globals.size(); ++local_idx) {
+        const int64_t global_idx = pack.globals[local_idx];
+        if (global_idx < 0 ||
+            static_cast<std::size_t>(global_idx) >= dense_size) {
             std::string message =
                 where ? where : "build_dense_global_to_local_lut";
             message += ": global ";
-            message += std::to_string(g2l_entry.first);
+            message += std::to_string(global_idx);
             message += " outside dense extent ";
             message += std::to_string(dense_size);
             message += " — pack layout mismatch";
             throw std::runtime_error(message);
         }
-        lut[static_cast<std::size_t>(g2l_entry.first)] = g2l_entry.second;
+        lut[static_cast<std::size_t>(global_idx)] =
+            static_cast<int32_t>(local_idx);
     }
     return lut;
 }
@@ -174,27 +209,14 @@ inline PackPlan build_pack_plan(ItemRange range,
     }
 
     plan.pack = make_pack_map_from_globals(std::move(globals));
-    if (include_writeback) {
-        plan.pack.writeback_globals = plan.pack.globals;
-        plan.pack.writeback_segments = plan.pack.segments;
-    }
-
-    std::vector<std::vector<int32_t>> key_slots;
-    key_slots.reserve(unique_positions.size());
-    for (const auto& positions : unique_positions) {
-        std::vector<int32_t> slots_for_key;
-        slots_for_key.reserve(positions.size());
-        for (int64_t global_idx : positions) {
-            slots_for_key.push_back(
-                lookup_local_slot_or_throw(plan.pack, global_idx, "build_pack_plan"));
-        }
-        key_slots.push_back(std::move(slots_for_key));
-    }
+    (void)include_writeback;
 
     plan.compact_slots.reserve(unique_positions.size() * static_cast<std::size_t>(elem_count));
-    for (const auto& slots_for_key : key_slots) {
-        plan.compact_slots.insert(plan.compact_slots.end(),
-                                   slots_for_key.begin(), slots_for_key.end());
+    for (const auto& positions : unique_positions) {
+        for (int64_t global_idx : positions) {
+            plan.compact_slots.push_back(
+                lookup_local_slot_or_throw(plan.pack, global_idx, "build_pack_plan"));
+        }
     }
 
     plan.item_key_offsets.reserve(item_key_indices.size());

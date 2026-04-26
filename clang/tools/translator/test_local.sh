@@ -17,15 +17,6 @@ LOCAL_TESTS=(
     "mandel1.0"
     "gradientSum"
     "jacobi1.0"
-)
-
-# Extra cases that are currently slower, lack a local reference, or expose
-# known output differences in the current translator. Enable them explicitly
-# with:
-#   INCLUDE_EXTENDED_LOCAL_TESTS=1 bash test_local.sh
-# or pass test names directly:
-#   LOCAL_TEST_TIMEOUT_SEC=300 bash test_local.sh MDP1.0
-EXTENDED_LOCAL_TESTS=(
     "imageAdjustment1.0"
     "oddeven0.1"
     "stencil1.0"
@@ -33,10 +24,6 @@ EXTENDED_LOCAL_TESTS=(
     "MDP1.0"
     "vectorAddCombo"
 )
-
-if [[ "${INCLUDE_EXTENDED_LOCAL_TESTS:-0}" == "1" ]]; then
-    LOCAL_TESTS+=("${EXTENDED_LOCAL_TESTS[@]}")
-fi
 
 # Default to a fast local smoke suite.
 LOCAL_TEST_TIMEOUT_SEC="${LOCAL_TEST_TIMEOUT_SEC:-120}"
