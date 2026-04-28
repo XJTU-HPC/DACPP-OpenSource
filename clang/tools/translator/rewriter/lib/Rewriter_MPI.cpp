@@ -57,9 +57,6 @@ void Rewriter::rewriteMPI() {
     int mpi_size = 1;
     MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);
     MPI_Comm_size(MPI_COMM_WORLD, &mpi_size);
-    if (mpi_rank != 0) {
-        freopen("/dev/null", "w", stdout);
-    }
 )";
 
     const std::string mpiFinish = R"(
