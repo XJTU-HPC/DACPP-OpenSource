@@ -2,6 +2,10 @@
 
 更新时间：2026-05-02
 
+阶段 1 保守优化已经完成，详细记录见：
+
+- `clang/tools/translator/docs/mpi_translator/mpi_stencil_phase1_status.md`
+
 ## 1. 目标声明
 
 这条路径的目标是为 MPI 下的 stencil / time-step 类循环单独生成代码：
@@ -172,13 +176,13 @@ cmake --build build --target translator -j8
 
 ```bash
 cd /Volumes/QUQ/working/dacpp/clang/tools/translator
-bash test_mpi.sh FOuLa1.0 stencil1.0 waveEquation1.0
+bash test_mpi.sh waveEquation1.0 stencil1.0 FOuLa1.0 mpiDenseCoverSibling1.0
 ```
 
 结果：
 
 ```text
-3 tests | 3 passed | 0 failed | 0 skipped
+4 tests | 4 passed | 0 failed | 0 skipped
 ```
 
 完整 MPI 回归：
@@ -210,6 +214,7 @@ bash test_mpi.sh
 - ctx / init / run codegen 第一版
 - loop stencil site 安全分流
 - 普通 MPI 和 stencil MPI 写回值 gather 修复
+- 阶段 1 保守优化：通信 metadata hoist 到 `init()`，`run()` 复用 layout 和 buffer
 - `translator` 构建验证
 - `test_mpi.sh` 完整回归验证
 

@@ -79,6 +79,15 @@ struct PackPlan {
     std::vector<int32_t> item_key_offsets;
 };
 
+struct GatheredIndexLayout {
+    int local_count = 0;
+    std::vector<int> counts;
+    std::vector<int> displs;
+    std::vector<int> byte_counts;
+    std::vector<int> byte_displs;
+    std::vector<int64_t> globals;
+};
+
 struct VectorIntHash {
     std::size_t operator()(const std::vector<int>& values) const {
         std::size_t seed = values.size();

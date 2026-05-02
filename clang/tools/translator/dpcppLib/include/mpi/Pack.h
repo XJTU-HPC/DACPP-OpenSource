@@ -243,6 +243,54 @@ inline PackPlan build_rw_pack_plan(ItemRange range,
     return build_pack_plan(range, pattern, true);
 }
 
+inline void init_gathered_index_layout(GatheredIndexLayout& layout,
+                                       const std::vector<int64_t>& local_globals,
+                                       int mpi_rank,
+                                       int mpi_size,
+                                       MPI_Comm comm = MPI_COMM_WORLD) {
+    layout.local_count = static_cast<int>(local_globals.size());
+    layout.counts.clear();
+    layout.displs.clear();
+    layout.byte_counts.clear();
+    layout.byte_displs.clear();
+    layout.globals.clear();
+
+    if (mpi_rank == 0) {
+        layout.counts.resize(mpi_size);
+        layout.displs.resize(mpi_size);
+    }
+
+    MPI_Gather(&layout.local_count, 1, MPI_INT,
+               mpi_rank == 0 ? layout.counts.data() : nullptr, 1, MPI_INT,
+               0, comm);
+
+    if (mpi_rank == 0) {
+        int current_displ = 0;
+        for (int rank = 0; rank < mpi_size; ++rank) {
+            layout.displs[rank] = current_displ;
+            current_displ += layout.counts[rank];
+        }
+        layout.globals.resize(current_displ);
+    }
+
+    MPI_Gatherv(const_cast<int64_t*>(local_globals.data()), layout.local_count,
+                MPI_LONG_LONG,
+                mpi_rank == 0 ? layout.globals.data() : nullptr,
+                mpi_rank == 0 ? layout.counts.data() : nullptr,
+                mpi_rank == 0 ? layout.displs.data() : nullptr,
+                MPI_LONG_LONG, 0, comm);
+}
+
+inline void init_layout_byte_counts(GatheredIndexLayout& layout,
+                                    std::size_t value_size) {
+    layout.byte_counts = layout.counts;
+    layout.byte_displs = layout.displs;
+    for (std::size_t idx = 0; idx < layout.byte_counts.size(); ++idx) {
+        layout.byte_counts[idx] *= static_cast<int>(value_size);
+        layout.byte_displs[idx] *= static_cast<int>(value_size);
+    }
+}
+
 template <typename T>
 inline std::vector<T> pack_values_by_globals(const std::vector<T>& global_data,
                                              const std::vector<int64_t>& globals) {
@@ -264,6 +312,18 @@ inline std::vector<T> pack_values_by_globals_range(const std::vector<T>& global_
         packed.push_back(global_data[static_cast<std::size_t>(globals[idx])]);
     }
     return packed;
+}
+
+template <typename T>
+inline void pack_values_by_globals_range_into(
+    const std::vector<T>& global_data,
+    const int64_t* globals,
+    std::size_t count,
+    std::vector<T>& packed) {
+    packed.resize(count);
+    for (std::size_t idx = 0; idx < count; ++idx) {
+        packed[idx] = global_data[static_cast<std::size_t>(globals[idx])];
+    }
 }
 
 template <typename T>
@@ -348,11 +408,66 @@ inline std::vector<T> pack_values_by_globals_parallel_range(
 }
 
 template <typename T>
+inline void pack_values_by_globals_parallel_range_into(
+    const std::vector<T>& global_data,
+    const int64_t* globals,
+    std::size_t count,
+    std::vector<T>& packed,
+    std::size_t threshold = 1 << 18) {
+    if (count < threshold) {
+        pack_values_by_globals_range_into(global_data, globals, count, packed);
+        return;
+    }
+
+    packed.resize(count);
+    if (count == 0) {
+        return;
+    }
+
+    sycl::queue q(sycl::default_selector_v);
+    {
+        sycl::buffer<T, 1> global_buf(
+            const_cast<T*>(global_data.data()),
+            sycl::range<1>(global_data.size()));
+        sycl::buffer<int64_t, 1> globals_buf(
+            const_cast<int64_t*>(globals),
+            sycl::range<1>(count));
+        sycl::buffer<T, 1> packed_buf(
+            packed.data(),
+            sycl::range<1>(packed.size()));
+
+        q.submit([&](sycl::handler& h) {
+            auto global_acc = global_buf.template get_access<sycl::access::mode::read>(h);
+            auto globals_acc = globals_buf.template get_access<sycl::access::mode::read>(h);
+            auto packed_acc = packed_buf.template get_access<sycl::access::mode::write>(h);
+            h.parallel_for(sycl::range<1>(count), [=](sycl::id<1> idx) {
+                const std::size_t i = idx[0];
+                packed_acc[i] = global_acc[static_cast<std::size_t>(globals_acc[i])];
+            });
+        });
+        q.wait();
+    }
+}
+
+template <typename T>
 inline void apply_writeback_by_globals(const std::vector<T>& local_data,
                                        const std::vector<int64_t>& globals,
                                        std::vector<T>& global_data) {
     for (std::size_t idx = 0; idx < globals.size(); ++idx) {
         global_data[static_cast<std::size_t>(globals[idx])] = local_data[idx];
+    }
+}
+
+inline void build_local_slots_for_globals(const PackMap& pack,
+                                          std::vector<int32_t>& local_slots) {
+    const std::vector<int64_t>& globals =
+        pack.writeback_globals.empty() ? pack.globals : pack.writeback_globals;
+    local_slots.clear();
+    local_slots.reserve(globals.size());
+    for (int64_t global_idx : globals) {
+        local_slots.push_back(
+            lookup_local_slot_or_throw(
+                pack, global_idx, "build_local_slots_for_globals"));
     }
 }
 
@@ -369,6 +484,16 @@ inline std::vector<T> build_writeback_values(const std::vector<T>& local_data,
                 pack, global_idx, "build_writeback_values"))]);
     }
     return values;
+}
+
+template <typename T>
+inline void pack_values_by_slots_into(const std::vector<T>& local_data,
+                                      const std::vector<int32_t>& local_slots,
+                                      std::vector<T>& values) {
+    values.resize(local_slots.size());
+    for (std::size_t idx = 0; idx < local_slots.size(); ++idx) {
+        values[idx] = local_data[static_cast<std::size_t>(local_slots[idx])];
+    }
 }
 
 template <typename T>
@@ -419,6 +544,47 @@ inline std::vector<T> build_writeback_values_parallel(
         q.wait();
     }
     return values;
+}
+
+template <typename T>
+inline void pack_values_by_slots_parallel_into(
+    const std::vector<T>& local_data,
+    const std::vector<int32_t>& local_slots,
+    std::vector<T>& values,
+    std::size_t threshold = 1 << 18) {
+    if (local_slots.size() < threshold) {
+        pack_values_by_slots_into(local_data, local_slots, values);
+        return;
+    }
+
+    values.resize(local_slots.size());
+    if (local_slots.empty()) {
+        return;
+    }
+
+    sycl::queue q(sycl::default_selector_v);
+    {
+        sycl::buffer<T, 1> local_buf(
+            const_cast<T*>(local_data.data()),
+            sycl::range<1>(local_data.size()));
+        sycl::buffer<int32_t, 1> slots_buf(
+            const_cast<int32_t*>(local_slots.data()),
+            sycl::range<1>(local_slots.size()));
+        sycl::buffer<T, 1> values_buf(
+            values.data(),
+            sycl::range<1>(values.size()));
+
+        q.submit([&](sycl::handler& h) {
+            auto local_acc = local_buf.template get_access<sycl::access::mode::read>(h);
+            auto slots_acc = slots_buf.template get_access<sycl::access::mode::read>(h);
+            auto values_acc = values_buf.template get_access<sycl::access::mode::write>(h);
+            h.parallel_for(sycl::range<1>(values.size()), [=](sycl::id<1> idx) {
+                const std::size_t i = idx[0];
+                values_acc[i] = local_acc[static_cast<std::size_t>(slots_acc[i])];
+            });
+        });
+        q.wait();
+    }
 }
 
 
