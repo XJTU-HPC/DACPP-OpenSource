@@ -1,20 +1,38 @@
-# MPI Stencil Loop Path Status
+# MPI Stencil / Wrapper Consistency Integrated Status
 
 更新时间：2026-05-02
 
-阶段 1 保守优化已经完成，详细记录见：
+## 1. 总目标和边界
 
-- `clang/tools/translator/docs/mpi_translator/mpi_stencil_phase1_status.md`
+本文把 MPI stencil loop 路径状态、Phase 1 保守优化、wrapper / stencil 输出副本一致性、post-shell region 化，以及后续“缓存一致性 + 部分交换”方向整合在一起。
 
-## 1. 目标声明
+当前总目标：
 
-这条路径的目标是为 MPI 下的 stencil / time-step 类循环单独生成代码：
+- 保持 root-centric MPI wrapper / MPI stencil 语义正确。
+- 对位于 time-step loop 内的 `<->` 生成 `ctx + init + run` 形态。
+- 把稳定的通信 metadata 缓存在 `init()`，让 `run()` 只做每步数据相关通信。
+- 建立输出副本一致性模型，区分 root 结果正确和非 root 副本正确。
+- 识别 shell 后明显可并行的 host loop，为后续 MPI region 化做准备。
+- 在现有 pack / writeback plan 基础上，探索用缓存一致性和部分交换替代手写传统 halo 的 stencil 优化路线。
 
-- 输入使用 `--mode=buffer --mpi`
-- 源码中存在位于 `for` / `while` 内部的 `<->`
-- shell 实参在外层循环之前已经声明，循环内每次迭代复用这些对象
+当前明确不做或尚未完成：
 
-目标生成形态是：
+- 不修改 DACPP 源码语法。
+- 不新增 CLI flag。
+- 不改变普通 MPI wrapper 的基本语义。
+- Phase 1 不做 rank 间 halo exchange。
+- Phase 1 不把 sibling update loops 合并进 stencil region。
+- 尚未完成真正分布式 stencil / halo / generalized cache exchange。
+
+## 2. 当前 MPI stencil 路径
+
+这条路径服务于 MPI 下的 stencil / time-step 类循环：
+
+- 输入使用 `--mode=buffer --mpi`。
+- 源码中存在位于 `for` / `while` 内部的 `<->`。
+- shell 实参在外层循环之前已经声明，循环内每次迭代复用这些对象。
+
+目标生成形态：
 
 ```cpp
 __dacpp_mpi_stencil_ctx_xxx ctx;
@@ -26,31 +44,27 @@ for (...) {
 
 这样可以把稳定不变的 pattern / binding / pack plan / rank range 初始化从每次迭代中提出来，循环内只执行每步真正需要重复的 scatter、kernel、gather、writeback、broadcast。
 
-明确不在这条路径优化范围内的场景：
-
-- shell 实参是在循环体内部临时声明的 view / tensor
-- 每次迭代 shell 实参的形状或绑定语义会变化
-- 不能安全把 `init(ctx, args...)` 提到外层循环之前的 `<->`
-
-这类场景会回退到普通 MPI wrapper 路径，保持原有语义优先。
-
-## 2. 当前设计
-
 当前采用 `ctx + init + run + compatibility wrapper` 结构：
 
 - `ctx`
-  - 保存 MPI rank / size、SYCL queue、AccessPattern、PackPlan、ItemRange 等稳定状态
+  - 保存 MPI rank / size、SYCL queue、AccessPattern、PackPlan、ItemRange、cached layout 和复用 buffer。
 - `init`
-  - 在循环外执行一次
-  - 初始化 pattern、binding split sizes、pack plan、本 rank item range
+  - 在循环外执行一次。
+  - 初始化 pattern、binding split sizes、pack plan、本 rank item range、gather / scatter layout。
 - `run`
-  - 在每次循环迭代执行
-  - 完成数据分发、本地 kernel、写回收集和必要 broadcast
+  - 在每次循环迭代执行。
+  - 完成数据分发、本地 kernel、写回收集和必要 broadcast。
 - compatibility wrapper
-  - 对非 loop stencil site 保留一次性调用形式
-  - 内部执行 `ctx; init(ctx, ...); run(ctx, ...);`
+  - 对非 loop stencil site 保留一次性调用形式。
+  - 内部执行 `ctx; init(ctx, ...); run(ctx, ...);`。
 
-## 3. 已完成实现
+不能安全 hoist 的场景会回退普通 MPI wrapper 路径：
+
+- shell 实参是在循环体内部临时声明的 view / tensor。
+- 每次迭代 shell 实参的形状或绑定语义会变化。
+- 不能安全把 `init(ctx, args...)` 提到外层循环之前的 `<->`。
+
+## 3. 已完成的 stencil 接线和修复
 
 ### 3.1 AST 侧记录 MPI stencil site
 
@@ -61,14 +75,14 @@ for (...) {
 
 已加入 `MpiStencilSite`，记录：
 
-- `<->` 的表达式编号
-- 当前 `BinaryOperator* dacExpr`
-- 包裹 `<->` 的外层 loop
+- `<->` 的表达式编号。
+- 当前 `BinaryOperator* dacExpr`。
+- 包裹 `<->` 的外层 loop。
 
 当前登记条件已经收紧：
 
-- `<->` 必须位于 `for` / `while` 中
-- shell 调用实参引用的非全局变量必须声明在外层 loop 之前
+- `<->` 必须位于 `for` / `while` 中。
+- shell 调用实参引用的非全局变量必须声明在外层 loop 之前。
 
 这样可以避免把循环体内部临时变量错误 hoist 到循环外。
 
@@ -89,7 +103,7 @@ if (dacppFile && dacppFile->hasMPIStencilSites()) {
 
 普通 MPI wrapper 路径仍然保留；只有安全登记为 stencil site 的 loop `<->` 才进入新路径。
 
-### 3.3 新增 stencil rewriter 文件
+### 3.3 Stencil rewriter 文件
 
 新增或接入文件：
 
@@ -102,42 +116,28 @@ if (dacppFile && dacppFile->hasMPIStencilSites()) {
 
 `rewriteMPIStencil()` 当前负责：
 
-1. 复用普通 MPI prelude
-2. 生成 local calc
-3. 生成 stencil ctx / init / run / compatibility wrapper
-4. 删除原 shell / calc 声明
-5. 在 `main` 中插入 MPI init / finalize
-6. 在 loop 前插入 ctx/init
-7. 将 loop 内 `<->` 替换为 `run(ctx, ...)`
-8. 设置 `mainAlreadyRewritten`，避免通用 `rewriteMain()` 二次替换
+1. 复用普通 MPI prelude。
+2. 生成 local calc。
+3. 生成 stencil ctx / init / run / compatibility wrapper。
+4. 删除原 shell / calc 声明。
+5. 在 `main` 中插入 MPI init / finalize。
+6. 在 loop 前插入 ctx/init。
+7. 将 loop 内 `<->` 替换为 `run(ctx, ...)`。
+8. 设置 `mainAlreadyRewritten`，避免通用 `rewriteMain()` 二次替换。
 
-## 4. 本轮修复
-
-### 4.1 修复错误 hoist
+### 3.4 修复错误 hoist
 
 问题：
 
-`FOuLa1.0` 中 `<->` 位于循环内，但 shell 实参 `u_kin`、`u_kout`、`r` 都是在循环体内部临时声明的。旧逻辑只要看到 `<->` 在 loop 中就走 stencil 路径，导致生成：
-
-```cpp
-__dacpp_mpi_stencil_init_PDE_pde(ctx, u_kin, u_kout, r);
-for (...) {
-    dacpp::Vector<double> u_kout = ...;
-    dacpp::Vector<double> r(...);
-    dacpp::Vector<double> u_kin = ...;
-    __dacpp_mpi_stencil_run_PDE_pde(ctx, u_kin, u_kout, r);
-}
-```
-
-`init` 被插到变量声明之前，生成代码编译失败。
+`FOuLa1.0` 中 `<->` 位于循环内，但 shell 实参 `u_kin`、`u_kout`、`r` 都是在循环体内部临时声明的。旧逻辑只要看到 `<->` 在 loop 中就走 stencil 路径，导致 `init` 被插到变量声明之前，生成代码编译失败。
 
 修复：
 
-- 在登记 `MpiStencilSite` 前检查 shell 实参引用的变量声明位置
-- 如果变量不是全局变量，且声明位置不在外层 loop 之前，则不登记 stencil site
-- 该 `<->` 回退普通 MPI wrapper
+- 在登记 `MpiStencilSite` 前检查 shell 实参引用的变量声明位置。
+- 如果变量不是全局变量，且声明位置不在外层 loop 之前，则不登记 stencil site。
+- 该 `<->` 回退普通 MPI wrapper。
 
-### 4.2 修复 MPI 写回 gather 值错位风险
+### 3.5 修复 MPI 写回 gather 值错位风险
 
 问题：
 
@@ -161,16 +161,376 @@ MPI_Gatherv(writeback_values_xxx.data(), send_count_xxx, ...);
 
 这样 gather 的值和 `writeback_globals` 一一对应。
 
-## 5. 当前验证结果
+## 4. Phase 1 保守优化
 
-已完成构建：
+Phase 1 只优化当前 root-centric MPI stencil 路径，不改变通信语义，不引入 halo 分布式 stencil。
+
+目标：
+
+- 把 `run()` 中每个 time step 重复计算的通信元数据搬到 `init()`。
+- 复用本地和 root 侧临时 buffer。
+- 保持当前 scatter / kernel / gather / broadcast 语义不变。
+- 不修改 DACPP 源码语法。
+- 不新增命令行开关。
+- 不改变普通 MPI wrapper 路径。
+
+### 4.1 旧生成代码的问题
+
+以 `waveEquation1.0` 为例，Phase 1 前的 MPI stencil `run()` 每次迭代都会重复执行：
+
+- `MPI_Gather(&local_global_count_*)`
+- `MPI_Gatherv(pack.globals)`
+- `MPI_Gather(&send_count_*)`
+- `MPI_Gatherv(writeback_globals)`
+- counts / displs 计算
+- root 侧 send / recv 临时 vector 重新分配
+- 默认情况下每轮执行 wrapper timing `MPI_Reduce`
+
+这些信息只依赖 shape、split、binding 和 rank item range，不依赖每步 tensor 数据，适合在 `init()` 中缓存。
+
+### 4.2 Runtime helper
+
+涉及文件：
+
+- `clang/tools/translator/dpcppLib/include/mpi/Common.h`
+- `clang/tools/translator/dpcppLib/include/mpi/Pack.h`
+
+新增：
+
+- `dacpp::mpi::GatheredIndexLayout`
+  - `local_count`
+  - `counts`
+  - `displs`
+  - `byte_counts`
+  - `byte_displs`
+  - `globals`
+- `init_gathered_index_layout(...)`
+  - 在 `init()` 中一次性收集 local count、displs 和 root 侧 globals。
+- `init_layout_byte_counts(...)`
+  - 为 byte transport 类型预计算 byte counts / displs。
+- `pack_values_by_globals_parallel_range_into(...)`
+  - root 侧复用 send buffer，按 cached globals 打包输入值。
+- `build_local_slots_for_globals(...)`
+  - 为 writeback globals 预计算本地 slot。
+- `pack_values_by_slots_parallel_into(...)`
+  - 每步按 cached slots 抽取 writeback values 到复用 buffer。
+
+### 4.3 Stencil codegen
+
+涉及文件：
+
+- `clang/tools/translator/rewriter/lib/mpi/Rewriter_MPI_Stencil_Codegen.cpp`
+
+已调整：
+
+- `ctx` 为每个参数保存 `local_<name>`。
+- `READ/READ_WRITE` 参数保存：
+  - `input_layout_<name>`
+  - `global_<name>`
+  - `sendbuf_<name>`
+- `WRITE/READ_WRITE` 参数保存：
+  - `output_layout_<name>`
+  - `writeback_slots_<name>`
+  - `writeback_values_<name>`
+  - `global_recv_values_<name>`
+  - `global_out_<name>`
+- `init()` 构建 pack plan 后初始化 input / output layout。
+- `run()` 删除重复 metadata gather，只保留数据相关通信。
+- `WRITE` 参数每轮 kernel 前重置 local buffer，保持原 fresh vector 语义。
+- wrapper timing `MPI_Reduce` 只在 `DACPP_MPI_PROFILE` 开启时执行。
+
+### 4.4 当前生成代码形态
+
+`waveEquation.mpi.dac_sycl_buffer.cpp` 现在的 stencil context 中包含：
+
+```cpp
+dacpp::mpi::GatheredIndexLayout input_layout_cur;
+std::vector<double> global_cur;
+std::vector<double> sendbuf_cur;
+dacpp::mpi::GatheredIndexLayout output_layout_next;
+std::vector<int32_t> writeback_slots_next;
+std::vector<double> writeback_values_next;
+```
+
+`init()` 中执行一次：
+
+```cpp
+dacpp::mpi::init_gathered_index_layout(ctx.input_layout_cur, ...);
+dacpp::mpi::init_gathered_index_layout(ctx.output_layout_next, ...);
+dacpp::mpi::build_local_slots_for_globals(...);
+```
+
+`run()` 中只保留：
+
+```cpp
+MPI_Scatterv(... input_layout_*.counts/displs ...);
+MPI_Gatherv(writeback_values_*.data(), ... output_layout_*.counts/displs ...);
+```
+
+结构检查结果：
+
+- `run()` 中不再出现 `MPI_Gather(&local_global_count_*)`。
+- `run()` 中不再出现 `MPI_Gatherv(...pack.globals...)`。
+- `run()` 中不再出现 `MPI_Gatherv(...writeback_globals...)`。
+- `MPI_Reduce` 仍存在于生成代码中，但已包在 `dacpp::mpi::profilingEnabled()` 分支内。
+
+## 5. 副本一致性问题
+
+MPI 翻译后，一个 tensor 的一致性分成两层：
+
+1. root 结果一致性。
+2. 非 root 本地副本一致性。
+
+root 结果一致性要求把每个 rank 计算出的局部写回收集到 root，并在 root 上重建完整 tensor。这一步需要 `MPI_Gatherv`，因为每个 rank 写回的 global index / value 数量和位置都可能不同。
+
+非 root 本地副本一致性是另一件事。root 重建 tensor 后，其他 rank 上同名 tensor 仍然可能是旧值。如果后续 host 代码会在所有 rank 上读取该 tensor，则需要把 root 的完整结果再 `MPI_Bcast` 给所有 rank。
+
+因此 `Gatherv` 和 `Bcast` 不是二选一关系：
+
+- `MPI_Gatherv`：收集分布式输出，保证 root 拥有正确全局结果。
+- `MPI_Bcast`：把 root 的全局结果同步回其他 rank，保证后续 all-rank host 读看到新值。
+
+当前普通 MPI wrapper 输出路径大体是：
+
+```cpp
+MPI_Gather(send_count);
+MPI_Gatherv(writeback_globals);
+MPI_Gatherv(writeback_values);
+if (rank == 0) {
+    apply_writeback_by_globals(...);
+}
+if (needsBcast) {
+    MPI_Bcast(full_tensor);
+}
+```
+
+`needsBcast` 当前由 `tensorNeedsBroadcast(...)` 给出，是一个 bool 判断：当前 DAC 表达式之后，如果目标 tensor 在 DAC 表达式外还有读或读改写，就认为需要 broadcast；纯写覆盖则不需要。
+
+### 5.1 `decay1.0` 暴露的问题
+
+`decay1.0` 源码形态：
+
+```cpp
+while (t_tensor[0] <= T) {
+    DECAY(N0s_tensor, lambdas_tensor, local_A_tensor, t_tensor) <-> decay;
+    A_tensor[10*t_tensor[0]] = local_A_tensor;
+    t_tensor[0] += dt;
+}
+```
+
+当前它实际进入 MPI stencil 路径，而不是普通 wrapper 路径。生成代码中，`local_A` 的写回值会通过 `MPI_Gatherv(writeback_values_local_A...)` 收到 root，并在 root 上 `apply_writeback_by_globals(...)` 后写回 `local_A`。
+
+风险点在后续 host 语句：
+
+```cpp
+A_tensor[10*t_tensor[0]] = local_A_tensor;
+```
+
+这行会在所有 rank 上执行。如果 `local_A_tensor` 没有 broadcast，则：
+
+- root 的 `local_A_tensor` 是新值。
+- 非 root 的 `local_A_tensor` 可能仍是旧值。
+- 非 root 对 `A_tensor` 的更新可能基于旧副本。
+
+当前测试可能没有暴露这个问题，因为非 root stdout 被静默，最终可观察输出主要来自 root。但语义上，这属于潜在副本不一致。
+
+这个例子说明：仅仅保证 root 写回正确还不够，必须知道后续 host 代码是 root-only observable，还是 all-rank computation。
+
+### 5.2 一致性分类建议
+
+当前 bool 级别的 `needsBcast` 不够表达后续语义，建议提升成更细的分类：
+
+- `root-only`：只需要 root 拿到正确结果，不需要 broadcast。
+- `all-ranks-needed`：后续 host 代码会在所有 rank 读取该 tensor，需要 `Gatherv + Bcast`。
+- `distributed-followup`：后续 host 代码本身可以被翻译成 MPI/SYCL region，不一定需要先 broadcast 完整 tensor。
+
+静态分析也需要区分不同后续使用：
+
+- 后续只是 root 输出、打印、写文件。
+- 后续作为下一次 DAC shell 的输入。
+- 后续参与普通 host 计算。
+- 后续被纯写覆盖。
+- 后续通过别名、slice、函数调用、容器访问间接使用。
+
+保守策略：
+
+- 分析不清楚时，优先 `Gatherv + Bcast` 保证语义。
+- 能证明 root-only 时，跳过 broadcast。
+- 能证明后续 host loop 可 region 化时，考虑把后续计算下沉到 SYCL/MPI region，减少不必要的全量副本同步。
+
+## 6. Post-shell 可并行循环问题
+
+`liuliang1.0` 源码中，shell 之后紧跟两个 host loop：
+
+```cpp
+LWR_shell(rho, new_rho) <-> lwr;
+for (int i = 1; i <= WIDTH-2; i++) {
+    rho[i] = new_rho[i-1];
+}
+for (int i = 0; i < 1; i++) {
+    rho[0] = new_rho[0];
+}
+```
+
+第一个 loop 是明显的 element-wise copy / shift：
+
+- 每个迭代写不同的 `rho[i]`。
+- 每个迭代读 `new_rho[i-1]`。
+- 没有 loop-carried dependency。
+- 适合翻译成 `sycl::parallel_for`。
+
+第二个 loop 实际只有一次迭代，语义上是边界赋值。它也可以被 region 化，但没必要为了性能单独并行；更合理的是作为小 region 或直接 root/all-rank host assignment 处理。
+
+非 MPI buffer 路径已经能做类似优化。当前生成的普通 SYCL buffer 代码中，`liuliang1.0` 会生成：
+
+```cpp
+__dacpp_submit_region_LWR_shell_lwr_stmt_0(ctx);
+__dacpp_submit_region_LWR_shell_lwr_stmt_1(ctx);
+```
+
+其中 `stmt_0` 内部就是：
+
+```cpp
+h.parallel_for(sycl::range<1>(__N), ... {
+    d_rho[i] = d_new_rho[i-1];
+});
+```
+
+但 MPI stencil 生成代码目前仍保留原始 C++ for：
+
+```cpp
+__dacpp_mpi_stencil_run_LWR_shell_lwr(ctx, rho, new_rho);
+for (int i = 1; i <= WIDTH-2; i++) {
+    rho[i] = new_rho[i-1];
+}
+```
+
+这带来两个问题：
+
+- 每个 time step 先对 `new_rho` 做完整 broadcast，保证所有 rank 都能执行后续 host loop。
+- 每个 rank 重复执行同样的串行 host loop，无法复用前面 shell 已经建立的 SYCL queue、buffer、rank range 和数据分布信息。
+
+所以这类问题本质上也是副本一致性问题的延伸：如果后续 host loop 可以被 region 化，就不一定要把 shell 输出先同步成所有 rank 的完整副本，再让所有 rank 重复串行执行。
+
+### 6.1 MPI 下把 post-shell loop 变成 `parallel_for`
+
+可以，但需要分层实现。
+
+保守实现：
+
+1. shell 输出仍然 `Gatherv` 到 root。
+2. 如果 post-shell loop 需要 all-rank 输入，则继续 `Bcast` 必要 tensor。
+3. 将后续可并行 host loop 在每个 rank 上用 SYCL `parallel_for` 执行。
+
+优点是实现风险低，语义接近当前代码；缺点是仍有全量 broadcast，每个 rank 仍可能重复执行同样 region。
+
+更好的 root-centric region：
+
+1. shell 输出 `Gatherv` 到 root。
+2. root 在 SYCL 上执行 post-shell region，更新 root tensor。
+3. 根据下一次使用决定是否 broadcast `rho`。
+
+对 `liuliang1.0`，下一轮 `LWR_shell(rho, new_rho)` 需要读取 `rho`。在当前 root-centric scatter 模型下，每轮 shell 输入本来只要求 root 拥有最新 `rho`，所以 post-shell loop 可以只在 root 上执行，然后下一轮由 root scatter `rho` 的局部窗口。
+
+更进一步的 distributed follow-up region：
+
+1. rank 本地执行 shell kernel。
+2. rank 本地直接执行后续 copy / shift region。
+3. 只在必要边界交换或最终 observable 点做通信。
+
+这会更接近真正分布式 stencil / time-step 执行，但需要 region 化、依赖分析、边界处理和一致性建模。
+
+### 6.2 建议的识别条件
+
+post-shell loop 可以自动 region 化的基本条件：
+
+- loop bound 可静态或运行时稳定表达。
+- loop body 中写入的 tensor 下标是当前 loop induction variable 的 affine 表达。
+- 每个迭代写集合不重叠，或能证明写冲突无害。
+- 读取 tensor 不被同一 loop 的其他迭代写后读影响。
+- body 内没有不可设备化的函数调用、I/O、MPI 调用、异常控制流。
+- 涉及的 tensor 和 shell 参数能映射到同一个 ctx 或可构建独立 region ctx。
+
+对 `liuliang1.0` 的第一个 loop：
+
+```cpp
+rho[i] = new_rho[i-1];
+```
+
+满足这些条件，适合作为首批测试。
+
+对边界赋值：
+
+```cpp
+rho[0] = new_rho[0];
+```
+
+可以作为小 region，也可以先保持 host assignment。关键是它必须被纳入一致性分析：如果只在 root 执行，那么下一轮输入 scatter 是否只依赖 root；如果所有 rank 后续读 `rho[0]`，则需要 broadcast 或 all-rank 更新。
+
+## 7. 基于缓存一致性和部分交换的 stencil 方向
+
+用户提出的思路：
+
+> 当前 MPI wrapper 已经把需要的内存重复 copy 到本地了。只要解决好缓存一致性问题，就可以不用传统手写 halo 的方式解决 stencil，而是在现在的逻辑上加部分交换。
+
+这个方向总体成立，但需要精确定义：它不是完全不需要 halo，而是不必局限于传统结构化 halo。更准确地说，是基于 global index / pack plan / writeback plan 的 generalized halo 或 cache exchange。
+
+当前代码已经具备的基础：
+
+- 每个 rank 有自己的 `local_*` buffer。
+- input pack plan 已经知道本 rank 需要读哪些 global index。
+- output writeback plan 已经知道本 rank 会写哪些 global index。
+- Phase 1 后，counts / displs / globals / slots 这类 metadata 可以缓存。
+- 对 stencil 来说，读窗口通常比写窗口大，例如读 `rho[i]`、`rho[i+1]`，写 `new_rho[i]`。多出来的读元素其实就是 ghost/cache 副本。
+
+因此后续可以把 root-centric 每步通信：
+
+```text
+root pack -> Scatterv input window -> kernel -> Gatherv output -> root apply -> optional Bcast
+```
+
+逐步优化成：
+
+```text
+本地保留 read cache
+根据 writeback_globals 标记 dirty
+只交换下一步会被其他 rank 读取的 dirty overlap
+本地 kernel
+必要时在 observable 点 gather 或 broadcast
+```
+
+对规则 stencil，这会退化成自动生成的左右边界、上下边界或 tile halo exchange。对不规则访问，它仍然可以作为基于 global index 集合交集的 general peer exchange。
+
+需要建模的核心概念：
+
+- owner：某个 global element 的主拥有者。
+- reader set：哪些 rank 的 read cache 持有该 global element。
+- writer set：哪些 rank 可能写该 global element。
+- dirty set：本步被写过、其他 cache 可能变旧的 global elements。
+- exchange plan：dirty set 和其他 rank read set 的交集，决定每步 peer-to-peer 发送什么。
+- post-shell region 影响：host loop region 也会读写 tensor，必须参与 dirty / reader / writer 分析。
+
+风险和限制：
+
+- 双 buffer stencil 比 in-place stencil 容易。`rho -> new_rho` 这种读旧写新，只要在 step 边界处理一致性；原地更新需要处理同一步内读写顺序。
+- 规则访问模式可以生成简洁的邻居交换；不规则访问可能退化成更通用但更重的 index exchange。
+- 如果后续 host 代码仍在所有 rank 上执行，则需要 all-rank 副本一致；如果能降成 root-only 或 distributed region，通信策略完全不同。
+- 仅说“解决缓存一致性”会低估难度，必须显式建模 owner、reader、writer、dirty 和 exchange plan。
+
+结论：
+
+现有 MPI wrapper / stencil 的 pack plan 已经很接近“按 global index 构建本地读写缓存”的中间表示。下一阶段可以不从传统手写 halo 入手，而是先做缓存一致性分类和部分交换计划。这样既能覆盖规则 stencil，也给不规则 stencil 留出统一路径。
+
+## 8. 验证结果
+
+构建：
 
 ```bash
 cd /Volumes/QUQ/working/dacpp
 cmake --build build --target translator -j8
 ```
 
-结果：通过。构建中仍有既有 Clang/本项目 warning，但没有新增编译错误。
+结果：通过。
 
 重点回归：
 
@@ -206,40 +566,58 @@ bash test_mpi.sh
 - `waveEquation1.0`
 - 以及普通 MPI 主线 case
 
-## 6. 当前状态判断
+## 9. 当前状态判断
 
 可以认为当前已经完成：
 
-- MPI stencil 路径接线
-- ctx / init / run codegen 第一版
-- loop stencil site 安全分流
-- 普通 MPI 和 stencil MPI 写回值 gather 修复
-- 阶段 1 保守优化：通信 metadata hoist 到 `init()`，`run()` 复用 layout 和 buffer
-- `translator` 构建验证
-- `test_mpi.sh` 完整回归验证
+- MPI stencil 路径接线。
+- ctx / init / run codegen 第一版。
+- loop stencil site 安全分流。
+- 普通 MPI 和 stencil MPI 写回值 gather 修复。
+- Phase 1 保守优化：通信 metadata hoist 到 `init()`，`run()` 复用 layout 和 buffer。
+- `translator` 构建验证。
+- `test_mpi.sh` 完整回归验证。
+- 已记录副本一致性、post-shell region 化、缓存一致性 + 部分交换的后续方向。
 
 当前不能宣称的是：
 
-- 已支持所有 loop 内 `<->` 的 hoist 优化
-- 已支持循环体内部临时 view 的跨迭代 ctx 复用
-- 已完成更精细的 stencil 语义分类
+- 已支持所有 loop 内 `<->` 的 hoist 优化。
+- 已支持循环体内部临时 view 的跨迭代 ctx 复用。
+- 已完成更精细的 stencil 语义分类。
+- 已修复所有非 root stale 副本风险。
+- 已把 `liuliang1.0` 的 post-shell loop 生成 MPI/SYCL region。
+- 已实现 generalized halo / cache exchange。
 
-## 7. 后续风险和建议
+## 10. 后续路线
 
-剩余风险：
+Phase A：一致性分类
 
-1. 多个 `<->` 位于同一个 loop 时，ctx/init 插入顺序和作用域还需要专门验证。
-2. 嵌套 loop 下，目前使用外层 loop 做 hoist 点，后续可能需要根据实参生命周期选择更精确的 loop。
-3. `Rewriter_MPI_Stencil_Analysis.cpp` 目前仍偏占位，真正的 stencil 分类逻辑还可以继续下沉到这里。
-4. 当前分流以“能否安全 hoist”为主，不等价于完整 stencil 语义识别。
+- 将 `tensorNeedsBroadcast(...)` 从 bool 扩展为后续使用分类。
+- 标注每个输出 tensor 的后续需求：root-only、all-ranks-needed、distributed-followup。
+- 为 `decay1.0` 增加能暴露非 root stale 副本的测试。
 
-建议下一步：
+Phase B：MPI root-centric post-shell region
 
-1. 增加专门覆盖多个 loop `<->` 的 MPI 测试。
-2. 增加嵌套 loop 的 stencil/非 stencil 对照测试。
-3. 把当前实参生命周期检查整理进 stencil analysis 模块。
-4. 如果要支持循环内临时 view 的 stencil 优化，需要设计按迭代更新 pattern/plan 或局部 init 的新策略。
+- 复用非 MPI buffer region 的识别结果。
+- 在 MPI stencil / wrapper ctx 中生成 post-shell region helper。
+- 首先支持 root-only SYCL region，避免不必要的 `new_rho` broadcast。
+- 用 `liuliang1.0` 验证 `rho[i] = new_rho[i-1]`。
 
-## 8. 一句话总结
+Phase C：cache consistency / partial exchange
 
-当前 MPI stencil 路径已经从“骨架接好但未闭环”推进到“可构建、可回归、普通 MPI 不被误伤”的状态；本轮关键修复是收紧 hoist 条件，并修正写回 gather 的值与 `writeback_globals` 对齐问题。
+- 基于 pack globals / writeback globals 建立 owner、reader set、writer set。
+- 预计算 rank 间 dirty overlap exchange plan。
+- 从双 buffer 1D stencil 开始验证。
+- 对规则 stencil 自动退化为传统 halo 形态。
+- 对不规则访问保留 generalized index exchange。
+
+Phase D：distributed follow-up region / generalized halo
+
+- 将 post-shell region 和 shell pack/writeback 信息关联。
+- 尽量在 rank-local buffer 上执行后续 region。
+- 引入必要边界交换。
+- 在最终 observable 点才 gather / broadcast。
+
+## 11. 一句话总结
+
+当前 MPI stencil 路径已经完成 Phase 1：metadata 缓存和 buffer 复用已落地，构建和完整 MPI 回归通过。下一步的核心不只是“加 halo”，而是把 wrapper/stencil 已经形成的本地读写缓存显式纳入一致性模型，在此基础上支持 post-shell region 和 rank 间部分交换。

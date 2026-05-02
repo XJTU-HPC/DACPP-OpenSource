@@ -1,204 +1,163 @@
-# 翻译后 SYCL 程序的运行时依赖
+# 翻译后 SYCL / MPI 程序的编译与运行依赖
 
-## 范围
+更新时间：2026-05-02
 
-本文档说明了在 `dacpp` 生成 `*.dac_sycl_buffer.cpp`、`*.dac_sycl_usm.cpp` 或 `*.mpi.dac_sycl_buffer.cpp` 文件后，翻译后的 SYCL 程序在编译和运行时所需的额外文件或运行时组件。
+## 1. 范围
 
-内容基于本仓库中翻译器的主线代码，以及 `tests/` 和 `/Volumes/QUQ/working/mpi_tmp` 目录下的实际生成文件。
+本文说明当前 `clang/tools/translator` 生成的 C++/SYCL 文件在编译和运行时需要什么。
 
-## 简要说明
+覆盖的生成物包括：
 
-存在两个不同的依赖层：
+- 普通 buffer 路径：`*.dac_sycl_buffer.cpp`
+- MPI buffer 路径：`*.mpi.dac_sycl_buffer.cpp`
+- 旧 USM 相关路径的少量遗留生成物：`*.dac_sycl_usm.cpp`
 
-1. 编译生成的 C++ 源代码所需的文件
-2. 运行编译后可执行文件所需的共享库
+当前主线测试和脚本默认使用：
 
-在本仓库中：
+```bash
+dacpp input.dac.cpp --mode=buffer
+dacpp input.dac.cpp --mode=buffer --mpi
+```
 
-- 翻译器的支持代码大部分是仅头文件（header-only）形式。
-- 可执行文件构建完成后，不再需要将这些仓库头文件与二进制文件一起分发。
-- 运行时，主要的外部依赖通常是：
-  - AdaptiveCpp 运行时库
-  - OpenMP 运行时库
-  - MPI 构建时需要的 MPI 运行时库
+也就是说，当前本地和 MPI 回归都以 buffer 生成路径为主。
 
-## 1. 编译生成的 SYCL 源代码所需的文件
+## 2. 两类依赖
 
-### 1.1 仓库通用头文件
+需要区分两件事：
 
-当前生成的 SYCL 文件通常包含以下仓库头文件：
+- 编译生成的 `.cpp` 文件时需要的头文件、编译器和链接库。
+- 运行已经编译好的可执行文件时需要的共享库和启动器。
+
+本仓库的 translator runtime 支持代码大多是 header-only。可执行文件构建完成后，通常不需要把仓库头文件放在运行目录；但如果要在另一台机器重新编译生成的 `.cpp` 文件，就必须提供这些头文件和外部工具链。
+
+## 3. 编译时依赖
+
+### 3.1 仓库头文件
+
+普通 buffer 生成代码通常包含：
 
 - `dacppLib/include/ReconTensor.h`
+- `dpcppLib/include/DataReconstructor1.h`
 - `dpcppLib/include/ParameterGeneration.h`
 
-大多数当前的非 block 生成输出还包含：
-
-- `dpcppLib/include/DataReconstructor1.h`
-
-如果翻译器走 block/region 路径，生成的文件可能包含：
+如果触发 buffer region 优化，生成代码可能包含：
 
 - `dpcppLib/include/DataReconstructor.new.h`
 - `dpcppLib/include/utils.h`
 
-MPI 生成的输出额外包含：
+MPI 生成代码额外包含：
 
+- `mpi.h`
+- `cstdio`
 - `dpcppLib/include/MPIPlanner.h`
-- `MPIPlanner.h` 从 `dpcppLib/include/mpi/` 引入的子头文件
+- `dpcppLib/include/mpi/Common.h`
+- `dpcppLib/include/mpi/Pack.h`
+- `dpcppLib/include/mpi/Views.h`
 
-由于 `MPIPlanner.h` 传递性地包含了 `dacInfo.h`，MPI 构建还依赖：
+`MPIPlanner.h` 会传递性依赖 translator 侧的数据结构定义，因此编译 MPI 生成代码还需要：
 
 - `rewriter/include/dacInfo.h`
 
-### 1.2 必需的包含目录
+### 3.2 必需 include 目录
 
-如果在辅助脚本之外编译生成的 `.cpp` 文件，需要以下包含根目录可用：
+脱离仓库脚本手动编译生成代码时，至少需要加入：
 
-- `dacppLib/include`
-- `dpcppLib/include`
-- `rewriter/include`
+```text
+clang/tools/translator/dacppLib/include
+clang/tools/translator/dpcppLib/include
+clang/tools/translator/rewriter/include
+```
 
-### 1.3 外部工具链头文件
+如果源代码还包含 `std_lib/include` 中的 DACPP 前端声明，也需要在翻译阶段提供：
 
-生成的代码还包含以下外部头文件：
+```text
+clang/tools/translator/std_lib/include
+```
 
-- `sycl/sycl.hpp`
-- `--mpi` 输出时的 `mpi.h`
+### 3.3 外部工具链
 
-因此，用于编译的机器必须安装：
+当前脚本默认使用 AdaptiveCpp 编译生成的 SYCL 代码：
 
-- AdaptiveCpp
-- MPI 输出所需的 MPI 开发环境
-- 如果编译器配置需要，还需安装 OpenMP 头文件
+- 头文件：`sycl/sycl.hpp`
+- 编译器：`$ACPP_ROOT/bin/acpp`
+- 默认本机路径：`/Volumes/QUQ/working/sycl-install`
 
-## 2. 运行时所需的共享库
+MPI 生成代码还需要：
 
-可执行文件编译完成后，上述仓库头文件不再是运行时依赖。运行时依赖是链接到二进制文件中的共享库。
+- MPI 开发头文件：`mpi.h`
+- MPI 链接库：`libmpi`
+- MPI 启动器：`mpirun`
 
-在当前仓库的 macOS 环境中，`otool -L` 显示的典型依赖如下：
+在当前 macOS 本机脚本中，`env.sh` 会尽量从 Homebrew 或 `PATH` 自动发现 OpenMPI 和 `libomp`。
 
-- `@rpath/libacpp-rt.dylib`
-- `@rpath/libacpp-common.dylib`
-- `/opt/homebrew/opt/libomp/lib/libomp.dylib`
-- `/opt/homebrew/opt/open-mpi/lib/libmpi.40.dylib`
+## 4. 运行时依赖
 
-`libc++` 和 `libSystem` 等系统库由操作系统提供，通常不需要自行打包。
+已经编译好的二进制运行时不需要仓库头文件，但需要链接到的动态库可被加载器找到。
 
-### 2.1 AdaptiveCpp 运行时
-
-这是翻译后 SYCL 可执行文件的主要强制运行时依赖。
-
-在本仓库中，默认安装路径为：
-
-- `/Volumes/QUQ/working/sycl-install`
-
-重要的运行时目录是：
-
-- `$ACPP_ROOT/lib`
-
-可执行文件在启动时至少需要 AdaptiveCpp 运行时库可用，特别是：
+当前 macOS 环境中常见依赖包括：
 
 - `libacpp-rt.dylib`
 - `libacpp-common.dylib`
+- `libomp.dylib`
+- MPI 程序需要 `libmpi.dylib`
 
-### 2.2 OpenMP 运行时
+Linux 上对应通常是：
 
-当前构建也会链接 `libomp`。
+- `libacpp-rt.so`
+- `libacpp-common.so`
+- `libomp.so`
+- MPI 程序需要 `libmpi.so`
 
-因此运行时机器还需要能够找到：
+系统 C++ 运行时和系统库一般由操作系统提供。
 
-- macOS 上的 `libomp.dylib`
-- Linux 上的 `libomp.so`
-
-### 2.3 MPI 运行时
-
-对于 MPI 生成的程序，运行时需要 `libmpi`。
-
-在本仓库当前的辅助脚本环境中，即使是非 MPI 的二进制文件，也可能被链接了 OpenMPI，因为 `env.sh` 在检测到 OpenMPI 安装时会添加 OpenMPI 链接标志。因此，如果按原样使用仓库辅助脚本，在非 MPI 二进制文件中看到 `libmpi` 不一定是 bug。
-
-## 3. 运行时通常需要的环境变量
+## 5. 环境变量
 
 ### macOS
 
-通常需要：
+常用设置：
 
 ```bash
 export ACPP_ROOT=/Volumes/QUQ/working/sycl-install
 export DYLD_LIBRARY_PATH="$ACPP_ROOT/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
 ```
 
-如果 OpenMPI 或 `libomp` 不在加载器可发现的位置，可能还需要将它们的库目录追加到 `DYLD_LIBRARY_PATH`。
+如果 OpenMPI 或 `libomp` 不在系统默认搜索路径，也需要把对应 `lib` 目录加入 `DYLD_LIBRARY_PATH`。
 
 ### Linux
 
-通常需要：
+常用设置：
 
 ```bash
 export ACPP_ROOT=/path/to/sycl-install
 export LD_LIBRARY_PATH="$ACPP_ROOT/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 ```
 
-如果 MPI 或 `libomp` 安装在非标准路径，也需要添加对应的库目录。
+如果 MPI 或 `libomp` 在非标准路径，也需要把对应目录加入 `LD_LIBRARY_PATH`。
 
-## 4. 普通 SYCL 与 MPI SYCL 的需求对比
+## 6. 仓库脚本提供的入口
 
-### 4.1 非 MPI 翻译的 SYCL 程序
-
-如果只想运行普通翻译后的 SYCL 可执行文件：
-
-- 编译时：
-  - `ReconTensor.h`
-  - `ParameterGeneration.h`
-  - 通常需要 `DataReconstructor1.h`
-  - AdaptiveCpp 头文件
-- 运行时：
-  - AdaptiveCpp 共享库
-  - OpenMP 共享库
-  - 如果使用了本仓库当前的 `env.sh` 构建，可能还需要 `libmpi`
-
-### 4.2 MPI 翻译的 SYCL 程序
-
-如果要运行 `--mpi` 翻译后的可执行文件：
-
-- 编译时：
-  - 以上所有内容
-  - `MPIPlanner.h`
-  - `dpcppLib/include/mpi/`
-  - MPI 头文件
-  - `rewriter/include/dacInfo.h`
-- 运行时：
-  - AdaptiveCpp 共享库
-  - OpenMP 共享库
-  - MPI 共享库
-  - `mpirun` 或等效的 MPI 启动器
-
-## 5. 快速检查清单
-
-如果要将生成的源文件或二进制文件迁移到另一台机器，请检查：
-
-- 该机器是否安装了 AdaptiveCpp，`sycl/sycl.hpp` 是否可用？
-- 编译时以下包含目录是否可用？
-  - `dacppLib/include`
-  - `dpcppLib/include`
-  - `rewriter/include`
-- 生成的文件是否包含 `MPIPlanner.h`？
-  - 如果是，还需携带 `dpcppLib/include/mpi/` 以及 MPI 头文件和库
-- 运行时机器是否有以下库？
-  - `libacpp-rt`
-  - `libacpp-common`
-  - `libomp`
-  - MPI 构建时的 `libmpi`
-- `DYLD_LIBRARY_PATH` 或 `LD_LIBRARY_PATH` 是否已配置，使加载器能找到这些库？
-
-## 6. 本仓库中的实用命令
-
-编译：
+推荐先加载：
 
 ```bash
 source /Volumes/QUQ/working/dacpp/clang/tools/translator/env.sh
-acpp-compile /path/to/file.dac_sycl_buffer.cpp /tmp/my_bin
 ```
 
-运行非 MPI 程序：
+加载后会提供几个 shell 函数。
+
+翻译：
+
+```bash
+dacpp /path/to/input.dac.cpp --mode=buffer
+dacpp /path/to/input.dac.cpp --mode=buffer --mpi
+```
+
+编译生成文件：
+
+```bash
+acpp-compile /path/to/input.dac_sycl_buffer.cpp /tmp/my_bin
+```
+
+运行普通程序：
 
 ```bash
 DYLD_LIBRARY_PATH="$ACPP_ROOT/lib" /tmp/my_bin
@@ -210,14 +169,84 @@ DYLD_LIBRARY_PATH="$ACPP_ROOT/lib" /tmp/my_bin
 DYLD_LIBRARY_PATH="$ACPP_ROOT/lib" mpirun -np 4 /tmp/my_bin
 ```
 
-## 7. 重要说明
+## 7. 普通 buffer 与 MPI buffer 对比
 
-如果问题严格来说是"运行已构建好的二进制文件时需要什么"，答案是：
+普通 buffer 生成代码：
 
-- 不再需要仓库头文件
-- 需要已链接的共享库，主要是 AdaptiveCpp、`libomp`，以及 MPI 构建时的 MPI 库
+- 编译时需要 DACPP tensor/runtime 头文件、AdaptiveCpp。
+- 运行时需要 AdaptiveCpp runtime 和 OpenMP runtime。
+- 如果按当前 `env.sh` 编译，可能也会链接 MPI 库，因为脚本检测到 OpenMPI 后会统一加入 MPI include/link flags；这不一定表示生成代码使用了 MPI。
 
-如果问题是"我需要携带什么到其他地方才能重新编译生成的 `.cpp` 文件"，则需要：
+MPI buffer 生成代码：
 
-- 上面列出的仓库运行时头文件
-- 外部 SYCL/MPI 工具链和库
+- 编译时额外需要 MPI 头文件、`MPIPlanner.h`、`dpcppLib/include/mpi/`、`rewriter/include/dacInfo.h`。
+- 运行时额外需要 MPI runtime 和 `mpirun`。
+- 当前 MPI 输出会在普通 wrapper 路径和 MPI stencil loop 路径之间自动分流。
+
+## 8. MPI 生成代码的当前形态
+
+普通 MPI wrapper 路径大体执行：
+
+```text
+root pack input -> MPI_Scatterv -> local SYCL kernel
+-> MPI_Gatherv writeback -> root apply writeback
+-> optional MPI_Bcast output
+```
+
+位于 time-step loop 内、且 shell 实参可安全 hoist 的 `<->` 会进入 MPI stencil 路径，生成：
+
+```cpp
+__dacpp_mpi_stencil_ctx_xxx ctx;
+__dacpp_mpi_stencil_init_xxx(ctx, ...);
+for (...) {
+    __dacpp_mpi_stencil_run_xxx(ctx, ...);
+}
+```
+
+当前 stencil Phase 1 已把稳定 metadata 缓存在 `init()`，包括 gathered layout、counts/displs、root 侧 globals、writeback slots 和复用 buffer。`run()` 中保留每步真正需要的数据通信。
+
+需要注意：
+
+- `MPI_Gatherv` 用于 root 重建输出。
+- `MPI_Bcast` 用于把 root 更新后的输出同步回非 root 副本。
+- 二者不是替代关系。
+- `--mpi-output-sync=root-only` 可以跳过最终 broadcast，但只有后续代码不需要 all-rank 副本一致时才安全。
+
+## 9. Profiling
+
+MPI 生成代码包含轻量 profiling 分支。只有开启运行时环境变量时才会执行相关 timing collective：
+
+```bash
+export DACPP_MPI_PROFILE=1
+```
+
+未开启时，生成代码中的 profiling `MPI_Reduce` 分支不会执行。
+
+## 10. 迁移检查清单
+
+如果迁移生成的 `.cpp` 文件到另一台机器重新编译，请检查：
+
+- AdaptiveCpp 是否安装，`sycl/sycl.hpp` 是否可用。
+- 是否提供以下 include 目录：
+  - `dacppLib/include`
+  - `dpcppLib/include`
+  - `rewriter/include`
+- 如果是 MPI 生成代码：
+  - MPI 头文件和库是否可用。
+  - `dpcppLib/include/mpi/` 是否完整。
+  - `rewriter/include/dacInfo.h` 是否可用。
+- 链接时是否能找到 AdaptiveCpp、OpenMP、MPI 库。
+
+如果迁移已经编译好的二进制，请检查：
+
+- AdaptiveCpp runtime 是否可加载。
+- OpenMP runtime 是否可加载。
+- MPI 程序的 MPI runtime 是否和编译时 ABI 匹配。
+- macOS 用 `DYLD_LIBRARY_PATH`，Linux 用 `LD_LIBRARY_PATH` 配好非标准库路径。
+
+## 11. 常见误区
+
+- 当前主线 MPI 回归不是 `--mode=usm --mpi`，而是 `--mode=buffer --mpi`。
+- 当前 MPI 主线生成物不是 `*.dac_sycl_buffer_mpi.cpp`，而是基于输入名生成 `*.mpi.dac_sycl_buffer.cpp`。
+- 运行二进制不需要仓库头文件；重新编译生成 `.cpp` 才需要。
+- 看到非 MPI 二进制链接了 `libmpi` 不一定是生成逻辑错误，可能是当前 `env.sh` 的统一链接参数导致。
