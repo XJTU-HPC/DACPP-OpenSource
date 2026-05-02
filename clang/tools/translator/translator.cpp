@@ -14,6 +14,7 @@
 #include <set>
 #include <string>
 #include <unordered_map>
+#include <functional>
 #include "clang/AST/ASTTypeTraits.h"
 
 #include "ASTParse.h"
@@ -206,6 +207,7 @@ public:
     dacExprMap[functionDecl].emplace(calcFunc);
 
     dacppFile->setExpression(dacExpr);
+    const int exprIndex = dacppFile->getNumExpression() - 1;
 
     // ------------------ 查找最外层循环 --------------------
     ASTContext *Ctx = Result.Context;
@@ -229,6 +231,32 @@ public:
       cur = p;
     }
     if (outer) {
+    bool canHoistStencilInit = true;
+    for (unsigned argIdx = 0; argIdx < shellCall->getNumArgs(); ++argIdx) {
+      std::function<void(const Stmt*)> checkArgRefs = [&](const Stmt* S) {
+        if (!S || !canHoistStencilInit) {
+          return;
+        }
+        if (const auto* DRE = llvm::dyn_cast<clang::DeclRefExpr>(S)) {
+          if (const auto* VD = llvm::dyn_cast<clang::VarDecl>(DRE->getDecl())) {
+            if (!VD->isFileVarDecl() &&
+                !SM.isBeforeInTranslationUnit(VD->getBeginLoc(), outer->getBeginLoc())) {
+              canHoistStencilInit = false;
+              return;
+            }
+          }
+        }
+        for (const Stmt* child : S->children()) {
+          checkArgRefs(child);
+        }
+      };
+      checkArgRefs(shellCall->getArg(argIdx));
+    }
+    if (canHoistStencilInit &&
+        (llvm::isa<clang::ForStmt>(outer) || llvm::isa<clang::WhileStmt>(outer))) {
+      dacppFile->addMPIStencilSite(exprIndex, dacExpr, outer);
+    }
+
     auto *FS = llvm::dyn_cast<clang::ForStmt>(outer);
     if (FS) {
       dacppFile->setForStatement(FS);

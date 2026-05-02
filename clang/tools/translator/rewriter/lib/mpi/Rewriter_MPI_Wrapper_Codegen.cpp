@@ -211,6 +211,7 @@ std::string buildWrapperCode(DacppFile* dacppFile,
 
         code += "    const auto& writeback_globals_" + calcName + " = " + packName + ".writeback_globals.empty() ? " + packName + ".globals : " + packName + ".writeback_globals;\n";
         code += "    int send_count_" + calcName + " = static_cast<int>(writeback_globals_" + calcName + ".size());\n";
+        code += "    std::vector<" + calcParam->getBasicType() + "> writeback_values_" + calcName + " = dacpp::mpi::build_writeback_values_parallel(" + localName + ", " + packName + ");\n";
         code += "    std::vector<int> recvcounts_" + calcName + ";\n";
         code += "    std::vector<int> recvdispls_" + calcName + ";\n";
         code += "    std::vector<int64_t> global_recv_globals_" + calcName + ";\n";
@@ -241,9 +242,9 @@ std::string buildWrapperCode(DacppFile* dacppFile,
             code += "    }\n";
             std::string payloadSendCount2 =
                 mpiPayloadCountExpr("send_count_" + calcName, calcParam->getBasicType());
-            code += "    MPI_Gatherv(" + localName + ".data(), " + payloadSendCount2 + ", " + mpiType + ", mpi_rank == 0 ? global_recv_values_" + calcName + ".data() : nullptr, mpi_rank == 0 ? recvcounts_bytes_" + calcName + ".data() : nullptr, mpi_rank == 0 ? recvdispls_bytes_" + calcName + ".data() : nullptr, " + mpiType + ", 0, MPI_COMM_WORLD);\n";
+            code += "    MPI_Gatherv(writeback_values_" + calcName + ".data(), " + payloadSendCount2 + ", " + mpiType + ", mpi_rank == 0 ? global_recv_values_" + calcName + ".data() : nullptr, mpi_rank == 0 ? recvcounts_bytes_" + calcName + ".data() : nullptr, mpi_rank == 0 ? recvdispls_bytes_" + calcName + ".data() : nullptr, " + mpiType + ", 0, MPI_COMM_WORLD);\n";
         } else {
-            code += "    MPI_Gatherv(" + localName + ".data(), send_count_" + calcName + ", " + mpiType + ", mpi_rank == 0 ? global_recv_values_" + calcName + ".data() : nullptr, mpi_rank == 0 ? recvcounts_" + calcName + ".data() : nullptr, mpi_rank == 0 ? recvdispls_" + calcName + ".data() : nullptr, " + mpiType + ", 0, MPI_COMM_WORLD);\n";
+            code += "    MPI_Gatherv(writeback_values_" + calcName + ".data(), send_count_" + calcName + ", " + mpiType + ", mpi_rank == 0 ? global_recv_values_" + calcName + ".data() : nullptr, mpi_rank == 0 ? recvcounts_" + calcName + ".data() : nullptr, mpi_rank == 0 ? recvdispls_" + calcName + ".data() : nullptr, " + mpiType + ", 0, MPI_COMM_WORLD);\n";
         }
         code += "    if (mpi_rank == 0) {\n";
         code += "        std::vector<" + calcParam->getBasicType() + "> " + globalName + ";\n";

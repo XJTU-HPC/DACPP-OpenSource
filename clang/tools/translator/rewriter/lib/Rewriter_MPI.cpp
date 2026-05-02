@@ -10,6 +10,11 @@
 namespace dacppTranslator {
 
 void Rewriter::rewriteMPI() {
+    if (dacppFile && dacppFile->hasMPIStencilSites()) {
+        rewriteMPIStencil();
+        return;
+    }
+
     std::string generated = mpi_rewriter::buildPrelude(dacppFile);
     std::set<std::string> generatedWrappers;
 
@@ -57,6 +62,9 @@ void Rewriter::rewriteMPI() {
     int mpi_size = 1;
     MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);
     MPI_Comm_size(MPI_COMM_WORLD, &mpi_size);
+    if (mpi_rank != 0) {
+        std::freopen("/dev/null", "w", stdout);
+    }
 )";
 
     const std::string mpiFinish = R"(

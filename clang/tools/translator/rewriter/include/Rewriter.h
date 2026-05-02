@@ -218,6 +218,7 @@ public:
 
 
     void rewriteMPI();
+    void rewriteMPIStencil();
 };
 
 // namespace dacppTranslator

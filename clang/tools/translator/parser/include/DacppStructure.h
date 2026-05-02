@@ -31,6 +31,12 @@ struct BufferRegionPlan {
     std::string disableReason;
 };
 
+struct MpiStencilSite {
+    int exprIndex = -1;
+    const clang::BinaryOperator* dacExpr = nullptr;
+    const clang::Stmt* outerLoop = nullptr;
+};
+
 
 /**
  * 存储头文件信息
@@ -115,6 +121,7 @@ public:
     bool mpiBroadcastOutputs = true;
     bool mainAlreadyRewritten = false;
     BufferRegionPlan bufferRegionPlan;
+    std::vector<MpiStencilSite> mpiStencilSites;
 public:
     const FunctionDecl* node;
     DacppFile();
@@ -193,6 +200,20 @@ public:
     bool getMPIBroadcastOutputs() const { return this->mpiBroadcastOutputs; }
     void setMainAlreadyRewritten(bool rewritten) { this->mainAlreadyRewritten = rewritten; }
     bool getMainAlreadyRewritten() const { return this->mainAlreadyRewritten; }
+    void addMPIStencilSite(int exprIndex,
+                           const clang::BinaryOperator* dacExpr,
+                           const clang::Stmt* outerLoop) {
+        if (!dacExpr || !outerLoop) {
+            return;
+        }
+        this->mpiStencilSites.push_back({exprIndex, dacExpr, outerLoop});
+    }
+    const std::vector<MpiStencilSite>& getMPIStencilSites() const {
+        return this->mpiStencilSites;
+    }
+    bool hasMPIStencilSites() const {
+        return !this->mpiStencilSites.empty();
+    }
 
 };
 }
