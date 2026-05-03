@@ -29,13 +29,16 @@ set(REWRITER_SOURCES
   rewriter/lib/universal_template.cpp
   rewriter/lib/Rewriter_MPI.cpp
   rewriter/lib/Rewriter_MPI_Stencil.cpp
-  rewriter/lib/mpi/Rewriter_MPI_Analysis.cpp
+  rewriter/lib/mpi/Rewriter_MPI_OutputAnalysis.cpp
+  rewriter/lib/mpi/Rewriter_MPI_PrintRewrite.cpp
+  rewriter/lib/mpi/Rewriter_MPI_ParamAnalysis.cpp
   rewriter/lib/mpi/Rewriter_MPI_Types.cpp
   rewriter/lib/mpi/Rewriter_MPI_Pattern.cpp
   rewriter/lib/mpi/Rewriter_MPI_Wrapper_Codegen.cpp
   rewriter/lib/mpi/Rewriter_MPI_Stencil_Analysis.cpp
   rewriter/lib/mpi/Rewriter_MPI_Stencil_Codegen.cpp
-  rewriter/lib/mpi/Rewriter_MPI_PostRegion.cpp
+  rewriter/lib/mpi/Rewriter_MPI_PostRegion_Analysis.cpp
+  rewriter/lib/mpi/Rewriter_MPI_PostRegion_Codegen.cpp
   rewriter/lib/Multiple_template.cpp
 )
 
