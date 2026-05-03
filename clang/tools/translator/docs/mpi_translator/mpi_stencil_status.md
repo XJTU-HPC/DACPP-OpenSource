@@ -117,6 +117,11 @@ if (dacppFile && dacppFile->hasMPIStencilSites()) {
 - `clang/tools/translator/rewriter/lib/Rewriter_MPI_Stencil.cpp`
 - `clang/tools/translator/rewriter/lib/mpi/Rewriter_MPI_Stencil_Analysis.cpp`
 - `clang/tools/translator/rewriter/lib/mpi/Rewriter_MPI_Stencil_Codegen.cpp`
+- `clang/tools/translator/rewriter/lib/mpi/Rewriter_MPI_OutputAnalysis.cpp`
+- `clang/tools/translator/rewriter/lib/mpi/Rewriter_MPI_PrintRewrite.cpp`
+- `clang/tools/translator/rewriter/lib/mpi/Rewriter_MPI_ParamAnalysis.cpp`
+- `clang/tools/translator/rewriter/lib/mpi/Rewriter_MPI_PostRegion_Analysis.cpp`
+- `clang/tools/translator/rewriter/lib/mpi/Rewriter_MPI_PostRegion_Codegen.cpp`
 - `clang/tools/translator/rewriter/include/Rewriter.h`
 - `clang/tools/translator/CMakeLists.txt`
 
@@ -281,6 +286,12 @@ MPI_Gatherv(writeback_values_*.data(), ... output_layout_*.counts/displs ...);
 - `MPI_Reduce` 仍存在于生成代码中，但已包在 `dacpp::mpi::profilingEnabled()` 分支内。
 
 ## 5. 副本一致性问题
+
+涉及文件：
+
+- `clang/tools/translator/rewriter/lib/mpi/Rewriter_MPI_OutputAnalysis.cpp`
+- `clang/tools/translator/rewriter/lib/mpi/Rewriter_MPI_PrintRewrite.cpp`
+- `clang/tools/translator/rewriter/lib/mpi/Rewriter_MPI_OutputAnalysis_Internal.h`
 
 MPI 翻译后，一个 tensor 的一致性分成两层：
 
@@ -454,6 +465,12 @@ if (__dacpp_mpi_is_root_rank()) {
 - 如果同一个 tensor 后续还有普通 host read，仍然分类为 `AllRanksNeeded`，不会因为存在一个 root-only 输出就跳过必要 broadcast。
 
 ## 6. Post-shell 可并行循环问题
+
+涉及文件：
+
+- `clang/tools/translator/rewriter/lib/mpi/Rewriter_MPI_PostRegion_Analysis.cpp`
+- `clang/tools/translator/rewriter/lib/mpi/Rewriter_MPI_PostRegion_Codegen.cpp`
+- `clang/tools/translator/rewriter/lib/mpi/Rewriter_MPI_PostRegion_Internal.h`
 
 `liuliang1.0` 源码中，shell 之后紧跟两个 host loop：
 

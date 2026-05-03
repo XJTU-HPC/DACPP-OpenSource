@@ -1,6 +1,6 @@
 # DACPP Translator
 
-更新时间：2026-05-02
+更新时间：2026-05-03
 
 `clang/tools/translator` 是 DACPP 到 C++/SYCL 的 source-to-source translator 主目录。当前主线以 buffer 生成路径为核心，并支持 `--mpi` 生成 MPI + SYCL 代码。
 
@@ -148,10 +148,20 @@ bash test_mpi.sh waveEquation1.0 stencil1.0 FOuLa1.0 mpiDenseCoverSibling1.0
   - MPI 总入口，负责普通 MPI wrapper 和 MPI stencil 路径分流。
 - `rewriter/lib/mpi/Rewriter_MPI_Wrapper_Codegen.cpp`
   - 普通 MPI wrapper codegen。
+- `rewriter/lib/mpi/Rewriter_MPI_Stencil_Analysis.cpp`
+  - MPI stencil site 能力分析和 distributed-followup 判定。
 - `rewriter/lib/mpi/Rewriter_MPI_Stencil_Codegen.cpp`
-  - MPI stencil `ctx/init/run` codegen。
-- `rewriter/lib/mpi/Rewriter_MPI_Analysis.cpp`
-  - MPI 参数读写推断、输出是否需要 broadcast 等分析。
+  - MPI stencil `ctx/init/run` 主 codegen。
+- `rewriter/lib/mpi/Rewriter_MPI_OutputAnalysis.cpp`
+  - MPI 输出同步分类、broadcast 需求分析。
+- `rewriter/lib/mpi/Rewriter_MPI_PrintRewrite.cpp`
+  - `.print()` / `std::cout` 的 root-only 改写。
+- `rewriter/lib/mpi/Rewriter_MPI_ParamAnalysis.cpp`
+  - 参数读写模式推断和语句访问摘要。
+- `rewriter/lib/mpi/Rewriter_MPI_PostRegion_Analysis.cpp`
+  - post-shell root-centric region 识别。
+- `rewriter/lib/mpi/Rewriter_MPI_PostRegion_Codegen.cpp`
+  - post-shell root-centric region helper 生成。
 - `rewriter/lib/mpi/Rewriter_MPI_Pattern.cpp`
   - AccessPattern、PackPlan 相关生成。
 - `dpcppLib/include/MPIPlanner.h`
