@@ -1,0 +1,6 @@
+LOG_CONTAINS:[DACPP][MPI][PhaseC] site smoothShell_smooth_step partial-exchange enabled
+LOG_CONTAINS:[DACPP][MPI] output next sync=distributed-followup
+LOG_NOT_CONTAINS:partial-exchange disabled
+SYCL_CONTAINS:ctx.use_partial_exchange = true;
+SYCL_CONTAINS:root_bridge_plan = dacpp::mpi::build_exchange_plan_from_layouts
+SYCL_CONTAINS:dacpp::mpi::exchange_values_by_slots(bridge_dense_state

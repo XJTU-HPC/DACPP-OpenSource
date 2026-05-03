@@ -762,8 +762,21 @@ const char* outputSyncRequirementName(OutputSyncRequirement requirement) {
 }
 
 bool requiresBroadcast(OutputSyncRequirement requirement) {
-    return requirement == OutputSyncRequirement::AllRanksNeeded ||
-           requirement == OutputSyncRequirement::DistributedFollowup;
+    return requirement == OutputSyncRequirement::AllRanksNeeded;
+}
+
+Expression* findExprForDacExpr(DacppFile* dacppFile,
+                               const clang::BinaryOperator* dacExpr) {
+    if (!dacppFile || !dacExpr) {
+        return nullptr;
+    }
+    for (int exprIdx = 0; exprIdx < dacppFile->getNumExpression(); ++exprIdx) {
+        Expression* expr = dacppFile->getExpression(exprIdx);
+        if (expr && expr->getDacExpr() == dacExpr) {
+            return expr;
+        }
+    }
+    return nullptr;
 }
 
 OutputSyncRequirement classifyOutputSyncRequirement(
@@ -786,6 +799,16 @@ OutputSyncRequirement classifyOutputSyncRequirement(
         collectRootCentricPostRegionStmts(dacppFile, currentDacExpr);
     std::set<const clang::Stmt*> rootRegionStmts(
         rootRegionStmtVec.begin(), rootRegionStmtVec.end());
+
+    Expression* siteExpr = findExprForDacExpr(dacppFile, currentDacExpr);
+    if (siteExpr &&
+        tensorUsesDistributedFollowup(dacppFile,
+                                      siteExpr->getShell(),
+                                      siteExpr->getCalc(),
+                                      tensorName,
+                                      currentDacExpr)) {
+        return OutputSyncRequirement::DistributedFollowup;
+    }
 
     const std::string actualTensorName =
         resolveActualTensorName(tensorName, currentDacExpr);

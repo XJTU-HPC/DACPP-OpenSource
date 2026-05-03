@@ -28,6 +28,7 @@ MPI_TESTS=(
     "mpiBroadcastTensor2Array"
     "mpiBroadcastUnknownFunction"
     "mpiBroadcastAliasRead"
+    "mpiDistributedStencil1D"
     "stencil1.0"
     "waveEquation1.0"
 )
@@ -123,6 +124,7 @@ clean_output() {
     | grep -v "SYCL2020 USM model" \
     | grep -v "AdaptiveCpp performance guide" \
     | grep -v "https://github.com/AdaptiveCpp" \
+    | grep -v '^[[:space:]]*$' \
     > "${1}.clean"
 }
 

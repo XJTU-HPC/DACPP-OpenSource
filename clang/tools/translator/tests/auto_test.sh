@@ -42,6 +42,7 @@ examples=(
     "liuliang1.0"
     "MDP1.0"
     "mandel1.0"
+    "mpiDistributedStencil1D"
     "oddeven0.1"
 )
 

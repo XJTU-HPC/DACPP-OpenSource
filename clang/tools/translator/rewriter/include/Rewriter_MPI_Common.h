@@ -37,6 +37,14 @@ struct RootCentricPostRegion {
     std::string helperName;
 };
 
+struct DistributedStencilSitePlan {
+    bool supported = false;
+    bool hasRootBridge = false;
+    std::string disableReason;
+    std::set<std::string> distributedTensors;
+    std::set<std::string> rootBridgeTensors;
+};
+
 std::vector<AccessSummary> summarizeStmtAccess(
     const clang::Stmt* stmt,
     const std::unordered_map<const clang::ValueDecl*, int>& paramIndices,
@@ -84,6 +92,18 @@ std::string buildWrapperCode(DacppFile* dacppFile,
                              Calc* calc,
                              const clang::BinaryOperator* dacExpr = nullptr);
 std::string buildPrelude(DacppFile* dacppFile);
+
+DistributedStencilSitePlan analyzeDistributedStencilSite(
+    DacppFile* dacppFile,
+    Shell* shell,
+    Calc* calc,
+    const clang::BinaryOperator* dacExpr);
+bool tensorUsesDistributedFollowup(
+    DacppFile* dacppFile,
+    Shell* shell,
+    Calc* calc,
+    const std::string& tensorName,
+    const clang::BinaryOperator* dacExpr);
 
 std::vector<RootCentricPostRegion> collectRootCentricPostRegions(
     DacppFile* dacppFile,

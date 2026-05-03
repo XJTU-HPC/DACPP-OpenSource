@@ -6,6 +6,7 @@
 #include <cctype>
 #include <cstdint>
 #include <chrono>
+#include <complex>
 #include <cstdio>
 #include <cstdlib>
 #include <memory>
@@ -86,6 +87,41 @@ struct GatheredIndexLayout {
     std::vector<int> byte_counts;
     std::vector<int> byte_displs;
     std::vector<int64_t> globals;
+};
+
+struct AllRankIndexLayout {
+    int local_count = 0;
+    std::vector<int> counts;
+    std::vector<int> displs;
+    std::vector<int64_t> globals;
+};
+
+struct PeerSlotExchange {
+    int peer_rank = -1;
+    std::vector<int32_t> local_slots;
+    std::vector<int64_t> globals;
+};
+
+struct ExchangePlan {
+    bool supported = false;
+    std::string unsupported_reason;
+    std::vector<PeerSlotExchange> send_transfers;
+    std::vector<PeerSlotExchange> recv_transfers;
+};
+
+template <typename T>
+struct DistributedTensorState {
+    bool enabled = false;
+    bool seeded = false;
+    bool authoritative_source = false;
+
+    std::vector<T> local_cache;
+    AllRankIndexLayout read_layout;
+    AllRankIndexLayout write_layout;
+    AllRankIndexLayout root_bridge_layout;
+    ExchangePlan exchange_plan;
+    ExchangePlan root_bridge_plan;
+    PackMap root_bridge_pack;
 };
 
 struct VectorIntHash {
@@ -208,6 +244,62 @@ inline ItemRange get_rank_item_range(int64_t total_items, int rank, int mpi_size
     const int64_t begin = static_cast<int64_t>(rank) * base + std::min<int64_t>(rank, rem);
     const int64_t end = begin + base + (rank < rem ? 1 : 0);
     return ItemRange{begin, end};
+}
+
+template <typename T>
+inline MPI_Datatype mpi_datatype_for_value() {
+    if constexpr (std::is_same_v<T, float>) {
+        return MPI_FLOAT;
+    } else if constexpr (std::is_same_v<T, double>) {
+        return MPI_DOUBLE;
+    } else if constexpr (std::is_same_v<T, long double>) {
+        return MPI_LONG_DOUBLE;
+    } else if constexpr (std::is_same_v<T, int>) {
+        return MPI_INT;
+    } else if constexpr (std::is_same_v<T, short> ||
+                         std::is_same_v<T, short int>) {
+        return MPI_SHORT;
+    } else if constexpr (std::is_same_v<T, long>) {
+        return MPI_LONG;
+    } else if constexpr (std::is_same_v<T, long long>) {
+        return MPI_LONG_LONG;
+    } else if constexpr (std::is_same_v<T, char>) {
+        return MPI_CHAR;
+    } else if constexpr (std::is_same_v<T, signed char>) {
+        return MPI_SIGNED_CHAR;
+    } else if constexpr (std::is_same_v<T, unsigned>) {
+        return MPI_UNSIGNED;
+    } else if constexpr (std::is_same_v<T, unsigned short>) {
+        return MPI_UNSIGNED_SHORT;
+    } else if constexpr (std::is_same_v<T, unsigned long>) {
+        return MPI_UNSIGNED_LONG;
+    } else if constexpr (std::is_same_v<T, unsigned long long>) {
+        return MPI_UNSIGNED_LONG_LONG;
+    } else if constexpr (std::is_same_v<T, unsigned char>) {
+        return MPI_UNSIGNED_CHAR;
+    } else if constexpr (std::is_same_v<T, bool>) {
+        return MPI_CXX_BOOL;
+    } else if constexpr (std::is_same_v<T, std::complex<float>>) {
+        return MPI_C_FLOAT_COMPLEX;
+    } else if constexpr (std::is_same_v<T, std::complex<double>>) {
+        return MPI_C_DOUBLE_COMPLEX;
+    } else if constexpr (std::is_same_v<T, std::complex<long double>>) {
+        return MPI_C_LONG_DOUBLE_COMPLEX;
+    }
+    return MPI_BYTE;
+}
+
+template <typename T>
+inline bool uses_byte_transport_for_value() {
+    return mpi_datatype_for_value<T>() == MPI_BYTE;
+}
+
+template <typename T>
+inline int mpi_payload_count_for_values(std::size_t count) {
+    if (uses_byte_transport_for_value<T>()) {
+        return static_cast<int>(count * sizeof(T));
+    }
+    return static_cast<int>(count);
 }
 
 inline int64_t linearize(const std::vector<int>& pos, const DataInfo& info) {
