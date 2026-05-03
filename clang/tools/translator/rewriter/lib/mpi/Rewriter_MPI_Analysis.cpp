@@ -9,6 +9,9 @@
 #include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/AST/Stmt.h"
 #include "clang/AST/ASTTypeTraits.h"
+#include "clang/Basic/SourceManager.h"
+#include "clang/Lex/Lexer.h"
+#include "clang/Rewrite/Core/Rewriter.h"
 
 #include "Rewriter_MPI_Common.h"
 
@@ -110,6 +113,22 @@ std::string resolveActualTensorName(const std::string& shellParamName,
     return shellParamName;
 }
 
+bool containsCoutExpr(const clang::Stmt* stmt) {
+    if (!stmt) {
+        return false;
+    }
+    if (const auto* DRE = llvm::dyn_cast<clang::DeclRefExpr>(stmt)) {
+        return DRE->getDecl() &&
+               DRE->getDecl()->getNameAsString() == "cout";
+    }
+    for (const clang::Stmt* child : stmt->children()) {
+        if (containsCoutExpr(child)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 bool isRootOnlyObservableCall(const clang::DeclRefExpr* DRE,
                               clang::ASTContext* context) {
     if (!DRE || !context) {
@@ -129,13 +148,18 @@ bool isRootOnlyObservableCall(const clang::DeclRefExpr* DRE,
             if (method && method->getNameAsString() == "print") {
                 return true;
             }
+            const auto* member =
+                llvm::dyn_cast_or_null<clang::MemberExpr>(
+                    memberCall->getCallee()->IgnoreParenImpCasts());
+            if (member && member->getMemberDecl() &&
+                member->getMemberDecl()->getNameAsString() == "print") {
+                return true;
+            }
         }
-        if (const auto* call = parent.get<clang::CallExpr>()) {
-            if (const clang::FunctionDecl* callee = call->getDirectCallee()) {
-                const std::string name = callee->getNameAsString();
-                if (name == "printf" || name == "puts" || name == "putchar") {
-                    return true;
-                }
+        if (const auto* opCall = parent.get<clang::CXXOperatorCallExpr>()) {
+            if (opCall->getOperator() == clang::OO_LessLess &&
+                containsCoutExpr(opCall)) {
+                return true;
             }
         }
         if (parent.get<clang::CompoundStmt>() ||
@@ -190,6 +214,185 @@ std::string assignmentLhsBaseForRhsRead(const clang::DeclRefExpr* DRE,
 }
 
 }  // namespace
+
+class RootOnlyPrintRewriteVisitor
+    : public clang::RecursiveASTVisitor<RootOnlyPrintRewriteVisitor> {
+public:
+    clang::Rewriter* TheRewriter = nullptr;
+    clang::ASTContext* Context = nullptr;
+    std::set<const clang::Stmt*> RewrittenStmts;
+
+    RootOnlyPrintRewriteVisitor(clang::Rewriter* rewriter,
+                                clang::ASTContext* context)
+        : TheRewriter(rewriter), Context(context) {}
+
+    bool VisitCXXMemberCallExpr(clang::CXXMemberCallExpr* call) {
+        if (!call || !TheRewriter) {
+            return true;
+        }
+        if (!isPrintCall(call)) {
+            return true;
+        }
+
+        rewriteOutputStatement(call);
+        return true;
+    }
+
+    bool VisitCXXOperatorCallExpr(clang::CXXOperatorCallExpr* call) {
+        if (!call || !TheRewriter) {
+            return true;
+        }
+        if (call->getOperator() != clang::OO_LessLess ||
+            !containsCout(call)) {
+            return true;
+        }
+
+        rewriteOutputStatement(call);
+        return true;
+    }
+
+private:
+    void rewriteOutputStatement(const clang::Stmt* output) {
+        const clang::Stmt* stmt = enclosingStatement(output);
+        if (!stmt || RewrittenStmts.count(stmt) != 0) {
+            return;
+        }
+        const clang::SourceManager& SM = TheRewriter->getSourceMgr();
+        if (!stmt->getBeginLoc().isValid() ||
+            !SM.isWrittenInMainFile(stmt->getBeginLoc())) {
+            return;
+        }
+        const clang::LangOptions& LO = TheRewriter->getLangOpts();
+        clang::SourceLocation replacementEnd = statementEndIncludingSemi(stmt);
+        if (replacementEnd.isInvalid()) {
+            return;
+        }
+        const std::string stmtText =
+            clang::Lexer::getSourceText(
+                clang::CharSourceRange::getCharRange(stmt->getBeginLoc(),
+                                                     replacementEnd),
+                SM, LO)
+                .str();
+        if (stmtText.empty()) {
+            return;
+        }
+
+        TheRewriter->ReplaceText(
+            clang::CharSourceRange::getCharRange(stmt->getBeginLoc(),
+                                                 replacementEnd),
+            "if (__dacpp_mpi_is_root_rank()) {\n        " + stmtText + "\n    }");
+        RewrittenStmts.insert(stmt);
+    }
+
+    bool isPrintCall(const clang::CXXMemberCallExpr* call) const {
+        if (!call) {
+            return false;
+        }
+        const clang::CXXMethodDecl* method = call->getMethodDecl();
+        if (method && method->getNameAsString() == "print") {
+            return true;
+        }
+        const auto* member =
+            llvm::dyn_cast_or_null<clang::MemberExpr>(
+                call->getCallee()->IgnoreParenImpCasts());
+        return member && member->getMemberDecl() &&
+               member->getMemberDecl()->getNameAsString() == "print";
+    }
+
+    bool containsCout(const clang::Stmt* stmt) const {
+        if (!stmt) {
+            return false;
+        }
+        if (const auto* DRE = llvm::dyn_cast<clang::DeclRefExpr>(stmt)) {
+            if (DRE->getDecl() &&
+                DRE->getDecl()->getNameAsString() == "cout") {
+                return true;
+            }
+        }
+        for (const clang::Stmt* child : stmt->children()) {
+            if (containsCout(child)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    const clang::Stmt* enclosingStatement(const clang::Stmt* stmt) const {
+        if (!stmt || !Context) {
+            return nullptr;
+        }
+
+        clang::DynTypedNode current = clang::DynTypedNode::create(*stmt);
+        for (int depth = 0; depth < 32; ++depth) {
+            auto parents = Context->getParents(current);
+            if (parents.empty()) {
+                break;
+            }
+            const clang::DynTypedNode& parent = parents[0];
+            if (const auto* compound = parent.get<clang::CompoundStmt>()) {
+                (void)compound;
+                if (const auto* asStmt = current.get<clang::Stmt>()) {
+                    return asStmt;
+                }
+                break;
+            }
+            if (parent.get<clang::ForStmt>() ||
+                parent.get<clang::WhileStmt>() ||
+                parent.get<clang::IfStmt>()) {
+                if (const auto* asStmt = current.get<clang::Stmt>()) {
+                    return asStmt;
+                }
+                break;
+            }
+            if (parent.get<clang::ReturnStmt>()) {
+                break;
+            }
+            current = parent;
+        }
+        return nullptr;
+    }
+
+    clang::SourceLocation statementEndIncludingSemi(
+        const clang::Stmt* stmt) const {
+        if (!stmt || !TheRewriter) {
+            return clang::SourceLocation();
+        }
+        const clang::SourceManager& SM = TheRewriter->getSourceMgr();
+        const clang::LangOptions& LO = TheRewriter->getLangOpts();
+        clang::SourceLocation afterToken =
+            clang::Lexer::getLocForEndOfToken(stmt->getEndLoc(), 0, SM, LO);
+        if (afterToken.isInvalid()) {
+            return clang::SourceLocation();
+        }
+
+        clang::SourceLocation scanLoc = afterToken;
+        for (int offset = 0; offset < 256; ++offset) {
+            clang::SourceLocation loc = afterToken.getLocWithOffset(offset);
+            if (loc.isInvalid() || !SM.isWrittenInSameFile(afterToken, loc)) {
+                break;
+            }
+            bool invalid = false;
+            const char* data = SM.getCharacterData(loc, &invalid);
+            if (invalid || !data) {
+                break;
+            }
+            if (*data == ';') {
+                return loc.getLocWithOffset(1);
+            }
+            if (*data == '\n') {
+                scanLoc = loc;
+                continue;
+            }
+            if (*data != ' ' && *data != '\t' && *data != '\r') {
+                break;
+            }
+            scanLoc = loc;
+        }
+
+        (void)scanLoc;
+        return afterToken;
+    }
+};
 
 class TensorUseVisitor : public clang::RecursiveASTVisitor<TensorUseVisitor> {
 public:
@@ -269,8 +472,8 @@ public:
                 if (RootRegionDepth > 0) {
                     HasReadInsideRootRegion = true;
                 } else if (isRootOnlyObservableCall(DRE, Context)) {
-                    // stdout is redirected to /dev/null on non-root ranks in MPI
-                    // generated main, so direct print-style uses only require root.
+                    // MPI codegen rewrites visible output statements so only
+                    // rank 0 executes observable .print()/cout output.
                 } else if (const std::string assignedName =
                                assignmentLhsBaseForRhsRead(DRE, Context);
                            !assignedName.empty()) {
@@ -698,6 +901,32 @@ void collectReturnStmts(const clang::Stmt* stmt,
     for (const clang::Stmt* child : stmt->children()) {
         collectReturnStmts(child, returns);
     }
+}
+
+void rewritePrintCallsRootOnly(clang::Rewriter* rewriter,
+                               const clang::TranslationUnitDecl* tuDecl) {
+    if (!rewriter || !tuDecl) {
+        return;
+    }
+    clang::SourceLocation insertLoc;
+    const clang::SourceManager& SM = rewriter->getSourceMgr();
+    for (const clang::Decl* decl : tuDecl->decls()) {
+        if (!decl) {
+            continue;
+        }
+        clang::SourceLocation loc = decl->getBeginLoc();
+        if (loc.isValid() && SM.isWrittenInMainFile(loc)) {
+            insertLoc = loc;
+            break;
+        }
+    }
+    if (insertLoc.isValid()) {
+        rewriter->InsertText(insertLoc,
+                             "static inline bool __dacpp_mpi_is_root_rank();\n");
+    }
+    RootOnlyPrintRewriteVisitor visitor(
+        rewriter, &const_cast<clang::TranslationUnitDecl*>(tuDecl)->getASTContext());
+    visitor.TraverseDecl(const_cast<clang::TranslationUnitDecl*>(tuDecl));
 }
 
 }  // namespace mpi_rewriter

@@ -60,9 +60,10 @@ std::string joinShellCallArgs(const clang::BinaryOperator* dacExpr,
     return args;
 }
 
-void insertMainMPISetup(clang::Rewriter* rewriter,
+void insertMainMPISetup(dacppTranslator::DacppFile* dacppFile,
+                        clang::Rewriter* rewriter,
                         const clang::FunctionDecl* mainFunc) {
-    if (!rewriter || !mainFunc) {
+    if (!dacppFile || !rewriter || !mainFunc) {
         return;
     }
 
@@ -70,6 +71,9 @@ void insertMainMPISetup(clang::Rewriter* rewriter,
     if (!body) {
         return;
     }
+
+    dacppTranslator::mpi_rewriter::rewritePrintCallsRootOnly(
+        rewriter, dacppFile->getTranslationUnitDecl());
 
     const std::string mpiInit = R"(
     int dacpp_mpi_finalize_needed = 0;
@@ -85,9 +89,6 @@ void insertMainMPISetup(clang::Rewriter* rewriter,
     int mpi_size = 1;
     MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);
     MPI_Comm_size(MPI_COMM_WORLD, &mpi_size);
-    if (mpi_rank != 0) {
-        std::freopen("/dev/null", "w", stdout);
-    }
 )";
 
     const std::string mpiFinish = R"(
@@ -149,7 +150,7 @@ void Rewriter::rewriteMPIStencil() {
     }
 
     rewriter->InsertText(dacppFile->node->getBeginLoc(), generated);
-    insertMainMPISetup(rewriter, dacppFile->getMainFunction());
+    insertMainMPISetup(dacppFile, rewriter, dacppFile->getMainFunction());
 
     for (int exprIdx = 0; exprIdx < dacppFile->getNumExpression(); ++exprIdx) {
         Expression* expr = dacppFile->getExpression(exprIdx);

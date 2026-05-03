@@ -370,13 +370,88 @@ v1 分类规则保守：
 - 后续读全部落在已支持、且会被替换的 root-centric post-shell region 中：`RootCentricFollowup`。
 - 后续存在普通 host read / read-write，或分析不能证明安全：`AllRanksNeeded`。
 - v1 支持简单 root-only observable 传播：如果输出实参只被赋给另一个 tensor，且传播目标最终只进入 root 可观察输出，例如 `A_tensor[...]=local_A_tensor` 后 `A_tensor[1].print()`，仍可分类为 `RootOnly`。
+- root-only observable 当前和输出语句 rewrite 闭环：`.print()` 和 `std::cout/cout << ...` 都会被分析层识别为 root-only observable，且会被 codegen 改写成 `if (__dacpp_mpi_is_root_rank()) { ... }`。
 - `DistributedFollowup` 只作为未来 generalized halo / cache exchange 的占位。
+
+当前 Broadcast analyze 的实际决策树：
+
+1. `classifyOutputSyncRequirement(dacppFile, tensorName, dacExpr)` 先解析当前 `<->` 的实际 tensor 名。
+2. `TensorUseVisitor` 从当前 `<->` 之后扫描 main body 中的后续读写。
+3. 读使用按位置分类：
+   - 落在 root-centric post-shell region：计入 `HasReadInsideRootRegion`。
+   - 落在 `.print()` / `std::cout` 输出语句：视为 root-only observable，不计入 all-rank read。
+   - 落在赋值 RHS：记录传播目标，递归证明传播目标最终是否只进入 root-only observable。
+   - 其他普通 host read / read-write：计入 `HasReadOutsideRootRegion`。
+4. 分类结果再交给 `requiresBroadcast(...)`：
+   - `RootOnly`：不 `MPI_Bcast`。
+   - `RootCentricFollowup`：不 `MPI_Bcast`。
+   - `AllRanksNeeded`：生成 `Gatherv + Bcast`。
+   - `DistributedFollowup`：当前保守要求 broadcast；v1 暂不生成 distributed path。
 
 当前验证到的分类：
 
 - `decay1.0`：`local_A sync=root-only`，无 `MPI_Bcast`。
 - `liuliang1.0`：`new_rho sync=root-centric-followup`，无 `MPI_Bcast`。
 - `mpiDenseCoverSibling1.0`：`updates sync=all-ranks-needed`，保留 `MPI_Bcast`。
+
+### 5.3 MPI 输出语句 root-only rewrite
+
+MPI 代码生成不再通过全局 stdout 重定向来压掉非 root 输出。也就是说，生成模板中已经删除了：
+
+```cpp
+if (mpi_rank != 0) {
+    std::freopen("/dev/null", "w", stdout);
+}
+```
+
+当前做法是更局部地改写可见输出语句：在 MPI 生成代码中插入 root-rank helper，并把输出语句包成 root-only。
+
+```cpp
+static inline bool __dacpp_mpi_is_root_rank();
+
+static inline bool __dacpp_mpi_is_root_rank() {
+    int initialized = 0;
+    MPI_Initialized(&initialized);
+    if (!initialized) {
+        return true;
+    }
+    int rank = 0;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    return rank == 0;
+}
+```
+
+典型改写：
+
+```cpp
+if (__dacpp_mpi_is_root_rank()) {
+    A_tensor[1].print();
+}
+```
+
+以及：
+
+```cpp
+if (__dacpp_mpi_is_root_rank()) {
+    std::cout << rho[15] << std::endl;
+}
+```
+
+覆盖范围：
+
+- `dacpp` tensor 的 `.print()` 成员调用，包括 `A_tensor[1].print()` 这类下标 / member chain。
+- `std::cout << ...` / `cout << ...` 输出语句。
+- `main()` 之外的用户函数输出，例如 `mandel1.0` 的 `PrintStats()`、`imageAdjustment1.0` 的 `printImage()`。
+- 无花括号 loop body 中的输出语句，例如 `gradientSum` 中 `for (...) std::cout << ...;`。
+
+这个 rewrite 是输出可观察行为层面的 guard，不等同于 tensor 副本一致性。`RootOnly` 分类仍然表示 root 结果正确即可；`AllRanksNeeded` 仍然会为后续 all-rank host read 保留 `MPI_Bcast`。
+
+闭环关系：
+
+- Broadcast analyze 把 `.print()` / `std::cout` 输出读识别为 root-only observable。
+- Output rewrite 保证这些 observable 真的只在 rank 0 执行。
+- 因此当 shell 输出只流向这些 observable，或者只通过简单赋值传播到这些 observable 时，可以安全分类为 `RootOnly` 并跳过 `MPI_Bcast`。
+- 如果同一个 tensor 后续还有普通 host read，仍然分类为 `AllRanksNeeded`，不会因为存在一个 root-only 输出就跳过必要 broadcast。
 
 ## 6. Post-shell 可并行循环问题
 
@@ -592,6 +667,7 @@ bash test_mpi.sh decay1.0 liuliang1.0 mpiDenseCoverSibling1.0
 - `decay1.0`：`step2.log` 中有 `output local_A sync=root-only`；生成代码有 `MPI_Gatherv(writeback_values_local_A...)` 和 root `apply_writeback_by_globals(...)`，没有为 `local_A` 生成 `MPI_Bcast`。
 - `liuliang1.0`：`step2.log` 中有 `output new_rho sync=root-centric-followup`；生成代码有 `__dacpp_mpi_region_LWR_shell_lwr_stmt_0/1`，helper 内有 `ctx.mpi_rank != 0` early return，且生成文件没有 `MPI_Bcast`。
 - `mpiDenseCoverSibling1.0`：`step2.log` 中有 `output updates sync=all-ranks-needed`；二维 sibling loop 目前不 region 化，生成代码保留 `MPI_Bcast`。
+- `gradientSum` / `mandel1.0` / `imageAdjustment1.0`：覆盖 `std::cout`、main 外输出函数、无花括号输出 loop body 的 root-only rewrite。
 
 完整 MPI 回归：
 
@@ -609,6 +685,11 @@ bash test_mpi.sh
 覆盖到的关键用例：
 
 - `mpiDenseCoverSibling1.0`
+- `decay1.0`
+- `liuliang1.0`
+- `mandel1.0`
+- `imageAdjustment1.0`
+- `gradientSum`
 - `FOuLa1.0`
 - `stencil1.0`
 - `waveEquation1.0`
@@ -624,7 +705,8 @@ bash test_mpi.sh
 - 普通 MPI 和 stencil MPI 写回值 gather 修复。
 - Phase 1 保守优化：通信 metadata hoist 到 `init()`，`run()` 复用 layout 和 buffer。
 - 输出同步分类 v1：`RootOnly`、`AllRanksNeeded`、`RootCentricFollowup`、`DistributedFollowup`。
-- 输出同步分类已基于当前 `<->` 的实际实参名分析后续使用，并支持简单 root-only observable 传播。
+- 输出同步分类已基于当前 `<->` 的实际实参名分析后续使用，并支持 `.print()` / `std::cout` root-only observable 传播。
+- MPI 输出语句 root-only rewrite：删除非 root stdout 全局重定向，改为 guard `.print()` 和 `std::cout` 输出语句。
 - `liuliang1.0` 一维 post-shell loop 的 MPI root-centric region helper 生成和替换。
 - `translator` 构建验证。
 - `test_mpi.sh` 完整回归验证。
@@ -636,6 +718,7 @@ bash test_mpi.sh
 - 已支持循环体内部临时 view 的跨迭代 ctx 复用。
 - 已完成完整别名 / 函数调用 / 复杂表达式数据流 / 完整 observable root-only 证明。
 - 已修复所有非 root stale 副本风险。
+- 已把所有可能产生 stdout/stderr 的 C/C++ I/O API 都纳入输出语句 root-only rewrite；当前只覆盖 `.print()` 和 `std::cout`。
 - 已支持 Matrix / 二维 / 复杂语句的 post-shell region。
 - 已实现 generalized halo / cache exchange。
 

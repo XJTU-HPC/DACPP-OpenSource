@@ -126,8 +126,9 @@ wrapper 负责：
 
 - 条件性的 `MPI_Init`
 - `MPI_Comm_rank / MPI_Comm_size`
-- 非 root rank 的 `stdout` 重定向
 - return 前的 `MPI_Finalize`
+
+当前主线不再依赖非 root rank 的全局 `stdout` 重定向。MPI 输出去重改为在生成代码中对可见输出语句做 root-only guard，例如 `.print()` 和 `std::cout << ...` 会被包成 `if (__dacpp_mpi_is_root_rank()) { ... }`。
 
 ---
 

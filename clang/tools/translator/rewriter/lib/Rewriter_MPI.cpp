@@ -48,6 +48,9 @@ void Rewriter::rewriteMPI() {
         return;
     }
 
+    mpi_rewriter::rewritePrintCallsRootOnly(
+        rewriter, dacppFile->getTranslationUnitDecl());
+
     const std::string mpiInit = R"(
     int dacpp_mpi_finalize_needed = 0;
     int dacpp_mpi_initialized = 0;
@@ -62,9 +65,6 @@ void Rewriter::rewriteMPI() {
     int mpi_size = 1;
     MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);
     MPI_Comm_size(MPI_COMM_WORLD, &mpi_size);
-    if (mpi_rank != 0) {
-        std::freopen("/dev/null", "w", stdout);
-    }
 )";
 
     const std::string mpiFinish = R"(

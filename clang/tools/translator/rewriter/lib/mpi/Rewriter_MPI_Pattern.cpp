@@ -199,6 +199,18 @@ std::string buildPrelude(DacppFile* dacppFile) {
         code += "#include <cstdio>\n";
     }
     code += "\n";
+    code += R"(static inline bool __dacpp_mpi_is_root_rank() {
+    int __dacpp_mpi_initialized = 0;
+    MPI_Initialized(&__dacpp_mpi_initialized);
+    if (!__dacpp_mpi_initialized) {
+        return true;
+    }
+    int __dacpp_mpi_rank = 0;
+    MPI_Comm_rank(MPI_COMM_WORLD, &__dacpp_mpi_rank);
+    return __dacpp_mpi_rank == 0;
+}
+
+)";
 
     std::set<std::string> seenNamespaces;
     for (int idx = 0; idx < dacppFile->getNumNameSpace(); ++idx) {
