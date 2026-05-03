@@ -354,7 +354,13 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
         const std::string localName = "local_" + calcName;
         const std::string globalName = "global_out_" + calcName;
         const std::string mpiType = mpi_rewriter::mpiDatatypeFor(calcParam->getBasicType());
-        const bool needsBcast = mpi_rewriter::tensorNeedsBroadcast(dacppFile, tensorName, dacExpr);
+        const mpi_rewriter::OutputSyncRequirement syncRequirement =
+            mpi_rewriter::classifyOutputSyncRequirement(dacppFile, tensorName, dacExpr);
+        const bool needsBcast = mpi_rewriter::requiresBroadcast(syncRequirement);
+        llvm::outs() << "[DACPP][MPI] output " << tensorName
+                     << " sync="
+                     << mpi_rewriter::outputSyncRequirementName(syncRequirement)
+                     << "\n";
 
         code += "    auto& output_layout_" + calcName + " = ctx.output_layout_" + calcName + ";\n";
         code += "    auto& writeback_values_" + calcName + " = ctx.writeback_values_" + calcName + ";\n";
@@ -433,6 +439,10 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
     }
     code += ");\n";
     code += "}\n";
+
+    code += "\n";
+    code += mpi_rewriter::buildRootCentricPostRegionHelpers(
+        dacppFile, shell, calc, dacExpr, ctxType, shellSignature);
 
     return code;
 }

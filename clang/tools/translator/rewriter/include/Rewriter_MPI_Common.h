@@ -25,6 +25,18 @@ struct SplitBindMeta {
     std::string offset = "0";
 };
 
+enum class OutputSyncRequirement {
+    RootOnly,
+    AllRanksNeeded,
+    RootCentricFollowup,
+    DistributedFollowup
+};
+
+struct RootCentricPostRegion {
+    const clang::Stmt* stmt = nullptr;
+    std::string helperName;
+};
+
 std::vector<AccessSummary> summarizeStmtAccess(
     const clang::Stmt* stmt,
     const std::unordered_map<const clang::ValueDecl*, int>& paramIndices,
@@ -36,6 +48,12 @@ std::string mpiPayloadCountExpr(const std::string& elemCountExpr,
                                 const std::string& type);
 std::string toPlannerMode(IOTYPE mode);
 std::string toAccessorMode(IOTYPE mode);
+OutputSyncRequirement classifyOutputSyncRequirement(
+    DacppFile* dacppFile,
+    const std::string& tensorName,
+    const clang::BinaryOperator* currentDacExpr = nullptr);
+bool requiresBroadcast(OutputSyncRequirement requirement);
+const char* outputSyncRequirementName(OutputSyncRequirement requirement);
 bool tensorNeedsBroadcast(DacppFile* dacppFile,
                           const std::string& tensorName,
                           const clang::BinaryOperator* currentDacExpr = nullptr);
@@ -64,6 +82,22 @@ std::string buildWrapperCode(DacppFile* dacppFile,
                              Calc* calc,
                              const clang::BinaryOperator* dacExpr = nullptr);
 std::string buildPrelude(DacppFile* dacppFile);
+
+std::vector<RootCentricPostRegion> collectRootCentricPostRegions(
+    DacppFile* dacppFile,
+    Shell* shell,
+    Calc* calc,
+    const clang::BinaryOperator* dacExpr);
+std::vector<const clang::Stmt*> collectRootCentricPostRegionStmts(
+    DacppFile* dacppFile,
+    const clang::BinaryOperator* dacExpr);
+std::string buildRootCentricPostRegionHelpers(
+    DacppFile* dacppFile,
+    Shell* shell,
+    Calc* calc,
+    const clang::BinaryOperator* dacExpr,
+    const std::string& ctxTypeName,
+    const std::string& shellSignature);
 
 }  // namespace mpi_rewriter
 }  // namespace dacppTranslator

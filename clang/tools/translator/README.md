@@ -234,7 +234,6 @@ export DACPP_MPI_PROFILE=1
 - `docs/macos_local_sycl_setup.md`
 - `docs/local_translator/buffer_region_device_residency.md`
 - `docs/mpi_translator/mpi_stencil_status.md`
-- `docs/mpi_translator/mpi_wrapper_consistency_and_regions.md`
 
 ## 9. 常见误区
 
@@ -242,4 +241,4 @@ export DACPP_MPI_PROFILE=1
 - 当前 MPI 主线生成并编译的是 `*.mpi.dac_sycl_buffer.cpp`，不是 `*.dac_sycl_buffer_mpi.cpp`。
 - `MPI_Gatherv` 和 `MPI_Bcast` 不是替代关系：前者负责 root 结果重建，后者负责非 root 副本同步。
 - `root-only` 输出同步不是通用优化，只有后续代码不需要 all-rank 副本一致时才安全。
-- 普通 buffer 路径已经有 post-shell region 优化能力；MPI 路径还没有把这类 host loop 完整合入 MPI/SYCL region。
+- 普通 buffer 路径已经有 post-shell region 优化能力；MPI 路径当前已支持一维 root-centric post-shell region v1，尚未支持完整 distributed region pipeline。

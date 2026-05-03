@@ -115,6 +115,9 @@ mpi_dac_path_for() {
 # ── 过滤 AdaptiveCpp 运行时警告 ──────────────────────────────────────────────
 clean_output() {
     grep -v "AdaptiveCpp Warning" "$1" \
+    | grep -v "This application uses SYCL buffers" \
+    | grep -v "SYCL2020 USM model" \
+    | grep -v "AdaptiveCpp performance guide" \
     | grep -v "https://github.com/AdaptiveCpp" \
     > "${1}.clean"
 }

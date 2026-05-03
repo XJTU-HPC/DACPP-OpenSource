@@ -67,6 +67,12 @@ lines = []
 for line in src.read_text(errors="ignore").splitlines():
     if "AdaptiveCpp Warning" in line:
         continue
+    if "This application uses SYCL buffers" in line:
+        continue
+    if "SYCL2020 USM model" in line:
+        continue
+    if "AdaptiveCpp performance guide" in line:
+        continue
     if "https://github.com/AdaptiveCpp" in line:
         continue
     lines.append(line.rstrip())

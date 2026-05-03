@@ -178,6 +178,17 @@ void Rewriter::rewriteMPIStencil() {
             }
             runCall += ")";
             rewriter->ReplaceText(dacExpr->getSourceRange(), runCall);
+
+            const auto rootRegions = mpi_rewriter::collectRootCentricPostRegions(
+                dacppFile, shell, calc, dacExpr);
+            for (const auto& region : rootRegions) {
+                std::string regionCall = region.helperName + "(" + ctxVar;
+                if (!argText.empty()) {
+                    regionCall += ", " + argText;
+                }
+                regionCall += ");";
+                rewriter->ReplaceText(region.stmt->getSourceRange(), regionCall);
+            }
             continue;
         }
 

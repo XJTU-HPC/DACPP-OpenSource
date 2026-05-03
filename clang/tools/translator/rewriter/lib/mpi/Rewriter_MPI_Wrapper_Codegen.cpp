@@ -207,7 +207,12 @@ std::string buildWrapperCode(DacppFile* dacppFile,
         const std::string localName = "local_" + calcName;
         const std::string globalName = "global_out_" + calcName;
         const std::string mpiType = mpiDatatypeFor(calcParam->getBasicType());
-        bool needsBcast = tensorNeedsBroadcast(dacppFile, tensorName, dacExpr);
+        const OutputSyncRequirement syncRequirement =
+            classifyOutputSyncRequirement(dacppFile, tensorName, dacExpr);
+        const bool needsBcast = requiresBroadcast(syncRequirement);
+        llvm::outs() << "[DACPP][MPI] output " << tensorName
+                     << " sync="
+                     << outputSyncRequirementName(syncRequirement) << "\n";
 
         code += "    const auto& writeback_globals_" + calcName + " = " + packName + ".writeback_globals.empty() ? " + packName + ".globals : " + packName + ".writeback_globals;\n";
         code += "    int send_count_" + calcName + " = static_cast<int>(writeback_globals_" + calcName + ".size());\n";
