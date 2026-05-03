@@ -65,7 +65,7 @@ std::string toViewType(ShellParam* shellParam, Param* calcParam, IOTYPE mode);
 void collectReturnStmts(const clang::Stmt* stmt,
                         std::vector<const clang::ReturnStmt*>& returns);
 void rewritePrintCallsRootOnly(clang::Rewriter* rewriter,
-                               const clang::TranslationUnitDecl* tuDecl);
+                               clang::TranslationUnitDecl* tuDecl);
 
 std::unordered_map<std::string, SplitBindMeta> collectSplitBindMeta(Shell* shell);
 

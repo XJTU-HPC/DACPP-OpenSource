@@ -1,4 +1,3 @@
-#include <regex>
 #include <set>
 #include <string>
 #include <vector>
@@ -68,11 +67,12 @@ std::string stripComments(const std::string& text) {
     for (std::size_t idx = 0; idx < withoutBlock.size(); ++idx) {
         if (idx + 1 < withoutBlock.size() &&
             withoutBlock[idx] == '/' && withoutBlock[idx + 1] == '/') {
-            while (idx < withoutBlock.size() && withoutBlock[idx] != '\n') {
-                ++idx;
-            }
-            if (idx < withoutBlock.size()) {
-                result.push_back(withoutBlock[idx]);
+            auto nlPos = withoutBlock.find('\n', idx);
+            if (nlPos != std::string::npos) {
+                result.push_back('\n');
+                idx = nlPos;
+            } else {
+                idx = withoutBlock.size();
             }
             continue;
         }
@@ -81,20 +81,57 @@ std::string stripComments(const std::string& text) {
     return result;
 }
 
+namespace {
+
+bool isWordBoundary(char c) {
+    return !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+             (c >= '0' && c <= '9') || c == '_');
+}
+
+}  // namespace
+
 bool containsWord(const std::string& text, const std::string& word) {
-    if (word.empty()) {
+    if (word.empty() || text.empty() || word.size() > text.size()) {
         return false;
     }
-    return std::regex_search(text, std::regex("\\b" + word + "\\b"));
+    std::size_t pos = 0;
+    while ((pos = text.find(word, pos)) != std::string::npos) {
+        const bool leftOk = pos == 0 || isWordBoundary(text[pos - 1]);
+        const std::size_t rightIdx = pos + word.size();
+        const bool rightOk = rightIdx >= text.size() || isWordBoundary(text[rightIdx]);
+        if (leftOk && rightOk) {
+            return true;
+        }
+        ++pos;
+    }
+    return false;
 }
 
 std::string replaceWord(std::string text,
                         const std::string& word,
                         const std::string& replacement) {
-    if (word.empty()) {
+    if (word.empty() || text.empty() || word.size() > text.size()) {
         return text;
     }
-    return std::regex_replace(text, std::regex("\\b" + word + "\\b"), replacement);
+    std::string result;
+    result.reserve(text.size());
+    std::size_t pos = 0;
+    std::size_t lastPos = 0;
+    while ((pos = text.find(word, pos)) != std::string::npos) {
+        const bool leftOk = pos == 0 || isWordBoundary(text[pos - 1]);
+        const std::size_t rightIdx = pos + word.size();
+        const bool rightOk = rightIdx >= text.size() || isWordBoundary(text[rightIdx]);
+        if (leftOk && rightOk) {
+            result.append(text, lastPos, pos - lastPos);
+            result.append(replacement);
+            pos += word.size();
+            lastPos = pos;
+        } else {
+            ++pos;
+        }
+    }
+    result.append(text, lastPos, text.size() - lastPos);
+    return result;
 }
 
 bool isVectorParam(Param* param) {
@@ -139,7 +176,11 @@ bool extractLoopRegionInfo(const clang::ForStmt* forStmt,
                            Shell* shell,
                            const BufferRegionPlan& plan,
                            LoopRegionInfo& info) {
-    if (!forStmt || !context || !shell || !plan.capturedNonShellVars.empty()) {
+    if (!forStmt || !context || !shell) {
+        return false;
+    }
+    // Only support plans that have no captured non-shell variables.
+    if (!plan.capturedNonShellVars.empty()) {
         return false;
     }
 

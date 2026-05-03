@@ -19,6 +19,13 @@ namespace dacppTranslator {
 namespace mpi_rewriter {
 namespace {
 
+// Maximum depth for parent-traversal lookups (statement-level analysis).
+constexpr int kMaxParentTraversalDepth = 16;
+// Maximum depth for finding the enclosing statement boundary.
+constexpr int kMaxEnclosingStmtDepth = 32;
+// Maximum byte offset scanned past a statement for the trailing semicolon.
+constexpr int kMaxSemicolonScanOffset = 256;
+
 const clang::CallExpr* getShellCallExpr(const clang::BinaryOperator* dacExpr) {
     if (!dacExpr) {
         return nullptr;
@@ -129,6 +136,21 @@ bool containsCoutExpr(const clang::Stmt* stmt) {
     return false;
 }
 
+bool isPrintMethodCall(const clang::CXXMemberCallExpr* call) {
+    if (!call) {
+        return false;
+    }
+    const clang::CXXMethodDecl* method = call->getMethodDecl();
+    if (method && method->getNameAsString() == "print") {
+        return true;
+    }
+    const auto* member =
+        llvm::dyn_cast_or_null<clang::MemberExpr>(
+            call->getCallee()->IgnoreParenImpCasts());
+    return member && member->getMemberDecl() &&
+           member->getMemberDecl()->getNameAsString() == "print";
+}
+
 bool isRootOnlyObservableCall(const clang::DeclRefExpr* DRE,
                               clang::ASTContext* context) {
     if (!DRE || !context) {
@@ -136,7 +158,7 @@ bool isRootOnlyObservableCall(const clang::DeclRefExpr* DRE,
     }
 
     clang::DynTypedNode current = clang::DynTypedNode::create(*DRE);
-    for (int depth = 0; depth < 16; ++depth) {
+    for (int depth = 0; depth < kMaxParentTraversalDepth; ++depth) {
         auto parents = context->getParents(current);
         if (parents.empty()) {
             break;
@@ -144,15 +166,7 @@ bool isRootOnlyObservableCall(const clang::DeclRefExpr* DRE,
         const clang::DynTypedNode& parent = parents[0];
         if (const auto* memberCall =
                 parent.get<clang::CXXMemberCallExpr>()) {
-            const clang::CXXMethodDecl* method = memberCall->getMethodDecl();
-            if (method && method->getNameAsString() == "print") {
-                return true;
-            }
-            const auto* member =
-                llvm::dyn_cast_or_null<clang::MemberExpr>(
-                    memberCall->getCallee()->IgnoreParenImpCasts());
-            if (member && member->getMemberDecl() &&
-                member->getMemberDecl()->getNameAsString() == "print") {
+            if (isPrintMethodCall(memberCall)) {
                 return true;
             }
         }
@@ -181,7 +195,7 @@ std::string assignmentLhsBaseForRhsRead(const clang::DeclRefExpr* DRE,
     }
 
     clang::DynTypedNode current = clang::DynTypedNode::create(*DRE);
-    for (int depth = 0; depth < 16; ++depth) {
+    for (int depth = 0; depth < kMaxParentTraversalDepth; ++depth) {
         auto parents = context->getParents(current);
         if (parents.empty()) {
             break;
@@ -243,7 +257,7 @@ public:
             return true;
         }
         if (call->getOperator() != clang::OO_LessLess ||
-            !containsCout(call)) {
+            !containsCoutExpr(call)) {
             return true;
         }
 
@@ -285,36 +299,7 @@ private:
     }
 
     bool isPrintCall(const clang::CXXMemberCallExpr* call) const {
-        if (!call) {
-            return false;
-        }
-        const clang::CXXMethodDecl* method = call->getMethodDecl();
-        if (method && method->getNameAsString() == "print") {
-            return true;
-        }
-        const auto* member =
-            llvm::dyn_cast_or_null<clang::MemberExpr>(
-                call->getCallee()->IgnoreParenImpCasts());
-        return member && member->getMemberDecl() &&
-               member->getMemberDecl()->getNameAsString() == "print";
-    }
-
-    bool containsCout(const clang::Stmt* stmt) const {
-        if (!stmt) {
-            return false;
-        }
-        if (const auto* DRE = llvm::dyn_cast<clang::DeclRefExpr>(stmt)) {
-            if (DRE->getDecl() &&
-                DRE->getDecl()->getNameAsString() == "cout") {
-                return true;
-            }
-        }
-        for (const clang::Stmt* child : stmt->children()) {
-            if (containsCout(child)) {
-                return true;
-            }
-        }
-        return false;
+        return isPrintMethodCall(call);
     }
 
     const clang::Stmt* enclosingStatement(const clang::Stmt* stmt) const {
@@ -323,14 +308,13 @@ private:
         }
 
         clang::DynTypedNode current = clang::DynTypedNode::create(*stmt);
-        for (int depth = 0; depth < 32; ++depth) {
+        for (int depth = 0; depth < kMaxEnclosingStmtDepth; ++depth) {
             auto parents = Context->getParents(current);
             if (parents.empty()) {
                 break;
             }
             const clang::DynTypedNode& parent = parents[0];
-            if (const auto* compound = parent.get<clang::CompoundStmt>()) {
-                (void)compound;
+            if (parent.get<clang::CompoundStmt>()) {
                 if (const auto* asStmt = current.get<clang::Stmt>()) {
                     return asStmt;
                 }
@@ -365,8 +349,7 @@ private:
             return clang::SourceLocation();
         }
 
-        clang::SourceLocation scanLoc = afterToken;
-        for (int offset = 0; offset < 256; ++offset) {
+        for (int offset = 0; offset < kMaxSemicolonScanOffset; ++offset) {
             clang::SourceLocation loc = afterToken.getLocWithOffset(offset);
             if (loc.isInvalid() || !SM.isWrittenInSameFile(afterToken, loc)) {
                 break;
@@ -379,17 +362,11 @@ private:
             if (*data == ';') {
                 return loc.getLocWithOffset(1);
             }
-            if (*data == '\n') {
-                scanLoc = loc;
-                continue;
-            }
-            if (*data != ' ' && *data != '\t' && *data != '\r') {
+            if (*data != ' ' && *data != '\t' && *data != '\r' && *data != '\n') {
                 break;
             }
-            scanLoc = loc;
         }
 
-        (void)scanLoc;
         return afterToken;
     }
 };
@@ -904,7 +881,7 @@ void collectReturnStmts(const clang::Stmt* stmt,
 }
 
 void rewritePrintCallsRootOnly(clang::Rewriter* rewriter,
-                               const clang::TranslationUnitDecl* tuDecl) {
+                               clang::TranslationUnitDecl* tuDecl) {
     if (!rewriter || !tuDecl) {
         return;
     }
@@ -924,9 +901,8 @@ void rewritePrintCallsRootOnly(clang::Rewriter* rewriter,
         rewriter->InsertText(insertLoc,
                              "static inline bool __dacpp_mpi_is_root_rank();\n");
     }
-    RootOnlyPrintRewriteVisitor visitor(
-        rewriter, &const_cast<clang::TranslationUnitDecl*>(tuDecl)->getASTContext());
-    visitor.TraverseDecl(const_cast<clang::TranslationUnitDecl*>(tuDecl));
+    RootOnlyPrintRewriteVisitor visitor(rewriter, &tuDecl->getASTContext());
+    visitor.TraverseDecl(tuDecl);
 }
 
 }  // namespace mpi_rewriter
