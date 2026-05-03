@@ -64,10 +64,7 @@ int main(int argc, char** argv) {
         }
 
         gathered_A.assign(numIsotopes, 0.0);
-        A.assign((steps + 1) * numIsotopes, 0.0);
-        for (size_t i = 0; i < numIsotopes; ++i) {
-            A[i] = 1000.0;
-        }
+        A.assign(steps * numIsotopes, 0.0);
     }
 
     double t = 0.0;
@@ -106,9 +103,10 @@ int main(int argc, char** argv) {
                     0,
                     MPI_COMM_WORLD);
 
-        if (rank == 0 && step <= steps) {
+        const size_t row = static_cast<size_t>(10.0 * current_t);
+        if (rank == 0 && row < steps) {
             for (size_t i = 0; i < numIsotopes; ++i) {
-                A[step * numIsotopes + i] = gathered_A[i];
+                A[row * numIsotopes + i] = gathered_A[i];
             }
         }
 
