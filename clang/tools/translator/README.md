@@ -165,10 +165,19 @@ bash test_mpi.sh waveEquation1.0 stencil1.0 FOuLa1.0 mpiDenseCoverSibling1.0
 - `rewriter/lib/mpi/Rewriter_MPI_Pattern.cpp`
   - AccessPattern、PackPlan 相关生成。
 - `dpcppLib/include/MPIPlanner.h`
+  - MPI 生成代码的统一兼容入口，生成文件仍只需要 include 这个头。
 - `dpcppLib/include/mpi/Common.h`
-- `dpcppLib/include/mpi/Pack.h`
+  - 共享基础 runtime 聚合头，转入 `CoreTypes.h`、`Profile.h`、`MpiTypes.h`、`Pattern.h`。
+- `dpcppLib/include/mpi/Wrapper.h`
+- `dpcppLib/include/mpi/WrapperPack.h`
+  - 普通 MPI wrapper 的 pack plan、global pack、writeback helper。
+- `dpcppLib/include/mpi/Stencil.h`
+- `dpcppLib/include/mpi/StencilTypes.h`
+- `dpcppLib/include/mpi/StencilLayout.h`
+- `dpcppLib/include/mpi/StencilExchange.h`
+  - MPI stencil / partial-exchange / root-bridge 的 layout、distributed cache 和 slot exchange helper。
 - `dpcppLib/include/mpi/Views.h`
-  - MPI runtime helper、pack/writeback/layout/view。
+  - view 聚合头，转入 `KernelViews.h` 和 `RegionViews.h`。
 
 `archive/` 和 `docs/**/archive/` 只保留历史材料，不代表当前主线。
 

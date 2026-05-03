@@ -50,9 +50,17 @@ MPI 生成代码额外包含：
 - `mpi.h`
 - `cstdio`
 - `dpcppLib/include/MPIPlanner.h`
+
+`MPIPlanner.h` 是生成代码的统一兼容入口，会继续传递包含 MPI runtime 的分层头：
+
 - `dpcppLib/include/mpi/Common.h`
-- `dpcppLib/include/mpi/Pack.h`
+  - 共享基础聚合头：`CoreTypes.h`、`Profile.h`、`MpiTypes.h`、`Pattern.h`。
+- `dpcppLib/include/mpi/Wrapper.h`
+  - 普通 MPI wrapper 聚合头，主要转入 `WrapperPack.h`。
+- `dpcppLib/include/mpi/Stencil.h`
+  - MPI stencil / partial-exchange 聚合头，转入 `StencilTypes.h`、`StencilLayout.h`、`StencilExchange.h`。
 - `dpcppLib/include/mpi/Views.h`
+  - view 聚合头，转入 `KernelViews.h`、`RegionViews.h`。
 
 `MPIPlanner.h` 会传递性依赖 translator 侧的数据结构定义，因此编译 MPI 生成代码还需要：
 
@@ -179,7 +187,7 @@ DYLD_LIBRARY_PATH="$ACPP_ROOT/lib" mpirun -np 4 /tmp/my_bin
 
 MPI buffer 生成代码：
 
-- 编译时额外需要 MPI 头文件、`MPIPlanner.h`、`dpcppLib/include/mpi/`、`rewriter/include/dacInfo.h`。
+- 编译时额外需要 MPI 头文件、`MPIPlanner.h`、完整的 `dpcppLib/include/mpi/` 分层 runtime 目录、`rewriter/include/dacInfo.h`。
 - 运行时额外需要 MPI runtime 和 `mpirun`。
 - 当前 MPI 输出会在普通 wrapper 路径和 MPI stencil loop 路径之间自动分流。
 
