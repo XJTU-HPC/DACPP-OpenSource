@@ -24,6 +24,10 @@ MPI_TESTS=(
     "imageAdjustment1.0"
     "vectorAddCombo"
     "gradientSum"
+    "mpiBroadcastRootOnlyCout"
+    "mpiBroadcastTensor2Array"
+    "mpiBroadcastUnknownFunction"
+    "mpiBroadcastAliasRead"
     "stencil1.0"
     "waveEquation1.0"
 )
@@ -127,6 +131,61 @@ run_in_env() {
     bash -lc "source '$SCRIPT_DIR/env.sh' && $*" > "$log" 2>&1
 }
 
+check_mpi_expectations() {
+    local expect_file="$1"
+    local log_file="$2"
+    local sycl_file="$3"
+    local failed=0
+
+    [[ -f "$expect_file" ]] || return 0
+
+    while IFS= read -r raw_line || [[ -n "$raw_line" ]]; do
+        local line kind pattern target_file
+        line="${raw_line#"${raw_line%%[![:space:]]*}"}"
+        line="${line%"${line##*[![:space:]]}"}"
+        [[ -z "$line" || "$line" == \#* ]] && continue
+
+        kind="${line%%:*}"
+        pattern="${line#*:}"
+        case "$kind" in
+            LOG_CONTAINS)
+                target_file="$log_file"
+                if ! grep -Fq "$pattern" "$target_file"; then
+                    echo "[FAIL] Expected log to contain: $pattern"
+                    failed=1
+                fi
+                ;;
+            LOG_NOT_CONTAINS)
+                target_file="$log_file"
+                if grep -Fq "$pattern" "$target_file"; then
+                    echo "[FAIL] Expected log not to contain: $pattern"
+                    failed=1
+                fi
+                ;;
+            SYCL_CONTAINS)
+                target_file="$sycl_file"
+                if ! grep -Fq "$pattern" "$target_file"; then
+                    echo "[FAIL] Expected generated SYCL to contain: $pattern"
+                    failed=1
+                fi
+                ;;
+            SYCL_NOT_CONTAINS)
+                target_file="$sycl_file"
+                if grep -Fq "$pattern" "$target_file"; then
+                    echo "[FAIL] Expected generated SYCL not to contain: $pattern"
+                    failed=1
+                fi
+                ;;
+            *)
+                echo "[FAIL] Unknown expectation kind in $expect_file: $kind"
+                failed=1
+                ;;
+        esac
+    done < "$expect_file"
+
+    return "$failed"
+}
+
 TOTAL=0; PASSED=0; FAILED=0; SKIPPED=0
 
 for test_name in "${MPI_TESTS[@]}"; do
@@ -180,6 +239,13 @@ for test_name in "${MPI_TESTS[@]}"; do
     if ! run_in_env "$work_dir/step2.log" "dacpp '$mpi_dac' --mode=buffer --mpi && acpp-compile '$mpi_sycl' '$mpi_bin'"; then
         echo "[FAIL] MPI translate/compile failed."
         head -n 20 "$work_dir/step2.log"
+        FAILED=$((FAILED + 1))
+        continue
+    fi
+
+    expect_file="$TESTS_DIR/$test_name/mpi_expect.txt"
+    if ! check_mpi_expectations "$expect_file" "$work_dir/step2.log" "$mpi_sycl"; then
+        echo "[FAIL] MPI generated structure expectations failed."
         FAILED=$((FAILED + 1))
         continue
     fi

@@ -1,0 +1,2 @@
+LOG_CONTAINS:[DACPP][MPI] output output sync=all-ranks-needed
+SYCL_CONTAINS:MPI_Bcast

@@ -669,6 +669,22 @@ bash test_mpi.sh decay1.0 liuliang1.0 mpiDenseCoverSibling1.0
 - `mpiDenseCoverSibling1.0`：`step2.log` 中有 `output updates sync=all-ranks-needed`；二维 sibling loop 目前不 region 化，生成代码保留 `MPI_Bcast`。
 - `gradientSum` / `mandel1.0` / `imageAdjustment1.0`：覆盖 `std::cout`、main 外输出函数、无花括号输出 loop body 的 root-only rewrite。
 
+Broadcast analyze 结构断言：
+
+`test_mpi.sh` 支持测试目录下的 `mpi_expect.txt`，在 MPI 翻译 / 编译后、运行前检查 `step2.log` 和生成的 MPI SYCL 文件。当前支持：
+
+- `LOG_CONTAINS:<literal>`
+- `LOG_NOT_CONTAINS:<literal>`
+- `SYCL_CONTAINS:<literal>`
+- `SYCL_NOT_CONTAINS:<literal>`
+
+新增 Broadcast analyze 测试：
+
+- `mpiBroadcastRootOnlyCout`：`std::cout << output_tensor[i]` 被分类为 `root-only`，生成输出 root guard，且不生成 `MPI_Bcast`。
+- `mpiBroadcastTensor2Array`：`output_tensor.tensor2Array(...)` 是普通 host read，必须分类为 `all-ranks-needed` 并生成 `MPI_Bcast`。
+- `mpiBroadcastUnknownFunction`：shell 输出传入未知函数读，必须分类为 `all-ranks-needed` 并生成 `MPI_Bcast`。
+- `mpiBroadcastAliasRead`：shell 输出经引用别名读取，必须保守分类为 `all-ranks-needed` 并生成 `MPI_Bcast`。
+
 完整 MPI 回归：
 
 ```bash
@@ -679,7 +695,7 @@ bash test_mpi.sh
 结果：
 
 ```text
-13 tests | 13 passed | 0 failed | 0 skipped
+17 tests | 17 passed | 0 failed | 0 skipped
 ```
 
 覆盖到的关键用例：
@@ -690,6 +706,10 @@ bash test_mpi.sh
 - `mandel1.0`
 - `imageAdjustment1.0`
 - `gradientSum`
+- `mpiBroadcastRootOnlyCout`
+- `mpiBroadcastTensor2Array`
+- `mpiBroadcastUnknownFunction`
+- `mpiBroadcastAliasRead`
 - `FOuLa1.0`
 - `stencil1.0`
 - `waveEquation1.0`
@@ -706,6 +726,7 @@ bash test_mpi.sh
 - Phase 1 保守优化：通信 metadata hoist 到 `init()`，`run()` 复用 layout 和 buffer。
 - 输出同步分类 v1：`RootOnly`、`AllRanksNeeded`、`RootCentricFollowup`、`DistributedFollowup`。
 - 输出同步分类已基于当前 `<->` 的实际实参名分析后续使用，并支持 `.print()` / `std::cout` root-only observable 传播。
+- Broadcast analyze 结构断言测试：已覆盖 root-only `std::cout`、`tensor2Array` 普通 host read、未知函数读、引用别名读。
 - MPI 输出语句 root-only rewrite：删除非 root stdout 全局重定向，改为 guard `.print()` 和 `std::cout` 输出语句。
 - `liuliang1.0` 一维 post-shell loop 的 MPI root-centric region helper 生成和替换。
 - `translator` 构建验证。
@@ -727,7 +748,7 @@ bash test_mpi.sh
 Phase A：一致性分类 v1 已完成，后续增强
 
 - 继续增强复杂表达式数据流和 root-only observable 证明。
-- 增加别名、slice、函数调用的保守降级测试。
+- 继续增加 slice / subview / 复杂表达式的保守降级测试；引用别名和未知函数读已有结构断言覆盖。
 - 为 `decay1.0` 增加能暴露非 root stale 副本的测试。
 
 Phase B：MPI root-centric post-shell region v1 已完成，后续增强
