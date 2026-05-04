@@ -293,8 +293,18 @@ std::vector<RootCentricPostRegion> collectRootCentricPostRegions(
         return result;
     }
 
+    std::set<const clang::Stmt*> distributedFollowupStmts;
+    const auto distributedRegions =
+        collectDistributedFollowupRegions(dacppFile, shell, calc, dacExpr);
+    for (const auto& region : distributedRegions) {
+        distributedFollowupStmts.insert(region.stmt);
+    }
+
     for (std::size_t stmtIdx = 0; stmtIdx < plan.siblingStmts.size(); ++stmtIdx) {
         const clang::Stmt* stmt = plan.siblingStmts[stmtIdx];
+        if (distributedFollowupStmts.count(stmt) != 0) {
+            continue;
+        }
         if (!detail::isRootCentricRegionSupported(dacppFile, shell, stmt)) {
             continue;
         }

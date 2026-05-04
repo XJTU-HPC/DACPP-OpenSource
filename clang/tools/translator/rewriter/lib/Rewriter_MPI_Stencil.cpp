@@ -190,6 +190,13 @@ void Rewriter::rewriteMPIStencil() {
                 regionCall += ");";
                 rewriter->ReplaceText(region.stmt->getSourceRange(), regionCall);
             }
+
+            const auto distributedRegions =
+                mpi_rewriter::collectDistributedFollowupRegions(
+                    dacppFile, shell, calc, dacExpr);
+            for (const auto& region : distributedRegions) {
+                rewriter->RemoveText(region.stmt->getSourceRange());
+            }
             continue;
         }
 

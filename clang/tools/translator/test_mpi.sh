@@ -29,6 +29,8 @@ MPI_TESTS=(
     "mpiBroadcastUnknownFunction"
     "mpiBroadcastAliasRead"
     "mpiDistributedStencil1D"
+    "mpiDistributedStencilNoBridge1D"
+    "mpiDistributedStencilSteady1D"
     "stencil1.0"
     "waveEquation1.0"
 )

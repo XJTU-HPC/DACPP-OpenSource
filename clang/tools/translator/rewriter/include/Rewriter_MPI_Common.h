@@ -37,12 +37,24 @@ struct RootCentricPostRegion {
     std::string helperName;
 };
 
+struct DistributedFollowupRegion {
+    const clang::Stmt* stmt = nullptr;
+};
+
+struct DistributedFollowupMapping {
+    std::string writerTensor;
+    std::string readerTensor;
+    int targetOffset = 0;
+};
+
 struct DistributedStencilSitePlan {
     bool supported = false;
     bool hasRootBridge = false;
     std::string disableReason;
     std::set<std::string> distributedTensors;
     std::set<std::string> rootBridgeTensors;
+    std::vector<DistributedFollowupMapping> followupMappings;
+    std::vector<const clang::Stmt*> distributedFollowupStmts;
 };
 
 std::vector<AccessSummary> summarizeStmtAccess(
@@ -106,6 +118,11 @@ bool tensorUsesDistributedFollowup(
     const clang::BinaryOperator* dacExpr);
 
 std::vector<RootCentricPostRegion> collectRootCentricPostRegions(
+    DacppFile* dacppFile,
+    Shell* shell,
+    Calc* calc,
+    const clang::BinaryOperator* dacExpr);
+std::vector<DistributedFollowupRegion> collectDistributedFollowupRegions(
     DacppFile* dacppFile,
     Shell* shell,
     Calc* calc,

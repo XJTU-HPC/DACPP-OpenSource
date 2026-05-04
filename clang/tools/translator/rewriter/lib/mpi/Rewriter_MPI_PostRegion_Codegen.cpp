@@ -194,8 +194,18 @@ std::string buildRootCentricPostRegionHelpers(
         return "";
     }
 
+    std::set<const clang::Stmt*> distributedFollowupStmts;
+    const auto distributedRegions =
+        collectDistributedFollowupRegions(dacppFile, shell, calc, dacExpr);
+    for (const auto& region : distributedRegions) {
+        distributedFollowupStmts.insert(region.stmt);
+    }
+
     std::string code;
     for (std::size_t stmtIdx = 0; stmtIdx < plan.siblingStmts.size(); ++stmtIdx) {
+        if (distributedFollowupStmts.count(plan.siblingStmts[stmtIdx]) != 0) {
+            continue;
+        }
         const auto* forStmt =
             llvm::dyn_cast_or_null<clang::ForStmt>(plan.siblingStmts[stmtIdx]);
         if (!forStmt) {

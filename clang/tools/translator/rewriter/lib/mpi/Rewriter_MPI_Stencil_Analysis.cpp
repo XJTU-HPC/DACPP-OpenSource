@@ -1,11 +1,14 @@
 #include <set>
 #include <string>
 #include <vector>
+#include <regex>
 
 #include "clang/AST/Expr.h"
+#include "clang/AST/Stmt.h"
 #include "clang/Lex/Lexer.h"
 
 #include "Rewriter_MPI_Stencil_Common.h"
+#include "Rewriter_MPI_PostRegion_Internal.h"
 
 namespace dacppTranslator {
 namespace mpi_rewriter {
@@ -116,6 +119,85 @@ void collectRootBridgeTensors(DistributedStencilSitePlan& plan,
     }
 }
 
+bool isEffectiveWriter(const std::string& tensorName,
+                       Shell* shell,
+                       const std::vector<IOTYPE>& paramModes) {
+    if (!shell) {
+        return false;
+    }
+    for (int paramIdx = 0; paramIdx < shell->getNumParams() &&
+                           paramIdx < static_cast<int>(paramModes.size());
+         ++paramIdx) {
+        if (shell->getParam(paramIdx)->getName() == tensorName) {
+            return paramModes[paramIdx] == IOTYPE::WRITE;
+        }
+    }
+    return false;
+}
+
+bool isEffectiveReader(const std::string& tensorName,
+                       Shell* shell,
+                       const std::vector<IOTYPE>& paramModes) {
+    if (!shell) {
+        return false;
+    }
+    for (int paramIdx = 0; paramIdx < shell->getNumParams() &&
+                           paramIdx < static_cast<int>(paramModes.size());
+         ++paramIdx) {
+        if (shell->getParam(paramIdx)->getName() == tensorName) {
+            return paramModes[paramIdx] == IOTYPE::READ;
+        }
+    }
+    return false;
+}
+
+bool tryCollectDistributedFollowup(DistributedStencilSitePlan& plan,
+                                   DacppFile* dacppFile,
+                                   Shell* shell,
+                                   const std::vector<IOTYPE>& paramModes,
+                                   const clang::Stmt* stmt) {
+    const auto* forStmt = llvm::dyn_cast_or_null<clang::ForStmt>(stmt);
+    if (!forStmt) {
+        return false;
+    }
+
+    detail::LoopRegionInfo info;
+    if (!detail::extractLoopRegionInfo(
+            forStmt, dacppFile->getContext(), shell,
+            dacppFile->getBufferRegionPlan(), info)) {
+        return false;
+    }
+
+    if (info.writtenTensors.size() != 1 || info.readTensors.size() != 1) {
+        return false;
+    }
+
+    const std::string& readerTensor = *info.writtenTensors.begin();
+    const std::string& writerTensor = *info.readTensors.begin();
+    if (!isEffectiveWriter(writerTensor, shell, paramModes) ||
+        !isEffectiveReader(readerTensor, shell, paramModes)) {
+        return false;
+    }
+
+    int targetOffset = 0;
+    const std::string pattern =
+        readerTensor + R"(\s*\[\s*)" + info.loopVar + R"(\s*\]\s*=\s*)" +
+        writerTensor + R"(\s*\[\s*)" + info.loopVar +
+        R"(\s*([+-])?\s*(\d+)?\s*\]\s*;?)";
+    std::smatch match;
+    if (!std::regex_match(info.bodyText, match, std::regex(pattern))) {
+        return false;
+    }
+    if (match.size() >= 3 && match[1].matched && match[2].matched) {
+        const int rhsOffset = std::stoi(match[2].str());
+        targetOffset = match[1].str() == "-" ? rhsOffset : -rhsOffset;
+    }
+
+    plan.followupMappings.push_back({writerTensor, readerTensor, targetOffset});
+    plan.distributedFollowupStmts.push_back(stmt);
+    return true;
+}
+
 }  // namespace
 
 DistributedStencilSitePlan analyzeDistributedStencilSite(
@@ -154,12 +236,19 @@ DistributedStencilSitePlan analyzeDistributedStencilSite(
             shell->getParam(paramIdx)->getName(), dacExpr));
     }
 
-    const auto rootRegions =
-        collectRootCentricPostRegions(dacppFile, shell, calc, dacExpr);
-    if (!regionPlan.siblingStmts.empty() &&
-        rootRegions.size() != regionPlan.siblingStmts.size()) {
+    std::vector<RootCentricPostRegion> rootRegions;
+    const bool allowDistributedFollowup = regionPlan.siblingStmts.size() == 1;
+    for (const clang::Stmt* stmt : regionPlan.siblingStmts) {
+        if (allowDistributedFollowup &&
+            tryCollectDistributedFollowup(plan, dacppFile, shell, paramModes, stmt)) {
+            continue;
+        }
+        if (detail::isRootCentricRegionSupported(dacppFile, shell, stmt)) {
+            rootRegions.push_back({stmt, ""});
+            continue;
+        }
         plan.disableReason =
-            "phase-c requires all post-shell sibling statements to lower as root-centric helpers";
+            "phase-c requires post-shell statements to lower as distributed followup or root-centric helpers";
         return plan;
     }
 
@@ -170,6 +259,23 @@ DistributedStencilSitePlan analyzeDistributedStencilSite(
 
     plan.supported = true;
     return plan;
+}
+
+std::vector<DistributedFollowupRegion> collectDistributedFollowupRegions(
+    DacppFile* dacppFile,
+    Shell* shell,
+    Calc* calc,
+    const clang::BinaryOperator* dacExpr) {
+    std::vector<DistributedFollowupRegion> regions;
+    const DistributedStencilSitePlan plan =
+        analyzeDistributedStencilSite(dacppFile, shell, calc, dacExpr);
+    if (!plan.supported) {
+        return regions;
+    }
+    for (const clang::Stmt* stmt : plan.distributedFollowupStmts) {
+        regions.push_back({stmt});
+    }
+    return regions;
 }
 
 bool tensorUsesDistributedFollowup(
