@@ -15,11 +15,11 @@
 当前总目标：
 
 - 保持 root-centric MPI wrapper / MPI stencil 语义正确。
-- 对位于 time-step loop 内的 `<->` 生成 `ctx + init + run` 形态。
+- 对位于 time-step loop 内的 `<->` 生成 `ctx + init + run + materialize` 形态。
 - 把稳定的通信 metadata 缓存在 `init()`，让 `run()` 只做每步数据相关通信。
 - 建立输出副本一致性模型，区分 root 结果正确和非 root 副本正确。
 - 识别 shell 后明显可并行的一维 host loop，并在 MPI stencil v1 中生成 root-centric region helper。
-- 识别简单一维 distributed follow-up loop，让部分 post-shell state transition 直接更新 distributed cache。
+- 识别简单一维 distributed follow-up route loop，让部分 post-shell state transition 直接更新 distributed cache。
 - 在现有 pack / writeback plan 基础上，探索用缓存一致性和部分交换替代手写传统 halo 的 stencil 优化路线。
 
 当前明确不做或尚未完成：
@@ -29,7 +29,12 @@
 - 不改变普通 MPI wrapper 的基本语义。
 - Phase 1 不做 rank 间 halo exchange。
 - Phase 1 不把 sibling update loops 合并进 rank-local distributed stencil pipeline；v1 只生成 root-centric helper。
-- Phase C 只支持非常窄的一维 `READ/WRITE` distributed follow-up；尚未完成通用分布式 stencil / halo / generalized cache exchange。
+- Phase C 只支持非常窄的一维 `READ/WRITE` distributed follow-up route；尚未完成通用分布式 stencil / halo / generalized cache exchange。
+
+相关实现说明：
+
+- `phase_c_impl_note_2026-05-03.md`：Phase C partial-exchange 第一版，打通 loop-lowered 1D root-bridge 正向路径。
+- `phase_c_routes_materialize_2026-05-04.md`：Phase C route IR 泛化、fanout / multi-route，以及 no-helper loop 后 materialize。
 
 ## 2. 当前 MPI stencil 路径
 
@@ -47,11 +52,13 @@ __dacpp_mpi_stencil_init_xxx(ctx, ...);
 for (...) {
     __dacpp_mpi_stencil_run_xxx(ctx, ...);
 }
+__dacpp_mpi_stencil_materialize_xxx(ctx, ...);
 ```
 
 这样可以把稳定不变的 pattern / binding / pack plan / rank range 初始化从每次迭代中提出来，循环内只执行每步真正需要重复的 scatter、kernel、gather、writeback、broadcast。
+对 no-root-bridge partial-exchange steady-state site，root 可见的最终 materialization 也从循环内延后到循环之后一次执行。
 
-当前采用 `ctx + init + run + compatibility wrapper` 结构：
+当前采用 `ctx + init + run + materialize + compatibility wrapper` 结构：
 
 - `ctx`
   - 保存 MPI rank / size、SYCL queue、AccessPattern、PackPlan、ItemRange、cached layout 和复用 buffer。
@@ -61,9 +68,13 @@ for (...) {
 - `run`
   - 在每次循环迭代执行。
   - 完成数据分发、本地 kernel、写回收集和必要 broadcast。
+- `materialize`
+  - 在 lowered outer loop 之后执行一次。
+  - 对 no-root-bridge partial-exchange site，把 distributed READ cache gather 回 root 并写回用户 tensor。
+  - 如果运行时已经 fallback 到 root-centric path，或者当前 site 是 root-bridge / unsupported path，则直接返回。
 - compatibility wrapper
   - 对非 loop stencil site 保留一次性调用形式。
-  - 内部执行 `ctx; init(ctx, ...); run(ctx, ...);`。
+  - 内部执行 `ctx; init(ctx, ...); run(ctx, ...); materialize(ctx, ...);`。
 
 不能安全 hoist 的场景会回退普通 MPI wrapper 路径：
 
@@ -130,7 +141,7 @@ if (dacppFile && dacppFile->hasMPIStencilSites()) {
 
 1. 复用普通 MPI prelude。
 2. 生成 local calc。
-3. 生成 stencil ctx / init / run / compatibility wrapper。
+3. 生成 stencil ctx / init / run / materialize / compatibility wrapper。
 4. 删除原 shell / calc 声明。
 5. 在 `main` 中插入 MPI init / finalize。
 6. 在 loop 前插入 ctx/init。
