@@ -61,6 +61,61 @@ inline void build_target_slots_for_globals_with_offset(
     }
 }
 
+inline int64_t map_2d_global_with_offset(int64_t source_global,
+                                         int64_t source_cols,
+                                         int64_t target_cols,
+                                         int64_t row_offset,
+                                         int64_t col_offset) {
+    if (source_global < 0 || source_cols <= 0 || target_cols <= 0) {
+        return -1;
+    }
+    const int64_t source_row = source_global / source_cols;
+    const int64_t source_col = source_global % source_cols;
+    const int64_t target_row = source_row + row_offset;
+    const int64_t target_col = source_col + col_offset;
+    if (target_row < 0 || target_col < 0 || target_col >= target_cols) {
+        return -1;
+    }
+    return target_row * target_cols + target_col;
+}
+
+inline int64_t inverse_map_2d_global_with_offset(int64_t target_global,
+                                                 int64_t source_cols,
+                                                 int64_t target_cols,
+                                                 int64_t row_offset,
+                                                 int64_t col_offset) {
+    if (target_global < 0 || source_cols <= 0 || target_cols <= 0) {
+        return -1;
+    }
+    const int64_t target_row = target_global / target_cols;
+    const int64_t target_col = target_global % target_cols;
+    const int64_t source_row = target_row - row_offset;
+    const int64_t source_col = target_col - col_offset;
+    if (source_row < 0 || source_col < 0 || source_col >= source_cols) {
+        return -1;
+    }
+    return source_row * source_cols + source_col;
+}
+
+inline void build_target_slots_for_globals_2d_offset(
+    const PackMap& pack,
+    const std::vector<int64_t>& globals,
+    int64_t source_cols,
+    int64_t target_cols,
+    int64_t row_offset,
+    int64_t col_offset,
+    std::vector<int32_t>& local_slots) {
+    local_slots.clear();
+    local_slots.reserve(globals.size());
+    for (int64_t global_idx : globals) {
+        const int64_t target_global =
+            map_2d_global_with_offset(global_idx, source_cols, target_cols,
+                                      row_offset, col_offset);
+        local_slots.push_back(
+            target_global >= 0 ? try_lookup_local_slot(pack, target_global) : -1);
+    }
+}
+
 inline ExchangePlan build_exchange_plan_from_layouts(
     const PackMap& writer_pack,
     const AllRankIndexLayout& writer_layout,
@@ -255,6 +310,141 @@ inline ExchangePlan build_exchange_plan_from_layouts_with_target_offset(
         const int64_t writer_global =
             writer_layout.globals[static_cast<std::size_t>(local_write_displ + idx)];
         const int64_t target_global = writer_global + target_offset;
+        for (int rank = 0; rank < mpi_size; ++rank) {
+            if (rank == mpi_rank) {
+                continue;
+            }
+            const int peer_count =
+                reader_layout.counts[static_cast<std::size_t>(rank)];
+            const int peer_displ =
+                reader_layout.displs[static_cast<std::size_t>(rank)];
+            const auto begin =
+                reader_layout.globals.begin() + peer_displ;
+            const auto end = begin + peer_count;
+            if (!std::binary_search(begin, end, target_global)) {
+                continue;
+            }
+            const int32_t slot = try_lookup_local_slot(writer_pack, writer_global);
+            if (slot < 0) {
+                plan.supported = false;
+                plan.unsupported_reason =
+                    "writer pack missing global " + std::to_string(writer_global);
+                return plan;
+            }
+            auto& transfer = send_by_peer[rank];
+            transfer.peer_rank = rank;
+            transfer.globals.push_back(writer_global);
+            transfer.local_slots.push_back(slot);
+        }
+    }
+
+    plan.supported = true;
+    for (auto& entry : send_by_peer) {
+        plan.send_transfers.push_back(std::move(entry.second));
+    }
+    for (auto& entry : recv_by_peer) {
+        plan.recv_transfers.push_back(std::move(entry.second));
+    }
+    std::sort(plan.send_transfers.begin(), plan.send_transfers.end(),
+              [](const PeerSlotExchange& lhs, const PeerSlotExchange& rhs) {
+                  return lhs.peer_rank < rhs.peer_rank;
+              });
+    std::sort(plan.recv_transfers.begin(), plan.recv_transfers.end(),
+              [](const PeerSlotExchange& lhs, const PeerSlotExchange& rhs) {
+                  return lhs.peer_rank < rhs.peer_rank;
+              });
+    return plan;
+}
+
+inline ExchangePlan build_exchange_plan_from_layouts_2d_offset(
+    const PackMap& writer_pack,
+    const AllRankIndexLayout& writer_layout,
+    const PackMap& reader_pack,
+    const AllRankIndexLayout& reader_layout,
+    int64_t writer_cols,
+    int64_t reader_cols,
+    int64_t row_offset,
+    int64_t col_offset,
+    int mpi_rank,
+    int mpi_size) {
+    ExchangePlan plan;
+    std::string unique_writer_reason;
+    if (!validate_unique_writers(writer_layout, mpi_size, &unique_writer_reason)) {
+        plan.supported = false;
+        plan.unsupported_reason =
+            "writer layout has overlapping ownership: " + unique_writer_reason;
+        return plan;
+    }
+
+    std::unordered_map<int64_t, int> writer_owner;
+    writer_owner.reserve(writer_layout.globals.size());
+    for (int rank = 0; rank < mpi_size; ++rank) {
+        const int count = writer_layout.counts[static_cast<std::size_t>(rank)];
+        const int displ = writer_layout.displs[static_cast<std::size_t>(rank)];
+        for (int idx = 0; idx < count; ++idx) {
+            writer_owner.emplace(
+                writer_layout.globals[static_cast<std::size_t>(displ + idx)], rank);
+        }
+    }
+
+    std::unordered_map<int, PeerSlotExchange> recv_by_peer;
+    const int local_read_count =
+        reader_layout.counts.empty()
+            ? 0
+            : reader_layout.counts[static_cast<std::size_t>(mpi_rank)];
+    const int local_read_displ =
+        reader_layout.displs.empty()
+            ? 0
+            : reader_layout.displs[static_cast<std::size_t>(mpi_rank)];
+    for (int idx = 0; idx < local_read_count; ++idx) {
+        const int64_t target_global =
+            reader_layout.globals[static_cast<std::size_t>(local_read_displ + idx)];
+        const int64_t writer_global =
+            inverse_map_2d_global_with_offset(target_global, writer_cols,
+                                              reader_cols, row_offset,
+                                              col_offset);
+        if (writer_global < 0) {
+            continue;
+        }
+        const auto ownerIt = writer_owner.find(writer_global);
+        if (ownerIt == writer_owner.end()) {
+            continue;
+        }
+        const int owner_rank = ownerIt->second;
+        if (owner_rank == mpi_rank) {
+            continue;
+        }
+        const int32_t slot = try_lookup_local_slot(reader_pack, target_global);
+        if (slot < 0) {
+            plan.supported = false;
+            plan.unsupported_reason =
+                "reader pack missing global " + std::to_string(target_global);
+            return plan;
+        }
+        auto& transfer = recv_by_peer[owner_rank];
+        transfer.peer_rank = owner_rank;
+        transfer.globals.push_back(target_global);
+        transfer.local_slots.push_back(slot);
+    }
+
+    std::unordered_map<int, PeerSlotExchange> send_by_peer;
+    const int local_write_count =
+        writer_layout.counts.empty()
+            ? 0
+            : writer_layout.counts[static_cast<std::size_t>(mpi_rank)];
+    const int local_write_displ =
+        writer_layout.displs.empty()
+            ? 0
+            : writer_layout.displs[static_cast<std::size_t>(mpi_rank)];
+    for (int idx = 0; idx < local_write_count; ++idx) {
+        const int64_t writer_global =
+            writer_layout.globals[static_cast<std::size_t>(local_write_displ + idx)];
+        const int64_t target_global =
+            map_2d_global_with_offset(writer_global, writer_cols, reader_cols,
+                                      row_offset, col_offset);
+        if (target_global < 0) {
+            continue;
+        }
         for (int rank = 0; rank < mpi_size; ++rank) {
             if (rank == mpi_rank) {
                 continue;

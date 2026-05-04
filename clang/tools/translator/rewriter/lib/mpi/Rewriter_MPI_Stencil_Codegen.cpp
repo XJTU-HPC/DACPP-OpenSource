@@ -395,14 +395,31 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
                             continue;
                         }
                         const std::string& readerCalcName = calc->getParam(readerIdx)->getName();
-                        const std::string targetOffset =
-                            std::to_string(followupMapping->targetOffset);
-                        if (followupMapping->targetOffset != 0) {
-                            code += "    dacpp::mpi::build_target_slots_for_globals_with_offset(ctx.plan_" + readerCalcName + ".pack, ctx.dist_" + calcName + ".local_write_globals, " + targetOffset + ", ctx.dist_" + calcName + ".local_target_slots_by_route[" + std::to_string(routeIdx) + "]);\n";
-                            code += "    ctx.dist_" + calcName + ".exchange_plans_by_route[" + std::to_string(routeIdx) + "] = dacpp::mpi::build_exchange_plan_from_layouts_with_target_offset(ctx.plan_" + calcName + ".pack, ctx.dist_" + calcName + ".write_layout, ctx.plan_" + readerCalcName + ".pack, ctx.dist_" + readerCalcName + ".read_layout, " + targetOffset + ", ctx.mpi_rank, ctx.mpi_size);\n";
+                        if (followupMapping->rank == 2) {
+                            const std::string writerCols =
+                                calcName + "_cols";
+                            const std::string readerCols =
+                                readerCalcName + "_cols";
+                            const std::string rowOffset =
+                                std::to_string(followupMapping->targetRowOffset);
+                            const std::string colOffset =
+                                std::to_string(followupMapping->targetColOffset);
+                            code += "    const int " + writerCols + " = " +
+                                    shell->getParam(paramIdx)->getName() + ".getShape(1);\n";
+                            code += "    const int " + readerCols + " = " +
+                                    shell->getParam(readerIdx)->getName() + ".getShape(1);\n";
+                            code += "    dacpp::mpi::build_target_slots_for_globals_2d_offset(ctx.plan_" + readerCalcName + ".pack, ctx.dist_" + calcName + ".local_write_globals, " + writerCols + ", " + readerCols + ", " + rowOffset + ", " + colOffset + ", ctx.dist_" + calcName + ".local_target_slots_by_route[" + std::to_string(routeIdx) + "]);\n";
+                            code += "    ctx.dist_" + calcName + ".exchange_plans_by_route[" + std::to_string(routeIdx) + "] = dacpp::mpi::build_exchange_plan_from_layouts_2d_offset(ctx.plan_" + calcName + ".pack, ctx.dist_" + calcName + ".write_layout, ctx.plan_" + readerCalcName + ".pack, ctx.dist_" + readerCalcName + ".read_layout, " + writerCols + ", " + readerCols + ", " + rowOffset + ", " + colOffset + ", ctx.mpi_rank, ctx.mpi_size);\n";
                         } else {
-                            code += "    dacpp::mpi::build_target_slots_for_globals(ctx.plan_" + readerCalcName + ".pack, ctx.dist_" + calcName + ".local_write_globals, ctx.dist_" + calcName + ".local_target_slots_by_route[" + std::to_string(routeIdx) + "]);\n";
-                            code += "    ctx.dist_" + calcName + ".exchange_plans_by_route[" + std::to_string(routeIdx) + "] = dacpp::mpi::build_exchange_plan_from_layouts(ctx.plan_" + calcName + ".pack, ctx.dist_" + calcName + ".write_layout, ctx.plan_" + readerCalcName + ".pack, ctx.dist_" + readerCalcName + ".read_layout, ctx.mpi_rank, ctx.mpi_size);\n";
+                            const std::string targetOffset =
+                                std::to_string(followupMapping->targetOffset);
+                            if (followupMapping->targetOffset != 0) {
+                                code += "    dacpp::mpi::build_target_slots_for_globals_with_offset(ctx.plan_" + readerCalcName + ".pack, ctx.dist_" + calcName + ".local_write_globals, " + targetOffset + ", ctx.dist_" + calcName + ".local_target_slots_by_route[" + std::to_string(routeIdx) + "]);\n";
+                                code += "    ctx.dist_" + calcName + ".exchange_plans_by_route[" + std::to_string(routeIdx) + "] = dacpp::mpi::build_exchange_plan_from_layouts_with_target_offset(ctx.plan_" + calcName + ".pack, ctx.dist_" + calcName + ".write_layout, ctx.plan_" + readerCalcName + ".pack, ctx.dist_" + readerCalcName + ".read_layout, " + targetOffset + ", ctx.mpi_rank, ctx.mpi_size);\n";
+                            } else {
+                                code += "    dacpp::mpi::build_target_slots_for_globals(ctx.plan_" + readerCalcName + ".pack, ctx.dist_" + calcName + ".local_write_globals, ctx.dist_" + calcName + ".local_target_slots_by_route[" + std::to_string(routeIdx) + "]);\n";
+                                code += "    ctx.dist_" + calcName + ".exchange_plans_by_route[" + std::to_string(routeIdx) + "] = dacpp::mpi::build_exchange_plan_from_layouts(ctx.plan_" + calcName + ".pack, ctx.dist_" + calcName + ".write_layout, ctx.plan_" + readerCalcName + ".pack, ctx.dist_" + readerCalcName + ".read_layout, ctx.mpi_rank, ctx.mpi_size);\n";
+                            }
                         }
                         code += "    if (!ctx.dist_" + calcName + ".exchange_plans_by_route[" + std::to_string(routeIdx) + "].supported) {\n";
                         code += "        ctx.partial_exchange_disable_reason = ctx.dist_" + calcName + ".exchange_plans_by_route[" + std::to_string(routeIdx) + "].unsupported_reason;\n";
@@ -656,6 +673,10 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
                 code += "    local_" + calcName + ".assign(ctx.plan_" + calcName +
                         ".pack.globals.size(), " + calcParam->getBasicType() + "{});\n";
             }
+            if (mpi_rewriter::inferViewRank(shell->getShellParam(paramIdx), calcParam) > 1) {
+                code += "    const int " + calcName + "_cols = ctx.pattern_" +
+                        calcName + ".partition_shape[1];\n";
+            }
         }
         code += "    if (local_item_count > 0) {\n";
         code += "        {\n";
@@ -851,12 +872,26 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
             }
             code += "    if (ctx.mpi_rank == 0) {\n";
             code += "        " + readerTensorName + ".tensor2Array(ctx.global_" + readerCalcName + ");\n";
+            if (mapping.rank == 2) {
+                Param* writerShellParam = shell->getParam(mapping.writerParamIndex);
+                code += "        const int64_t __dacpp_writer_cols = static_cast<int64_t>(" +
+                        writerShellParam->getName() + ".getShape(1));\n";
+                code += "        const int64_t __dacpp_reader_cols = static_cast<int64_t>(" +
+                        readerTensorName + ".getShape(1));\n";
+            }
             code += "        for (std::size_t __dacpp_idx = 0; __dacpp_idx < ctx.output_layout_" +
                     writerCalcName + ".globals.size() && __dacpp_idx < ctx.global_recv_values_" +
                     writerCalcName + ".size(); ++__dacpp_idx) {\n";
-            code += "            const int64_t __dacpp_target_global = ctx.output_layout_" +
-                    writerCalcName + ".globals[__dacpp_idx] + static_cast<int64_t>(" +
-                    std::to_string(mapping.targetOffset) + ");\n";
+            if (mapping.rank == 2) {
+                code += "            const int64_t __dacpp_target_global = dacpp::mpi::map_2d_global_with_offset(ctx.output_layout_" +
+                        writerCalcName + ".globals[__dacpp_idx], __dacpp_writer_cols, __dacpp_reader_cols, " +
+                        std::to_string(mapping.targetRowOffset) + ", " +
+                        std::to_string(mapping.targetColOffset) + ");\n";
+            } else {
+                code += "            const int64_t __dacpp_target_global = ctx.output_layout_" +
+                        writerCalcName + ".globals[__dacpp_idx] + static_cast<int64_t>(" +
+                        std::to_string(mapping.targetOffset) + ");\n";
+            }
             code += "            if (__dacpp_target_global >= 0 && static_cast<std::size_t>(__dacpp_target_global) < ctx.global_" +
                     readerCalcName + ".size()) {\n";
             code += "                ctx.global_" + readerCalcName + "[static_cast<std::size_t>(__dacpp_target_global)] = ctx.global_recv_values_" +

@@ -1,0 +1,8 @@
+LOG_CONTAINS:[DACPP][MPI][PhaseC] site stencilShell_stencil partial-exchange enabled (root-bridge)
+LOG_CONTAINS:[DACPP][MPI][PhaseC] route detected matOut->matIn offset=(1,1)
+LOG_CONTAINS:[DACPP][MPI][PhaseC] halo-exchange enabled route=matOut->matIn
+LOG_NOT_CONTAINS:partial-exchange disabled
+SYCL_CONTAINS:ctx.use_partial_exchange = true;
+SYCL_CONTAINS:build_exchange_plan_from_layouts_2d_offset
+SYCL_CONTAINS:publish_local_writes_with_halo_or_exchange
+SYCL_CONTAINS:root_bridge_plan = dacpp::mpi::build_exchange_plan_from_layouts

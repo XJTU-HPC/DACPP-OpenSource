@@ -306,7 +306,11 @@ std::vector<RootCentricPostRegion> collectRootCentricPostRegions(
             continue;
         }
         if (!detail::isRootCentricRegionSupported(dacppFile, shell, stmt)) {
-            continue;
+            const DistributedStencilSitePlan sitePlan =
+                analyzeDistributedStencilSite(dacppFile, shell, calc, dacExpr);
+            if (!sitePlan.supported || !sitePlan.hasRootBridge) {
+                continue;
+            }
         }
         result.push_back({stmt, detail::helperNameFor(shell, calc, stmtIdx)});
     }
@@ -332,8 +336,12 @@ std::vector<const clang::Stmt*> collectRootCentricPostRegionStmts(
             continue;
         }
         Shell* shell = expr->getShell();
+        Calc* calc = expr->getCalc();
+        const DistributedStencilSitePlan sitePlan =
+            analyzeDistributedStencilSite(dacppFile, shell, calc, dacExpr);
         for (const clang::Stmt* stmt : plan.siblingStmts) {
-            if (detail::isRootCentricRegionSupported(dacppFile, shell, stmt)) {
+            if (detail::isRootCentricRegionSupported(dacppFile, shell, stmt) ||
+                (sitePlan.supported && sitePlan.hasRootBridge)) {
                 result.push_back(stmt);
             }
         }

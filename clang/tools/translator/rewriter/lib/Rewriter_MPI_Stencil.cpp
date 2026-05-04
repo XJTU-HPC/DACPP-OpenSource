@@ -8,6 +8,7 @@
 #include "clang/Rewrite/Core/Rewriter.h"
 
 #include "Rewriter_MPI_Common.h"
+#include "mpi/Rewriter_MPI_PostRegion_Internal.h"
 #include "Rewriter_MPI_Stencil_Common.h"
 
 namespace {
@@ -204,8 +205,32 @@ void Rewriter::rewriteMPIStencil() {
             const auto distributedRegions =
                 mpi_rewriter::collectDistributedFollowupRegions(
                     dacppFile, shell, calc, dacExpr);
+            const auto sitePlan = mpi_rewriter::analyzeDistributedStencilSite(
+                dacppFile, shell, calc, dacExpr);
             for (const auto& region : distributedRegions) {
-                rewriter->RemoveText(region.stmt->getSourceRange());
+                if (!sitePlan.hasRootBridge) {
+                    rewriter->RemoveText(region.stmt->getSourceRange());
+                    continue;
+                }
+                std::size_t stmtIdx = 0;
+                bool foundStmtIdx = false;
+                const auto& regionPlan = dacppFile->getBufferRegionPlan();
+                for (; stmtIdx < regionPlan.siblingStmts.size(); ++stmtIdx) {
+                    if (regionPlan.siblingStmts[stmtIdx] == region.stmt) {
+                        foundStmtIdx = true;
+                        break;
+                    }
+                }
+                if (foundStmtIdx) {
+                    std::string regionCall =
+                        mpi_rewriter::detail::helperNameFor(shell, calc, stmtIdx) +
+                        "(" + ctxVar;
+                    if (!argText.empty()) {
+                        regionCall += ", " + argText;
+                    }
+                    regionCall += ");";
+                    rewriter->ReplaceText(region.stmt->getSourceRange(), regionCall);
+                }
             }
             continue;
         }

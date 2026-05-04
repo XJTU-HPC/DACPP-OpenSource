@@ -46,14 +46,26 @@ struct AffineIndex1D {
     int offset = 0;
 };
 
+struct AffineIndex2D {
+    std::string rowLoopVar;
+    std::string colLoopVar;
+    int rowOffset = 0;
+    int colOffset = 0;
+};
+
 struct DistributedFollowupMapping {
     std::string writerTensor;
     std::string readerTensor;
     int writerParamIndex = -1;
     int readerParamIndex = -1;
+    int rank = 1;
     AffineIndex1D writerIndex;
     AffineIndex1D readerIndex;
+    AffineIndex2D writerIndex2D;
+    AffineIndex2D readerIndex2D;
     int targetOffset = 0;
+    int targetRowOffset = 0;
+    int targetColOffset = 0;
     const clang::Stmt* stmt = nullptr;
 };
 
