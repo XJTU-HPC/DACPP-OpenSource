@@ -41,12 +41,20 @@ struct DistributedFollowupRegion {
     const clang::Stmt* stmt = nullptr;
 };
 
+struct AffineIndex1D {
+    std::string loopVar;
+    int offset = 0;
+};
+
 struct DistributedFollowupMapping {
     std::string writerTensor;
     std::string readerTensor;
     int writerParamIndex = -1;
     int readerParamIndex = -1;
+    AffineIndex1D writerIndex;
+    AffineIndex1D readerIndex;
     int targetOffset = 0;
+    const clang::Stmt* stmt = nullptr;
 };
 
 struct DistributedStencilSitePlan {

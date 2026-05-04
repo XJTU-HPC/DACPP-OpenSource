@@ -3,8 +3,6 @@
 #include <set>
 #include <string>
 #include <vector>
-#include <regex>
-#include <sstream>
 
 #include "clang/AST/Expr.h"
 #include "clang/AST/Stmt.h"
@@ -166,6 +164,85 @@ int findShellParamIndex(Shell* shell, const std::string& tensorName) {
     return -1;
 }
 
+Split* findSingleNonVoidSplit(ShellParam* shellParam) {
+    if (!shellParam) {
+        return nullptr;
+    }
+
+    Split* result = nullptr;
+    for (int splitIdx = 0; splitIdx < shellParam->getNumSplit(); ++splitIdx) {
+        Split* split = shellParam->getSplit(splitIdx);
+        if (!split || split->getId() == "void") {
+            continue;
+        }
+        if (result) {
+            return nullptr;
+        }
+        result = split;
+    }
+    return result;
+}
+
+bool isStrideOneInputDomainSplit(Split* split) {
+    if (!split || split->getId() == "void") {
+        return false;
+    }
+    if (split->type == "IndexSplit") {
+        return true;
+    }
+    auto* regular = static_cast<RegularSplit*>(split);
+    return regular && regular->getSplitStride() == 1;
+}
+
+bool writerRouteCoveredByInputDomain(
+    Shell* shell,
+    const std::vector<IOTYPE>& effectiveModes,
+    int writerParamIndex,
+    const std::unordered_map<std::string, SplitBindMeta>& splitMeta) {
+    if (!shell || writerParamIndex < 0 ||
+        writerParamIndex >= shell->getNumShellParams()) {
+        return false;
+    }
+
+    Split* writerSplit =
+        findSingleNonVoidSplit(shell->getShellParam(writerParamIndex));
+    if (!writerSplit || writerSplit->type != "IndexSplit") {
+        return false;
+    }
+
+    const auto writerMeta = splitMeta.find(writerSplit->getId());
+    if (writerMeta == splitMeta.end()) {
+        return false;
+    }
+
+    for (int paramIdx = 0; paramIdx < shell->getNumShellParams() &&
+                           paramIdx < static_cast<int>(effectiveModes.size());
+         ++paramIdx) {
+        if (effectiveModes[paramIdx] == IOTYPE::WRITE) {
+            continue;
+        }
+        ShellParam* shellParam = shell->getShellParam(paramIdx);
+        if (!shellParam) {
+            continue;
+        }
+        for (int splitIdx = 0; splitIdx < shellParam->getNumSplit(); ++splitIdx) {
+            Split* split = shellParam->getSplit(splitIdx);
+            if (!split || split->getId() == "void") {
+                continue;
+            }
+            const auto inputMeta = splitMeta.find(split->getId());
+            if (inputMeta == splitMeta.end() ||
+                inputMeta->second.bindId != writerMeta->second.bindId) {
+                continue;
+            }
+            if (isStrideOneInputDomainSplit(split)) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 std::string trim(std::string text) {
     const auto begin = text.find_first_not_of(" \t\r\n");
     if (begin == std::string::npos) {
@@ -173,55 +250,6 @@ std::string trim(std::string text) {
     }
     const auto end = text.find_last_not_of(" \t\r\n");
     return text.substr(begin, end - begin + 1);
-}
-
-std::string stripOuterBraces(std::string text) {
-    text = trim(std::move(text));
-    if (text.size() >= 2 && text.front() == '{' && text.back() == '}') {
-        text = text.substr(1, text.size() - 2);
-    }
-    return trim(std::move(text));
-}
-
-std::string stripComments(const std::string& text) {
-    std::string withoutBlock;
-    withoutBlock.reserve(text.size());
-    bool inBlockComment = false;
-    for (std::size_t idx = 0; idx < text.size(); ++idx) {
-        if (!inBlockComment && idx + 1 < text.size() &&
-            text[idx] == '/' && text[idx + 1] == '*') {
-            inBlockComment = true;
-            ++idx;
-            continue;
-        }
-        if (inBlockComment && idx + 1 < text.size() &&
-            text[idx] == '*' && text[idx + 1] == '/') {
-            inBlockComment = false;
-            ++idx;
-            continue;
-        }
-        if (!inBlockComment) {
-            withoutBlock.push_back(text[idx]);
-        }
-    }
-
-    std::string result;
-    result.reserve(withoutBlock.size());
-    for (std::size_t idx = 0; idx < withoutBlock.size(); ++idx) {
-        if (idx + 1 < withoutBlock.size() &&
-            withoutBlock[idx] == '/' && withoutBlock[idx + 1] == '/') {
-            auto nlPos = withoutBlock.find('\n', idx);
-            if (nlPos != std::string::npos) {
-                result.push_back('\n');
-                idx = nlPos;
-            } else {
-                idx = withoutBlock.size();
-            }
-            continue;
-        }
-        result.push_back(withoutBlock[idx]);
-    }
-    return result;
 }
 
 bool isSupportedIncrement(const clang::ForStmt* forStmt) {
@@ -247,7 +275,7 @@ bool isSupportedIncrement(const clang::ForStmt* forStmt) {
 
 struct RouteLoopInfo {
     std::string loopVar;
-    std::string bodyText;
+    const clang::VarDecl* loopVarDecl = nullptr;
 };
 
 bool extractRouteLoopInfo(const clang::ForStmt* forStmt,
@@ -272,6 +300,7 @@ bool extractRouteLoopInfo(const clang::ForStmt* forStmt,
         return false;
     }
     info.loopVar = loopVarDecl->getNameAsString();
+    info.loopVarDecl = loopVarDecl;
 
     const auto* cond =
         llvm::dyn_cast_or_null<clang::BinaryOperator>(forStmt->getCond());
@@ -291,72 +320,157 @@ bool extractRouteLoopInfo(const clang::ForStmt* forStmt,
         return false;
     }
 
-    info.bodyText = stripOuterBraces(
-        stripComments(getStmtSourceText(forStmt->getBody(), context)));
-    if (info.bodyText.empty()) {
-        return false;
-    }
-
-    const std::vector<std::string> rejected = {
-        "for", "while", "switch", "return", "break", "continue", "goto",
-        "MPI_", "std::", "cout", "cerr", "printf"};
-    for (const auto& token : rejected) {
-        if (containsWord(info.bodyText, token)) {
-            return false;
-        }
-    }
     return true;
 }
 
-std::vector<std::string> splitSimpleAssignments(const std::string& bodyText) {
-    std::vector<std::string> assignments;
-    std::stringstream ss(bodyText);
-    std::string piece;
-    while (std::getline(ss, piece, ';')) {
-        std::string trimmed = piece;
-        trimmed.erase(trimmed.begin(),
-                      std::find_if(trimmed.begin(), trimmed.end(), [](unsigned char ch) {
-                          return !std::isspace(ch);
-                      }));
-        trimmed.erase(std::find_if(trimmed.rbegin(), trimmed.rend(), [](unsigned char ch) {
-                          return !std::isspace(ch);
-                      }).base(),
-                      trimmed.end());
-        if (!trimmed.empty()) {
-            assignments.push_back(trimmed);
-        }
-    }
-    return assignments;
+const clang::Expr* ignoreTransparentExpr(const clang::Expr* expr) {
+    return expr ? expr->IgnoreParenImpCasts() : nullptr;
 }
 
-bool parseAffineVectorAccess(const std::string& expr,
-                             const std::string& loopVar,
-                             std::string& tensorName,
-                             int& offset) {
-    static const std::regex accessPattern(
-        R"(^\s*([A-Za-z_]\w*)\s*\[\s*([A-Za-z_]\w*)\s*([+-])?\s*(\d+)?\s*\]\s*$)");
-    std::smatch match;
-    if (!std::regex_match(expr, match, accessPattern)) {
+bool parseIntegerLiteralExpr(const clang::Expr* expr, int& value) {
+    expr = ignoreTransparentExpr(expr);
+    if (const auto* intLiteral = llvm::dyn_cast_or_null<clang::IntegerLiteral>(expr)) {
+        value = static_cast<int>(intLiteral->getValue().getSExtValue());
+        return true;
+    }
+    return false;
+}
+
+bool parseLoopAffineExpr(const clang::Expr* expr,
+                         const clang::VarDecl* loopVarDecl,
+                         const std::string& loopVar,
+                         int& offset) {
+    expr = ignoreTransparentExpr(expr);
+    if (!expr || !loopVarDecl) {
         return false;
     }
-    if (match[2].str() != loopVar) {
+
+    if (const auto* dre = llvm::dyn_cast<clang::DeclRefExpr>(expr)) {
+        if (dre->getDecl() == loopVarDecl) {
+            offset = 0;
+            return true;
+        }
         return false;
     }
-    tensorName = match[1].str();
-    offset = 0;
-    if (match[3].matched || match[4].matched) {
-        if (!match[3].matched || !match[4].matched) {
+
+    const auto* binary = llvm::dyn_cast<clang::BinaryOperator>(expr);
+    if (!binary ||
+        (binary->getOpcode() != clang::BO_Add &&
+         binary->getOpcode() != clang::BO_Sub)) {
+        return false;
+    }
+
+    const clang::Expr* lhs = ignoreTransparentExpr(binary->getLHS());
+    const clang::Expr* rhs = ignoreTransparentExpr(binary->getRHS());
+    const auto* lhsRef = llvm::dyn_cast_or_null<clang::DeclRefExpr>(lhs);
+    if (!lhsRef || lhsRef->getDecl() != loopVarDecl) {
+        return false;
+    }
+
+    int literal = 0;
+    if (!parseIntegerLiteralExpr(rhs, literal)) {
+        return false;
+    }
+
+    offset = binary->getOpcode() == clang::BO_Sub ? -literal : literal;
+    (void)loopVar;
+    return true;
+}
+
+const clang::Expr* getSubscriptBaseExpr(const clang::Expr* expr,
+                                        const clang::Expr*& indexExpr) {
+    expr = ignoreTransparentExpr(expr);
+    indexExpr = nullptr;
+    if (const auto* subscript = llvm::dyn_cast_or_null<clang::ArraySubscriptExpr>(expr)) {
+        indexExpr = subscript->getIdx();
+        return subscript->getBase();
+    }
+    if (const auto* opCall = llvm::dyn_cast_or_null<clang::CXXOperatorCallExpr>(expr)) {
+        if (opCall->getOperator() == clang::OO_Subscript &&
+            opCall->getNumArgs() >= 2) {
+            indexExpr = opCall->getArg(1);
+            return opCall->getArg(0);
+        }
+    }
+    return nullptr;
+}
+
+bool parseAffineVectorAccessAST(const clang::Expr* expr,
+                                const RouteLoopInfo& info,
+                                std::string& tensorName,
+                                AffineIndex1D& index) {
+    const clang::Expr* indexExpr = nullptr;
+    const clang::Expr* baseExpr = getSubscriptBaseExpr(expr, indexExpr);
+    if (!baseExpr || !indexExpr) {
+        return false;
+    }
+
+    baseExpr = ignoreTransparentExpr(baseExpr);
+    const auto* baseRef = llvm::dyn_cast_or_null<clang::DeclRefExpr>(baseExpr);
+    if (!baseRef || !baseRef->getDecl()) {
+        return false;
+    }
+
+    int offset = 0;
+    if (!parseLoopAffineExpr(indexExpr, info.loopVarDecl, info.loopVar, offset)) {
+        return false;
+    }
+
+    tensorName = baseRef->getDecl()->getNameAsString();
+    index.loopVar = info.loopVar;
+    index.offset = offset;
+    return true;
+}
+
+struct RouteAssignment {
+    const clang::Expr* lhs = nullptr;
+    const clang::Expr* rhs = nullptr;
+    const clang::Stmt* stmt = nullptr;
+};
+
+bool appendSimpleAssignment(const clang::Stmt* stmt,
+                            std::vector<RouteAssignment>& assignments) {
+    if (const auto* binary = llvm::dyn_cast_or_null<clang::BinaryOperator>(stmt)) {
+        if (binary->getOpcode() != clang::BO_Assign) {
             return false;
         }
-        const int value = std::stoi(match[4].str());
-        offset = match[3].str() == "-" ? -value : value;
+        assignments.push_back({binary->getLHS(), binary->getRHS(), binary});
+        return true;
     }
-    return true;
+    if (const auto* opCall =
+            llvm::dyn_cast_or_null<clang::CXXOperatorCallExpr>(stmt)) {
+        if (opCall->getOperator() != clang::OO_Equal ||
+            opCall->getNumArgs() < 2) {
+            return false;
+        }
+        assignments.push_back({opCall->getArg(0), opCall->getArg(1), opCall});
+        return true;
+    }
+    return false;
+}
+
+bool collectTopLevelAssignments(const clang::Stmt* stmt,
+                                std::vector<RouteAssignment>& assignments) {
+    if (!stmt) {
+        return false;
+    }
+
+    if (const auto* compound = llvm::dyn_cast<clang::CompoundStmt>(stmt)) {
+        for (const clang::Stmt* child : compound->body()) {
+            if (!appendSimpleAssignment(child, assignments)) {
+                return false;
+            }
+        }
+        return !assignments.empty();
+    }
+
+    return appendSimpleAssignment(stmt, assignments);
 }
 
 bool tryCollectDistributedFollowup(DistributedStencilSitePlan& plan,
                                    DacppFile* dacppFile,
                                    Shell* shell,
+                                   const std::vector<IOTYPE>& effectiveModes,
                                    const std::vector<IOTYPE>& transportModes,
                                    const clang::Stmt* stmt) {
     const auto* forStmt = llvm::dyn_cast_or_null<clang::ForStmt>(stmt);
@@ -371,29 +485,26 @@ bool tryCollectDistributedFollowup(DistributedStencilSitePlan& plan,
         return false;
     }
 
-    const std::vector<std::string> assignments =
-        splitSimpleAssignments(info.bodyText);
+    std::vector<RouteAssignment> assignments;
+    if (!collectTopLevelAssignments(forStmt->getBody(), assignments)) {
+        return false;
+    }
     if (assignments.empty()) {
         return false;
     }
 
     std::vector<DistributedFollowupMapping> routes;
     routes.reserve(assignments.size());
-    for (const std::string& assignment : assignments) {
-        const std::size_t eqPos = assignment.find('=');
-        if (eqPos == std::string::npos ||
-            assignment.find('=', eqPos + 1) != std::string::npos) {
-            return false;
-        }
-
+    const auto splitMeta = collectSplitBindMeta(shell);
+    for (const RouteAssignment& assignment : assignments) {
         std::string readerTensor;
         std::string writerTensor;
-        int readerOffset = 0;
-        int writerOffset = 0;
-        if (!parseAffineVectorAccess(assignment.substr(0, eqPos), info.loopVar,
-                                     readerTensor, readerOffset) ||
-            !parseAffineVectorAccess(assignment.substr(eqPos + 1), info.loopVar,
-                                     writerTensor, writerOffset)) {
+        AffineIndex1D readerIndex;
+        AffineIndex1D writerIndex;
+        if (!parseAffineVectorAccessAST(assignment.lhs, info,
+                                        readerTensor, readerIndex) ||
+            !parseAffineVectorAccessAST(assignment.rhs, info,
+                                        writerTensor, writerIndex)) {
             return false;
         }
         if (!isEffectiveWriter(writerTensor, shell, transportModes) ||
@@ -405,14 +516,24 @@ bool tryCollectDistributedFollowup(DistributedStencilSitePlan& plan,
         if (writerIdx < 0 || readerIdx < 0) {
             return false;
         }
+        if (!writerRouteCoveredByInputDomain(
+                shell, effectiveModes, writerIdx, splitMeta)) {
+            return false;
+        }
 
         DistributedFollowupMapping route;
         route.writerTensor = writerTensor;
         route.readerTensor = readerTensor;
         route.writerParamIndex = writerIdx;
         route.readerParamIndex = readerIdx;
-        route.targetOffset = readerOffset - writerOffset;
+        route.writerIndex = writerIndex;
+        route.readerIndex = readerIndex;
+        route.targetOffset = readerIndex.offset - writerIndex.offset;
+        route.stmt = assignment.stmt;
         routes.push_back(route);
+        llvm::outs() << "[DACPP][MPI][PhaseC] route detected "
+                     << writerTensor << "->" << readerTensor
+                     << " offset=" << route.targetOffset << "\n";
     }
 
     plan.followupMappings.insert(plan.followupMappings.end(),
@@ -471,7 +592,8 @@ DistributedStencilSitePlan analyzeDistributedStencilSite(
     const bool allowDistributedFollowup = regionPlan.siblingStmts.size() == 1;
     for (const clang::Stmt* stmt : regionPlan.siblingStmts) {
         if (allowDistributedFollowup &&
-            tryCollectDistributedFollowup(plan, dacppFile, shell, transportModes, stmt)) {
+            tryCollectDistributedFollowup(plan, dacppFile, shell, effectiveModes,
+                                          transportModes, stmt)) {
             continue;
         }
         if (detail::isRootCentricRegionSupported(dacppFile, shell, stmt)) {
