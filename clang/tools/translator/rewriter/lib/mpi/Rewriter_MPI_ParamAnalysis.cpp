@@ -198,9 +198,7 @@ std::vector<IOTYPE> inferEffectiveParamModes(Shell* shell, Calc* calc) {
         if (reads && writes) {
             modes[paramIdx] = IOTYPE::READ_WRITE;
         } else if (writes && updateReads) {
-            modes[paramIdx] = modes[paramIdx] == IOTYPE::WRITE
-                                  ? IOTYPE::WRITE
-                                  : IOTYPE::READ_WRITE;
+            modes[paramIdx] = IOTYPE::READ_WRITE;
         } else if (writes) {
             modes[paramIdx] = IOTYPE::WRITE;
         } else if (reads || updateReads) {

@@ -217,9 +217,7 @@ std::vector<dacppTranslator::IOTYPE> inferEffectiveBufferParamModes(
         if (reads && writes) {
             modes[paramIdx] = dacppTranslator::IOTYPE::READ_WRITE;
         } else if (writes && updateReads) {
-            modes[paramIdx] = modes[paramIdx] == dacppTranslator::IOTYPE::WRITE
-                                  ? dacppTranslator::IOTYPE::WRITE
-                                  : dacppTranslator::IOTYPE::READ_WRITE;
+            modes[paramIdx] = dacppTranslator::IOTYPE::READ_WRITE;
         } else if (writes) {
             modes[paramIdx] = dacppTranslator::IOTYPE::WRITE;
         } else if (reads || updateReads) {
