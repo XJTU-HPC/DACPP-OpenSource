@@ -23,10 +23,10 @@ std::vector<const mpi_rewriter::DistributedFollowupMapping*> findFollowupMapping
     return result;
 }
 
-int findDefaultReaderIndex(const std::vector<IOTYPE>& paramModes) {
-    for (int candidateIdx = 0; candidateIdx < static_cast<int>(paramModes.size());
+int findDefaultReaderIndex(const std::vector<IOTYPE>& transportModes) {
+    for (int candidateIdx = 0; candidateIdx < static_cast<int>(transportModes.size());
          ++candidateIdx) {
-        if (paramModes[candidateIdx] != IOTYPE::WRITE) {
+        if (transportModes[candidateIdx] != IOTYPE::WRITE) {
             return candidateIdx;
         }
     }
@@ -80,7 +80,7 @@ void appendPatternInitForContext(std::string& code,
                                  Shell* shell,
                                  Calc* calc,
                                  const std::unordered_map<std::string, mpi_rewriter::SplitBindMeta>& splitMeta,
-                                 const std::vector<IOTYPE>& paramModes,
+                                 const std::vector<IOTYPE>& transportModes,
                                  const std::string& ctxVar) {
     for (int paramIdx = 0; paramIdx < shell->getNumShellParams(); ++paramIdx) {
         ShellParam* shellParam = shell->getShellParam(paramIdx);
@@ -89,7 +89,7 @@ void appendPatternInitForContext(std::string& code,
         const std::string& name = calcParam->getName();
         const std::string& tensorName = shellWrapperParam->getName();
         const std::string patternName = ctxVar + ".pattern_" + name;
-        const IOTYPE mode = paramModes[paramIdx];
+        const IOTYPE mode = transportModes[paramIdx];
 
         code += "    " + patternName + " = dacpp::mpi::AccessPattern{};\n";
         code += "    " + patternName + ".param_id = " + std::to_string(paramIdx) + ";\n";
@@ -201,7 +201,8 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
     const std::string materializeName = materializeFunctionName(shell, calc);
     const std::string shellSignature = buildShellSignature(shell);
     const std::string shellArgNames = buildParamNameList(shell);
-    const auto paramModes = mpi_rewriter::inferEffectiveParamModes(shell, calc);
+    const auto effectiveModes = mpi_rewriter::inferEffectiveParamModes(shell, calc);
+    const auto transportModes = mpi_rewriter::inferPhaseCTransportParamModes(shell, calc);
     const auto splitMeta = mpi_rewriter::collectSplitBindMeta(shell);
     const auto distributedSitePlan =
         mpi_rewriter::analyzeDistributedStencilSite(dacppFile, shell, calc, dacExpr);
@@ -238,12 +239,12 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
         code += "    std::vector<" + elemType + "> local_" + calcName + ";\n";
         code += "    dacpp::mpi::DistributedTensorState<" + elemType + "> dist_" +
                 calcName + ";\n";
-        if (paramModes[paramIdx] != IOTYPE::WRITE) {
+        if (transportModes[paramIdx] != IOTYPE::WRITE) {
             code += "    dacpp::mpi::GatheredIndexLayout input_layout_" + calcName + ";\n";
             code += "    std::vector<" + elemType + "> global_" + calcName + ";\n";
             code += "    std::vector<" + elemType + "> sendbuf_" + calcName + ";\n";
         }
-        if (paramModes[paramIdx] != IOTYPE::READ) {
+        if (transportModes[paramIdx] != IOTYPE::READ) {
             code += "    dacpp::mpi::GatheredIndexLayout output_layout_" + calcName + ";\n";
             code += "    std::vector<int32_t> writeback_slots_" + calcName + ";\n";
             code += "    std::vector<" + elemType + "> writeback_values_" + calcName + ";\n";
@@ -263,7 +264,7 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
     code += "    ctx.q = std::make_unique<sycl::queue>(sycl::default_selector_v);\n";
     code += "    ctx.binding_split_sizes.clear();\n";
     code += "    ctx.total_items = 1;\n";
-    appendPatternInitForContext(code, shell, calc, splitMeta, paramModes, "ctx");
+    appendPatternInitForContext(code, shell, calc, splitMeta, transportModes, "ctx");
     code += "    for (int64_t split_size : ctx.binding_split_sizes) ctx.total_items *= split_size;\n";
     code += "    ctx.item_range = dacpp::mpi::get_rank_item_range(ctx.total_items, ctx.mpi_rank, ctx.mpi_size);\n";
     code += "    ctx.local_item_count = ctx.item_range.size();\n";
@@ -273,11 +274,11 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
             resolveActualTensorName(shell->getParam(paramIdx)->getName(), dacExpr);
         code += "    ctx.pattern_" + calcName + ".bind_split_sizes = ctx.binding_split_sizes;\n";
         code += "    ctx.plan_" + calcName + " = " +
-                mpi_rewriter::buildPackPlanBuilderExpr(paramModes[paramIdx],
+                mpi_rewriter::buildPackPlanBuilderExpr(transportModes[paramIdx],
                                                        "ctx.item_range",
                                                        "ctx.pattern_" + calcName) + ";\n";
         code += "    ctx.local_" + calcName + ".resize(ctx.plan_" + calcName + ".pack.globals.size());\n";
-        if (paramModes[paramIdx] != IOTYPE::WRITE) {
+        if (transportModes[paramIdx] != IOTYPE::WRITE) {
             code += "    dacpp::mpi::init_gathered_index_layout(ctx.input_layout_" + calcName +
                     ", ctx.plan_" + calcName + ".pack.globals, ctx.mpi_rank, ctx.mpi_size);\n";
             if (mpi_rewriter::usesByteTransport(calc->getParam(paramIdx)->getBasicType())) {
@@ -285,7 +286,7 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
                         calcName + ", sizeof(" + calc->getParam(paramIdx)->getBasicType() + "));\n";
             }
         }
-        if (paramModes[paramIdx] != IOTYPE::READ) {
+        if (transportModes[paramIdx] != IOTYPE::READ) {
             code += "    const auto& writeback_globals_" + calcName + " = ctx.plan_" + calcName +
                     ".pack.writeback_globals.empty() ? ctx.plan_" + calcName +
                     ".pack.globals : ctx.plan_" + calcName + ".pack.writeback_globals;\n";
@@ -308,7 +309,7 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
         for (int paramIdx = 0; paramIdx < shell->getNumShellParams(); ++paramIdx) {
             Param* shellWrapperParam = shell->getParam(paramIdx);
             Param* calcParam = calc->getParam(paramIdx);
-            const IOTYPE mode = paramModes[paramIdx];
+            const IOTYPE mode = transportModes[paramIdx];
             const std::string& calcName = calcParam->getName();
             const std::string& tensorName = shellWrapperParam->getName();
             const std::string actualTensorName =
@@ -403,7 +404,7 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
                     code += "    if (!ctx.dist_" + calcName + ".local_target_slots_by_route.empty()) ctx.dist_" + calcName + ".local_target_slots = ctx.dist_" + calcName + ".local_target_slots_by_route.front();\n";
                     code += "    if (!ctx.dist_" + calcName + ".exchange_plans_by_route.empty()) ctx.dist_" + calcName + ".exchange_plan = ctx.dist_" + calcName + ".exchange_plans_by_route.front();\n";
                 } else {
-                    const int readerIdx = findDefaultReaderIndex(paramModes);
+                    const int readerIdx = findDefaultReaderIndex(transportModes);
                     if (readerIdx >= 0) {
                         const std::string& readerCalcName = calc->getParam(readerIdx)->getName();
                         code += "    ctx.dist_" + calcName + ".local_target_slots_by_route.resize(1);\n";
@@ -447,7 +448,7 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
         ShellParam* shellParam = shell->getShellParam(paramIdx);
         Param* shellWrapperParam = shell->getParam(paramIdx);
         Param* calcParam = calc->getParam(paramIdx);
-        const IOTYPE mode = paramModes[paramIdx];
+        const IOTYPE mode = transportModes[paramIdx];
         const std::string& calcName = calcParam->getName();
         const std::string& tensorName = shellWrapperParam->getName();
         const std::string packName = "ctx.plan_" + calcName + ".pack";
@@ -506,7 +507,7 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
         Param* calcParam = calc->getParam(paramIdx);
         const std::string& name = calcParam->getName();
         code += "                auto acc_" + name + " = buffer_" + name + ".get_access<" +
-                mpi_rewriter::toAccessorMode(paramModes[paramIdx]) + ">(h);\n";
+                mpi_rewriter::toAccessorMode(effectiveModes[paramIdx]) + ">(h);\n";
         code += "                auto slots_acc_" + name +
                 " = slots_buffer_" + name + ".get_access<sycl::access::mode::read>(h);\n";
         code += "                auto key_offsets_acc_" + name +
@@ -525,11 +526,11 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
         code += "                    auto* key_offsets_" + name +
                 " = key_offsets_acc_" + name + ".template get_multi_ptr<sycl::access::decorated::no>().get();\n";
         if (mpi_rewriter::inferViewRank(shellParam, calcParam) <= 1) {
-            code += "                    " + mpi_rewriter::toViewType(shellParam, calcParam, paramModes[paramIdx]) +
+            code += "                    " + mpi_rewriter::toViewType(shellParam, calcParam, effectiveModes[paramIdx]) +
                     " view_" + name + "{data_" + name + ", slots_" + name + ", key_offsets_" + name +
                     "[item_linear]};\n";
         } else {
-            code += "                    " + mpi_rewriter::toViewType(shellParam, calcParam, paramModes[paramIdx]) +
+            code += "                    " + mpi_rewriter::toViewType(shellParam, calcParam, effectiveModes[paramIdx]) +
                     " view_" + name + "{data_" + name + ", slots_" + name + ", key_offsets_" + name +
                     "[item_linear], " + name + "_cols};\n";
         }
@@ -549,7 +550,7 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
     code += "    }\n";
 
     for (int paramIdx = 0; paramIdx < shell->getNumShellParams(); ++paramIdx) {
-        if (paramModes[paramIdx] == IOTYPE::READ) {
+        if (transportModes[paramIdx] == IOTYPE::READ) {
             continue;
         }
 
@@ -630,7 +631,7 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
             const std::string& calcName = calcParam->getName();
             code += "    auto& local_" + calcName + " = ctx.dist_" + calcName +
                     ".local_cache;\n";
-            if (paramModes[paramIdx] == IOTYPE::WRITE) {
+            if (transportModes[paramIdx] == IOTYPE::WRITE) {
                 code += "    local_" + calcName + ".assign(ctx.plan_" + calcName +
                         ".pack.globals.size(), " + calcParam->getBasicType() + "{});\n";
             }
@@ -654,7 +655,7 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
             Param* calcParam = calc->getParam(paramIdx);
             const std::string& name = calcParam->getName();
             code += "                auto acc_" + name + " = buffer_" + name + ".get_access<" +
-                    mpi_rewriter::toAccessorMode(paramModes[paramIdx]) + ">(h);\n";
+                    mpi_rewriter::toAccessorMode(effectiveModes[paramIdx]) + ">(h);\n";
             code += "                auto slots_acc_" + name +
                     " = slots_buffer_" + name + ".get_access<sycl::access::mode::read>(h);\n";
             code += "                auto key_offsets_acc_" + name +
@@ -673,11 +674,11 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
             code += "                    auto* key_offsets_" + name +
                     " = key_offsets_acc_" + name + ".template get_multi_ptr<sycl::access::decorated::no>().get();\n";
             if (mpi_rewriter::inferViewRank(shellParam, calcParam) <= 1) {
-                code += "                    " + mpi_rewriter::toViewType(shellParam, calcParam, paramModes[paramIdx]) +
+                code += "                    " + mpi_rewriter::toViewType(shellParam, calcParam, effectiveModes[paramIdx]) +
                         " view_" + name + "{data_" + name + ", slots_" + name + ", key_offsets_" + name +
                         "[item_linear]};\n";
             } else {
-                code += "                    " + mpi_rewriter::toViewType(shellParam, calcParam, paramModes[paramIdx]) +
+                code += "                    " + mpi_rewriter::toViewType(shellParam, calcParam, effectiveModes[paramIdx]) +
                         " view_" + name + "{data_" + name + ", slots_" + name + ", key_offsets_" + name +
                         "[item_linear], " + name + "_cols};\n";
             }
@@ -696,7 +697,7 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
         code += "        }\n";
         code += "    }\n";
         for (int paramIdx = 0; paramIdx < shell->getNumShellParams(); ++paramIdx) {
-            if (paramModes[paramIdx] == IOTYPE::READ) {
+            if (transportModes[paramIdx] == IOTYPE::READ) {
                 continue;
             }
             Param* calcParam = calc->getParam(paramIdx);
@@ -726,7 +727,7 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
         }
         if (distributedSitePlan.hasRootBridge) {
             for (int paramIdx = 0; paramIdx < shell->getNumShellParams(); ++paramIdx) {
-                if (paramModes[paramIdx] == IOTYPE::READ) {
+                if (transportModes[paramIdx] == IOTYPE::READ) {
                     continue;
                 }
                 Param* calcParam = calc->getParam(paramIdx);
@@ -792,7 +793,7 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
         code += "    return;\n";
     } else {
         for (int paramIdx = 0; paramIdx < shell->getNumShellParams(); ++paramIdx) {
-            if (paramModes[paramIdx] == IOTYPE::WRITE) {
+            if (transportModes[paramIdx] == IOTYPE::WRITE) {
                 continue;
             }
             Param* calcParam = calc->getParam(paramIdx);

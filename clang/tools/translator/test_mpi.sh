@@ -31,6 +31,7 @@ MPI_TESTS=(
     "mpiDistributedStencil1D"
     "mpiDistributedStencilNoBridge1D"
     "mpiDistributedStencilSteady1D"
+    "mpiPhaseCWriteThenRead1D"
     "stencil1.0"
     "waveEquation1.0"
 )

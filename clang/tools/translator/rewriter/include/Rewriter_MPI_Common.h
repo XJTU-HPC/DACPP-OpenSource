@@ -81,6 +81,7 @@ bool tensorNeedsBroadcast(DacppFile* dacppFile,
                           const clang::BinaryOperator* currentDacExpr = nullptr);
 
 std::vector<IOTYPE> inferEffectiveParamModes(Shell* shell, Calc* calc);
+std::vector<IOTYPE> inferPhaseCTransportParamModes(Shell* shell, Calc* calc);
 int inferViewRank(ShellParam* shellParam, Param* calcParam);
 std::string toViewType(ShellParam* shellParam, Param* calcParam, IOTYPE mode);
 

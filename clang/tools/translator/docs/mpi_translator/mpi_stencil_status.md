@@ -571,7 +571,7 @@ if (ctx.use_partial_exchange && ctx.dist_state.root_bridge_plan.supported) {
 }
 ```
 
-这一步只在站点真正启用了 partial-exchange 时生效。它现在是 shell steady-state distributed path 之外的 secondary bridge：shell 内部的 writer -> reader 交换已经直接走 distributed cache + `exchange_plan`，只有 helper 仍需要 root 可见状态时才会额外走这条 bridge。`liuliang1.0` 目前由于 effective `READ_WRITE` kernel param 仍会整站回退，所以它继续走 root-centric helper + 旧通信路径，而不会启用 Phase C 分支。
+这一步只在站点真正启用了 partial-exchange 时生效。它现在是 shell steady-state distributed path 之外的 secondary bridge：shell 内部的 writer -> reader 交换已经直接走 distributed cache + `exchange_plan`，只有 helper 仍需要 root 可见状态时才会额外走这条 bridge。`liuliang1.0` 当前已经能把 `new_rho` 这类 calc 内先写后读同一 slot 的“假 READ_WRITE”降级为 Phase C `WRITE` transport，因此会启用 partial-exchange root-bridge 路径，同时保留 root-centric helper 处理两个 sibling loop。
 
 ### 6.1 MPI 下把 post-shell loop 变成 `parallel_for`
 
@@ -714,7 +714,7 @@ root pack -> Scatterv input window -> kernel -> Gatherv output -> root apply -> 
 - 当前 no-helper steady-state 只支持一个 post-shell sibling loop，且必须全部由简单一维 affine copy/shift assignment 组成；多个 sibling 仍保守走 root-centric helper / root bridge 路径。
 - 当前 route IR 已支持一个 sibling loop 内的多 route，但仍是窄实现：mapping 来源只支持 `reader[i +/- C] = writer[i +/- C]`，还不是复杂表达式、函数调用、多维索引或通用数据流路由。
 - root bridge 目前仍是保守实现，writer 侧按 root-authoritative dense cover 建计划，还不是精确 helper-written subset。
-- `liuliang1.0` 目前仍因为 effective `READ_WRITE` kernel param 被 Phase C guard 拦住，保持 root-centric fallback；它还不是 partial-exchange 的正向 benchmark。
+- `liuliang1.0` 已经不再因为 calc 内 `new_rho[0]` 写后读被 Phase C guard 拦住；当前会启用 partial-exchange root-bridge 路径，但多个 sibling loop 仍保守交给 root-centric helper + bridge。
 - 2D / `dacpp::Matrix` / in-place `READ_WRITE` / one-shot MPI wrapper integration 都还在后续范围内。
 
 ## 8. 验证结果
@@ -796,7 +796,8 @@ bash test_mpi.sh mpiDistributedStencilNoBridge1D mpiDistributedStencilSteady1D m
 生成代码结构检查：
 
 - `decay1.0`：`step2.log` 中有 `output local_A sync=root-only`；生成代码有 `MPI_Gatherv(writeback_values_local_A...)` 和 root `apply_writeback_by_globals(...)`，没有为 `local_A` 生成 `MPI_Bcast`。
-- `liuliang1.0`：`step2.log` 中有 `partial-exchange disabled: phase-c does not support READ_WRITE kernel params`；它保留 `output new_rho sync=root-centric-followup`，生成代码仍有 `__dacpp_mpi_region_LWR_shell_lwr_stmt_0/1`，但不会启用 Phase C partial path。
+- `liuliang1.0`：`step2.log` 中有 `param new_rho transport=write after write-before-read analysis` 和 `partial-exchange enabled (root-bridge)`；生成代码有 `ctx.use_partial_exchange = true`、`__dacpp_mpi_region_LWR_shell_lwr_stmt_0/1`、`root_bridge_plan = dacpp::mpi::build_exchange_plan_from_layouts(...)` 和 `exchange_values_by_slots(...)`。
+- `mpiPhaseCWriteThenRead1D`：覆盖 `next[0] = ...; next[0] = std::max(..., next[0]);` 这种写后读输出参数；`next` 被降级为 Phase C `WRITE` transport，no-root-bridge partial path 生成 `publish_local_writes_with_exchange(...)` 和 loop 后 `materialize()`，运行结果和 baseline 一致。
 - `mpiDistributedStencil1D`：`step2.log` 中有 `partial-exchange enabled (root-bridge)` 和 `output next sync=distributed-followup`；生成代码里有 `ctx.use_partial_exchange = true`、`build_target_slots_for_globals(...)`、`publish_local_writes_with_exchange(...)`、`root_bridge_plan = dacpp::mpi::build_exchange_plan_from_layouts(...)`，说明 steady-state shell exchange 和 helper bridge 都已经生成。
 - `mpiDistributedStencilNoBridge1D`：`step2.log` 中有 `partial-exchange enabled` 且没有 `partial-exchange disabled`；生成代码有 `ctx.use_partial_exchange = true` 和 `publish_local_writes_with_exchange(...)`，没有 `root_bridge_plan = dacpp::mpi::build_exchange_plan_from_layouts(...)`。
 - `mpiDistributedStencilSteady1D`：`step2.log` 中有 `partial-exchange enabled` 和 `output next sync=distributed-followup`；生成代码有 `build_exchange_plan_from_layouts_with_target_offset(...)`、`publish_local_writes_with_exchange(..., ctx.dist_state.local_cache, ...)`、`__dacpp_mpi_stencil_materialize_smoothShell_smooth_step(...)`，没有 root bridge plan，证明 `next -> state` 的 no-helper steady-state 路径已经生成并通过运行对比。
@@ -832,7 +833,7 @@ bash test_mpi.sh
 结果：
 
 ```text
-20 tests | 20 passed | 0 failed | 0 skipped
+21 tests | 21 passed | 0 failed | 0 skipped
 ```
 
 覆盖到的关键用例：
@@ -850,6 +851,7 @@ bash test_mpi.sh
 - `mpiDistributedStencil1D`
 - `mpiDistributedStencilNoBridge1D`
 - `mpiDistributedStencilSteady1D`
+- `mpiPhaseCWriteThenRead1D`
 - `FOuLa1.0`
 - `stencil1.0`
 - `waveEquation1.0`
@@ -869,6 +871,7 @@ bash test_mpi.sh
 - Broadcast analyze 结构断言测试：已覆盖 root-only `std::cout`、`tensor2Array` 普通 host read、未知函数读、引用别名读。
 - MPI 输出语句 root-only rewrite：删除非 root stdout 全局重定向，改为 guard `.print()` 和 `std::cout` 输出语句。
 - `liuliang1.0` 一维 post-shell loop 的 MPI root-centric region helper 生成和替换。
+- Phase C 写后读 transport 分析已落地：calc 内先写后读同一 output slot 的假 `READ_WRITE` 参数可降级为 WRITE transport，kernel view 仍保留有效读写能力。
 - Phase C C0 guard 和 loop-only eligibility analysis 已落地。
 - Phase C 运行时基础设施已落地：all-rank layout、unique writer validate、exchange plan、persistent distributed tensor state。
 - Phase C distributed run path 已落地，当前支持 1D `dacpp::Vector` loop stencil site 的 persistent cache + steady-state writer -> reader exchange，helper bridge 作为 secondary path 保留。
@@ -878,8 +881,10 @@ bash test_mpi.sh
 - no-helper steady-state root materialization 已延后：partial no-root-bridge path 的 root gather 从每轮 `run()` 移到 loop 后一次 `materialize()`。
 - `DistributedFollowup` 已经是实 codegen path，不再只是分类占位。
 - `mpiDistributedStencil1D` 正向回归已验证 partial-exchange enabled、steady-state writer -> reader exchange 生成，以及 helper bridge 仍然可用。
+- `liuliang1.0` 正向回归已验证 partial-exchange root-bridge enabled、`new_rho` 写后读降级、root-centric helper 和 root bridge 同时生成。
+- `mpiPhaseCWriteThenRead1D` 正向回归已验证 no-root-bridge 写后读 output 参数可进入 partial-exchange steady-state。
 - `translator` 构建验证。
-- `test_mpi.sh` 完整回归验证，当前是 `20 tests | 20 passed | 0 failed | 0 skipped`。
+- `test_mpi.sh` 完整回归验证，当前是 `21 tests | 21 passed | 0 failed | 0 skipped`。
 - 已记录副本一致性、post-shell region v1、缓存一致性 + 部分交换的后续方向。
 
 当前不能宣称的是：
@@ -889,7 +894,7 @@ bash test_mpi.sh
 - 已完成完整别名 / 函数调用 / 复杂表达式数据流 / 完整 observable root-only 证明。
 - 已修复所有非 root stale 副本风险。
 - 已把所有可能产生 stdout/stderr 的 C/C++ I/O API 都纳入输出语句 root-only rewrite；当前只覆盖 `.print()` 和 `std::cout`。
-- `liuliang1.0` 还没有切到 partial-exchange steady-state；它当前仍因 effective `READ_WRITE` kernel param 走 fallback。
+- `liuliang1.0` 还没有切到 no-root-bridge steady-state；它当前启用的是 partial-exchange root-bridge 路径，多个 sibling loop 仍走 root-centric helper。
 - 已支持 Matrix / 二维 / 复杂语句的 post-shell region。
 - 已支持复杂数据流的通用 steady-state 路由；当前 explicit mapping 只覆盖一个 sibling loop 内的简单一维 affine copy/shift assignment route。
 - 已实现精确 helper-written subset 的 bridge payload；当前 root bridge 还是保守 dense-root-authoritative 方案。
@@ -933,7 +938,7 @@ Phase C：cache consistency / partial exchange，主线已通，后续做泛化
 
 - 把当前简单 assignment route 扩成更通用的数据流路由，支持复杂表达式、函数调用和多维索引。
 - 把 root bridge 从保守 dense cover 收紧到 helper-written subset。
-- 继续验证双 buffer 1D stencil，并决定是否为 `liuliang1.0` 这类 effective `READ_WRITE` case 放宽分析或改写形态。
+- 继续把写后读 transport 分析扩展到更多安全形态，并评估 `liuliang1.0` 多 sibling loop 是否可以进一步转成 no-root-bridge distributed route。
 - 对规则 stencil 自动退化为传统 halo 形态。
 - 对不规则访问保留 generalized index exchange。
 
@@ -946,4 +951,4 @@ Phase D：distributed follow-up region / generalized halo
 
 ## 11. 一句话总结
 
-当前 MPI stencil 路径已经完成 Phase 1、输出一致性 / root-centric region v1，以及 Phase C 当前主线：metadata 缓存、buffer 复用、输出同步分类、`liuliang1.0` root-centric helper、`mpiDistributedStencil1D` 的 steady-state writer -> reader exchange + helper bridge、`mpiDistributedStencilNoBridge1D` 的 no-bridge smoke、`mpiDistributedStencilSteady1D` 的 no-helper steady-state、multi-route / fanout route、以及 loop 后 materialize 都已落地，完整 MPI 回归是 `20 / 20` 通过。下一步的核心是把当前简单 route 扩到复杂数据流、2D、`READ_WRITE`、精确 bridge payload 和 wrapper 路径。
+当前 MPI stencil 路径已经完成 Phase 1、输出一致性 / root-centric region v1，以及 Phase C 当前主线：metadata 缓存、buffer 复用、输出同步分类、写后读假 `READ_WRITE` 的 Phase C transport 降级、`liuliang1.0` root-bridge partial path、`mpiDistributedStencil1D` 的 steady-state writer -> reader exchange + helper bridge、`mpiDistributedStencilNoBridge1D` 的 no-bridge smoke、`mpiDistributedStencilSteady1D` 的 no-helper steady-state、multi-route / fanout route、以及 loop 后 materialize 都已落地，完整 MPI 回归是 `21 / 21` 通过。下一步的核心是把当前简单 route 扩到复杂数据流、2D、更多 `READ_WRITE` 安全形态、精确 bridge payload 和 wrapper 路径。

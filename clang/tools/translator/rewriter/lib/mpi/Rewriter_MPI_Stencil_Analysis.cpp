@@ -124,15 +124,15 @@ void collectRootBridgeTensors(DistributedStencilSitePlan& plan,
 
 bool isEffectiveWriter(const std::string& tensorName,
                        Shell* shell,
-                       const std::vector<IOTYPE>& paramModes) {
+                       const std::vector<IOTYPE>& transportModes) {
     if (!shell) {
         return false;
     }
     for (int paramIdx = 0; paramIdx < shell->getNumParams() &&
-                           paramIdx < static_cast<int>(paramModes.size());
+                           paramIdx < static_cast<int>(transportModes.size());
          ++paramIdx) {
         if (shell->getParam(paramIdx)->getName() == tensorName) {
-            return paramModes[paramIdx] == IOTYPE::WRITE;
+            return transportModes[paramIdx] == IOTYPE::WRITE;
         }
     }
     return false;
@@ -140,15 +140,15 @@ bool isEffectiveWriter(const std::string& tensorName,
 
 bool isEffectiveReader(const std::string& tensorName,
                        Shell* shell,
-                       const std::vector<IOTYPE>& paramModes) {
+                       const std::vector<IOTYPE>& transportModes) {
     if (!shell) {
         return false;
     }
     for (int paramIdx = 0; paramIdx < shell->getNumParams() &&
-                           paramIdx < static_cast<int>(paramModes.size());
+                           paramIdx < static_cast<int>(transportModes.size());
          ++paramIdx) {
         if (shell->getParam(paramIdx)->getName() == tensorName) {
-            return paramModes[paramIdx] == IOTYPE::READ;
+            return transportModes[paramIdx] == IOTYPE::READ;
         }
     }
     return false;
@@ -357,7 +357,7 @@ bool parseAffineVectorAccess(const std::string& expr,
 bool tryCollectDistributedFollowup(DistributedStencilSitePlan& plan,
                                    DacppFile* dacppFile,
                                    Shell* shell,
-                                   const std::vector<IOTYPE>& paramModes,
+                                   const std::vector<IOTYPE>& transportModes,
                                    const clang::Stmt* stmt) {
     const auto* forStmt = llvm::dyn_cast_or_null<clang::ForStmt>(stmt);
     if (!forStmt) {
@@ -396,8 +396,8 @@ bool tryCollectDistributedFollowup(DistributedStencilSitePlan& plan,
                                      writerTensor, writerOffset)) {
             return false;
         }
-        if (!isEffectiveWriter(writerTensor, shell, paramModes) ||
-            !isEffectiveReader(readerTensor, shell, paramModes)) {
+        if (!isEffectiveWriter(writerTensor, shell, transportModes) ||
+            !isEffectiveReader(readerTensor, shell, transportModes)) {
             return false;
         }
         const int writerIdx = findShellParamIndex(shell, writerTensor);
@@ -440,9 +440,11 @@ DistributedStencilSitePlan analyzeDistributedStencilSite(
         return plan;
     }
 
-    const auto paramModes = inferEffectiveParamModes(shell, calc);
-    if (paramModes.size() != static_cast<std::size_t>(shell->getNumShellParams())) {
-        plan.disableReason = "failed to infer effective parameter modes";
+    const auto effectiveModes = inferEffectiveParamModes(shell, calc);
+    const auto transportModes = inferPhaseCTransportParamModes(shell, calc);
+    if (effectiveModes.size() != static_cast<std::size_t>(shell->getNumShellParams()) ||
+        transportModes.size() != static_cast<std::size_t>(shell->getNumShellParams())) {
+        plan.disableReason = "failed to infer phase-c parameter modes";
         return plan;
     }
 
@@ -451,7 +453,13 @@ DistributedStencilSitePlan analyzeDistributedStencilSite(
             plan.disableReason = "phase-c only supports 1D dacpp::Vector tensors";
             return plan;
         }
-        if (paramModes[paramIdx] == IOTYPE::READ_WRITE) {
+        if (effectiveModes[paramIdx] == IOTYPE::READ_WRITE &&
+            transportModes[paramIdx] == IOTYPE::WRITE) {
+            llvm::outs() << "[DACPP][MPI][PhaseC] param "
+                         << shell->getParam(paramIdx)->getName()
+                         << " transport=write after write-before-read analysis\n";
+        }
+        if (transportModes[paramIdx] == IOTYPE::READ_WRITE) {
             plan.disableReason = "phase-c does not support READ_WRITE kernel params";
             return plan;
         }
@@ -463,7 +471,7 @@ DistributedStencilSitePlan analyzeDistributedStencilSite(
     const bool allowDistributedFollowup = regionPlan.siblingStmts.size() == 1;
     for (const clang::Stmt* stmt : regionPlan.siblingStmts) {
         if (allowDistributedFollowup &&
-            tryCollectDistributedFollowup(plan, dacppFile, shell, paramModes, stmt)) {
+            tryCollectDistributedFollowup(plan, dacppFile, shell, transportModes, stmt)) {
             continue;
         }
         if (detail::isRootCentricRegionSupported(dacppFile, shell, stmt)) {
