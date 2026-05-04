@@ -11,24 +11,23 @@ namespace mpi_stencil_rewriter {
 
 namespace {
 
-const mpi_rewriter::DistributedFollowupMapping* findFollowupMappingForWriter(
+std::vector<const mpi_rewriter::DistributedFollowupMapping*> findFollowupMappingsForWriter(
     const mpi_rewriter::DistributedStencilSitePlan& plan,
     const std::string& writerTensor) {
+    std::vector<const mpi_rewriter::DistributedFollowupMapping*> result;
     for (const auto& mapping : plan.followupMappings) {
         if (mapping.writerTensor == writerTensor) {
-            return &mapping;
+            result.push_back(&mapping);
         }
     }
-    return nullptr;
+    return result;
 }
 
-int findShellParamIndex(Shell* shell, const std::string& tensorName) {
-    if (!shell) {
-        return -1;
-    }
-    for (int paramIdx = 0; paramIdx < shell->getNumParams(); ++paramIdx) {
-        if (shell->getParam(paramIdx)->getName() == tensorName) {
-            return paramIdx;
+int findDefaultReaderIndex(const std::vector<IOTYPE>& paramModes) {
+    for (int candidateIdx = 0; candidateIdx < static_cast<int>(paramModes.size());
+         ++candidateIdx) {
+        if (paramModes[candidateIdx] != IOTYPE::WRITE) {
+            return candidateIdx;
         }
     }
     return -1;
@@ -171,6 +170,10 @@ std::string runFunctionName(Shell* shell, Calc* calc) {
     return "__dacpp_mpi_stencil_run_" + wrapperName(shell, calc);
 }
 
+std::string materializeFunctionName(Shell* shell, Calc* calc) {
+    return "__dacpp_mpi_stencil_materialize_" + wrapperName(shell, calc);
+}
+
 std::string buildShellSignature(Shell* shell) {
     std::string signature;
     for (int paramIdx = 0; paramIdx < shell->getNumParams(); ++paramIdx) {
@@ -195,6 +198,7 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
     const std::string ctxType = contextTypeName(shell, calc);
     const std::string initName = initFunctionName(shell, calc);
     const std::string runName = runFunctionName(shell, calc);
+    const std::string materializeName = materializeFunctionName(shell, calc);
     const std::string shellSignature = buildShellSignature(shell);
     const std::string shellArgNames = buildParamNameList(shell);
     const auto paramModes = mpi_rewriter::inferEffectiveParamModes(shell, calc);
@@ -365,39 +369,57 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
                 code += "    if (!dacpp::mpi::validate_unique_writers(ctx.dist_" + calcName + ".write_layout, ctx.mpi_size, &ctx.partial_exchange_disable_reason)) {\n";
                 code += "        ctx.use_partial_exchange = false;\n";
                 code += "    }\n";
-                const auto* followupMapping =
-                    findFollowupMappingForWriter(distributedSitePlan, tensorName);
-                int readerIdx = -1;
-                if (followupMapping) {
-                    readerIdx = findShellParamIndex(shell, followupMapping->readerTensor);
-                }
-                if (readerIdx < 0) {
-                    for (int candidateIdx = 0; candidateIdx < shell->getNumShellParams(); ++candidateIdx) {
-                        if (paramModes[candidateIdx] != IOTYPE::WRITE) {
-                            readerIdx = candidateIdx;
-                            break;
+                const auto followupMappings =
+                    findFollowupMappingsForWriter(distributedSitePlan, tensorName);
+                if (!followupMappings.empty()) {
+                    code += "    ctx.dist_" + calcName + ".local_target_slots_by_route.resize(" +
+                            std::to_string(followupMappings.size()) + ");\n";
+                    code += "    ctx.dist_" + calcName + ".exchange_plans_by_route.resize(" +
+                            std::to_string(followupMappings.size()) + ");\n";
+                    for (std::size_t routeIdx = 0; routeIdx < followupMappings.size(); ++routeIdx) {
+                        const auto* followupMapping = followupMappings[routeIdx];
+                        const int readerIdx =
+                            followupMapping ? followupMapping->readerParamIndex : -1;
+                        if (readerIdx < 0) {
+                            code += "    ctx.partial_exchange_disable_reason = \"phase-c route missing reader for WRITE tensor " + tensorName + "\";\n";
+                            code += "    ctx.use_partial_exchange = false;\n";
+                            continue;
                         }
+                        const std::string& readerCalcName = calc->getParam(readerIdx)->getName();
+                        const std::string targetOffset =
+                            std::to_string(followupMapping->targetOffset);
+                        if (followupMapping->targetOffset != 0) {
+                            code += "    dacpp::mpi::build_target_slots_for_globals_with_offset(ctx.plan_" + readerCalcName + ".pack, ctx.dist_" + calcName + ".local_write_globals, " + targetOffset + ", ctx.dist_" + calcName + ".local_target_slots_by_route[" + std::to_string(routeIdx) + "]);\n";
+                            code += "    ctx.dist_" + calcName + ".exchange_plans_by_route[" + std::to_string(routeIdx) + "] = dacpp::mpi::build_exchange_plan_from_layouts_with_target_offset(ctx.plan_" + calcName + ".pack, ctx.dist_" + calcName + ".write_layout, ctx.plan_" + readerCalcName + ".pack, ctx.dist_" + readerCalcName + ".read_layout, " + targetOffset + ", ctx.mpi_rank, ctx.mpi_size);\n";
+                        } else {
+                            code += "    dacpp::mpi::build_target_slots_for_globals(ctx.plan_" + readerCalcName + ".pack, ctx.dist_" + calcName + ".local_write_globals, ctx.dist_" + calcName + ".local_target_slots_by_route[" + std::to_string(routeIdx) + "]);\n";
+                            code += "    ctx.dist_" + calcName + ".exchange_plans_by_route[" + std::to_string(routeIdx) + "] = dacpp::mpi::build_exchange_plan_from_layouts(ctx.plan_" + calcName + ".pack, ctx.dist_" + calcName + ".write_layout, ctx.plan_" + readerCalcName + ".pack, ctx.dist_" + readerCalcName + ".read_layout, ctx.mpi_rank, ctx.mpi_size);\n";
+                        }
+                        code += "    if (!ctx.dist_" + calcName + ".exchange_plans_by_route[" + std::to_string(routeIdx) + "].supported) {\n";
+                        code += "        ctx.partial_exchange_disable_reason = ctx.dist_" + calcName + ".exchange_plans_by_route[" + std::to_string(routeIdx) + "].unsupported_reason;\n";
+                        code += "        ctx.use_partial_exchange = false;\n";
+                        code += "    }\n";
                     }
-                }
-                if (readerIdx >= 0) {
-                    const std::string& readerCalcName = calc->getParam(readerIdx)->getName();
-                    const std::string targetOffset =
-                        followupMapping ? std::to_string(followupMapping->targetOffset)
-                                        : "0";
-                    if (followupMapping && followupMapping->targetOffset != 0) {
-                        code += "    dacpp::mpi::build_target_slots_for_globals_with_offset(ctx.plan_" + readerCalcName + ".pack, ctx.dist_" + calcName + ".local_write_globals, " + targetOffset + ", ctx.dist_" + calcName + ".local_target_slots);\n";
-                        code += "    ctx.dist_" + calcName + ".exchange_plan = dacpp::mpi::build_exchange_plan_from_layouts_with_target_offset(ctx.plan_" + calcName + ".pack, ctx.dist_" + calcName + ".write_layout, ctx.plan_" + readerCalcName + ".pack, ctx.dist_" + readerCalcName + ".read_layout, " + targetOffset + ", ctx.mpi_rank, ctx.mpi_size);\n";
-                    } else {
-                        code += "    dacpp::mpi::build_target_slots_for_globals(ctx.plan_" + readerCalcName + ".pack, ctx.dist_" + calcName + ".local_write_globals, ctx.dist_" + calcName + ".local_target_slots);\n";
-                        code += "    ctx.dist_" + calcName + ".exchange_plan = dacpp::mpi::build_exchange_plan_from_layouts(ctx.plan_" + calcName + ".pack, ctx.dist_" + calcName + ".write_layout, ctx.plan_" + readerCalcName + ".pack, ctx.dist_" + readerCalcName + ".read_layout, ctx.mpi_rank, ctx.mpi_size);\n";
-                    }
-                    code += "    if (!ctx.dist_" + calcName + ".exchange_plan.supported) {\n";
-                    code += "        ctx.partial_exchange_disable_reason = ctx.dist_" + calcName + ".exchange_plan.unsupported_reason;\n";
-                    code += "        ctx.use_partial_exchange = false;\n";
-                    code += "    }\n";
+                    code += "    if (!ctx.dist_" + calcName + ".local_target_slots_by_route.empty()) ctx.dist_" + calcName + ".local_target_slots = ctx.dist_" + calcName + ".local_target_slots_by_route.front();\n";
+                    code += "    if (!ctx.dist_" + calcName + ".exchange_plans_by_route.empty()) ctx.dist_" + calcName + ".exchange_plan = ctx.dist_" + calcName + ".exchange_plans_by_route.front();\n";
                 } else {
-                    code += "    ctx.partial_exchange_disable_reason = \"phase-c could not find reader for WRITE tensor " + tensorName + "\";\n";
-                    code += "    ctx.use_partial_exchange = false;\n";
+                    const int readerIdx = findDefaultReaderIndex(paramModes);
+                    if (readerIdx >= 0) {
+                        const std::string& readerCalcName = calc->getParam(readerIdx)->getName();
+                        code += "    ctx.dist_" + calcName + ".local_target_slots_by_route.resize(1);\n";
+                        code += "    ctx.dist_" + calcName + ".exchange_plans_by_route.resize(1);\n";
+                        code += "    dacpp::mpi::build_target_slots_for_globals(ctx.plan_" + readerCalcName + ".pack, ctx.dist_" + calcName + ".local_write_globals, ctx.dist_" + calcName + ".local_target_slots_by_route[0]);\n";
+                        code += "    ctx.dist_" + calcName + ".exchange_plans_by_route[0] = dacpp::mpi::build_exchange_plan_from_layouts(ctx.plan_" + calcName + ".pack, ctx.dist_" + calcName + ".write_layout, ctx.plan_" + readerCalcName + ".pack, ctx.dist_" + readerCalcName + ".read_layout, ctx.mpi_rank, ctx.mpi_size);\n";
+                        code += "    if (!ctx.dist_" + calcName + ".exchange_plans_by_route[0].supported) {\n";
+                        code += "        ctx.partial_exchange_disable_reason = ctx.dist_" + calcName + ".exchange_plans_by_route[0].unsupported_reason;\n";
+                        code += "        ctx.use_partial_exchange = false;\n";
+                        code += "    }\n";
+                        code += "    ctx.dist_" + calcName + ".local_target_slots = ctx.dist_" + calcName + ".local_target_slots_by_route.front();\n";
+                        code += "    ctx.dist_" + calcName + ".exchange_plan = ctx.dist_" + calcName + ".exchange_plans_by_route.front();\n";
+                    } else {
+                        code += "    ctx.partial_exchange_disable_reason = \"phase-c could not find reader for WRITE tensor " + tensorName + "\";\n";
+                        code += "    ctx.use_partial_exchange = false;\n";
+                    }
                 }
             }
         }
@@ -681,23 +703,26 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
             const std::string& calcName = calcParam->getName();
             Param* shellWrapperParam = shell->getParam(paramIdx);
             const std::string& tensorName = shellWrapperParam->getName();
-            const auto* followupMapping =
-                findFollowupMappingForWriter(distributedSitePlan, tensorName);
-            std::string targetCache = "ctx.dist_" + calcName + ".local_cache";
-            if (followupMapping) {
-                const int readerIdx =
-                    findShellParamIndex(shell, followupMapping->readerTensor);
-                if (readerIdx >= 0) {
+            const auto followupMappings =
+                findFollowupMappingsForWriter(distributedSitePlan, tensorName);
+            const std::size_t routeCount =
+                !followupMappings.empty() ? followupMappings.size() : 1;
+            for (std::size_t routeIdx = 0; routeIdx < routeCount; ++routeIdx) {
+                const auto* followupMapping =
+                    !followupMappings.empty() ? followupMappings[routeIdx] : nullptr;
+                std::string targetCache = "ctx.dist_" + calcName + ".local_cache";
+                if (followupMapping && followupMapping->readerParamIndex >= 0) {
                     targetCache = "ctx.dist_" +
-                                  calc->getParam(readerIdx)->getName() +
+                                  calc->getParam(followupMapping->readerParamIndex)->getName() +
                                   ".local_cache";
                 }
+                code += "    dacpp::mpi::publish_local_writes_with_exchange(local_" + calcName +
+                        ", ctx.dist_" + calcName + ".local_write_slots, ctx.dist_" + calcName +
+                        ".local_target_slots_by_route[" + std::to_string(routeIdx) + "], " +
+                        targetCache + ", ctx.dist_" + calcName +
+                        ".local_write_values, ctx.dist_" + calcName +
+                        ".exchange_plans_by_route[" + std::to_string(routeIdx) + "]);\n";
             }
-            code += "    dacpp::mpi::publish_local_writes_with_exchange(local_" + calcName +
-                    ", ctx.dist_" + calcName + ".local_write_slots, ctx.dist_" + calcName +
-                    ".local_target_slots, " + targetCache +
-                    ", ctx.dist_" + calcName + ".local_write_values, ctx.dist_" +
-                    calcName + ".exchange_plan);\n";
         }
         if (distributedSitePlan.hasRootBridge) {
             for (int paramIdx = 0; paramIdx < shell->getNumShellParams(); ++paramIdx) {
@@ -738,41 +763,6 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
                 code += "    }\n";
             }
         }
-        if (!distributedSitePlan.hasRootBridge) {
-            for (int paramIdx = 0; paramIdx < shell->getNumShellParams(); ++paramIdx) {
-                if (paramModes[paramIdx] == IOTYPE::WRITE) {
-                    continue;
-                }
-                Param* calcParam = calc->getParam(paramIdx);
-                Param* shellWrapperParam = shell->getParam(paramIdx);
-                const std::string& calcName = calcParam->getName();
-                const std::string& tensorName = shellWrapperParam->getName();
-                const std::string mpiType =
-                    mpi_rewriter::mpiDatatypeFor(calcParam->getBasicType());
-
-                if (mpi_rewriter::usesByteTransport(calcParam->getBasicType())) {
-                    code += "    MPI_Gatherv(ctx.dist_" + calcName + ".local_cache.data(), " +
-                            mpi_rewriter::mpiPayloadCountExpr("ctx.input_layout_" + calcName + ".local_count",
-                                                              calcParam->getBasicType()) +
-                            ", " + mpiType + ", ctx.mpi_rank == 0 ? ctx.sendbuf_" +
-                            calcName + ".data() : nullptr, ctx.mpi_rank == 0 ? ctx.input_layout_" +
-                            calcName + ".byte_counts.data() : nullptr, ctx.mpi_rank == 0 ? ctx.input_layout_" +
-                            calcName + ".byte_displs.data() : nullptr, " + mpiType + ", 0, MPI_COMM_WORLD);\n";
-                } else {
-                    code += "    MPI_Gatherv(ctx.dist_" + calcName + ".local_cache.data(), ctx.input_layout_" +
-                            calcName + ".local_count, " + mpiType + ", ctx.mpi_rank == 0 ? ctx.sendbuf_" +
-                            calcName + ".data() : nullptr, ctx.mpi_rank == 0 ? ctx.input_layout_" +
-                            calcName + ".counts.data() : nullptr, ctx.mpi_rank == 0 ? ctx.input_layout_" +
-                            calcName + ".displs.data() : nullptr, " + mpiType + ", 0, MPI_COMM_WORLD);\n";
-                }
-                code += "    if (ctx.mpi_rank == 0) {\n";
-                code += "        " + tensorName + ".tensor2Array(ctx.global_" + calcName + ");\n";
-                code += "        dacpp::mpi::apply_writeback_by_globals(ctx.sendbuf_" + calcName +
-                        ", ctx.input_layout_" + calcName + ".globals, ctx.global_" + calcName + ");\n";
-                code += "        " + tensorName + ".array2Tensor(ctx.global_" + calcName + ");\n";
-                code += "    }\n";
-            }
-        }
         code += "    }\n";
     } else {
         code += "    }\n";
@@ -790,6 +780,53 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
     code += "    dacpp::mpi::reportCollectPositionsProfile(\"" + wrapper + "\", MPI_COMM_WORLD);\n";
     code += "}\n\n";
 
+    code += "void " + materializeName + "(" + ctxType + "& ctx";
+    if (!shellSignature.empty()) {
+        code += ", " + shellSignature;
+    }
+    code += ") {\n";
+    code += "    if (!ctx.use_partial_exchange) {\n";
+    code += "        return;\n";
+    code += "    }\n";
+    if (!distributedSitePlan.supported || distributedSitePlan.hasRootBridge) {
+        code += "    return;\n";
+    } else {
+        for (int paramIdx = 0; paramIdx < shell->getNumShellParams(); ++paramIdx) {
+            if (paramModes[paramIdx] == IOTYPE::WRITE) {
+                continue;
+            }
+            Param* calcParam = calc->getParam(paramIdx);
+            Param* shellWrapperParam = shell->getParam(paramIdx);
+            const std::string& calcName = calcParam->getName();
+            const std::string& tensorName = shellWrapperParam->getName();
+            const std::string mpiType =
+                mpi_rewriter::mpiDatatypeFor(calcParam->getBasicType());
+
+            if (mpi_rewriter::usesByteTransport(calcParam->getBasicType())) {
+                code += "    MPI_Gatherv(ctx.dist_" + calcName + ".local_cache.data(), " +
+                        mpi_rewriter::mpiPayloadCountExpr("ctx.input_layout_" + calcName + ".local_count",
+                                                          calcParam->getBasicType()) +
+                        ", " + mpiType + ", ctx.mpi_rank == 0 ? ctx.sendbuf_" +
+                        calcName + ".data() : nullptr, ctx.mpi_rank == 0 ? ctx.input_layout_" +
+                        calcName + ".byte_counts.data() : nullptr, ctx.mpi_rank == 0 ? ctx.input_layout_" +
+                        calcName + ".byte_displs.data() : nullptr, " + mpiType + ", 0, MPI_COMM_WORLD);\n";
+            } else {
+                code += "    MPI_Gatherv(ctx.dist_" + calcName + ".local_cache.data(), ctx.input_layout_" +
+                        calcName + ".local_count, " + mpiType + ", ctx.mpi_rank == 0 ? ctx.sendbuf_" +
+                        calcName + ".data() : nullptr, ctx.mpi_rank == 0 ? ctx.input_layout_" +
+                        calcName + ".counts.data() : nullptr, ctx.mpi_rank == 0 ? ctx.input_layout_" +
+                        calcName + ".displs.data() : nullptr, " + mpiType + ", 0, MPI_COMM_WORLD);\n";
+            }
+            code += "    if (ctx.mpi_rank == 0) {\n";
+            code += "        " + tensorName + ".tensor2Array(ctx.global_" + calcName + ");\n";
+            code += "        dacpp::mpi::apply_writeback_by_globals(ctx.sendbuf_" + calcName +
+                    ", ctx.input_layout_" + calcName + ".globals, ctx.global_" + calcName + ");\n";
+            code += "        " + tensorName + ".array2Tensor(ctx.global_" + calcName + ");\n";
+            code += "    }\n";
+        }
+    }
+    code += "}\n\n";
+
     code += "void " + wrapper + "(" + shellSignature + ") {\n";
     code += "    " + ctxType + " ctx;\n";
     code += "    " + initName + "(ctx";
@@ -798,6 +835,11 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
     }
     code += ");\n";
     code += "    " + runName + "(ctx";
+    if (!shellArgNames.empty()) {
+        code += ", " + shellArgNames;
+    }
+    code += ");\n";
+    code += "    " + materializeName + "(ctx";
     if (!shellArgNames.empty()) {
         code += ", " + shellArgNames;
     }

@@ -44,6 +44,8 @@ struct DistributedFollowupRegion {
 struct DistributedFollowupMapping {
     std::string writerTensor;
     std::string readerTensor;
+    int writerParamIndex = -1;
+    int readerParamIndex = -1;
     int targetOffset = 0;
 };
 

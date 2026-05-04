@@ -1,7 +1,10 @@
+#include <algorithm>
+#include <cctype>
 #include <set>
 #include <string>
 #include <vector>
 #include <regex>
+#include <sstream>
 
 #include "clang/AST/Expr.h"
 #include "clang/AST/Stmt.h"
@@ -151,6 +154,206 @@ bool isEffectiveReader(const std::string& tensorName,
     return false;
 }
 
+int findShellParamIndex(Shell* shell, const std::string& tensorName) {
+    if (!shell) {
+        return -1;
+    }
+    for (int paramIdx = 0; paramIdx < shell->getNumParams(); ++paramIdx) {
+        if (shell->getParam(paramIdx)->getName() == tensorName) {
+            return paramIdx;
+        }
+    }
+    return -1;
+}
+
+std::string trim(std::string text) {
+    const auto begin = text.find_first_not_of(" \t\r\n");
+    if (begin == std::string::npos) {
+        return "";
+    }
+    const auto end = text.find_last_not_of(" \t\r\n");
+    return text.substr(begin, end - begin + 1);
+}
+
+std::string stripOuterBraces(std::string text) {
+    text = trim(std::move(text));
+    if (text.size() >= 2 && text.front() == '{' && text.back() == '}') {
+        text = text.substr(1, text.size() - 2);
+    }
+    return trim(std::move(text));
+}
+
+std::string stripComments(const std::string& text) {
+    std::string withoutBlock;
+    withoutBlock.reserve(text.size());
+    bool inBlockComment = false;
+    for (std::size_t idx = 0; idx < text.size(); ++idx) {
+        if (!inBlockComment && idx + 1 < text.size() &&
+            text[idx] == '/' && text[idx + 1] == '*') {
+            inBlockComment = true;
+            ++idx;
+            continue;
+        }
+        if (inBlockComment && idx + 1 < text.size() &&
+            text[idx] == '*' && text[idx + 1] == '/') {
+            inBlockComment = false;
+            ++idx;
+            continue;
+        }
+        if (!inBlockComment) {
+            withoutBlock.push_back(text[idx]);
+        }
+    }
+
+    std::string result;
+    result.reserve(withoutBlock.size());
+    for (std::size_t idx = 0; idx < withoutBlock.size(); ++idx) {
+        if (idx + 1 < withoutBlock.size() &&
+            withoutBlock[idx] == '/' && withoutBlock[idx + 1] == '/') {
+            auto nlPos = withoutBlock.find('\n', idx);
+            if (nlPos != std::string::npos) {
+                result.push_back('\n');
+                idx = nlPos;
+            } else {
+                idx = withoutBlock.size();
+            }
+            continue;
+        }
+        result.push_back(withoutBlock[idx]);
+    }
+    return result;
+}
+
+bool isSupportedIncrement(const clang::ForStmt* forStmt) {
+    const auto* inc = forStmt ? forStmt->getInc() : nullptr;
+    if (!inc) {
+        return false;
+    }
+    if (const auto* unary = llvm::dyn_cast<clang::UnaryOperator>(inc)) {
+        return unary->isIncrementOp();
+    }
+    if (const auto* opCall = llvm::dyn_cast<clang::CXXOperatorCallExpr>(inc)) {
+        return opCall->getOperator() == clang::OO_PlusPlus;
+    }
+    if (const auto* binary = llvm::dyn_cast<clang::BinaryOperator>(inc)) {
+        if (!binary->isAssignmentOp()) {
+            return false;
+        }
+        const std::string text = binary->getOpcodeStr().str();
+        return text == "+=" || text == "=";
+    }
+    return false;
+}
+
+struct RouteLoopInfo {
+    std::string loopVar;
+    std::string bodyText;
+};
+
+bool extractRouteLoopInfo(const clang::ForStmt* forStmt,
+                          clang::ASTContext* context,
+                          const BufferRegionPlan& plan,
+                          RouteLoopInfo& info) {
+    if (!forStmt || !context || !plan.capturedNonShellVars.empty()) {
+        return false;
+    }
+
+    const auto& sourceManager = context->getSourceManager();
+    const auto& langOpts = context->getLangOpts();
+
+    const auto* declStmt =
+        llvm::dyn_cast_or_null<clang::DeclStmt>(forStmt->getInit());
+    if (!declStmt || !declStmt->isSingleDecl()) {
+        return false;
+    }
+    const auto* loopVarDecl =
+        llvm::dyn_cast_or_null<clang::VarDecl>(declStmt->getSingleDecl());
+    if (!loopVarDecl || !loopVarDecl->getInit()) {
+        return false;
+    }
+    info.loopVar = loopVarDecl->getNameAsString();
+
+    const auto* cond =
+        llvm::dyn_cast_or_null<clang::BinaryOperator>(forStmt->getCond());
+    if (!cond) {
+        return false;
+    }
+    const std::string lhsText =
+        clang::Lexer::getSourceText(
+            clang::CharSourceRange::getTokenRange(cond->getLHS()->getSourceRange()),
+            sourceManager, langOpts)
+            .str();
+    if (trim(lhsText) != info.loopVar ||
+        (cond->getOpcode() != clang::BO_LE && cond->getOpcode() != clang::BO_LT)) {
+        return false;
+    }
+    if (!isSupportedIncrement(forStmt)) {
+        return false;
+    }
+
+    info.bodyText = stripOuterBraces(
+        stripComments(getStmtSourceText(forStmt->getBody(), context)));
+    if (info.bodyText.empty()) {
+        return false;
+    }
+
+    const std::vector<std::string> rejected = {
+        "for", "while", "switch", "return", "break", "continue", "goto",
+        "MPI_", "std::", "cout", "cerr", "printf"};
+    for (const auto& token : rejected) {
+        if (containsWord(info.bodyText, token)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+std::vector<std::string> splitSimpleAssignments(const std::string& bodyText) {
+    std::vector<std::string> assignments;
+    std::stringstream ss(bodyText);
+    std::string piece;
+    while (std::getline(ss, piece, ';')) {
+        std::string trimmed = piece;
+        trimmed.erase(trimmed.begin(),
+                      std::find_if(trimmed.begin(), trimmed.end(), [](unsigned char ch) {
+                          return !std::isspace(ch);
+                      }));
+        trimmed.erase(std::find_if(trimmed.rbegin(), trimmed.rend(), [](unsigned char ch) {
+                          return !std::isspace(ch);
+                      }).base(),
+                      trimmed.end());
+        if (!trimmed.empty()) {
+            assignments.push_back(trimmed);
+        }
+    }
+    return assignments;
+}
+
+bool parseAffineVectorAccess(const std::string& expr,
+                             const std::string& loopVar,
+                             std::string& tensorName,
+                             int& offset) {
+    static const std::regex accessPattern(
+        R"(^\s*([A-Za-z_]\w*)\s*\[\s*([A-Za-z_]\w*)\s*([+-])?\s*(\d+)?\s*\]\s*$)");
+    std::smatch match;
+    if (!std::regex_match(expr, match, accessPattern)) {
+        return false;
+    }
+    if (match[2].str() != loopVar) {
+        return false;
+    }
+    tensorName = match[1].str();
+    offset = 0;
+    if (match[3].matched || match[4].matched) {
+        if (!match[3].matched || !match[4].matched) {
+            return false;
+        }
+        const int value = std::stoi(match[4].str());
+        offset = match[3].str() == "-" ? -value : value;
+    }
+    return true;
+}
+
 bool tryCollectDistributedFollowup(DistributedStencilSitePlan& plan,
                                    DacppFile* dacppFile,
                                    Shell* shell,
@@ -161,39 +364,59 @@ bool tryCollectDistributedFollowup(DistributedStencilSitePlan& plan,
         return false;
     }
 
-    detail::LoopRegionInfo info;
-    if (!detail::extractLoopRegionInfo(
-            forStmt, dacppFile->getContext(), shell,
+    RouteLoopInfo info;
+    if (!extractRouteLoopInfo(
+            forStmt, dacppFile->getContext(),
             dacppFile->getBufferRegionPlan(), info)) {
         return false;
     }
 
-    if (info.writtenTensors.size() != 1 || info.readTensors.size() != 1) {
+    const std::vector<std::string> assignments =
+        splitSimpleAssignments(info.bodyText);
+    if (assignments.empty()) {
         return false;
     }
 
-    const std::string& readerTensor = *info.writtenTensors.begin();
-    const std::string& writerTensor = *info.readTensors.begin();
-    if (!isEffectiveWriter(writerTensor, shell, paramModes) ||
-        !isEffectiveReader(readerTensor, shell, paramModes)) {
-        return false;
+    std::vector<DistributedFollowupMapping> routes;
+    routes.reserve(assignments.size());
+    for (const std::string& assignment : assignments) {
+        const std::size_t eqPos = assignment.find('=');
+        if (eqPos == std::string::npos ||
+            assignment.find('=', eqPos + 1) != std::string::npos) {
+            return false;
+        }
+
+        std::string readerTensor;
+        std::string writerTensor;
+        int readerOffset = 0;
+        int writerOffset = 0;
+        if (!parseAffineVectorAccess(assignment.substr(0, eqPos), info.loopVar,
+                                     readerTensor, readerOffset) ||
+            !parseAffineVectorAccess(assignment.substr(eqPos + 1), info.loopVar,
+                                     writerTensor, writerOffset)) {
+            return false;
+        }
+        if (!isEffectiveWriter(writerTensor, shell, paramModes) ||
+            !isEffectiveReader(readerTensor, shell, paramModes)) {
+            return false;
+        }
+        const int writerIdx = findShellParamIndex(shell, writerTensor);
+        const int readerIdx = findShellParamIndex(shell, readerTensor);
+        if (writerIdx < 0 || readerIdx < 0) {
+            return false;
+        }
+
+        DistributedFollowupMapping route;
+        route.writerTensor = writerTensor;
+        route.readerTensor = readerTensor;
+        route.writerParamIndex = writerIdx;
+        route.readerParamIndex = readerIdx;
+        route.targetOffset = readerOffset - writerOffset;
+        routes.push_back(route);
     }
 
-    int targetOffset = 0;
-    const std::string pattern =
-        readerTensor + R"(\s*\[\s*)" + info.loopVar + R"(\s*\]\s*=\s*)" +
-        writerTensor + R"(\s*\[\s*)" + info.loopVar +
-        R"(\s*([+-])?\s*(\d+)?\s*\]\s*;?)";
-    std::smatch match;
-    if (!std::regex_match(info.bodyText, match, std::regex(pattern))) {
-        return false;
-    }
-    if (match.size() >= 3 && match[1].matched && match[2].matched) {
-        const int rhsOffset = std::stoi(match[2].str());
-        targetOffset = match[1].str() == "-" ? rhsOffset : -rhsOffset;
-    }
-
-    plan.followupMappings.push_back({writerTensor, readerTensor, targetOffset});
+    plan.followupMappings.insert(plan.followupMappings.end(),
+                                 routes.begin(), routes.end());
     plan.distributedFollowupStmts.push_back(stmt);
     return true;
 }

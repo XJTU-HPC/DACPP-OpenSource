@@ -49,11 +49,13 @@ struct DistributedTensorState {
     std::vector<T> local_write_values;
     std::vector<int32_t> local_write_slots;
     std::vector<int32_t> local_target_slots;
+    std::vector<std::vector<int32_t>> local_target_slots_by_route;
     std::vector<int64_t> local_write_globals;
     AllRankIndexLayout read_layout;
     AllRankIndexLayout write_layout;
     AllRankIndexLayout root_bridge_layout;
     ExchangePlan exchange_plan;
+    std::vector<ExchangePlan> exchange_plans_by_route;
     ExchangePlan root_bridge_plan;
     PackMap root_bridge_pack;
 };

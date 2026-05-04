@@ -180,6 +180,16 @@ void Rewriter::rewriteMPIStencil() {
             runCall += ")";
             rewriter->ReplaceText(dacExpr->getSourceRange(), runCall);
 
+            std::string materializeCall = "\n    " +
+                mpi_stencil_rewriter::materializeFunctionName(shell, calc) +
+                "(" + ctxVar;
+            if (!argText.empty()) {
+                materializeCall += ", " + argText;
+            }
+            materializeCall += ");\n";
+            rewriter->InsertTextAfterToken(siteIt->second.outerLoop->getEndLoc(),
+                                           materializeCall);
+
             const auto rootRegions = mpi_rewriter::collectRootCentricPostRegions(
                 dacppFile, shell, calc, dacExpr);
             for (const auto& region : rootRegions) {

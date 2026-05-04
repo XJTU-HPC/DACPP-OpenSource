@@ -12,6 +12,7 @@ std::string wrapperName(Shell* shell, Calc* calc);
 std::string contextTypeName(Shell* shell, Calc* calc);
 std::string initFunctionName(Shell* shell, Calc* calc);
 std::string runFunctionName(Shell* shell, Calc* calc);
+std::string materializeFunctionName(Shell* shell, Calc* calc);
 std::string buildShellSignature(Shell* shell);
 
 std::string buildStencilWrapperCode(DacppFile* dacppFile,
