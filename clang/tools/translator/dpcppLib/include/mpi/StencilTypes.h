@@ -32,11 +32,28 @@ struct PeerSlotExchange {
     std::vector<int64_t> globals;
 };
 
+struct SlotSpan {
+    int32_t begin = 0;
+    int32_t count = 0;
+};
+
+struct PeerHaloExchange {
+    int peer_rank = -1;
+    std::vector<SlotSpan> local_spans;
+};
+
 struct ExchangePlan {
     bool supported = false;
     std::string unsupported_reason;
     std::vector<PeerSlotExchange> send_transfers;
     std::vector<PeerSlotExchange> recv_transfers;
+};
+
+struct HaloExchangePlan {
+    bool supported = false;
+    std::string unsupported_reason;
+    std::vector<PeerHaloExchange> send_transfers;
+    std::vector<PeerHaloExchange> recv_transfers;
 };
 
 template <typename T>
@@ -57,6 +74,8 @@ struct DistributedTensorState {
     ExchangePlan exchange_plan;
     std::vector<ExchangePlan> exchange_plans_by_route;
     ExchangePlan root_bridge_plan;
+    HaloExchangePlan halo_plan;
+    std::vector<HaloExchangePlan> halo_plans_by_route;
     PackMap root_bridge_pack;
 };
 

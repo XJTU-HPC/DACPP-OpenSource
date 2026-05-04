@@ -377,6 +377,8 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
                             std::to_string(followupMappings.size()) + ");\n";
                     code += "    ctx.dist_" + calcName + ".exchange_plans_by_route.resize(" +
                             std::to_string(followupMappings.size()) + ");\n";
+                    code += "    ctx.dist_" + calcName + ".halo_plans_by_route.resize(" +
+                            std::to_string(followupMappings.size()) + ");\n";
                     for (std::size_t routeIdx = 0; routeIdx < followupMappings.size(); ++routeIdx) {
                         const auto* followupMapping = followupMappings[routeIdx];
                         const int readerIdx =
@@ -400,23 +402,36 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
                         code += "        ctx.partial_exchange_disable_reason = ctx.dist_" + calcName + ".exchange_plans_by_route[" + std::to_string(routeIdx) + "].unsupported_reason;\n";
                         code += "        ctx.use_partial_exchange = false;\n";
                         code += "    }\n";
+                        code += "    ctx.dist_" + calcName + ".halo_plans_by_route[" + std::to_string(routeIdx) + "] = dacpp::mpi::build_halo_plan_from_exchange_plan(ctx.dist_" + calcName + ".exchange_plans_by_route[" + std::to_string(routeIdx) + "]);\n";
+                        llvm::outs() << "[DACPP][MPI][PhaseC] halo-exchange enabled route="
+                                     << tensorName << "->"
+                                     << shell->getParam(readerIdx)->getName()
+                                     << "\n";
                     }
                     code += "    if (!ctx.dist_" + calcName + ".local_target_slots_by_route.empty()) ctx.dist_" + calcName + ".local_target_slots = ctx.dist_" + calcName + ".local_target_slots_by_route.front();\n";
                     code += "    if (!ctx.dist_" + calcName + ".exchange_plans_by_route.empty()) ctx.dist_" + calcName + ".exchange_plan = ctx.dist_" + calcName + ".exchange_plans_by_route.front();\n";
+                    code += "    if (!ctx.dist_" + calcName + ".halo_plans_by_route.empty()) ctx.dist_" + calcName + ".halo_plan = ctx.dist_" + calcName + ".halo_plans_by_route.front();\n";
                 } else {
                     const int readerIdx = findDefaultReaderIndex(transportModes);
                     if (readerIdx >= 0) {
                         const std::string& readerCalcName = calc->getParam(readerIdx)->getName();
                         code += "    ctx.dist_" + calcName + ".local_target_slots_by_route.resize(1);\n";
                         code += "    ctx.dist_" + calcName + ".exchange_plans_by_route.resize(1);\n";
+                        code += "    ctx.dist_" + calcName + ".halo_plans_by_route.resize(1);\n";
                         code += "    dacpp::mpi::build_target_slots_for_globals(ctx.plan_" + readerCalcName + ".pack, ctx.dist_" + calcName + ".local_write_globals, ctx.dist_" + calcName + ".local_target_slots_by_route[0]);\n";
                         code += "    ctx.dist_" + calcName + ".exchange_plans_by_route[0] = dacpp::mpi::build_exchange_plan_from_layouts(ctx.plan_" + calcName + ".pack, ctx.dist_" + calcName + ".write_layout, ctx.plan_" + readerCalcName + ".pack, ctx.dist_" + readerCalcName + ".read_layout, ctx.mpi_rank, ctx.mpi_size);\n";
                         code += "    if (!ctx.dist_" + calcName + ".exchange_plans_by_route[0].supported) {\n";
                         code += "        ctx.partial_exchange_disable_reason = ctx.dist_" + calcName + ".exchange_plans_by_route[0].unsupported_reason;\n";
                         code += "        ctx.use_partial_exchange = false;\n";
                         code += "    }\n";
+                        code += "    ctx.dist_" + calcName + ".halo_plans_by_route[0] = dacpp::mpi::build_halo_plan_from_exchange_plan(ctx.dist_" + calcName + ".exchange_plans_by_route[0]);\n";
                         code += "    ctx.dist_" + calcName + ".local_target_slots = ctx.dist_" + calcName + ".local_target_slots_by_route.front();\n";
                         code += "    ctx.dist_" + calcName + ".exchange_plan = ctx.dist_" + calcName + ".exchange_plans_by_route.front();\n";
+                        code += "    ctx.dist_" + calcName + ".halo_plan = ctx.dist_" + calcName + ".halo_plans_by_route.front();\n";
+                        llvm::outs() << "[DACPP][MPI][PhaseC] halo-exchange enabled route="
+                                     << tensorName << "->"
+                                     << shell->getParam(readerIdx)->getName()
+                                     << "\n";
                     } else {
                         code += "    ctx.partial_exchange_disable_reason = \"phase-c could not find reader for WRITE tensor " + tensorName + "\";\n";
                         code += "    ctx.use_partial_exchange = false;\n";
@@ -717,12 +732,14 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
                                   calc->getParam(followupMapping->readerParamIndex)->getName() +
                                   ".local_cache";
                 }
-                code += "    dacpp::mpi::publish_local_writes_with_exchange(local_" + calcName +
+                code += "    dacpp::mpi::publish_local_writes_with_halo_or_exchange(local_" + calcName +
                         ", ctx.dist_" + calcName + ".local_write_slots, ctx.dist_" + calcName +
                         ".local_target_slots_by_route[" + std::to_string(routeIdx) + "], " +
                         targetCache + ", ctx.dist_" + calcName +
                         ".local_write_values, ctx.dist_" + calcName +
-                        ".exchange_plans_by_route[" + std::to_string(routeIdx) + "]);\n";
+                        ".exchange_plans_by_route[" + std::to_string(routeIdx) +
+                        "], ctx.dist_" + calcName + ".halo_plans_by_route[" +
+                        std::to_string(routeIdx) + "]);\n";
             }
         }
         if (distributedSitePlan.hasRootBridge) {

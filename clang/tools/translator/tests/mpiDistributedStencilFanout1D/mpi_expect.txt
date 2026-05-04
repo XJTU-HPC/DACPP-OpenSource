@@ -3,7 +3,8 @@ LOG_CONTAINS:[DACPP][MPI] output next sync=distributed-followup
 LOG_NOT_CONTAINS:partial-exchange disabled
 SYCL_CONTAINS:local_target_slots_by_route.resize(2)
 SYCL_CONTAINS:exchange_plans_by_route.resize(2)
-SYCL_CONTAINS:publish_local_writes_with_exchange(local_next
+SYCL_CONTAINS:halo_plans_by_route.resize(2)
+SYCL_CONTAINS:publish_local_writes_with_halo_or_exchange(local_next
 SYCL_CONTAINS:ctx.dist_left.local_cache
 SYCL_CONTAINS:ctx.dist_right.local_cache
 SYCL_CONTAINS:__dacpp_mpi_stencil_materialize_fanShell_fan_step

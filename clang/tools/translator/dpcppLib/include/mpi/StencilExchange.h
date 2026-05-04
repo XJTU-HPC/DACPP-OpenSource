@@ -45,9 +45,7 @@ inline void build_target_slots_for_globals(const PackMap& pack,
     local_slots.clear();
     local_slots.reserve(globals.size());
     for (int64_t global_idx : globals) {
-        local_slots.push_back(
-            lookup_local_slot_or_throw(
-                pack, global_idx, "build_target_slots_for_globals"));
+        local_slots.push_back(try_lookup_local_slot(pack, global_idx));
     }
 }
 
@@ -59,10 +57,7 @@ inline void build_target_slots_for_globals_with_offset(
     local_slots.clear();
     local_slots.reserve(globals.size());
     for (int64_t global_idx : globals) {
-        local_slots.push_back(
-            lookup_local_slot_or_throw(
-                pack, global_idx + target_offset,
-                "build_target_slots_for_globals_with_offset"));
+        local_slots.push_back(try_lookup_local_slot(pack, global_idx + target_offset));
     }
 }
 
@@ -306,6 +301,105 @@ inline ExchangePlan build_exchange_plan_from_layouts_with_target_offset(
     return plan;
 }
 
+inline std::vector<SlotSpan> compact_slots_to_spans(
+    const std::vector<int32_t>& local_slots,
+    std::string* unsupported_reason = nullptr) {
+    std::vector<SlotSpan> spans;
+    if (local_slots.empty()) {
+        return spans;
+    }
+
+    int32_t span_begin = local_slots.front();
+    if (span_begin < 0) {
+        if (unsupported_reason) {
+            *unsupported_reason = "halo transfer contains negative slot";
+        }
+        return {};
+    }
+    int32_t previous = span_begin;
+    int32_t count = 1;
+    for (std::size_t idx = 1; idx < local_slots.size(); ++idx) {
+        const int32_t slot = local_slots[idx];
+        if (slot < 0) {
+            if (unsupported_reason) {
+                *unsupported_reason = "halo transfer contains negative slot";
+            }
+            return {};
+        }
+        if (slot < previous) {
+            if (unsupported_reason) {
+                *unsupported_reason = "halo transfer slots are not monotonic";
+            }
+            return {};
+        }
+        if (slot == previous + 1) {
+            ++count;
+        } else if (slot == previous) {
+            if (unsupported_reason) {
+                *unsupported_reason = "halo transfer slots contain duplicates";
+            }
+            return {};
+        } else {
+            spans.push_back(SlotSpan{span_begin, count});
+            span_begin = slot;
+            count = 1;
+        }
+        previous = slot;
+    }
+    spans.push_back(SlotSpan{span_begin, count});
+    return spans;
+}
+
+inline HaloExchangePlan build_halo_plan_from_exchange_plan(
+    const ExchangePlan& exchange_plan) {
+    HaloExchangePlan halo_plan;
+    if (!exchange_plan.supported) {
+        halo_plan.supported = false;
+        halo_plan.unsupported_reason =
+            exchange_plan.unsupported_reason.empty()
+                ? "exchange plan is unsupported"
+                : exchange_plan.unsupported_reason;
+        return halo_plan;
+    }
+
+    halo_plan.send_transfers.reserve(exchange_plan.send_transfers.size());
+    for (const auto& transfer : exchange_plan.send_transfers) {
+        std::string reason;
+        PeerHaloExchange halo_transfer;
+        halo_transfer.peer_rank = transfer.peer_rank;
+        halo_transfer.local_spans =
+            compact_slots_to_spans(transfer.local_slots, &reason);
+        if (!reason.empty()) {
+            halo_plan.supported = false;
+            halo_plan.unsupported_reason =
+                "send peer " + std::to_string(transfer.peer_rank) +
+                ": " + reason;
+            return halo_plan;
+        }
+        halo_plan.send_transfers.push_back(std::move(halo_transfer));
+    }
+
+    halo_plan.recv_transfers.reserve(exchange_plan.recv_transfers.size());
+    for (const auto& transfer : exchange_plan.recv_transfers) {
+        std::string reason;
+        PeerHaloExchange halo_transfer;
+        halo_transfer.peer_rank = transfer.peer_rank;
+        halo_transfer.local_spans =
+            compact_slots_to_spans(transfer.local_slots, &reason);
+        if (!reason.empty()) {
+            halo_plan.supported = false;
+            halo_plan.unsupported_reason =
+                "recv peer " + std::to_string(transfer.peer_rank) +
+                ": " + reason;
+            return halo_plan;
+        }
+        halo_plan.recv_transfers.push_back(std::move(halo_transfer));
+    }
+
+    halo_plan.supported = true;
+    return halo_plan;
+}
+
 template <typename T>
 inline void pack_values_by_slots_into(const std::vector<T>& local_data,
                                       const std::vector<int32_t>& local_slots,
@@ -369,6 +463,51 @@ inline void pack_values_by_slots_parallel_into(
             });
         });
         q.wait();
+    }
+}
+
+template <typename T>
+inline std::size_t halo_value_count(
+    const std::vector<SlotSpan>& spans) {
+    std::size_t count = 0;
+    for (const SlotSpan& span : spans) {
+        if (span.count > 0) {
+            count += static_cast<std::size_t>(span.count);
+        }
+    }
+    return count;
+}
+
+template <typename T>
+inline void pack_values_by_spans_into(const std::vector<T>& local_data,
+                                      const std::vector<SlotSpan>& spans,
+                                      std::vector<T>& values) {
+    values.resize(halo_value_count<T>(spans));
+    std::size_t out_idx = 0;
+    for (const SlotSpan& span : spans) {
+        for (int32_t offset = 0; offset < span.count; ++offset) {
+            values[out_idx++] =
+                local_data[static_cast<std::size_t>(span.begin + offset)];
+        }
+    }
+}
+
+template <typename T>
+inline void unpack_values_by_spans_into(const std::vector<T>& values,
+                                        const std::vector<SlotSpan>& spans,
+                                        std::vector<T>& target) {
+    std::size_t in_idx = 0;
+    for (const SlotSpan& span : spans) {
+        for (int32_t offset = 0; offset < span.count; ++offset) {
+            if (in_idx >= values.size()) {
+                return;
+            }
+            const int32_t slot = span.begin + offset;
+            if (slot >= 0 && static_cast<std::size_t>(slot) < target.size()) {
+                target[static_cast<std::size_t>(slot)] = values[in_idx];
+            }
+            ++in_idx;
+        }
     }
 }
 
@@ -438,6 +577,72 @@ inline void exchange_values_by_slots(const std::vector<T>& send_source,
 }
 
 template <typename T>
+inline void exchange_values_by_halo_spans(const std::vector<T>& send_source,
+                                          const HaloExchangePlan& plan,
+                                          std::vector<T>& recv_target,
+                                          MPI_Comm comm = MPI_COMM_WORLD) {
+    if (!plan.supported) {
+        return;
+    }
+
+    const MPI_Datatype mpi_type = mpi_datatype_for_value<T>();
+    std::vector<std::vector<T>> send_buffers(plan.send_transfers.size());
+    std::vector<std::vector<T>> recv_buffers(plan.recv_transfers.size());
+    std::vector<MPI_Request> requests;
+    requests.reserve(plan.send_transfers.size() + plan.recv_transfers.size());
+
+    for (std::size_t idx = 0; idx < plan.recv_transfers.size(); ++idx) {
+        const auto& transfer = plan.recv_transfers[idx];
+        recv_buffers[idx].resize(halo_value_count<T>(transfer.local_spans));
+        if (recv_buffers[idx].empty()) {
+            continue;
+        }
+        MPI_Request req{};
+        if (uses_byte_transport_for_value<T>()) {
+            MPI_Irecv(reinterpret_cast<unsigned char*>(recv_buffers[idx].data()),
+                      mpi_payload_count_for_values<T>(recv_buffers[idx].size()),
+                      mpi_type, transfer.peer_rank, 0, comm, &req);
+        } else {
+            MPI_Irecv(recv_buffers[idx].data(),
+                      mpi_payload_count_for_values<T>(recv_buffers[idx].size()),
+                      mpi_type, transfer.peer_rank, 0, comm, &req);
+        }
+        requests.push_back(req);
+    }
+
+    for (std::size_t idx = 0; idx < plan.send_transfers.size(); ++idx) {
+        const auto& transfer = plan.send_transfers[idx];
+        pack_values_by_spans_into(send_source, transfer.local_spans,
+                                  send_buffers[idx]);
+        if (send_buffers[idx].empty()) {
+            continue;
+        }
+        MPI_Request req{};
+        if (uses_byte_transport_for_value<T>()) {
+            MPI_Isend(reinterpret_cast<unsigned char*>(send_buffers[idx].data()),
+                      mpi_payload_count_for_values<T>(send_buffers[idx].size()),
+                      mpi_type, transfer.peer_rank, 0, comm, &req);
+        } else {
+            MPI_Isend(send_buffers[idx].data(),
+                      mpi_payload_count_for_values<T>(send_buffers[idx].size()),
+                      mpi_type, transfer.peer_rank, 0, comm, &req);
+        }
+        requests.push_back(req);
+    }
+
+    if (!requests.empty()) {
+        MPI_Waitall(static_cast<int>(requests.size()), requests.data(),
+                    MPI_STATUSES_IGNORE);
+    }
+
+    for (std::size_t idx = 0; idx < plan.recv_transfers.size(); ++idx) {
+        unpack_values_by_spans_into(recv_buffers[idx],
+                                    plan.recv_transfers[idx].local_spans,
+                                    recv_target);
+    }
+}
+
+template <typename T>
 inline void publish_local_writes_with_exchange(
     const std::vector<T>& local_write_source,
     const std::vector<int32_t>& local_write_slots,
@@ -460,6 +665,35 @@ inline void publish_local_writes_with_exchange(
     }
 
     exchange_values_by_slots(local_write_source, plan, local_cache, comm);
+}
+
+template <typename T>
+inline void publish_local_writes_with_halo_or_exchange(
+    const std::vector<T>& local_write_source,
+    const std::vector<int32_t>& local_write_slots,
+    const std::vector<int32_t>& local_target_slots,
+    std::vector<T>& local_cache,
+    std::vector<T>& local_write_values,
+    const ExchangePlan& exchange_plan,
+    const HaloExchangePlan& halo_plan,
+    MPI_Comm comm = MPI_COMM_WORLD) {
+    if (!local_write_slots.empty()) {
+        pack_values_by_slots_parallel_into(local_write_source, local_write_slots,
+                                           local_write_values);
+        unpack_values_by_slots_into(local_write_values, local_target_slots,
+                                    local_cache);
+    } else {
+        local_write_values.clear();
+    }
+
+    if (halo_plan.supported) {
+        exchange_values_by_halo_spans(local_write_source, halo_plan, local_cache,
+                                      comm);
+        return;
+    }
+
+    exchange_values_by_slots(local_write_source, exchange_plan, local_cache,
+                             comm);
 }
 
 }  // namespace mpi
