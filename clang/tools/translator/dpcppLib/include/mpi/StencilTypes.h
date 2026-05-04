@@ -46,6 +46,10 @@ struct DistributedTensorState {
     bool authoritative_source = false;
 
     std::vector<T> local_cache;
+    std::vector<T> local_write_values;
+    std::vector<int32_t> local_write_slots;
+    std::vector<int32_t> local_target_slots;
+    std::vector<int64_t> local_write_globals;
     AllRankIndexLayout read_layout;
     AllRankIndexLayout write_layout;
     AllRankIndexLayout root_bridge_layout;

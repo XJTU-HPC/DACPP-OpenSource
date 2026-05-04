@@ -333,12 +333,28 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
                 }
             } else {
                 code += "    ctx.dist_" + calcName + ".local_cache.assign(ctx.plan_" + calcName + ".pack.globals.size(), " + calcParam->getBasicType() + "{});\n";
+                code += "    ctx.dist_" + calcName + ".local_write_slots = ctx.writeback_slots_" + calcName + ";\n";
+                code += "    ctx.dist_" + calcName + ".local_write_globals = writeback_globals_" + calcName + ";\n";
+                code += "    ctx.dist_" + calcName + ".local_write_values.resize(ctx.dist_" + calcName + ".local_write_slots.size());\n";
                 code += "    dacpp::mpi::init_all_rank_index_layout(ctx.dist_" + calcName +
                         ".write_layout, writeback_globals_" + calcName +
                         ", ctx.mpi_rank, ctx.mpi_size);\n";
                 code += "    if (!dacpp::mpi::validate_unique_writers(ctx.dist_" + calcName + ".write_layout, ctx.mpi_size, &ctx.partial_exchange_disable_reason)) {\n";
                 code += "        ctx.use_partial_exchange = false;\n";
                 code += "    }\n";
+                for (int readerIdx = 0; readerIdx < shell->getNumShellParams(); ++readerIdx) {
+                    if (paramModes[readerIdx] == IOTYPE::WRITE) {
+                        continue;
+                    }
+                    const std::string& readerCalcName = calc->getParam(readerIdx)->getName();
+                    code += "    dacpp::mpi::build_target_slots_for_globals(ctx.plan_" + readerCalcName + ".pack, ctx.dist_" + calcName + ".local_write_globals, ctx.dist_" + calcName + ".local_target_slots);\n";
+                    code += "    ctx.dist_" + calcName + ".exchange_plan = dacpp::mpi::build_exchange_plan_from_layouts(ctx.plan_" + calcName + ".pack, ctx.dist_" + calcName + ".write_layout, ctx.plan_" + readerCalcName + ".pack, ctx.dist_" + readerCalcName + ".read_layout, ctx.mpi_rank, ctx.mpi_size);\n";
+                    code += "    if (!ctx.dist_" + calcName + ".exchange_plan.supported) {\n";
+                        code += "        ctx.partial_exchange_disable_reason = ctx.dist_" + calcName + ".exchange_plan.unsupported_reason;\n";
+                    code += "        ctx.use_partial_exchange = false;\n";
+                    code += "    }\n";
+                    break;
+                }
             }
         }
     } else {
@@ -613,6 +629,18 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
         code += "            q.wait();\n";
         code += "        }\n";
         code += "    }\n";
+        for (int paramIdx = 0; paramIdx < shell->getNumShellParams(); ++paramIdx) {
+            if (paramModes[paramIdx] == IOTYPE::READ) {
+                continue;
+            }
+            Param* calcParam = calc->getParam(paramIdx);
+            const std::string& calcName = calcParam->getName();
+            code += "    dacpp::mpi::publish_local_writes_with_exchange(local_" + calcName +
+                    ", ctx.dist_" + calcName + ".local_write_slots, ctx.dist_" + calcName +
+                    ".local_target_slots, ctx.dist_" + calcName +
+                    ".local_cache, ctx.dist_" + calcName + ".local_write_values, ctx.dist_" +
+                    calcName + ".exchange_plan);\n";
+        }
         if (distributedSitePlan.hasRootBridge) {
             for (int paramIdx = 0; paramIdx < shell->getNumShellParams(); ++paramIdx) {
                 if (paramModes[paramIdx] == IOTYPE::READ) {

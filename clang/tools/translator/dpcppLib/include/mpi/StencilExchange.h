@@ -39,6 +39,18 @@ inline void build_local_slots_for_globals(const PackMap& pack,
     }
 }
 
+inline void build_target_slots_for_globals(const PackMap& pack,
+                                           const std::vector<int64_t>& globals,
+                                           std::vector<int32_t>& local_slots) {
+    local_slots.clear();
+    local_slots.reserve(globals.size());
+    for (int64_t global_idx : globals) {
+        local_slots.push_back(
+            lookup_local_slot_or_throw(
+                pack, global_idx, "build_target_slots_for_globals"));
+    }
+}
+
 inline ExchangePlan build_exchange_plan_from_layouts(
     const PackMap& writer_pack,
     const AllRankIndexLayout& writer_layout,
@@ -287,6 +299,31 @@ inline void exchange_values_by_slots(const std::vector<T>& send_source,
                                     plan.recv_transfers[idx].local_slots,
                                     recv_target);
     }
+}
+
+template <typename T>
+inline void publish_local_writes_with_exchange(
+    const std::vector<T>& local_write_source,
+    const std::vector<int32_t>& local_write_slots,
+    const std::vector<int32_t>& local_target_slots,
+    std::vector<T>& local_cache,
+    std::vector<T>& local_write_values,
+    const ExchangePlan& plan,
+    MPI_Comm comm = MPI_COMM_WORLD) {
+    if (!local_write_slots.empty()) {
+        pack_values_by_slots_parallel_into(local_write_source, local_write_slots,
+                                           local_write_values);
+        unpack_values_by_slots_into(local_write_values, local_target_slots,
+                                    local_cache);
+    } else {
+        local_write_values.clear();
+    }
+
+    if (!plan.supported) {
+        return;
+    }
+
+    exchange_values_by_slots(local_write_source, plan, local_cache, comm);
 }
 
 }  // namespace mpi
