@@ -493,49 +493,32 @@ wave     1024  200         2     2.57x
 
 ## 10. 下一步 TODO
 
-优先级按当前用户目标“非 `mpi*` 应用正确且无灾难慢”排序。
+当前推进重心先集中在 `waveEquation1.0`。其它应用和泛化路线暂时只做 correctness / structure 回归，不主动展开新优化，避免多线并行把判断噪声放大。
 
-1. 固化大规模 benchmark
-   - 保留 `bench_stencil_mpi.sh` 和 `bench_wave_mpi.sh` 作为正式性能 smoke。
-   - 使用 `bench_stencil_wave_sweep.sh` 做多规模 / 多 run 复核，避免按单点噪声调整实现。
-   - 给 `MDP1.0`、`liuliang1.0`、`oddeven0.1`、`jacobi1.0` 增加更能暴露 time-step 热路径的大规模 benchmark。
-   - `bench_mpi_apps.sh` 继续作为粗粒度 smoke，不作为精确性能结论。
+1. `waveEquation1.0` 剩余差距治理
+   - 当前从 `498x` 灾难 root-centric path 降到约 `2.57x`；多规模 sweep 显示 1024 规模仍是最值得优先看的热路径。
+   - profile 显示 kernel 约 `0.98ms/step`、publish 约 `0.31ms/step`、read-transition 约 `0.21ms/step`；boundary 可忽略，root bridge 为 0。
+   - 短期只围绕 wave 做复杂度和常数优化：减少每步 SYCL buffer / launch 常数，降低 publish / read-transition 开销，保持 `matCur -> matPrev` read-cache transition、`matNext -> matCur` route、boundary-local update 语义不变。
+   - 不引入 root helper/root bridge，不放宽 Phase C eligibility guard；guard 不满足时继续走现有 correctness path。
 
-2. `stencil1.0` fast-kernel codegen
-   - 当前约 `1.3x`，不是灾难慢。
-   - `ContiguousView1D/2D` 已减少通用 `slots/key_offsets` 间接，但 profile 显示收益有限。
-   - 下一步重点转为减少每步 SYCL buffer 构造 / kernel launch 常数，并评估是否为规则 row-block stencil 直接生成 row/col 线性索引 kernel。
-   - 目标是规则 row-block stencil 直接生成 row/col 线性索引 kernel。
+2. `waveEquation1.0` 可考虑的非常数优化方向
+   - multi-state transition：在 layout、shape、生命周期完全一致时，把 `matCur -> matPrev` 从 O(local slots) scatter 降为 cache swap/rename；不满足 guard 时保留当前 slot-copy path。
+   - kernel/transition 融合：评估固定 `kernel -> read-transition -> publish` 链能否融合本地 state update 或延迟 publish，减少每步 SYCL launch 和 buffer 生命周期；必须保持 halo 边界语义。
+   - wave 专用 row-block direct kernel：只覆盖当前可证明的规则 2D row-block wave 形态，直接以 row/col domain 生成 kernel，绕过 item-space PackPlan 和每 item View 构造；不泛化到任意 stencil。
+   - wave halo / exchange 压缩：优先把当前 generalized exchange 中的 row-span halo 做轻量化，减少 per-step metadata traversal 和消息处理；不规则访问继续走 generalized fallback。
 
-3. `waveEquation1.0` 剩余差距治理
-   - 当前从 `498x` 降到约 `2.57x`，多规模 sweep 显示 1024 规模仍是优先热路径。
-   - profile 显示 kernel 约 `0.98ms/step`、publish 约 `0.31ms/step`、read-transition 约 `0.21ms/step`；boundary 可忽略。
-   - 研究 `matCur -> matPrev` 是否能从 slot copy 优化为 cache swap/rename 或更低开销 local copy。
-   - 减少每步 exchange / SYCL buffer 构造常数。
-   - 不再回到 root helper/root bridge。
+3. wave benchmark / profile 固化
+   - `bench_wave_mpi.sh` 作为当前主要性能 smoke。
+   - 使用 `WAVE_BENCH_RUNS>=3` 和多个 `NX=NY` 规模复核，避免按单点噪声调整实现。
+   - `bench_stencil_wave_sweep.sh` 暂时只用于观察 wave 和确认 stencil 没退化；不以 stencil 提速作为当前目标。
+   - 每次 wave 优化后至少跑：`cmake --build build --target translator -j8`、`bash test_mpi.sh waveEquation1.0 stencil1.0 jacobi1.0`、`WAVE_BENCH_RUNS=1 bash bench_wave_mpi.sh`；阶段收口再跑完整 `bash test_mpi.sh`。
 
-4. `FOuLa1.0` 临时 view hot path
-   - 当前正确性通过，但因 loop 内临时 view 不做 hoist。
-   - 已纳入粗粒度 benchmark smoke；下一步仍需大规模输入确认 compatibility wrapper 开销是否可能成为热路径。
-
-5. `jacobi1.0` 独立 solver 路线
-   - 不强行塞进 2D Matrix stencil route。
-   - 设计 row-block `A` 常驻、全局 `x` 副本、local `x_new`、convergence reduction、`x_new -> x` distributed vector state transition。
-
-6. 泛化 Phase C route / boundary / bridge
-   - 扩展复杂 RHS、函数调用、多维索引和 writer/read domain 覆盖证明。
-   - 扩展写后读 transport 和 boundary-local 安全形态。
-   - 将 root bridge 从 dense cover 收紧到 helper-written subset。
-   - 推进 tile halo / corner halo；不规则访问保留 generalized index exchange。
-
-7. 可考虑的非常数优化方向
-   - `jacobi1.0` 独立 distributed solver：把每轮 `x_new` gather/broadcast 降为 row-block local compute + convergence reduction + vector state transition。这是算法通信复杂度优化，不应塞进 Matrix stencil route。
-   - `waveEquation1.0` multi-state transition：在 layout、shape、生命周期完全一致时，把 `matCur -> matPrev` 从 O(local slots) scatter 降为 cache swap/rename；不满足 guard 时保留当前 slot-copy path。
-   - 规则 2D stencil direct kernel：对可证明 row-block、固定 window、无复杂 sibling fallback 的 case，直接以 global/local row-col domain 生成 kernel，绕过 item-space PackPlan 和每 item View 构造；这比当前 `ContiguousView` 是更强的结构优化。
-   - halo / exchange 复杂度优化：把当前 generalized index exchange 进一步压成 row-span / tile-span / corner-aware halo，减少 per-step metadata traversal 和消息数量；不规则访问继续走 generalized fallback。
-   - kernel/transition 融合：对 `waveEquation1.0` 这类固定 `kernel -> read-transition -> publish` 链，评估能否融合本地 state update 或延迟 publish，减少每步 SYCL launch 和 buffer 生命周期；必须保持 halo 边界语义。
-   - helper-written subset bridge：对仍需要 root helper 的 case，跟踪 helper 实际写集合，避免 dense root-authoritative bridge，把 root bridge 通信复杂度从全 tensor 降到 helper-written subset。
+4. 暂缓项，只保留回归
+   - `stencil1.0`：当前约 `1.3x`，不是灾难慢；暂缓 fast-kernel work，只确认 no-root route / boundary-local / materialize 结构不退化。
+   - `FOuLa1.0`：当前 correctness 通过；暂缓 loop 内临时 view hot path 方案，只保留 smoke 和结构 expectation。
+   - `jacobi1.0`：继续保持 mixed Matrix/Vector Phase C disabled fallback；独立 distributed solver 暂缓设计。
+   - 泛化 Phase C route / boundary / bridge、tile halo / corner halo、helper-written subset bridge：作为后续方向保留，不进入当前 wave-first 阶段。
 
 ## 11. 一句话总结
 
-当前 MPI stencil 路径已经完成 Phase 1、输出一致性分类、root-only 输出 rewrite、loop-lowered `ctx/init/run/materialize`、Phase C distributed cache / route / halo 基础设施，以及 1D boundary-local、2D boundary-local、2D READ-cache state transition。`liuliang1.0`、`stencil1.0`、`waveEquation1.0` 已从灾难 root-centric 热路径迁移到 no-root distributed path；`jacobi1.0` 保持正确的 mixed Vector/Matrix fallback。14 个非 `mpi*` 应用和完整 MPI suite 当前均通过。下一步重点是固化大规模 benchmark、降低 2D generated kernel/exchange 常数、补 `FOuLa1.0` 临时 view 性能结论，并为 Jacobi 设计独立 distributed iterative solver。
+当前 MPI stencil 路径已经完成 Phase 1、输出一致性分类、root-only 输出 rewrite、loop-lowered `ctx/init/run/materialize`、Phase C distributed cache / route / halo 基础设施，以及 1D boundary-local、2D boundary-local、2D READ-cache state transition。`liuliang1.0`、`stencil1.0`、`waveEquation1.0` 已从灾难 root-centric 热路径迁移到 no-root distributed path；`jacobi1.0` 保持正确的 mixed Vector/Matrix fallback。14 个非 `mpi*` 应用和完整 MPI suite 当前均通过。下一阶段先把重心放在 `waveEquation1.0`：围绕 kernel / publish / read-transition 的常数和必要的非常数优化做窄口径推进；`stencil1.0`、`FOuLa1.0`、`jacobi1.0` 和 Phase C 泛化路线暂时只保留回归，不主动展开。
