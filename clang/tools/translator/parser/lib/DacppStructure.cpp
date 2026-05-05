@@ -295,6 +295,10 @@ const FunctionDecl* dacppTranslator::DacppFile::getMainFuncLoc() {
 }
 void dacppTranslator::DacppFile::collectVarsFromForStatement() {
     forStatementVars.clear();
+    const clang::Stmt* loop = loopStatement ? loopStatement : forStatement;
+    if (!loop) {
+        return;
+    }
 
     clang::ASTContext &Ctx = *Context;
     clang::SourceManager &SM = Ctx.getSourceManager();
@@ -317,7 +321,7 @@ void dacppTranslator::DacppFile::collectVarsFromForStatement() {
             collectRefs(child);
     };
 
-    collectRefs(forStatement->getBody());
+    collectRefs(loop);
 
     // --------------------------------------
     // Step 2：收集 for 循环内部声明的所有变量（用于排除）
@@ -344,7 +348,15 @@ void dacppTranslator::DacppFile::collectVarsFromForStatement() {
         scan(body);
     };
 
-    collectInnerDecls(forStatement->getInit(), forStatement->getBody());
+    const clang::Stmt* loopInit = nullptr;
+    const clang::Stmt* loopBody = loop;
+    if (const auto* FS = llvm::dyn_cast<clang::ForStmt>(loop)) {
+        loopInit = FS->getInit();
+        loopBody = FS->getBody();
+    } else if (const auto* WS = llvm::dyn_cast<clang::WhileStmt>(loop)) {
+        loopBody = WS->getBody();
+    }
+    collectInnerDecls(loopInit, loopBody);
 
     // --------------------------------------
     // Step 3：过滤：只保留在 for 外声明、但在 for 内使用的非全局变量
@@ -362,9 +374,9 @@ void dacppTranslator::DacppFile::collectVarsFromForStatement() {
         if (VD->isFileVarDecl())
             continue;
 
-        // 判断声明位置是否在 for 语句之前
+        // 判断声明位置是否在循环语句之前
         clang::SourceLocation declLoc = VD->getBeginLoc();
-        clang::SourceLocation forLoc = forStatement->getBeginLoc();
+        clang::SourceLocation forLoc = loop->getBeginLoc();
 
         if (SM.isBeforeInTranslationUnit(declLoc, forLoc)) {
             uniqueVars.insert(VD);
@@ -397,13 +409,25 @@ std::vector<std::pair<std::string, std::string>> dacppTranslator::DacppFile::get
 void dacppTranslator::DacppFile::analyzeBufferRegionPlan() {
     bufferRegionPlan = BufferRegionPlan{};
 
-    if (!this->Context || !this->forStatement || this->exprs.size() != 1 ||
+    const clang::Stmt* outerLoop = this->loopStatement ? this->loopStatement :
+        static_cast<const clang::Stmt*>(this->forStatement);
+    if (!this->Context || !outerLoop || this->exprs.size() != 1 ||
         this->dacExprs.size() != 1) {
         bufferRegionPlan.disableReason = "requires exactly one <-> inside one outer loop";
         return;
     }
 
-    const auto* body = llvm::dyn_cast_or_null<clang::CompoundStmt>(this->forStatement->getBody());
+    const clang::Stmt* rawBody = nullptr;
+    if (const auto* FS = llvm::dyn_cast<clang::ForStmt>(outerLoop)) {
+        rawBody = FS->getBody();
+    } else if (const auto* WS = llvm::dyn_cast<clang::WhileStmt>(outerLoop)) {
+        rawBody = WS->getBody();
+    } else {
+        bufferRegionPlan.disableReason = "outer loop must be for or while";
+        return;
+    }
+
+    const auto* body = llvm::dyn_cast_or_null<clang::CompoundStmt>(rawBody);
     if (!body) {
         bufferRegionPlan.disableReason = "outer loop body must be a compound statement";
         return;
@@ -420,7 +444,7 @@ void dacppTranslator::DacppFile::analyzeBufferRegionPlan() {
 
     int exprCountInOuterFor = 0;
     for (const auto* candidate : this->dacExprs) {
-        if (candidate && rangeContains(SM, this->forStatement->getSourceRange(),
+        if (candidate && rangeContains(SM, outerLoop->getSourceRange(),
                                        candidate->getSourceRange())) {
             ++exprCountInOuterFor;
         }
@@ -532,7 +556,8 @@ void dacppTranslator::DacppFile::analyzeBufferRegionPlan() {
     bufferRegionPlan.enabled = true;
     bufferRegionPlan.exprIndex = 0;
     bufferRegionPlan.parentFunction = this->node;
-    bufferRegionPlan.outerFor = this->forStatement;
+    bufferRegionPlan.outerLoop = outerLoop;
+    bufferRegionPlan.outerFor = llvm::dyn_cast<clang::ForStmt>(outerLoop);
     bufferRegionPlan.dacExpr = dacExpr;
     bufferRegionPlan.siblingStmts = std::move(siblingStmts);
     bufferRegionPlan.capturedVars = this->getForStatementVars();

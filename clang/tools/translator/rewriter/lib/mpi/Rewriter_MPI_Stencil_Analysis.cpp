@@ -919,10 +919,6 @@ DistributedStencilSitePlan analyzeDistributedStencilSite(
         plan.distributedTensors.insert(resolveActualTensorName(
             shell->getParam(paramIdx)->getName(), dacExpr));
     }
-    if (hasMatrixParam && shell->getNumShellParams() != 2) {
-        plan.disableReason = "phase-c matrix v1 supports two tensor sites only";
-        return plan;
-    }
     if (hasVectorParam && hasMatrixParam) {
         plan.disableReason = "phase-c does not support mixed Vector/Matrix sites";
         return plan;

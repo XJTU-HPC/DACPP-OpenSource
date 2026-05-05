@@ -307,6 +307,11 @@ std::string buildRootCentricPostRegionHelpers(
     if (!plan.enabled || plan.dacExpr != dacExpr) {
         return "";
     }
+    const auto sitePlan = analyzeDistributedStencilSite(
+        dacppFile, shell, calc, dacExpr);
+    if (!sitePlan.supported || !sitePlan.hasRootBridge) {
+        return "";
+    }
 
     std::set<const clang::Stmt*> distributedFollowupStmts;
     const auto distributedRegions =
@@ -330,8 +335,6 @@ std::string buildRootCentricPostRegionHelpers(
                 dacppFile, shell, calc, plan.siblingStmts[stmtIdx], stmtIdx,
                 ctxTypeName, shellSignature);
         } else if (helper.empty() && distributedFollowupStmts.count(plan.siblingStmts[stmtIdx]) != 0) {
-            const auto sitePlan = analyzeDistributedStencilSite(
-                dacppFile, shell, calc, dacExpr);
             if (sitePlan.hasRootBridge) {
                 helper = buildRootSerialStmtHelper(
                     dacppFile, shell, calc, plan.siblingStmts[stmtIdx], stmtIdx,

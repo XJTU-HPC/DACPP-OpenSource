@@ -252,8 +252,10 @@ public:
       };
       checkArgRefs(shellCall->getArg(argIdx));
     }
-    if (canHoistStencilInit &&
+    if (MpiOpt && canHoistStencilInit &&
         (llvm::isa<clang::ForStmt>(outer) || llvm::isa<clang::WhileStmt>(outer))) {
+      dacppFile->setLoopStatement(outer);
+      dacppFile->collectVarsFromForStatement();
       dacppFile->addMPIStencilSite(exprIndex, dacExpr, outer);
     }
 
@@ -262,6 +264,8 @@ public:
       dacppFile->setForStatement(FS);
       dacppFile->collectVarsFromForStatement();
       llvm::outs() << "[DAC-Translator] Found outermost loop for <->\n";
+    } else if (llvm::isa<clang::WhileStmt>(outer)) {
+      llvm::outs() << "[DAC-Translator] Found outermost while loop for <->\n";
     } else {
       llvm::outs() << "[DAC-Translator] <-> NOT inside any loop\n";
     }

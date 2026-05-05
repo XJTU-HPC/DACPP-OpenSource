@@ -1,0 +1,26 @@
+LOG_CONTAINS:[DAC-Translator] Found outermost while loop for <->
+LOG_CONTAINS:[DACPP][MPI][PhaseC] site jacobiShell_jacobi partial-exchange disabled: phase-c does not support mixed Vector/Matrix sites
+LOG_CONTAINS:[DACPP][MPI][FallbackCache] input A cached in init
+LOG_CONTAINS:[DACPP][MPI][FallbackCache] input b cached in init
+LOG_CONTAINS:[DACPP][MPI][FallbackCache] input x cached in init refresh-from x_new
+LOG_CONTAINS:[DACPP][MPI][FallbackCache] input nums cached in init
+LOG_CONTAINS:[DACPP][MPI] output x_new sync=all-ranks-needed
+SYCL_CONTAINS:ctx.use_partial_exchange = false;
+SYCL_CONTAINS:ctx.partial_exchange_disable_reason = "phase-c does not support mixed Vector/Matrix sites";
+SYCL_CONTAINS:if (!ctx.use_partial_exchange) {
+SYCL_CONTAINS:// DACPP fallback cached input: A
+SYCL_CONTAINS:// DACPP fallback cached input: b
+SYCL_CONTAINS:// DACPP fallback cached input: nums
+SYCL_CONTAINS:// DACPP fallback loop-carried input: x <- x_new
+SYCL_CONTAINS:// DACPP fallback cached input reused: A
+SYCL_CONTAINS:// DACPP fallback cached input reused: b
+SYCL_CONTAINS:// DACPP fallback cached input reused: nums
+SYCL_CONTAINS:// DACPP fallback loop-carried input reused: x
+SYCL_CONTAINS:// DACPP fallback loop-carried input refreshed: x <- x_new
+SYCL_CONTAINS:pack_values_by_globals_parallel_range_into(global_out_x_new, ctx.plan_x.pack.globals.data(), ctx.plan_x.pack.globals.size(), ctx.local_x);
+SYCL_NOT_CONTAINS:x.tensor2Array(global_x);
+SYCL_CONTAINS:MPI_Scatterv
+SYCL_CONTAINS:MPI_Gatherv
+SYCL_CONTAINS:MPI_Bcast
+SYCL_NOT_CONTAINS:__dacpp_mpi_region_jacobiShell_jacobi
+SYCL_NOT_CONTAINS:publish_local_writes_with_halo_or_exchange

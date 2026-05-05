@@ -3,6 +3,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include "clang/AST/ExprCXX.h"
+#include "clang/AST/RecursiveASTVisitor.h"
 #include "Rewriter_MPI_Stencil_Common.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -42,6 +44,472 @@ std::string buildParamNameList(Shell* shell) {
         args += shell->getParam(paramIdx)->getName();
     }
     return args;
+}
+
+class NamedDeclRefVisitor
+    : public clang::RecursiveASTVisitor<NamedDeclRefVisitor> {
+public:
+    explicit NamedDeclRefVisitor(std::string targetName)
+        : targetName_(std::move(targetName)) {}
+
+    bool VisitDeclRefExpr(clang::DeclRefExpr* dre) {
+        if (dre && dre->getDecl() &&
+            dre->getDecl()->getNameAsString() == targetName_) {
+            found_ = true;
+        }
+        return !found_;
+    }
+
+    bool found() const { return found_; }
+
+private:
+    std::string targetName_;
+    bool found_ = false;
+};
+
+bool exprReferencesName(const clang::Expr* expr, const std::string& name) {
+    if (!expr || name.empty()) {
+        return false;
+    }
+    NamedDeclRefVisitor visitor(name);
+    visitor.TraverseStmt(const_cast<clang::Expr*>(expr));
+    return visitor.found();
+}
+
+const clang::Expr* stripExpr(const clang::Expr* expr) {
+    while (expr) {
+        expr = expr->IgnoreParenImpCasts();
+        if (const auto* materialized =
+                llvm::dyn_cast<clang::MaterializeTemporaryExpr>(expr)) {
+            expr = materialized->getSubExpr();
+            continue;
+        }
+        if (const auto* cleanup = llvm::dyn_cast<clang::ExprWithCleanups>(expr)) {
+            expr = cleanup->getSubExpr();
+            continue;
+        }
+        if (const auto* bind = llvm::dyn_cast<clang::CXXBindTemporaryExpr>(expr)) {
+            expr = bind->getSubExpr();
+            continue;
+        }
+        return expr;
+    }
+    return nullptr;
+}
+
+std::string directBaseDeclName(const clang::Expr* expr) {
+    expr = stripExpr(expr);
+    if (!expr) {
+        return "";
+    }
+    if (const auto* dre = llvm::dyn_cast<clang::DeclRefExpr>(expr)) {
+        return dre->getDecl() ? dre->getDecl()->getNameAsString() : "";
+    }
+    if (const auto* subscript = llvm::dyn_cast<clang::ArraySubscriptExpr>(expr)) {
+        return directBaseDeclName(subscript->getBase());
+    }
+    if (const auto* member = llvm::dyn_cast<clang::MemberExpr>(expr)) {
+        return directBaseDeclName(member->getBase());
+    }
+    if (const auto* unary = llvm::dyn_cast<clang::UnaryOperator>(expr)) {
+        if (unary->getOpcode() == clang::UO_Deref ||
+            unary->getOpcode() == clang::UO_AddrOf) {
+            return directBaseDeclName(unary->getSubExpr());
+        }
+    }
+    if (const auto* opCall = llvm::dyn_cast<clang::CXXOperatorCallExpr>(expr)) {
+        if ((opCall->getOperator() == clang::OO_Subscript ||
+             opCall->getOperator() == clang::OO_Call) &&
+            opCall->getNumArgs() > 0) {
+            return directBaseDeclName(opCall->getArg(0));
+        }
+    }
+    if (const auto* memberCall =
+            llvm::dyn_cast<clang::CXXMemberCallExpr>(expr)) {
+        return directBaseDeclName(memberCall->getImplicitObjectArgument());
+    }
+    return "";
+}
+
+bool isWholeDeclExprNamed(const clang::Expr* expr, const std::string& name) {
+    expr = stripExpr(expr);
+    const auto* dre = llvm::dyn_cast_or_null<clang::DeclRefExpr>(expr);
+    return dre && dre->getDecl() && dre->getDecl()->getNameAsString() == name;
+}
+
+class TensorWriteVisitor
+    : public clang::RecursiveASTVisitor<TensorWriteVisitor> {
+public:
+    explicit TensorWriteVisitor(std::string targetName)
+        : targetName_(std::move(targetName)) {}
+
+    bool TraverseBinaryOperator(clang::BinaryOperator* binary) {
+        if (!binary || hasWrite_) {
+            return !hasWrite_;
+        }
+        if (binary->isAssignmentOp()) {
+            if (exprReferencesName(binary->getLHS(), targetName_)) {
+                hasWrite_ = true;
+                return false;
+            }
+            TraverseStmt(binary->getRHS());
+            return !hasWrite_;
+        }
+        return clang::RecursiveASTVisitor<TensorWriteVisitor>::
+            TraverseBinaryOperator(binary);
+    }
+
+    bool TraverseUnaryOperator(clang::UnaryOperator* unary) {
+        if (!unary || hasWrite_) {
+            return !hasWrite_;
+        }
+        if (unary->isIncrementDecrementOp() &&
+            exprReferencesName(unary->getSubExpr(), targetName_)) {
+            hasWrite_ = true;
+            return false;
+        }
+        return clang::RecursiveASTVisitor<TensorWriteVisitor>::
+            TraverseUnaryOperator(unary);
+    }
+
+    bool TraverseCXXOperatorCallExpr(clang::CXXOperatorCallExpr* opCall) {
+        if (!opCall || hasWrite_) {
+            return !hasWrite_;
+        }
+        if (opCall->isAssignmentOp()) {
+            if (opCall->getNumArgs() > 0 &&
+                exprReferencesName(opCall->getArg(0), targetName_)) {
+                hasWrite_ = true;
+                return false;
+            }
+            for (unsigned argIdx = 1; argIdx < opCall->getNumArgs(); ++argIdx) {
+                TraverseStmt(opCall->getArg(argIdx));
+                if (hasWrite_) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        return clang::RecursiveASTVisitor<TensorWriteVisitor>::
+            TraverseCXXOperatorCallExpr(opCall);
+    }
+
+    bool TraverseCXXMemberCallExpr(clang::CXXMemberCallExpr* call) {
+        if (!call || hasWrite_) {
+            return !hasWrite_;
+        }
+        const clang::CXXMethodDecl* method = call->getMethodDecl();
+        if (method && !method->isConst() &&
+            exprReferencesName(call->getImplicitObjectArgument(), targetName_)) {
+            hasWrite_ = true;
+            return false;
+        }
+        return clang::RecursiveASTVisitor<TensorWriteVisitor>::
+            TraverseCXXMemberCallExpr(call);
+    }
+
+    bool TraverseCallExpr(clang::CallExpr* call) {
+        if (!call || hasWrite_) {
+            return !hasWrite_;
+        }
+        if (!llvm::isa<clang::CXXMemberCallExpr>(call) &&
+            !llvm::isa<clang::CXXOperatorCallExpr>(call)) {
+            for (const clang::Expr* arg : call->arguments()) {
+                if (exprReferencesName(arg, targetName_)) {
+                    hasWrite_ = true;
+                    return false;
+                }
+            }
+        }
+        return clang::RecursiveASTVisitor<TensorWriteVisitor>::
+            TraverseCallExpr(call);
+    }
+
+    bool hasWrite() const { return hasWrite_; }
+
+private:
+    std::string targetName_;
+    bool hasWrite_ = false;
+};
+
+bool stmtWritesTensorName(const clang::Stmt* stmt, const std::string& name) {
+    if (!stmt || name.empty()) {
+        return false;
+    }
+    TensorWriteVisitor visitor(name);
+    visitor.TraverseStmt(const_cast<clang::Stmt*>(stmt));
+    return visitor.hasWrite();
+}
+
+class LoopCarriedInputAssignmentVisitor
+    : public clang::RecursiveASTVisitor<LoopCarriedInputAssignmentVisitor> {
+public:
+    explicit LoopCarriedInputAssignmentVisitor(std::string targetName)
+        : targetName_(std::move(targetName)) {}
+
+    bool TraverseBinaryOperator(clang::BinaryOperator* binary) {
+        if (!binary || invalid_) {
+            return !invalid_;
+        }
+        if (binary->isAssignmentOp() && exprReferencesName(binary->getLHS(),
+                                                           targetName_)) {
+            recordTargetWrite(binary->getLHS());
+            return !invalid_;
+        }
+        return clang::RecursiveASTVisitor<LoopCarriedInputAssignmentVisitor>::
+            TraverseBinaryOperator(binary);
+    }
+
+    bool TraverseUnaryOperator(clang::UnaryOperator* unary) {
+        if (!unary || invalid_) {
+            return !invalid_;
+        }
+        if (unary->isIncrementDecrementOp() &&
+            directBaseDeclName(unary->getSubExpr()) == targetName_) {
+            invalid_ = true;
+            return false;
+        }
+        return clang::RecursiveASTVisitor<LoopCarriedInputAssignmentVisitor>::
+            TraverseUnaryOperator(unary);
+    }
+
+    bool TraverseCXXOperatorCallExpr(clang::CXXOperatorCallExpr* opCall) {
+        if (!opCall || invalid_) {
+            return !invalid_;
+        }
+        if (opCall->isAssignmentOp() && opCall->getNumArgs() > 0 &&
+            exprReferencesName(opCall->getArg(0), targetName_)) {
+            recordTargetWrite(opCall->getArg(0));
+            return !invalid_;
+        }
+        if ((opCall->getOperator() == clang::OO_PlusPlus ||
+             opCall->getOperator() == clang::OO_MinusMinus) &&
+            opCall->getNumArgs() > 0 &&
+            directBaseDeclName(opCall->getArg(0)) == targetName_) {
+            invalid_ = true;
+            return false;
+        }
+        return clang::RecursiveASTVisitor<LoopCarriedInputAssignmentVisitor>::
+            TraverseCXXOperatorCallExpr(opCall);
+    }
+
+    bool TraverseCXXMemberCallExpr(clang::CXXMemberCallExpr* call) {
+        if (!call || invalid_) {
+            return !invalid_;
+        }
+        if (directBaseDeclName(call->getImplicitObjectArgument()) == targetName_) {
+            const clang::CXXMethodDecl* method = call->getMethodDecl();
+            if (!method || !method->isConst()) {
+                invalid_ = true;
+                return false;
+            }
+        }
+        return clang::RecursiveASTVisitor<LoopCarriedInputAssignmentVisitor>::
+            TraverseCXXMemberCallExpr(call);
+    }
+
+    bool TraverseCallExpr(clang::CallExpr* call) {
+        if (!call || invalid_) {
+            return !invalid_;
+        }
+        if (!llvm::isa<clang::CXXMemberCallExpr>(call) &&
+            !llvm::isa<clang::CXXOperatorCallExpr>(call)) {
+            for (const clang::Expr* arg : call->arguments()) {
+                if (directBaseDeclName(arg) == targetName_) {
+                    invalid_ = true;
+                    return false;
+                }
+            }
+        }
+        return clang::RecursiveASTVisitor<LoopCarriedInputAssignmentVisitor>::
+            TraverseCallExpr(call);
+    }
+
+    bool hasAnyTargetWrite() const { return targetWriteCount_ > 0; }
+    bool hasUnsafeTargetWrite() const { return invalid_; }
+    int targetWriteCount() const { return targetWriteCount_; }
+
+private:
+    void recordTargetWrite(const clang::Expr* lhs) {
+        ++targetWriteCount_;
+        if (!isWholeDeclExprNamed(lhs, targetName_)) {
+            invalid_ = true;
+        }
+    }
+
+    std::string targetName_;
+    bool invalid_ = false;
+    int targetWriteCount_ = 0;
+};
+
+bool stmtIsDirectWholeTensorAssignmentFromAny(
+    const clang::Stmt* stmt,
+    const std::string& targetName,
+    const std::unordered_map<std::string, int>& sourceParamByActualName,
+    int& sourceParamIndex) {
+    const auto* expr = llvm::dyn_cast_or_null<clang::Expr>(stmt);
+    expr = stripExpr(expr);
+    if (!expr) {
+        return false;
+    }
+
+    const clang::Expr* lhs = nullptr;
+    const clang::Expr* rhs = nullptr;
+    bool simpleAssign = false;
+    if (const auto* binary = llvm::dyn_cast<clang::BinaryOperator>(expr)) {
+        if (binary->isAssignmentOp()) {
+            lhs = binary->getLHS();
+            rhs = binary->getRHS();
+            simpleAssign = binary->getOpcode() == clang::BO_Assign;
+        }
+    } else if (const auto* opCall =
+                   llvm::dyn_cast<clang::CXXOperatorCallExpr>(expr)) {
+        if (opCall->isAssignmentOp() && opCall->getNumArgs() > 1) {
+            lhs = opCall->getArg(0);
+            rhs = opCall->getArg(1);
+            simpleAssign = opCall->getOperator() == clang::OO_Equal;
+        }
+    }
+
+    if (!simpleAssign || !isWholeDeclExprNamed(lhs, targetName)) {
+        return false;
+    }
+    const std::string sourceName = directBaseDeclName(rhs);
+    auto it = sourceParamByActualName.find(sourceName);
+    if (it == sourceParamByActualName.end()) {
+        return false;
+    }
+    sourceParamIndex = it->second;
+    return true;
+}
+
+bool fallbackOutputBroadcasts(DacppFile* dacppFile,
+                              const std::string& tensorName,
+                              const clang::BinaryOperator* dacExpr) {
+    const mpi_rewriter::OutputSyncRequirement syncRequirement =
+        mpi_rewriter::classifyOutputSyncRequirement(dacppFile, tensorName, dacExpr);
+    return syncRequirement ==
+               mpi_rewriter::OutputSyncRequirement::DistributedFollowup
+               ? true
+               : mpi_rewriter::requiresBroadcast(syncRequirement);
+}
+
+int findLoopCarriedInputSourceParam(
+    DacppFile* dacppFile,
+    Shell* shell,
+    Calc* calc,
+    const clang::BinaryOperator* dacExpr,
+    int targetParamIndex,
+    const std::vector<std::string>& actualTensorNames,
+    const std::vector<IOTYPE>& transportModes,
+    const std::vector<bool>& aliasesAnyOtherParam) {
+    if (!dacppFile || !shell || !calc || !dacExpr || targetParamIndex < 0 ||
+        targetParamIndex >= static_cast<int>(actualTensorNames.size()) ||
+        targetParamIndex >= static_cast<int>(transportModes.size()) ||
+        transportModes[targetParamIndex] != IOTYPE::READ ||
+        aliasesAnyOtherParam[static_cast<std::size_t>(targetParamIndex)]) {
+        return -1;
+    }
+
+    const auto& regionPlan = dacppFile->getBufferRegionPlan();
+    if (!regionPlan.enabled || regionPlan.dacExpr != dacExpr ||
+        regionPlan.siblingStmts.empty()) {
+        return -1;
+    }
+
+    const std::string& targetActualName =
+        actualTensorNames[static_cast<std::size_t>(targetParamIndex)];
+    if (targetActualName.empty()) {
+        return -1;
+    }
+
+    std::unordered_map<std::string, int> sourceParamByActualName;
+    for (int sourceIdx = 0; sourceIdx < shell->getNumShellParams(); ++sourceIdx) {
+        if (sourceIdx == targetParamIndex ||
+            sourceIdx >= static_cast<int>(transportModes.size()) ||
+            sourceIdx >= static_cast<int>(actualTensorNames.size()) ||
+            transportModes[sourceIdx] != IOTYPE::WRITE ||
+            aliasesAnyOtherParam[static_cast<std::size_t>(sourceIdx)] ||
+            calc->getParam(sourceIdx)->getBasicType() !=
+                calc->getParam(targetParamIndex)->getBasicType() ||
+            mpi_rewriter::inferViewRank(shell->getShellParam(sourceIdx),
+                                        calc->getParam(sourceIdx)) !=
+                mpi_rewriter::inferViewRank(shell->getShellParam(targetParamIndex),
+                                            calc->getParam(targetParamIndex)) ||
+            !fallbackOutputBroadcasts(dacppFile, shell->getParam(sourceIdx)->getName(),
+                                      dacExpr)) {
+            continue;
+        }
+        const std::string& sourceActualName =
+            actualTensorNames[static_cast<std::size_t>(sourceIdx)];
+        if (sourceActualName.empty() || sourceActualName == targetActualName) {
+            continue;
+        }
+        bool sourceWrittenBySibling = false;
+        for (const clang::Stmt* stmt : regionPlan.siblingStmts) {
+            if (stmtWritesTensorName(stmt, sourceActualName)) {
+                sourceWrittenBySibling = true;
+                break;
+            }
+        }
+        if (!sourceWrittenBySibling) {
+            sourceParamByActualName.emplace(sourceActualName, sourceIdx);
+        }
+    }
+    if (sourceParamByActualName.empty()) {
+        return -1;
+    }
+
+    int directAssignmentSourceIdx = -1;
+    bool sawDirectAssignment = false;
+    LoopCarriedInputAssignmentVisitor writeVisitor(targetActualName);
+    for (const clang::Stmt* stmt : regionPlan.siblingStmts) {
+        int candidateSourceIdx = -1;
+        if (stmtIsDirectWholeTensorAssignmentFromAny(
+                stmt, targetActualName, sourceParamByActualName,
+                candidateSourceIdx)) {
+            if (sawDirectAssignment ||
+                (directAssignmentSourceIdx >= 0 &&
+                 directAssignmentSourceIdx != candidateSourceIdx)) {
+                return -1;
+            }
+            sawDirectAssignment = true;
+            directAssignmentSourceIdx = candidateSourceIdx;
+        }
+
+        writeVisitor.TraverseStmt(const_cast<clang::Stmt*>(stmt));
+        if (writeVisitor.hasUnsafeTargetWrite()) {
+            return -1;
+        }
+    }
+    if (writeVisitor.targetWriteCount() != 1) {
+        return -1;
+    }
+    return sawDirectAssignment && directAssignmentSourceIdx >= 0
+               ? directAssignmentSourceIdx
+               : -1;
+}
+
+bool isFallbackInputCacheCandidate(DacppFile* dacppFile,
+                                   const clang::BinaryOperator* dacExpr,
+                                   const std::string& actualTensorName,
+                                   IOTYPE transportMode) {
+    if (!dacppFile || !dacExpr || actualTensorName.empty() ||
+        transportMode != IOTYPE::READ) {
+        return false;
+    }
+
+    const auto& regionPlan = dacppFile->getBufferRegionPlan();
+    if (!regionPlan.enabled || regionPlan.dacExpr != dacExpr) {
+        return false;
+    }
+
+    for (const clang::Stmt* stmt : regionPlan.siblingStmts) {
+        if (stmtWritesTensorName(stmt, actualTensorName)) {
+            return false;
+        }
+    }
+    return true;
 }
 
 std::string resolveActualTensorName(const std::string& shellParamName,
@@ -210,6 +678,57 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
     const auto splitMeta = mpi_rewriter::collectSplitBindMeta(shell);
     const auto distributedSitePlan =
         mpi_rewriter::analyzeDistributedStencilSite(dacppFile, shell, calc, dacExpr);
+    std::vector<bool> fallbackInputCacheable(
+        static_cast<std::size_t>(shell->getNumShellParams()), false);
+    std::vector<int> fallbackInputRefreshSource(
+        static_cast<std::size_t>(shell->getNumShellParams()), -1);
+    std::vector<std::string> actualTensorNames(
+        static_cast<std::size_t>(shell->getNumShellParams()));
+    std::vector<bool> aliasesAnyOtherParam(
+        static_cast<std::size_t>(shell->getNumShellParams()), false);
+    for (int paramIdx = 0; paramIdx < shell->getNumShellParams(); ++paramIdx) {
+        actualTensorNames[static_cast<std::size_t>(paramIdx)] =
+            resolveActualTensorName(shell->getParam(paramIdx)->getName(), dacExpr);
+    }
+    for (int paramIdx = 0; paramIdx < shell->getNumShellParams(); ++paramIdx) {
+        const std::string& actualTensorName =
+            actualTensorNames[static_cast<std::size_t>(paramIdx)];
+        bool aliasesMutableParam = false;
+        for (int otherIdx = 0; otherIdx < shell->getNumShellParams(); ++otherIdx) {
+            if (otherIdx == paramIdx) {
+                continue;
+            }
+            if (actualTensorNames[static_cast<std::size_t>(otherIdx)] ==
+                    actualTensorName &&
+                transportModes[otherIdx] != IOTYPE::READ) {
+                aliasesMutableParam = true;
+            }
+            if (actualTensorNames[static_cast<std::size_t>(otherIdx)] ==
+                actualTensorName) {
+                aliasesAnyOtherParam[static_cast<std::size_t>(paramIdx)] = true;
+            }
+        }
+        fallbackInputCacheable[static_cast<std::size_t>(paramIdx)] =
+            !aliasesMutableParam &&
+            !distributedSitePlan.supported &&
+            isFallbackInputCacheCandidate(
+                dacppFile, dacExpr, actualTensorName, transportModes[paramIdx]);
+    }
+    if (!distributedSitePlan.supported) {
+        for (int paramIdx = 0; paramIdx < shell->getNumShellParams(); ++paramIdx) {
+            if (fallbackInputCacheable[static_cast<std::size_t>(paramIdx)]) {
+                continue;
+            }
+            const int sourceIdx = findLoopCarriedInputSourceParam(
+                dacppFile, shell, calc, dacExpr, paramIdx, actualTensorNames,
+                transportModes, aliasesAnyOtherParam);
+            if (sourceIdx >= 0) {
+                fallbackInputCacheable[static_cast<std::size_t>(paramIdx)] = true;
+                fallbackInputRefreshSource[static_cast<std::size_t>(paramIdx)] =
+                    sourceIdx;
+            }
+        }
+    }
 
     if (distributedSitePlan.supported) {
         llvm::outs() << "[DACPP][MPI][PhaseC] site " << wrapper
@@ -222,6 +741,20 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
         llvm::outs() << "[DACPP][MPI][PhaseC] site " << wrapper
                      << " partial-exchange disabled: "
                      << distributedSitePlan.disableReason << "\n";
+    }
+    for (int paramIdx = 0; paramIdx < shell->getNumShellParams(); ++paramIdx) {
+        if (fallbackInputCacheable[static_cast<std::size_t>(paramIdx)]) {
+            llvm::outs() << "[DACPP][MPI][FallbackCache] input "
+                         << shell->getParam(paramIdx)->getName()
+                         << " cached in init";
+            const int sourceIdx =
+                fallbackInputRefreshSource[static_cast<std::size_t>(paramIdx)];
+            if (sourceIdx >= 0) {
+                llvm::outs() << " refresh-from "
+                             << shell->getParam(sourceIdx)->getName();
+            }
+            llvm::outs() << "\n";
+        }
     }
 
     std::string code;
@@ -290,6 +823,35 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
             if (mpi_rewriter::usesByteTransport(calc->getParam(paramIdx)->getBasicType())) {
                 code += "    if (ctx.mpi_rank == 0) dacpp::mpi::init_layout_byte_counts(ctx.input_layout_" +
                         calcName + ", sizeof(" + calc->getParam(paramIdx)->getBasicType() + "));\n";
+            }
+            if (fallbackInputCacheable[static_cast<std::size_t>(paramIdx)]) {
+                const std::string& tensorName = shell->getParam(paramIdx)->getName();
+                const std::string mpiType =
+                    mpi_rewriter::mpiDatatypeFor(calc->getParam(paramIdx)->getBasicType());
+                const int sourceIdx =
+                    fallbackInputRefreshSource[static_cast<std::size_t>(paramIdx)];
+                if (sourceIdx >= 0) {
+                    code += "    // DACPP fallback loop-carried input: " +
+                            tensorName + " <- " +
+                            shell->getParam(sourceIdx)->getName() + "\n";
+                } else {
+                    code += "    // DACPP fallback cached input: " + tensorName + "\n";
+                }
+                code += "    if (ctx.mpi_rank == 0) {\n";
+                code += "        " + tensorName + ".tensor2Array(ctx.global_" + calcName + ");\n";
+                code += "        dacpp::mpi::pack_values_by_globals_parallel_range_into(ctx.global_" +
+                        calcName + ", ctx.input_layout_" + calcName +
+                        ".globals.data(), ctx.input_layout_" + calcName +
+                        ".globals.size(), ctx.sendbuf_" + calcName + ");\n";
+                code += "    }\n";
+                if (mpi_rewriter::usesByteTransport(calc->getParam(paramIdx)->getBasicType())) {
+                    code += "    MPI_Scatterv(ctx.mpi_rank == 0 ? ctx.sendbuf_" + calcName + ".data() : nullptr, ctx.mpi_rank == 0 ? ctx.input_layout_" + calcName + ".byte_counts.data() : nullptr, ctx.mpi_rank == 0 ? ctx.input_layout_" + calcName + ".byte_displs.data() : nullptr, " + mpiType + ", ctx.local_" + calcName + ".data(), " +
+                            mpi_rewriter::mpiPayloadCountExpr("ctx.input_layout_" + calcName + ".local_count",
+                                                              calc->getParam(paramIdx)->getBasicType()) +
+                            ", " + mpiType + ", 0, MPI_COMM_WORLD);\n";
+                } else {
+                    code += "    MPI_Scatterv(ctx.mpi_rank == 0 ? ctx.sendbuf_" + calcName + ".data() : nullptr, ctx.mpi_rank == 0 ? ctx.input_layout_" + calcName + ".counts.data() : nullptr, ctx.mpi_rank == 0 ? ctx.input_layout_" + calcName + ".displs.data() : nullptr, " + mpiType + ", ctx.local_" + calcName + ".data(), ctx.input_layout_" + calcName + ".local_count, " + mpiType + ", 0, MPI_COMM_WORLD);\n";
+                }
             }
         }
         if (transportModes[paramIdx] != IOTYPE::READ) {
@@ -498,23 +1060,34 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
 
         code += "    auto& " + localName + " = ctx.local_" + calcName + ";\n";
         if (mode != IOTYPE::WRITE) {
-            code += "    auto& input_layout_" + calcName + " = ctx.input_layout_" + calcName + ";\n";
-            code += "    auto& global_" + calcName + " = ctx.global_" + calcName + ";\n";
-            code += "    auto& sendbuf_" + calcName + " = ctx.sendbuf_" + calcName + ";\n";
-            code += "    if (mpi_rank == 0) {\n";
-            code += "        " + tensorName + ".tensor2Array(global_" + calcName + ");\n";
-            code += "        dacpp::mpi::pack_values_by_globals_parallel_range_into(global_" + calcName +
-                    ", input_layout_" + calcName + ".globals.data(), input_layout_" + calcName +
-                    ".globals.size(), sendbuf_" + calcName + ");\n";
-            code += "    }\n";
-            code += "    " + localName + ".resize(static_cast<std::size_t>(input_layout_" + calcName + ".local_count));\n";
-            if (mpi_rewriter::usesByteTransport(calcParam->getBasicType())) {
-                code += "    MPI_Scatterv(mpi_rank == 0 ? sendbuf_" + calcName + ".data() : nullptr, mpi_rank == 0 ? input_layout_" + calcName + ".byte_counts.data() : nullptr, mpi_rank == 0 ? input_layout_" + calcName + ".byte_displs.data() : nullptr, " + mpiType + ", " + localName + ".data(), " +
-                        mpi_rewriter::mpiPayloadCountExpr("input_layout_" + calcName + ".local_count",
-                                                          calcParam->getBasicType()) +
-                        ", " + mpiType + ", 0, MPI_COMM_WORLD);\n";
+            if (fallbackInputCacheable[static_cast<std::size_t>(paramIdx)]) {
+                const int sourceIdx =
+                    fallbackInputRefreshSource[static_cast<std::size_t>(paramIdx)];
+                if (sourceIdx >= 0) {
+                    code += "    // DACPP fallback loop-carried input reused: " +
+                            tensorName + "\n";
+                } else {
+                    code += "    // DACPP fallback cached input reused: " + tensorName + "\n";
+                }
             } else {
-                code += "    MPI_Scatterv(mpi_rank == 0 ? sendbuf_" + calcName + ".data() : nullptr, mpi_rank == 0 ? input_layout_" + calcName + ".counts.data() : nullptr, mpi_rank == 0 ? input_layout_" + calcName + ".displs.data() : nullptr, " + mpiType + ", " + localName + ".data(), input_layout_" + calcName + ".local_count, " + mpiType + ", 0, MPI_COMM_WORLD);\n";
+                code += "    auto& input_layout_" + calcName + " = ctx.input_layout_" + calcName + ";\n";
+                code += "    auto& global_" + calcName + " = ctx.global_" + calcName + ";\n";
+                code += "    auto& sendbuf_" + calcName + " = ctx.sendbuf_" + calcName + ";\n";
+                code += "    if (mpi_rank == 0) {\n";
+                code += "        " + tensorName + ".tensor2Array(global_" + calcName + ");\n";
+                code += "        dacpp::mpi::pack_values_by_globals_parallel_range_into(global_" + calcName +
+                        ", input_layout_" + calcName + ".globals.data(), input_layout_" + calcName +
+                        ".globals.size(), sendbuf_" + calcName + ");\n";
+                code += "    }\n";
+                code += "    " + localName + ".resize(static_cast<std::size_t>(input_layout_" + calcName + ".local_count));\n";
+                if (mpi_rewriter::usesByteTransport(calcParam->getBasicType())) {
+                    code += "    MPI_Scatterv(mpi_rank == 0 ? sendbuf_" + calcName + ".data() : nullptr, mpi_rank == 0 ? input_layout_" + calcName + ".byte_counts.data() : nullptr, mpi_rank == 0 ? input_layout_" + calcName + ".byte_displs.data() : nullptr, " + mpiType + ", " + localName + ".data(), " +
+                            mpi_rewriter::mpiPayloadCountExpr("input_layout_" + calcName + ".local_count",
+                                                              calcParam->getBasicType()) +
+                            ", " + mpiType + ", 0, MPI_COMM_WORLD);\n";
+                } else {
+                    code += "    MPI_Scatterv(mpi_rank == 0 ? sendbuf_" + calcName + ".data() : nullptr, mpi_rank == 0 ? input_layout_" + calcName + ".counts.data() : nullptr, mpi_rank == 0 ? input_layout_" + calcName + ".displs.data() : nullptr, " + mpiType + ", " + localName + ".data(), input_layout_" + calcName + ".local_count, " + mpiType + ", 0, MPI_COMM_WORLD);\n";
+                }
             }
         } else {
             code += "    " + localName + ".assign(" + packName + ".globals.size(), " + calcParam->getBasicType() + "{});\n";
@@ -660,6 +1233,22 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
         } else {
             code += "{\n";
             code += "    }\n";
+        }
+        for (int readerIdx = 0; readerIdx < shell->getNumShellParams(); ++readerIdx) {
+            if (fallbackInputRefreshSource[static_cast<std::size_t>(readerIdx)] !=
+                paramIdx) {
+                continue;
+            }
+            const std::string& readerCalcName =
+                calc->getParam(readerIdx)->getName();
+            const std::string& readerTensorName =
+                shell->getParam(readerIdx)->getName();
+            code += "    // DACPP fallback loop-carried input refreshed: " +
+                    readerTensorName + " <- " + tensorName + "\n";
+            code += "    dacpp::mpi::pack_values_by_globals_parallel_range_into(global_out_" +
+                    calcName + ", ctx.plan_" + readerCalcName +
+                    ".pack.globals.data(), ctx.plan_" + readerCalcName +
+                    ".pack.globals.size(), ctx.local_" + readerCalcName + ");\n";
         }
     }
     if (distributedSitePlan.supported) {

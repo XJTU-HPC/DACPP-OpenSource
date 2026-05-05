@@ -20,6 +20,7 @@ MPI_TESTS=(
     "DFT1.0"
     "liuliang1.0"
     "MDP1.0"
+    "jacobi1.0"
     "mandel1.0"
     "imageAdjustment1.0"
     "vectorAddCombo"

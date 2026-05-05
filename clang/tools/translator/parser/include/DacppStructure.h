@@ -23,6 +23,7 @@ struct BufferRegionPlan {
     bool enabled = false;
     int exprIndex = -1;
     const clang::FunctionDecl* parentFunction = nullptr;
+    const clang::Stmt* outerLoop = nullptr;
     const clang::ForStmt* outerFor = nullptr;
     const clang::BinaryOperator* dacExpr = nullptr;
     std::vector<const clang::Stmt*> siblingStmts;
@@ -109,7 +110,8 @@ public:
     clang::ASTContext *Context = nullptr;//用于存储本代码的ASTContext
     /****************for循环相关*****************/
     //这里的for循环是指包含了表达式的for循环 形如for(...) {shell<->clac;}
-    const clang::ForStmt* forStatement;  // 用于存储包裹了表达式的循环语句
+    const clang::Stmt* loopStatement = nullptr;  // 用于存储包裹了表达式的通用循环语句
+    const clang::ForStmt* forStatement = nullptr;  // 用于存储包裹了表达式的for循环语句
     bool forStatementCtrl = false; // 用于标记是否检测到了包裹表达式的循环语句
     std::vector<std::pair<std::string, std::string>> forStatementVars; // 记录前文提及的for循环中用到的、但是在for循环外声明的变量的   变量名及其类型,第一个表示变量名，第二个表示变量类型
     /****************main函数相关*****************/
@@ -166,7 +168,14 @@ public:
     /*2025.12.01新增*/
     void setForStatement(const clang::ForStmt* FS) {
         this->forStatement = FS;
+        this->loopStatement = FS;
         this->forStatementCtrl = true;
+    }
+    void setLoopStatement(const clang::Stmt* loop) {
+        this->loopStatement = loop;
+    }
+    const clang::Stmt* getLoopStatement() {
+        return loopStatement;
     }
     const clang::ForStmt* getForStatement() {
         return forStatement;
