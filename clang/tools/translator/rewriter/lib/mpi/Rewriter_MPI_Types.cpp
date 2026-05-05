@@ -85,15 +85,19 @@ int inferViewRank(ShellParam* shellParam, Param* calcParam) {
 }
 
 std::string toViewType(ShellParam* shellParam, Param* calcParam, IOTYPE mode) {
-    const std::string baseType = calcParam->getBasicType();
-    const bool isReadOnly = mode == IOTYPE::READ;
-    const std::string qualifiedType = isReadOnly ? ("const " + baseType) : baseType;
+    const std::string qualifiedType = viewElementType(calcParam, mode);
     const int dim = inferViewRank(shellParam, calcParam);
 
     if (dim <= 1) {
         return "dacpp::mpi::View1D<" + qualifiedType + ">";
     }
     return "dacpp::mpi::View2D<" + qualifiedType + ">";
+}
+
+std::string viewElementType(Param* calcParam, IOTYPE mode) {
+    const std::string baseType = calcParam->getBasicType();
+    const bool isReadOnly = mode == IOTYPE::READ;
+    return isReadOnly ? ("const " + baseType) : baseType;
 }
 
 }  // namespace mpi_rewriter

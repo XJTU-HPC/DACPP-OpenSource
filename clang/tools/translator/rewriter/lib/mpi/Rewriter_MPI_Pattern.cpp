@@ -150,14 +150,22 @@ std::string buildPatternInitCode(
 }
 
 std::string buildLocalCalcCode(Shell* shell, Calc* calc) {
-    const auto paramModes = inferEffectiveParamModes(shell, calc);
-    std::string code = "inline void " + calc->getName() + "_mpi_local(";
+    (void)shell;
+    std::string code;
+    if (calc->getNumParams() > 0) {
+        code += "template <";
+        for (int paramIdx = 0; paramIdx < calc->getNumParams(); ++paramIdx) {
+            code += "typename __dacpp_view_t" + std::to_string(paramIdx);
+            if (paramIdx + 1 != calc->getNumParams()) {
+                code += ", ";
+            }
+        }
+        code += ">\n";
+    }
+    code += "inline void " + calc->getName() + "_mpi_local(";
     for (int paramIdx = 0; paramIdx < calc->getNumParams(); ++paramIdx) {
-        code += toViewType(
-                    shell->getShellParam(paramIdx),
-                    calc->getParam(paramIdx),
-                    paramModes[paramIdx]) +
-                " " + calc->getParam(paramIdx)->getName();
+        code += "__dacpp_view_t" + std::to_string(paramIdx) + " " +
+                calc->getParam(paramIdx)->getName();
         if (paramIdx + 1 != calc->getNumParams()) {
             code += ", ";
         }

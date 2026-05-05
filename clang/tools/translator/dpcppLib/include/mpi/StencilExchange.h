@@ -662,13 +662,14 @@ inline void scatter_values_by_slots_parallel_into(
     const std::vector<int32_t>& source_slots,
     const std::vector<int32_t>& target_slots,
     std::vector<T>& target,
+    sycl::queue& q,
     std::size_t threshold = 1 << 18) {
     const std::size_t count = std::min(source_slots.size(), target_slots.size());
     if (count == 0) {
         return;
     }
 
-    if (count < threshold) {
+    if (count < threshold || source.data() == target.data()) {
         for (std::size_t idx = 0; idx < count; ++idx) {
             const int32_t source_slot = source_slots[idx];
             const int32_t target_slot = target_slots[idx];
@@ -683,7 +684,6 @@ inline void scatter_values_by_slots_parallel_into(
         return;
     }
 
-    sycl::queue q(sycl::default_selector_v);
     {
         sycl::buffer<T, 1> source_buf(
             const_cast<T*>(source.data()),
@@ -722,6 +722,18 @@ inline void scatter_values_by_slots_parallel_into(
         });
         q.wait();
     }
+}
+
+template <typename T>
+inline void scatter_values_by_slots_parallel_into(
+    const std::vector<T>& source,
+    const std::vector<int32_t>& source_slots,
+    const std::vector<int32_t>& target_slots,
+    std::vector<T>& target,
+    std::size_t threshold = 1 << 18) {
+    sycl::queue q(sycl::default_selector_v);
+    scatter_values_by_slots_parallel_into(source, source_slots, target_slots,
+                                          target, q, threshold);
 }
 
 template <typename T>
@@ -934,15 +946,58 @@ inline void publish_local_writes_with_halo_or_exchange(
     std::vector<T>& local_write_values,
     const ExchangePlan& exchange_plan,
     const HaloExchangePlan& halo_plan,
+    sycl::queue& q,
     MPI_Comm comm = MPI_COMM_WORLD) {
     if (!local_write_slots.empty()) {
         pack_values_by_slots_parallel_into(local_write_source, local_write_slots,
                                            local_write_values);
         scatter_values_by_slots_parallel_into(
             local_write_source, local_write_slots, local_target_slots,
-            local_cache);
+            local_cache, q);
     } else {
         local_write_values.clear();
+    }
+
+    if (halo_plan.supported) {
+        exchange_values_by_halo_spans(local_write_source, halo_plan, local_cache,
+                                      comm);
+        return;
+    }
+
+    exchange_values_by_slots(local_write_source, exchange_plan, local_cache,
+                             comm);
+}
+
+template <typename T>
+inline void publish_local_writes_with_halo_or_exchange(
+    const std::vector<T>& local_write_source,
+    const std::vector<int32_t>& local_write_slots,
+    const std::vector<int32_t>& local_target_slots,
+    std::vector<T>& local_cache,
+    std::vector<T>& local_write_values,
+    const ExchangePlan& exchange_plan,
+    const HaloExchangePlan& halo_plan,
+    MPI_Comm comm = MPI_COMM_WORLD) {
+    sycl::queue q(sycl::default_selector_v);
+    publish_local_writes_with_halo_or_exchange(
+        local_write_source, local_write_slots, local_target_slots, local_cache,
+        local_write_values, exchange_plan, halo_plan, q, comm);
+}
+
+template <typename T>
+inline void publish_local_writes_with_halo_or_exchange_cache_only(
+    const std::vector<T>& local_write_source,
+    const std::vector<int32_t>& local_write_slots,
+    const std::vector<int32_t>& local_target_slots,
+    std::vector<T>& local_cache,
+    const ExchangePlan& exchange_plan,
+    const HaloExchangePlan& halo_plan,
+    sycl::queue& q,
+    MPI_Comm comm = MPI_COMM_WORLD) {
+    if (!local_write_slots.empty()) {
+        scatter_values_by_slots_parallel_into(
+            local_write_source, local_write_slots, local_target_slots,
+            local_cache, q);
     }
 
     if (halo_plan.supported) {
@@ -964,20 +1019,10 @@ inline void publish_local_writes_with_halo_or_exchange_cache_only(
     const ExchangePlan& exchange_plan,
     const HaloExchangePlan& halo_plan,
     MPI_Comm comm = MPI_COMM_WORLD) {
-    if (!local_write_slots.empty()) {
-        scatter_values_by_slots_parallel_into(
-            local_write_source, local_write_slots, local_target_slots,
-            local_cache);
-    }
-
-    if (halo_plan.supported) {
-        exchange_values_by_halo_spans(local_write_source, halo_plan, local_cache,
-                                      comm);
-        return;
-    }
-
-    exchange_values_by_slots(local_write_source, exchange_plan, local_cache,
-                             comm);
+    sycl::queue q(sycl::default_selector_v);
+    publish_local_writes_with_halo_or_exchange_cache_only(
+        local_write_source, local_write_slots, local_target_slots, local_cache,
+        exchange_plan, halo_plan, q, comm);
 }
 
 }  // namespace mpi

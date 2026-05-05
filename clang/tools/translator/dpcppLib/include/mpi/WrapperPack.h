@@ -95,6 +95,33 @@ inline PackPlan build_pack_plan(ItemRange range,
     return plan;
 }
 
+inline bool is_contiguous_kernel_pack_plan(const PackPlan& plan,
+                                           int64_t item_count,
+                                           int64_t elem_count) {
+    if (item_count < 0 || elem_count <= 0) {
+        return false;
+    }
+    const std::size_t expected_items = static_cast<std::size_t>(item_count);
+    const std::size_t expected_slots =
+        expected_items * static_cast<std::size_t>(elem_count);
+    if (plan.item_key_offsets.size() != expected_items ||
+        plan.compact_slots.size() != expected_slots) {
+        return false;
+    }
+    for (std::size_t idx = 0; idx < plan.item_key_offsets.size(); ++idx) {
+        if (plan.item_key_offsets[idx] !=
+            static_cast<int32_t>(idx * static_cast<std::size_t>(elem_count))) {
+            return false;
+        }
+    }
+    for (std::size_t idx = 0; idx < plan.compact_slots.size(); ++idx) {
+        if (plan.compact_slots[idx] != static_cast<int32_t>(idx)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 inline PackPlan build_input_pack_plan(ItemRange range,
                                       const AccessPattern& pattern) {
     return build_pack_plan(range, pattern, false);

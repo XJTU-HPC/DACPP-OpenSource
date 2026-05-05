@@ -12,6 +12,7 @@ RUNS="${APP_BENCH_RUNS:-3}"
 SLOW_RATIO="${APP_BENCH_SLOW_RATIO:-10}"
 
 APP_TESTS=(
+    "FOuLa1.0"
     "MDP1.0"
     "liuliang1.0"
     "stencil1.0"

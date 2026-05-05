@@ -1,0 +1,11 @@
+LOG_CONTAINS:[DAC-Translator] Found outermost loop for <->
+LOG_CONTAINS:[DACPP] buffer region optimization skipped: only loops with <-> as the first top-level statement are supported
+LOG_CONTAINS:[DACPP][MPI] output u_kout sync=root-only
+LOG_NOT_CONTAINS:partial-exchange enabled
+LOG_NOT_CONTAINS:partial-exchange disabled
+SYCL_CONTAINS:PDE_pde(u_kin, u_kout, r)
+SYCL_CONTAINS:MPI_Scatterv
+SYCL_CONTAINS:MPI_Gatherv
+SYCL_NOT_CONTAINS:<->
+SYCL_NOT_CONTAINS:__dacpp_mpi_stencil_ctx_PDE_pde
+SYCL_NOT_CONTAINS:root_bridge_plan = dacpp::mpi::build_exchange_plan_from_layouts

@@ -40,6 +40,37 @@ struct View2D {
     }
 };
 
+template <typename T>
+struct ContiguousView1D {
+    T* data = nullptr;
+    int offset = 0;
+
+    decltype(auto) operator[](int idx) const {
+        return data[offset + idx];
+    }
+};
+
+template <typename T>
+struct ContiguousView2DRow {
+    T* data = nullptr;
+    int offset = 0;
+
+    decltype(auto) operator[](int idx) const {
+        return data[offset + idx];
+    }
+};
+
+template <typename T>
+struct ContiguousView2D {
+    T* data = nullptr;
+    int offset = 0;
+    int cols = 0;
+
+    ContiguousView2DRow<T> operator[](int row) const {
+        return ContiguousView2DRow<T>{data, offset + row * cols};
+    }
+};
+
 }  // namespace mpi
 }  // namespace dacpp
 

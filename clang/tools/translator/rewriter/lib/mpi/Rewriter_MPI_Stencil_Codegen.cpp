@@ -777,6 +777,7 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
     code += "    int mpi_rank = 0;\n";
     code += "    int mpi_size = 1;\n";
     code += "    bool use_partial_exchange = false;\n";
+    code += "    bool use_contiguous_kernel_views = false;\n";
     code += "    std::string partial_exchange_disable_reason;\n";
     code += "    std::unique_ptr<sycl::queue> q;\n";
     code += "    std::vector<int64_t> binding_split_sizes;\n";
@@ -906,6 +907,14 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
             code += "    if (ctx.mpi_rank == 0) ctx.global_recv_values_" + calcName +
                     ".resize(ctx.output_layout_" + calcName + ".globals.size());\n";
         }
+    }
+    code += "    ctx.use_contiguous_kernel_views = true;\n";
+    for (int paramIdx = 0; paramIdx < shell->getNumShellParams(); ++paramIdx) {
+        Param* calcParam = calc->getParam(paramIdx);
+        const std::string& calcName = calcParam->getName();
+        code += "    ctx.use_contiguous_kernel_views = ctx.use_contiguous_kernel_views && dacpp::mpi::is_contiguous_kernel_pack_plan(ctx.plan_" +
+                calcName + ", ctx.local_item_count, dacpp::mpi::partition_element_count(ctx.pattern_" +
+                calcName + "));\n";
     }
     if (distributedSitePlan.supported) {
         code += "    ctx.use_partial_exchange = true;\n";
@@ -1242,7 +1251,25 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
     code += "    auto dacpp_wrapper_start = std::chrono::steady_clock::now();\n";
     code += "    auto& q = *ctx.q;\n";
     code += "    const int64_t local_item_count = ctx.local_item_count;\n";
+    code += "    const bool dacpp_profile_enabled = dacpp::mpi::profilingEnabled();\n";
+    code += "    double dacpp_profile_input_ms = 0.0;\n";
+    code += "    double dacpp_profile_dist_setup_ms = 0.0;\n";
+    code += "    double dacpp_profile_kernel_ms = 0.0;\n";
+    code += "    double dacpp_profile_read_transition_ms = 0.0;\n";
+    code += "    double dacpp_profile_publish_ms = 0.0;\n";
+    code += "    double dacpp_profile_boundary_ms = 0.0;\n";
+    code += "    double dacpp_profile_root_bridge_ms = 0.0;\n";
+    code += "    double dacpp_profile_writeback_ms = 0.0;\n";
+    code += "    auto dacpp_profile_now = [&]() {\n";
+    code += "        return dacpp_profile_enabled ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};\n";
+    code += "    };\n";
+    code += "    auto dacpp_profile_add = [&](double& bucket, std::chrono::steady_clock::time_point start) {\n";
+    code += "        if (dacpp_profile_enabled) {\n";
+    code += "            bucket += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();\n";
+    code += "        }\n";
+    code += "    };\n";
     code += "    if (!ctx.use_partial_exchange) {\n";
+    code += "    auto dacpp_profile_input_start = dacpp_profile_now();\n";
 
     for (int paramIdx = 0; paramIdx < shell->getNumShellParams(); ++paramIdx) {
         ShellParam* shellParam = shell->getShellParam(paramIdx);
@@ -1299,6 +1326,8 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
         }
     }
 
+    code += "    dacpp_profile_add(dacpp_profile_input_ms, dacpp_profile_input_start);\n";
+    code += "    auto dacpp_profile_kernel_start = dacpp_profile_now();\n";
     code += "    if (local_item_count > 0) {\n";
     code += "        {\n";
     for (int paramIdx = 0; paramIdx < shell->getNumShellParams(); ++paramIdx) {
@@ -1359,7 +1388,9 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
     code += "            q.wait();\n";
     code += "        }\n";
     code += "    }\n";
+    code += "    dacpp_profile_add(dacpp_profile_kernel_ms, dacpp_profile_kernel_start);\n";
 
+    code += "    auto dacpp_profile_writeback_start = dacpp_profile_now();\n";
     for (int paramIdx = 0; paramIdx < shell->getNumShellParams(); ++paramIdx) {
         if (transportModes[paramIdx] == IOTYPE::READ) {
             continue;
@@ -1451,8 +1482,10 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
                     ".pack.globals.size(), ctx.local_" + readerCalcName + ");\n";
         }
     }
+    code += "    dacpp_profile_add(dacpp_profile_writeback_ms, dacpp_profile_writeback_start);\n";
     if (distributedSitePlan.supported) {
         code += "    } else {\n";
+        code += "    auto dacpp_profile_dist_setup_start = dacpp_profile_now();\n";
         for (int paramIdx = 0; paramIdx < shell->getNumShellParams(); ++paramIdx) {
             Param* calcParam = calc->getParam(paramIdx);
             const std::string& calcName = calcParam->getName();
@@ -1462,12 +1495,65 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
                 code += "    local_" + calcName + ".assign(ctx.plan_" + calcName +
                         ".pack.globals.size(), " + calcParam->getBasicType() + "{});\n";
             }
+            code += "    const int " + calcName + "_partition_size = static_cast<int>(dacpp::mpi::partition_element_count(ctx.pattern_" +
+                    calcName + "));\n";
             if (mpi_rewriter::inferViewRank(shell->getShellParam(paramIdx), calcParam) > 1) {
                 code += "    const int " + calcName + "_cols = ctx.pattern_" +
                         calcName + ".partition_shape[1];\n";
             }
         }
+        code += "    dacpp_profile_add(dacpp_profile_dist_setup_ms, dacpp_profile_dist_setup_start);\n";
+        code += "    auto dacpp_profile_kernel_start = dacpp_profile_now();\n";
         code += "    if (local_item_count > 0) {\n";
+        code += "        if (ctx.use_contiguous_kernel_views) {\n";
+        code += "            {\n";
+        for (int paramIdx = 0; paramIdx < shell->getNumShellParams(); ++paramIdx) {
+            Param* calcParam = calc->getParam(paramIdx);
+            const std::string& name = calcParam->getName();
+            code += "                sycl::buffer<" + calcParam->getBasicType() + ", 1> buffer_" + name +
+                    "(local_" + name + ".data(), sycl::range<1>(local_" + name + ".size()));\n";
+        }
+        code += "                q.submit([&](sycl::handler& h) {\n";
+        for (int paramIdx = 0; paramIdx < shell->getNumShellParams(); ++paramIdx) {
+            Param* calcParam = calc->getParam(paramIdx);
+            const std::string& name = calcParam->getName();
+            code += "                    auto acc_" + name + " = buffer_" + name + ".get_access<" +
+                    mpi_rewriter::toAccessorMode(effectiveModes[paramIdx]) + ">(h);\n";
+        }
+        code += "                    h.parallel_for(sycl::range<1>(static_cast<std::size_t>(local_item_count)), [=](sycl::id<1> idx) {\n";
+        code += "                        const int item_linear = static_cast<int>(idx[0]);\n";
+        for (int paramIdx = 0; paramIdx < shell->getNumShellParams(); ++paramIdx) {
+            ShellParam* shellParam = shell->getShellParam(paramIdx);
+            Param* calcParam = calc->getParam(paramIdx);
+            const std::string& name = calcParam->getName();
+            code += "                        auto* data_" + name +
+                    " = acc_" + name + ".template get_multi_ptr<sycl::access::decorated::no>().get();\n";
+            code += "                        const int key_offset_" + name + " = item_linear * " +
+                    name + "_partition_size;\n";
+            if (mpi_rewriter::inferViewRank(shellParam, calcParam) <= 1) {
+                code += "                        dacpp::mpi::ContiguousView1D<" +
+                        mpi_rewriter::viewElementType(calcParam, effectiveModes[paramIdx]) +
+                        "> view_" + name + "{data_" + name + ", key_offset_" + name + "};\n";
+            } else {
+                code += "                        dacpp::mpi::ContiguousView2D<" +
+                        mpi_rewriter::viewElementType(calcParam, effectiveModes[paramIdx]) +
+                        "> view_" + name + "{data_" + name + ", key_offset_" + name + ", " +
+                        name + "_cols};\n";
+            }
+        }
+        code += "                        " + calc->getName() + "_mpi_local(";
+        for (int paramIdx = 0; paramIdx < calc->getNumParams(); ++paramIdx) {
+            code += "view_" + calc->getParam(paramIdx)->getName();
+            if (paramIdx + 1 != calc->getNumParams()) {
+                code += ", ";
+            }
+        }
+        code += ");\n";
+        code += "                    });\n";
+        code += "                });\n";
+        code += "                q.wait();\n";
+        code += "            }\n";
+        code += "        } else {\n";
         code += "        {\n";
         for (int paramIdx = 0; paramIdx < shell->getNumShellParams(); ++paramIdx) {
             Param* calcParam = calc->getParam(paramIdx);
@@ -1526,8 +1612,11 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
         code += "            });\n";
         code += "            q.wait();\n";
         code += "        }\n";
+        code += "        }\n";
         code += "    }\n";
+        code += "    dacpp_profile_add(dacpp_profile_kernel_ms, dacpp_profile_kernel_start);\n";
         if (!distributedSitePlan.readCacheTransitions.empty()) {
+            code += "    auto dacpp_profile_read_transition_start = dacpp_profile_now();\n";
             for (std::size_t transitionIdx = 0;
                  transitionIdx < distributedSitePlan.readCacheTransitions.size();
                  ++transitionIdx) {
@@ -1545,22 +1634,14 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
                 code += "    // DACPP read-cache state transition: " +
                         transition.writerTensor + " -> " +
                         transition.readerTensor + "\n";
-                code += "    {\n";
-                code += "        const std::size_t __dacpp_transition_count = ctx.read_cache_transition_target_slots_" +
-                        idx + ".size();\n";
-                code += "        for (std::size_t __dacpp_transition_i = 0; __dacpp_transition_i < __dacpp_transition_count; ++__dacpp_transition_i) {\n";
-                code += "            const int32_t __dacpp_source_slot = ctx.read_cache_transition_source_slots_" +
-                        idx + "[__dacpp_transition_i];\n";
-                code += "            const int32_t __dacpp_target_slot = ctx.read_cache_transition_target_slots_" +
-                        idx + "[__dacpp_transition_i];\n";
-                code += "            local_" + readerCalcName +
-                        "[static_cast<std::size_t>(__dacpp_target_slot)] = local_" +
-                        writerCalcName +
-                        "[static_cast<std::size_t>(__dacpp_source_slot)];\n";
-                code += "        }\n";
-                code += "    }\n";
+                code += "    dacpp::mpi::scatter_values_by_slots_parallel_into(local_" +
+                        writerCalcName + ", ctx.read_cache_transition_source_slots_" +
+                        idx + ", ctx.read_cache_transition_target_slots_" + idx +
+                        ", local_" + readerCalcName + ", q);\n";
             }
+            code += "    dacpp_profile_add(dacpp_profile_read_transition_ms, dacpp_profile_read_transition_start);\n";
         }
+        code += "    auto dacpp_profile_publish_start = dacpp_profile_now();\n";
         for (int paramIdx = 0; paramIdx < shell->getNumShellParams(); ++paramIdx) {
             if (transportModes[paramIdx] == IOTYPE::READ) {
                 continue;
@@ -1591,7 +1672,7 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
                             targetCache + ", ctx.dist_" + calcName +
                             ".exchange_plans_by_route[" + std::to_string(routeIdx) +
                             "], ctx.dist_" + calcName + ".halo_plans_by_route[" +
-                            std::to_string(routeIdx) + "]);\n";
+                            std::to_string(routeIdx) + "], q);\n";
                 } else {
                     code += "    dacpp::mpi::publish_local_writes_with_halo_or_exchange(local_" + calcName +
                             ", ctx.dist_" + calcName + ".local_write_slots, ctx.dist_" + calcName +
@@ -1600,11 +1681,13 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
                             ".local_write_values, ctx.dist_" + calcName +
                             ".exchange_plans_by_route[" + std::to_string(routeIdx) +
                             "], ctx.dist_" + calcName + ".halo_plans_by_route[" +
-                            std::to_string(routeIdx) + "]);\n";
+                            std::to_string(routeIdx) + "], q);\n";
                 }
             }
         }
+        code += "    dacpp_profile_add(dacpp_profile_publish_ms, dacpp_profile_publish_start);\n";
         if (useDistributedReaderMaterialize) {
+            code += "    auto dacpp_profile_boundary_start = dacpp_profile_now();\n";
             for (const auto& update : distributedSitePlan.boundaryLocalUpdates) {
                 if (update.paramIndex < 0 ||
                     update.paramIndex >= shell->getNumShellParams()) {
@@ -1647,8 +1730,10 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
                 }
                 code += "    }\n";
             }
+            code += "    dacpp_profile_add(dacpp_profile_boundary_ms, dacpp_profile_boundary_start);\n";
         }
         if (distributedSitePlan.hasRootBridge && !useDistributedReaderMaterialize) {
+            code += "    auto dacpp_profile_root_bridge_start = dacpp_profile_now();\n";
             for (int paramIdx = 0; paramIdx < shell->getNumShellParams(); ++paramIdx) {
                 if (transportModes[paramIdx] == IOTYPE::READ) {
                     continue;
@@ -1686,6 +1771,7 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
                 code += "        " + tensorName + ".array2Tensor(ctx.global_out_" + calcName + ");\n";
                 code += "    }\n";
             }
+            code += "    dacpp_profile_add(dacpp_profile_root_bridge_ms, dacpp_profile_root_bridge_start);\n";
         }
         code += "    }\n";
     } else {
@@ -1697,8 +1783,12 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
     code += "        double dacpp_wrapper_local_ms = std::chrono::duration<double, std::milli>(dacpp_wrapper_end - dacpp_wrapper_start).count();\n";
     code += "        double dacpp_wrapper_max_ms = 0.0;\n";
     code += "        MPI_Reduce(&dacpp_wrapper_local_ms, &dacpp_wrapper_max_ms, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);\n";
+    code += "        double dacpp_profile_local_parts[8] = {dacpp_profile_input_ms, dacpp_profile_dist_setup_ms, dacpp_profile_kernel_ms, dacpp_profile_read_transition_ms, dacpp_profile_publish_ms, dacpp_profile_boundary_ms, dacpp_profile_root_bridge_ms, dacpp_profile_writeback_ms};\n";
+    code += "        double dacpp_profile_max_parts[8] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};\n";
+    code += "        MPI_Reduce(dacpp_profile_local_parts, dacpp_profile_max_parts, 8, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);\n";
     code += "        if (mpi_rank == 0) {\n";
     code += "        std::fprintf(stderr, \"[DACPP][PROFILE][%s] wrapper_total_ms(max): %.3f\\n\", \"" + wrapper + "\", dacpp_wrapper_max_ms);\n";
+    code += "        std::fprintf(stderr, \"[DACPP][PROFILE][%s] run_breakdown_ms(max): input=%.3f dist_setup=%.3f kernel=%.3f read_transition=%.3f publish=%.3f boundary=%.3f root_bridge=%.3f writeback=%.3f\\n\", \"" + wrapper + "\", dacpp_profile_max_parts[0], dacpp_profile_max_parts[1], dacpp_profile_max_parts[2], dacpp_profile_max_parts[3], dacpp_profile_max_parts[4], dacpp_profile_max_parts[5], dacpp_profile_max_parts[6], dacpp_profile_max_parts[7]);\n";
     code += "        }\n";
     code += "    }\n";
     code += "    dacpp::mpi::reportCollectPositionsProfile(\"" + wrapper + "\", MPI_COMM_WORLD);\n";

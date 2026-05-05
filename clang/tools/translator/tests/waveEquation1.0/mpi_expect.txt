@@ -8,6 +8,7 @@ SYCL_CONTAINS:ctx.use_partial_exchange = true;
 SYCL_CONTAINS:build_exchange_plan_from_layouts_2d_offset
 SYCL_CONTAINS:publish_local_writes_with_halo_or_exchange
 SYCL_CONTAINS:// DACPP read-cache state transition: matCur -> matPrev
+SYCL_CONTAINS:scatter_values_by_slots_parallel_into(local_cur
 SYCL_CONTAINS:// DACPP distributed boundary-local update: matCur
 SYCL_NOT_CONTAINS:root_bridge_plan = dacpp::mpi::build_exchange_plan_from_layouts
 SYCL_NOT_CONTAINS:__dacpp_mpi_region_waveEqShell_waveEq_stmt_0
