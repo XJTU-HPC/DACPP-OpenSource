@@ -319,6 +319,11 @@ std::string buildRootCentricPostRegionHelpers(
     for (const auto& region : distributedRegions) {
         distributedFollowupStmts.insert(region.stmt);
     }
+    if (!sitePlan.hasRootBridge && sitePlan.followupMappings.size() == 1) {
+        for (const clang::Stmt* stmt : sitePlan.boundaryLocalStmts) {
+            distributedFollowupStmts.insert(stmt);
+        }
+    }
 
     std::string code;
     for (std::size_t stmtIdx = 0; stmtIdx < plan.siblingStmts.size(); ++stmtIdx) {

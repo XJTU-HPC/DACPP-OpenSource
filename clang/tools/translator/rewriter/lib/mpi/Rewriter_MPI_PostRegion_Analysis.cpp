@@ -304,6 +304,11 @@ std::vector<RootCentricPostRegion> collectRootCentricPostRegions(
     for (const auto& region : distributedRegions) {
         distributedFollowupStmts.insert(region.stmt);
     }
+    if (!sitePlan.hasRootBridge && sitePlan.followupMappings.size() == 1) {
+        for (const clang::Stmt* stmt : sitePlan.boundaryLocalStmts) {
+            distributedFollowupStmts.insert(stmt);
+        }
+    }
 
     for (std::size_t stmtIdx = 0; stmtIdx < plan.siblingStmts.size(); ++stmtIdx) {
         const clang::Stmt* stmt = plan.siblingStmts[stmtIdx];

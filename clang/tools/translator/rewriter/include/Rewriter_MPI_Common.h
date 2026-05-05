@@ -69,6 +69,27 @@ struct DistributedFollowupMapping {
     const clang::Stmt* stmt = nullptr;
 };
 
+struct BoundaryLocalUpdate {
+    std::string tensorName;
+    int paramIndex = -1;
+    int rank = 2;
+    int targetRow = 0;
+    int targetCol = 0;
+    int sourceRow = 0;
+    int sourceCol = 0;
+    std::string targetRowExpr;
+    std::string targetColExpr;
+    std::string sourceRowExpr;
+    std::string sourceColExpr;
+    bool targetRowUsesLoop = false;
+    bool targetColUsesLoop = false;
+    bool sourceRowUsesLoop = false;
+    bool sourceColUsesLoop = false;
+    bool constantRhs = false;
+    std::string constantValue;
+    const clang::Stmt* stmt = nullptr;
+};
+
 struct DistributedStencilSitePlan {
     bool supported = false;
     bool hasRootBridge = false;
@@ -77,6 +98,8 @@ struct DistributedStencilSitePlan {
     std::set<std::string> rootBridgeTensors;
     std::vector<DistributedFollowupMapping> followupMappings;
     std::vector<const clang::Stmt*> distributedFollowupStmts;
+    std::vector<BoundaryLocalUpdate> boundaryLocalUpdates;
+    std::vector<const clang::Stmt*> boundaryLocalStmts;
 };
 
 std::vector<AccessSummary> summarizeStmtAccess(

@@ -538,6 +538,43 @@ bool parseLoopAffineExprForAnyLoop(const clang::Expr* expr,
     return false;
 }
 
+bool parseLoopOrIntegerIndexExpr(const clang::Expr* expr,
+                                 const RouteLoopInfo& loopInfo,
+                                 bool& usesLoop,
+                                 int& offset,
+                                 std::string& exprText,
+                                 clang::ASTContext* context) {
+    int parsedOffset = 0;
+    if (parseLoopAffineExpr(expr, loopInfo.loopVarDecl, loopInfo.loopVar,
+                            parsedOffset)) {
+        usesLoop = true;
+        offset = parsedOffset;
+        exprText = loopInfo.loopVar;
+        if (parsedOffset > 0) {
+            exprText += " + " + std::to_string(parsedOffset);
+        } else if (parsedOffset < 0) {
+            exprText += " - " + std::to_string(-parsedOffset);
+        }
+        return true;
+    }
+    if (parseIntegerLiteralExpr(expr, parsedOffset)) {
+        usesLoop = false;
+        offset = parsedOffset;
+        exprText = std::to_string(parsedOffset);
+        return true;
+    }
+    if (context) {
+        const std::string text = trim(getStmtSourceText(expr, context));
+        if (!text.empty() && !containsWord(text, loopInfo.loopVar)) {
+            usesLoop = false;
+            offset = 0;
+            exprText = text;
+            return true;
+        }
+    }
+    return false;
+}
+
 const clang::Expr* getSubscriptBaseExpr(const clang::Expr* expr,
                                         const clang::Expr*& indexExpr) {
     expr = ignoreTransparentExpr(expr);
@@ -642,6 +679,152 @@ bool parseAffineMatrixAccessAST(const clang::Expr* expr,
         return true;
     }
     return false;
+}
+
+bool parseBoundaryMatrixAccessAST(const clang::Expr* expr,
+                                  const RouteLoopInfo& loopInfo,
+                                  clang::ASTContext* context,
+                                  std::string& tensorName,
+                                  bool& rowUsesLoop,
+                                  int& rowOffset,
+                                  std::string& rowExprText,
+                                  bool& colUsesLoop,
+                                  int& colOffset,
+                                  std::string& colExprText) {
+    const clang::Expr* colIndexExpr = nullptr;
+    const clang::Expr* rowAccessExpr =
+        getSubscriptBaseExpr(expr, colIndexExpr);
+    if (!rowAccessExpr || !colIndexExpr) {
+        return false;
+    }
+
+    const clang::Expr* rowIndexExpr = nullptr;
+    const clang::Expr* baseExpr =
+        getSubscriptBaseExpr(rowAccessExpr, rowIndexExpr);
+    if (!baseExpr || !rowIndexExpr) {
+        return false;
+    }
+
+    baseExpr = ignoreTransparentExpr(baseExpr);
+    const auto* baseRef = llvm::dyn_cast_or_null<clang::DeclRefExpr>(baseExpr);
+    if (!baseRef || !baseRef->getDecl()) {
+        return false;
+    }
+
+    if (!parseLoopOrIntegerIndexExpr(rowIndexExpr, loopInfo,
+                                     rowUsesLoop, rowOffset,
+                                     rowExprText, context) ||
+        !parseLoopOrIntegerIndexExpr(colIndexExpr, loopInfo,
+                                     colUsesLoop, colOffset,
+                                     colExprText, context)) {
+        return false;
+    }
+    if (rowUsesLoop == colUsesLoop) {
+        return false;
+    }
+
+    tensorName = baseRef->getDecl()->getNameAsString();
+    return true;
+}
+
+std::string compactExprText(std::string text) {
+    text.erase(std::remove_if(text.begin(), text.end(),
+                              [](unsigned char c) {
+                                  return std::isspace(c) != 0;
+                              }),
+               text.end());
+    return text;
+}
+
+std::string stripOuterParens(std::string text) {
+    text = compactExprText(text);
+    bool changed = true;
+    while (changed && text.size() >= 2 && text.front() == '(' &&
+           text.back() == ')') {
+        int depth = 0;
+        changed = true;
+        for (std::size_t i = 0; i + 1 < text.size(); ++i) {
+            if (text[i] == '(') {
+                ++depth;
+            } else if (text[i] == ')') {
+                --depth;
+                if (depth == 0) {
+                    changed = false;
+                    break;
+                }
+            }
+        }
+        if (changed) {
+            text = text.substr(1, text.size() - 2);
+        }
+    }
+    return text;
+}
+
+bool isOneLessExpr(const std::string& maybeHigh,
+                   const std::string& maybeLow) {
+    const std::string high = stripOuterParens(maybeHigh);
+    const std::string low = stripOuterParens(maybeLow);
+    if (high.empty() || low.empty()) {
+        return false;
+    }
+    if (low == high + "-1") {
+        return true;
+    }
+    const auto splitMinusLiteral = [](const std::string& text,
+                                      std::string& base,
+                                      int& literal) {
+        const std::size_t minus = text.rfind('-');
+        if (minus == std::string::npos || minus + 1 >= text.size()) {
+            return false;
+        }
+        int value = 0;
+        for (std::size_t idx = minus + 1; idx < text.size(); ++idx) {
+            if (!std::isdigit(static_cast<unsigned char>(text[idx]))) {
+                return false;
+            }
+            value = value * 10 + (text[idx] - '0');
+        }
+        base = text.substr(0, minus);
+        literal = value;
+        return !base.empty();
+    };
+    std::string highBase;
+    std::string lowBase;
+    int highLiteral = 0;
+    int lowLiteral = 0;
+    if (splitMinusLiteral(high, highBase, highLiteral) &&
+        splitMinusLiteral(low, lowBase, lowLiteral)) {
+        return highBase == lowBase && lowLiteral == highLiteral + 1;
+    }
+    return false;
+}
+
+bool isBoundaryCopyPair(bool targetUsesLoop,
+                        int targetOffset,
+                        const std::string& targetExpr,
+                        bool sourceUsesLoop,
+                        int sourceOffset,
+                        const std::string& sourceExpr) {
+    if (targetUsesLoop || sourceUsesLoop) {
+        return targetUsesLoop && sourceUsesLoop &&
+               targetOffset == 0 && sourceOffset == 0;
+    }
+    if (targetExpr == "0" && sourceExpr == "1") {
+        return true;
+    }
+    return isOneLessExpr(targetExpr, sourceExpr);
+}
+
+bool isBoundaryConstantTarget(bool targetUsesLoop,
+                              int targetOffset,
+                              const std::string& targetExpr,
+                              bool otherDimUsesLoop) {
+    if (targetUsesLoop) {
+        return targetOffset == 0 && !otherDimUsesLoop;
+    }
+    return targetExpr == "0" ||
+           stripOuterParens(targetExpr).find("-1") != std::string::npos;
 }
 
 struct RouteAssignment {
@@ -868,6 +1051,138 @@ bool tryCollectDistributedFollowup2D(DistributedStencilSitePlan& plan,
     return true;
 }
 
+bool tryCollectBoundaryLocalUpdate2D(DistributedStencilSitePlan& plan,
+                                     DacppFile* dacppFile,
+                                     Shell* shell,
+                                     const std::vector<IOTYPE>& transportModes,
+                                     const clang::Stmt* stmt) {
+    const auto* forStmt = llvm::dyn_cast_or_null<clang::ForStmt>(stmt);
+    if (!forStmt || !dacppFile || !dacppFile->getContext()) {
+        return false;
+    }
+
+    RouteLoopInfo loopInfo;
+    if (!extractRouteLoopInfo(forStmt, dacppFile->getContext(),
+                              dacppFile->getBufferRegionPlan(), loopInfo)) {
+        return false;
+    }
+
+    std::vector<RouteAssignment> assignments;
+    if (!collectTopLevelAssignments(forStmt->getBody(), assignments) ||
+        assignments.empty()) {
+        return false;
+    }
+
+    std::vector<BoundaryLocalUpdate> updates;
+    updates.reserve(assignments.size());
+    for (const RouteAssignment& assignment : assignments) {
+        std::string targetTensor;
+        bool targetRowUsesLoop = false;
+        bool targetColUsesLoop = false;
+        int targetRow = 0;
+        int targetCol = 0;
+        std::string targetRowExpr;
+        std::string targetColExpr;
+        if (!parseBoundaryMatrixAccessAST(assignment.lhs, loopInfo,
+                                          dacppFile->getContext(), targetTensor,
+                                          targetRowUsesLoop, targetRow,
+                                          targetRowExpr,
+                                          targetColUsesLoop, targetCol,
+                                          targetColExpr)) {
+            return false;
+        }
+
+        std::string sourceTensor;
+        bool sourceRowUsesLoop = false;
+        bool sourceColUsesLoop = false;
+        int sourceRow = 0;
+        int sourceCol = 0;
+        std::string sourceRowExpr;
+        std::string sourceColExpr;
+        bool constantRhs = false;
+        std::string constantValue;
+        if (parseBoundaryMatrixAccessAST(assignment.rhs, loopInfo,
+                                         dacppFile->getContext(), sourceTensor,
+                                         sourceRowUsesLoop, sourceRow,
+                                         sourceRowExpr,
+                                         sourceColUsesLoop, sourceCol,
+                                         sourceColExpr)) {
+            if (sourceTensor != targetTensor ||
+                sourceRowUsesLoop != targetRowUsesLoop ||
+                sourceColUsesLoop != targetColUsesLoop) {
+                return false;
+            }
+            const bool rowOk =
+                isBoundaryCopyPair(targetRowUsesLoop, targetRow, targetRowExpr,
+                                   sourceRowUsesLoop, sourceRow, sourceRowExpr);
+            const bool colOk =
+                isBoundaryCopyPair(targetColUsesLoop, targetCol, targetColExpr,
+                                   sourceColUsesLoop, sourceCol, sourceColExpr);
+            const bool rowBoundary =
+                !targetRowUsesLoop && !sourceRowUsesLoop;
+            const bool colBoundary =
+                !targetColUsesLoop && !sourceColUsesLoop;
+            if (!((rowBoundary && rowOk && colOk) ||
+                  (colBoundary && rowOk && colOk))) {
+                return false;
+            }
+        } else if (int literal = 0; parseIntegerLiteralExpr(assignment.rhs, literal)) {
+            sourceTensor = targetTensor;
+            sourceRowUsesLoop = targetRowUsesLoop;
+            sourceColUsesLoop = targetColUsesLoop;
+            sourceRow = targetRow;
+            sourceCol = targetCol;
+            sourceRowExpr = targetRowExpr;
+            sourceColExpr = targetColExpr;
+            constantRhs = true;
+            constantValue = std::to_string(literal);
+            const bool targetIsBoundary =
+                isBoundaryConstantTarget(targetRowUsesLoop, targetRow,
+                                         targetRowExpr, targetColUsesLoop) ||
+                isBoundaryConstantTarget(targetColUsesLoop, targetCol,
+                                         targetColExpr, targetRowUsesLoop);
+            if (!targetIsBoundary) {
+                return false;
+            }
+        } else {
+            return false;
+        }
+
+        const int paramIdx = findShellParamIndex(shell, targetTensor);
+        if (paramIdx < 0 || paramIdx >= static_cast<int>(transportModes.size()) ||
+            transportModes[paramIdx] == IOTYPE::WRITE) {
+            return false;
+        }
+
+        BoundaryLocalUpdate update;
+        update.tensorName = targetTensor;
+        update.paramIndex = paramIdx;
+        update.rank = 2;
+        update.targetRow = targetRow;
+        update.targetCol = targetCol;
+        update.sourceRow = sourceRow;
+        update.sourceCol = sourceCol;
+        update.targetRowExpr = targetRowExpr;
+        update.targetColExpr = targetColExpr;
+        update.sourceRowExpr = sourceRowExpr;
+        update.sourceColExpr = sourceColExpr;
+        update.targetRowUsesLoop = targetRowUsesLoop;
+        update.targetColUsesLoop = targetColUsesLoop;
+        update.sourceRowUsesLoop = sourceRowUsesLoop;
+        update.sourceColUsesLoop = sourceColUsesLoop;
+        update.constantRhs = constantRhs;
+        update.constantValue = constantValue;
+        update.stmt = assignment.stmt;
+        updates.push_back(update);
+    }
+
+    plan.boundaryLocalUpdates.insert(plan.boundaryLocalUpdates.end(),
+                                     updates.begin(), updates.end());
+    plan.boundaryLocalStmts.push_back(stmt);
+    llvm::outs() << "[DACPP][MPI][PhaseC] boundary-local update detected stmt\n";
+    return true;
+}
+
 }  // namespace
 
 DistributedStencilSitePlan analyzeDistributedStencilSite(
@@ -934,6 +1249,12 @@ DistributedStencilSitePlan analyzeDistributedStencilSite(
         }
         if (hasMatrixParam &&
             tryCollectDistributedFollowup2D(plan, dacppFile, shell, effectiveModes,
+                                            transportModes, stmt)) {
+            continue;
+        }
+        if (hasMatrixParam && rootRegions.empty() &&
+            plan.followupMappings.size() == 1 &&
+            tryCollectBoundaryLocalUpdate2D(plan, dacppFile, shell,
                                             transportModes, stmt)) {
             continue;
         }

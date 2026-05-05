@@ -657,6 +657,74 @@ inline void pack_values_by_slots_parallel_into(
 }
 
 template <typename T>
+inline void scatter_values_by_slots_parallel_into(
+    const std::vector<T>& source,
+    const std::vector<int32_t>& source_slots,
+    const std::vector<int32_t>& target_slots,
+    std::vector<T>& target,
+    std::size_t threshold = 1 << 18) {
+    const std::size_t count = std::min(source_slots.size(), target_slots.size());
+    if (count == 0) {
+        return;
+    }
+
+    if (count < threshold) {
+        for (std::size_t idx = 0; idx < count; ++idx) {
+            const int32_t source_slot = source_slots[idx];
+            const int32_t target_slot = target_slots[idx];
+            if (source_slot < 0 || target_slot < 0 ||
+                static_cast<std::size_t>(source_slot) >= source.size() ||
+                static_cast<std::size_t>(target_slot) >= target.size()) {
+                continue;
+            }
+            target[static_cast<std::size_t>(target_slot)] =
+                source[static_cast<std::size_t>(source_slot)];
+        }
+        return;
+    }
+
+    sycl::queue q(sycl::default_selector_v);
+    {
+        sycl::buffer<T, 1> source_buf(
+            const_cast<T*>(source.data()),
+            sycl::range<1>(source.size()));
+        sycl::buffer<int32_t, 1> source_slots_buf(
+            const_cast<int32_t*>(source_slots.data()),
+            sycl::range<1>(source_slots.size()));
+        sycl::buffer<int32_t, 1> target_slots_buf(
+            const_cast<int32_t*>(target_slots.data()),
+            sycl::range<1>(target_slots.size()));
+        sycl::buffer<T, 1> target_buf(
+            target.data(),
+            sycl::range<1>(target.size()));
+
+        q.submit([&](sycl::handler& h) {
+            auto source_acc =
+                source_buf.template get_access<sycl::access::mode::read>(h);
+            auto source_slots_acc =
+                source_slots_buf.template get_access<sycl::access::mode::read>(h);
+            auto target_slots_acc =
+                target_slots_buf.template get_access<sycl::access::mode::read>(h);
+            auto target_acc =
+                target_buf.template get_access<sycl::access::mode::read_write>(h);
+            h.parallel_for(sycl::range<1>(count), [=](sycl::id<1> idx) {
+                const std::size_t i = idx[0];
+                const int32_t source_slot = source_slots_acc[i];
+                const int32_t target_slot = target_slots_acc[i];
+                if (source_slot < 0 || target_slot < 0 ||
+                    static_cast<std::size_t>(source_slot) >= source_acc.get_count() ||
+                    static_cast<std::size_t>(target_slot) >= target_acc.get_count()) {
+                    return;
+                }
+                target_acc[static_cast<std::size_t>(target_slot)] =
+                    source_acc[static_cast<std::size_t>(source_slot)];
+            });
+        });
+        q.wait();
+    }
+}
+
+template <typename T>
 inline std::size_t halo_value_count(
     const std::vector<SlotSpan>& spans) {
     std::size_t count = 0;
@@ -870,10 +938,36 @@ inline void publish_local_writes_with_halo_or_exchange(
     if (!local_write_slots.empty()) {
         pack_values_by_slots_parallel_into(local_write_source, local_write_slots,
                                            local_write_values);
-        unpack_values_by_slots_into(local_write_values, local_target_slots,
-                                    local_cache);
+        scatter_values_by_slots_parallel_into(
+            local_write_source, local_write_slots, local_target_slots,
+            local_cache);
     } else {
         local_write_values.clear();
+    }
+
+    if (halo_plan.supported) {
+        exchange_values_by_halo_spans(local_write_source, halo_plan, local_cache,
+                                      comm);
+        return;
+    }
+
+    exchange_values_by_slots(local_write_source, exchange_plan, local_cache,
+                             comm);
+}
+
+template <typename T>
+inline void publish_local_writes_with_halo_or_exchange_cache_only(
+    const std::vector<T>& local_write_source,
+    const std::vector<int32_t>& local_write_slots,
+    const std::vector<int32_t>& local_target_slots,
+    std::vector<T>& local_cache,
+    const ExchangePlan& exchange_plan,
+    const HaloExchangePlan& halo_plan,
+    MPI_Comm comm = MPI_COMM_WORLD) {
+    if (!local_write_slots.empty()) {
+        scatter_values_by_slots_parallel_into(
+            local_write_source, local_write_slots, local_target_slots,
+            local_cache);
     }
 
     if (halo_plan.supported) {

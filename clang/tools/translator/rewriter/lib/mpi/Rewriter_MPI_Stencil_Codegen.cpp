@@ -678,6 +678,19 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
     const auto splitMeta = mpi_rewriter::collectSplitBindMeta(shell);
     const auto distributedSitePlan =
         mpi_rewriter::analyzeDistributedStencilSite(dacppFile, shell, calc, dacExpr);
+    const bool useDistributedReaderMaterialize =
+        distributedSitePlan.supported &&
+        !distributedSitePlan.hasRootBridge &&
+        !distributedSitePlan.boundaryLocalUpdates.empty() &&
+        distributedSitePlan.followupMappings.size() == 1;
+    std::set<int> distributedMaterializeReaderParams;
+    if (useDistributedReaderMaterialize) {
+        for (const auto& mapping : distributedSitePlan.followupMappings) {
+            if (mapping.readerParamIndex >= 0) {
+                distributedMaterializeReaderParams.insert(mapping.readerParamIndex);
+            }
+        }
+    }
     std::vector<bool> fallbackInputCacheable(
         static_cast<std::size_t>(shell->getNumShellParams()), false);
     std::vector<int> fallbackInputRefreshSource(
@@ -733,8 +746,10 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
     if (distributedSitePlan.supported) {
         llvm::outs() << "[DACPP][MPI][PhaseC] site " << wrapper
                      << " partial-exchange enabled";
-        if (distributedSitePlan.hasRootBridge) {
+        if (distributedSitePlan.hasRootBridge && !useDistributedReaderMaterialize) {
             llvm::outs() << " (root-bridge)";
+        } else if (distributedSitePlan.hasRootBridge) {
+            llvm::outs() << " (distributed-boundary)";
         }
         llvm::outs() << "\n";
     } else {
@@ -787,6 +802,16 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
             code += "    std::vector<" + elemType + "> writeback_values_" + calcName + ";\n";
             code += "    std::vector<" + elemType + "> global_recv_values_" + calcName + ";\n";
             code += "    std::vector<" + elemType + "> global_out_" + calcName + ";\n";
+        }
+    }
+    if (useDistributedReaderMaterialize) {
+        for (std::size_t updateIdx = 0;
+             updateIdx < distributedSitePlan.boundaryLocalUpdates.size();
+             ++updateIdx) {
+            code += "    std::vector<int32_t> boundary_local_target_slots_" +
+                    std::to_string(updateIdx) + ";\n";
+            code += "    std::vector<int32_t> boundary_local_source_slots_" +
+                    std::to_string(updateIdx) + ";\n";
         }
     }
     code += "};\n\n";
@@ -914,7 +939,8 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
                             ", 0, MPI_COMM_WORLD);\n";
                 }
                 code += "    ctx.dist_" + calcName + ".seeded = true;\n";
-                if (distributedSitePlan.rootBridgeTensors.count(tensorName) != 0) {
+                if (!useDistributedReaderMaterialize &&
+                    distributedSitePlan.rootBridgeTensors.count(tensorName) != 0) {
                     code += "    ctx.dist_" + calcName + ".root_bridge_pack = dacpp::mpi::make_dense_cover_pack(static_cast<std::size_t>(" +
                             tensorName + ".getSize()));\n";
                     code += "    ctx.dist_" + calcName + ".root_bridge_layout = dacpp::mpi::AllRankIndexLayout{};\n";
@@ -1020,10 +1046,77 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
                     } else {
                         code += "    ctx.partial_exchange_disable_reason = \"phase-c could not find reader for WRITE tensor " + tensorName + "\";\n";
                         code += "    ctx.use_partial_exchange = false;\n";
-                    }
                 }
             }
         }
+        if (useDistributedReaderMaterialize &&
+            paramIdx + 1 == shell->getNumShellParams()) {
+            for (std::size_t updateIdx = 0;
+                 updateIdx < distributedSitePlan.boundaryLocalUpdates.size();
+                 ++updateIdx) {
+                const auto& update =
+                    distributedSitePlan.boundaryLocalUpdates[updateIdx];
+                if (update.paramIndex < 0 ||
+                    update.paramIndex >= shell->getNumShellParams()) {
+                    continue;
+                }
+                Param* calcParam = calc->getParam(update.paramIndex);
+                Param* shellParam = shell->getParam(update.paramIndex);
+                const std::string& calcName = calcParam->getName();
+                const std::string& tensorName = shellParam->getName();
+                const std::string rowExpr =
+                    update.targetRowUsesLoop ? "__dacpp_idx" : update.targetRowExpr;
+                const std::string colExpr =
+                    update.targetColUsesLoop ? "__dacpp_idx" : update.targetColExpr;
+                const std::string sourceRowExpr =
+                    update.sourceRowUsesLoop ? "__dacpp_idx" : update.sourceRowExpr;
+                const std::string sourceColExpr =
+                    update.sourceColUsesLoop ? "__dacpp_idx" : update.sourceColExpr;
+                const std::string idx = std::to_string(updateIdx);
+                code += "    // DACPP boundary-local slot plan: " +
+                        tensorName + "\n";
+                code += "    ctx.boundary_local_target_slots_" + idx + ".clear();\n";
+                code += "    ctx.boundary_local_source_slots_" + idx + ".clear();\n";
+                code += "    {\n";
+                code += "        const int64_t __dacpp_rows = static_cast<int64_t>(" +
+                        tensorName + ".getShape(0));\n";
+                code += "        const int64_t __dacpp_cols = static_cast<int64_t>(" +
+                        tensorName + ".getShape(1));\n";
+                const std::string boundaryEndExpr =
+                    (update.targetRowUsesLoop || update.sourceRowUsesLoop)
+                        ? "__dacpp_rows"
+                        : "__dacpp_cols";
+                code += "        const int64_t __dacpp_end = " +
+                        boundaryEndExpr + ";\n";
+                code += "        for (int64_t __dacpp_idx = 0; __dacpp_idx < __dacpp_end; ++__dacpp_idx) {\n";
+                code += "            const int64_t __dacpp_target_row = " + rowExpr + ";\n";
+                code += "            const int64_t __dacpp_target_col = " + colExpr + ";\n";
+                code += "            if (__dacpp_target_row < 0 || __dacpp_target_col < 0 || __dacpp_target_row >= __dacpp_rows || __dacpp_target_col >= __dacpp_cols) continue;\n";
+                code += "            const int64_t __dacpp_target_global = __dacpp_target_row * __dacpp_cols + __dacpp_target_col;\n";
+                code += "            const int32_t __dacpp_target_slot = dacpp::mpi::try_lookup_local_slot(ctx.plan_" +
+                        calcName + ".pack, __dacpp_target_global);\n";
+                code += "            if (__dacpp_target_slot < 0) continue;\n";
+                if (update.constantRhs) {
+                    code += "            ctx.boundary_local_target_slots_" + idx +
+                            ".push_back(__dacpp_target_slot);\n";
+                } else {
+                    code += "            const int64_t __dacpp_source_row = " + sourceRowExpr + ";\n";
+                    code += "            const int64_t __dacpp_source_col = " + sourceColExpr + ";\n";
+                    code += "            if (__dacpp_source_row < 0 || __dacpp_source_col < 0 || __dacpp_source_row >= __dacpp_rows || __dacpp_source_col >= __dacpp_cols) continue;\n";
+                    code += "            const int64_t __dacpp_source_global = __dacpp_source_row * __dacpp_cols + __dacpp_source_col;\n";
+                    code += "            const int32_t __dacpp_source_slot = dacpp::mpi::try_lookup_local_slot(ctx.plan_" +
+                            calcName + ".pack, __dacpp_source_global);\n";
+                    code += "            if (__dacpp_source_slot < 0) continue;\n";
+                    code += "            ctx.boundary_local_target_slots_" + idx +
+                            ".push_back(__dacpp_target_slot);\n";
+                    code += "            ctx.boundary_local_source_slots_" + idx +
+                            ".push_back(__dacpp_source_slot);\n";
+                }
+                code += "        }\n";
+                code += "    }\n";
+            }
+        }
+    }
     } else {
         code += "    ctx.use_partial_exchange = false;\n";
         code += "    ctx.partial_exchange_disable_reason = \"" +
@@ -1350,17 +1443,66 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
                                   calc->getParam(followupMapping->readerParamIndex)->getName() +
                                   ".local_cache";
                 }
-                code += "    dacpp::mpi::publish_local_writes_with_halo_or_exchange(local_" + calcName +
-                        ", ctx.dist_" + calcName + ".local_write_slots, ctx.dist_" + calcName +
-                        ".local_target_slots_by_route[" + std::to_string(routeIdx) + "], " +
-                        targetCache + ", ctx.dist_" + calcName +
-                        ".local_write_values, ctx.dist_" + calcName +
-                        ".exchange_plans_by_route[" + std::to_string(routeIdx) +
-                        "], ctx.dist_" + calcName + ".halo_plans_by_route[" +
-                        std::to_string(routeIdx) + "]);\n";
+                if (useDistributedReaderMaterialize) {
+                    code += "    dacpp::mpi::publish_local_writes_with_halo_or_exchange_cache_only(local_" + calcName +
+                            ", ctx.dist_" + calcName + ".local_write_slots, ctx.dist_" + calcName +
+                            ".local_target_slots_by_route[" + std::to_string(routeIdx) + "], " +
+                            targetCache + ", ctx.dist_" + calcName +
+                            ".exchange_plans_by_route[" + std::to_string(routeIdx) +
+                            "], ctx.dist_" + calcName + ".halo_plans_by_route[" +
+                            std::to_string(routeIdx) + "]);\n";
+                } else {
+                    code += "    dacpp::mpi::publish_local_writes_with_halo_or_exchange(local_" + calcName +
+                            ", ctx.dist_" + calcName + ".local_write_slots, ctx.dist_" + calcName +
+                            ".local_target_slots_by_route[" + std::to_string(routeIdx) + "], " +
+                            targetCache + ", ctx.dist_" + calcName +
+                            ".local_write_values, ctx.dist_" + calcName +
+                            ".exchange_plans_by_route[" + std::to_string(routeIdx) +
+                            "], ctx.dist_" + calcName + ".halo_plans_by_route[" +
+                            std::to_string(routeIdx) + "]);\n";
+                }
             }
         }
-        if (distributedSitePlan.hasRootBridge) {
+        if (useDistributedReaderMaterialize) {
+            for (const auto& update : distributedSitePlan.boundaryLocalUpdates) {
+                if (update.paramIndex < 0 ||
+                    update.paramIndex >= shell->getNumShellParams()) {
+                    continue;
+                }
+                Param* calcParam = calc->getParam(update.paramIndex);
+                Param* shellParam = shell->getParam(update.paramIndex);
+                const std::string& calcName = calcParam->getName();
+                const std::string& tensorName = shellParam->getName();
+                const std::string idx = std::to_string(
+                    static_cast<std::size_t>(&update - distributedSitePlan.boundaryLocalUpdates.data()));
+                code += "    // DACPP distributed boundary-local update: " +
+                        tensorName + "\n";
+                code += "    {\n";
+                if (update.constantRhs) {
+                    code += "        for (int32_t __dacpp_target_slot : ctx.boundary_local_target_slots_" +
+                            idx + ") {\n";
+                    code += "            local_" + calcName +
+                            "[static_cast<std::size_t>(__dacpp_target_slot)] = static_cast<" +
+                            calcParam->getBasicType() + ">(" +
+                            (update.constantValue.empty() ? "0" : update.constantValue) + ");\n";
+                    code += "        }\n";
+                } else {
+                    code += "        const std::size_t __dacpp_boundary_count = ctx.boundary_local_target_slots_" +
+                            idx + ".size();\n";
+                    code += "        for (std::size_t __dacpp_boundary_i = 0; __dacpp_boundary_i < __dacpp_boundary_count; ++__dacpp_boundary_i) {\n";
+                    code += "            const int32_t __dacpp_target_slot = ctx.boundary_local_target_slots_" +
+                            idx + "[__dacpp_boundary_i];\n";
+                    code += "            const int32_t __dacpp_source_slot = ctx.boundary_local_source_slots_" +
+                            idx + "[__dacpp_boundary_i];\n";
+                    code += "            local_" + calcName +
+                            "[static_cast<std::size_t>(__dacpp_target_slot)] = local_" +
+                            calcName + "[static_cast<std::size_t>(__dacpp_source_slot)];\n";
+                    code += "        }\n";
+                }
+                code += "    }\n";
+            }
+        }
+        if (distributedSitePlan.hasRootBridge && !useDistributedReaderMaterialize) {
             for (int paramIdx = 0; paramIdx < shell->getNumShellParams(); ++paramIdx) {
                 if (transportModes[paramIdx] == IOTYPE::READ) {
                     continue;
@@ -1424,7 +1566,45 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
     code += "    if (!ctx.use_partial_exchange) {\n";
     code += "        return;\n";
     code += "    }\n";
-    if (!distributedSitePlan.supported || distributedSitePlan.hasRootBridge) {
+    if (!distributedSitePlan.supported) {
+        code += "    return;\n";
+    } else if (useDistributedReaderMaterialize) {
+        for (int readerParamIdx : distributedMaterializeReaderParams) {
+            if (readerParamIdx < 0 ||
+                readerParamIdx >= shell->getNumShellParams()) {
+                continue;
+            }
+            Param* readerCalcParam = calc->getParam(readerParamIdx);
+            Param* readerShellParam = shell->getParam(readerParamIdx);
+            const std::string& readerCalcName = readerCalcParam->getName();
+            const std::string& readerTensorName = readerShellParam->getName();
+            const std::string mpiType =
+                mpi_rewriter::mpiDatatypeFor(readerCalcParam->getBasicType());
+            if (mpi_rewriter::usesByteTransport(readerCalcParam->getBasicType())) {
+                code += "    MPI_Gatherv(ctx.dist_" + readerCalcName + ".local_cache.data(), " +
+                        mpi_rewriter::mpiPayloadCountExpr("ctx.input_layout_" + readerCalcName + ".local_count",
+                                                          readerCalcParam->getBasicType()) +
+                        ", " + mpiType + ", ctx.mpi_rank == 0 ? ctx.sendbuf_" +
+                        readerCalcName + ".data() : nullptr, ctx.mpi_rank == 0 ? ctx.input_layout_" +
+                        readerCalcName + ".byte_counts.data() : nullptr, ctx.mpi_rank == 0 ? ctx.input_layout_" +
+                        readerCalcName + ".byte_displs.data() : nullptr, " + mpiType + ", 0, MPI_COMM_WORLD);\n";
+            } else {
+                code += "    MPI_Gatherv(ctx.dist_" + readerCalcName +
+                        ".local_cache.data(), ctx.input_layout_" + readerCalcName +
+                        ".local_count, " + mpiType + ", ctx.mpi_rank == 0 ? ctx.sendbuf_" +
+                        readerCalcName + ".data() : nullptr, ctx.mpi_rank == 0 ? ctx.input_layout_" +
+                        readerCalcName + ".counts.data() : nullptr, ctx.mpi_rank == 0 ? ctx.input_layout_" +
+                        readerCalcName + ".displs.data() : nullptr, " + mpiType + ", 0, MPI_COMM_WORLD);\n";
+            }
+            code += "    if (ctx.mpi_rank == 0) {\n";
+            code += "        " + readerTensorName + ".tensor2Array(ctx.global_" + readerCalcName + ");\n";
+            code += "        dacpp::mpi::apply_writeback_by_globals(ctx.sendbuf_" + readerCalcName +
+                    ", ctx.input_layout_" + readerCalcName + ".globals, ctx.global_" +
+                    readerCalcName + ");\n";
+            code += "        " + readerTensorName + ".array2Tensor(ctx.global_" + readerCalcName + ");\n";
+            code += "    }\n";
+        }
+    } else if (distributedSitePlan.hasRootBridge) {
         code += "    return;\n";
     } else if (!distributedSitePlan.followupMappings.empty()) {
         for (const auto& mapping : distributedSitePlan.followupMappings) {

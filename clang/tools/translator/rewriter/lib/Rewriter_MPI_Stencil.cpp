@@ -207,8 +207,13 @@ void Rewriter::rewriteMPIStencil() {
                     dacppFile, shell, calc, dacExpr);
             const auto sitePlan = mpi_rewriter::analyzeDistributedStencilSite(
                 dacppFile, shell, calc, dacExpr);
+            const bool useDistributedReaderMaterialize =
+                sitePlan.supported &&
+                !sitePlan.hasRootBridge &&
+                !sitePlan.boundaryLocalStmts.empty() &&
+                sitePlan.followupMappings.size() == 1;
             for (const auto& region : distributedRegions) {
-                if (!sitePlan.hasRootBridge) {
+                if (!sitePlan.hasRootBridge || useDistributedReaderMaterialize) {
                     rewriter->RemoveText(region.stmt->getSourceRange());
                     continue;
                 }
@@ -230,6 +235,11 @@ void Rewriter::rewriteMPIStencil() {
                     }
                     regionCall += ");";
                     rewriter->ReplaceText(region.stmt->getSourceRange(), regionCall);
+                }
+            }
+            if (useDistributedReaderMaterialize) {
+                for (const clang::Stmt* stmt : sitePlan.boundaryLocalStmts) {
+                    rewriter->RemoveText(stmt->getSourceRange());
                 }
             }
             continue;

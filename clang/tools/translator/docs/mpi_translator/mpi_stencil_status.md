@@ -701,7 +701,7 @@ root pack -> Scatterv input window -> kernel -> Gatherv output -> root apply -> 
 - 当前 site-level guard 是整站回退规则，不做站内 tensor 混合模式：只要有一个条件不满足，整站回到原来的 `Scatterv -> kernel -> Gatherv -> apply_writeback -> optional Bcast`。
 - 当前 shipping 范围包括 1D `dacpp::Vector` effective `READ/WRITE` route，以及 V1 2D row-block `dacpp::Matrix` route。V1 二维支持双缓冲 `READ`/`WRITE` 和写后读降级后的假 `READ_WRITE`，并且不再要求 Matrix site 只有两个 shell tensor 参数；多 Matrix 参数站点会按每个 AST sibling loop 独立尝试 route/root-helper/fallback。真实 in-place `READ_WRITE`、mixed Vector/Matrix、复杂 RHS / 函数调用、复杂多维表达式仍整站 fallback。
 - `init()` 阶段会做一次 root scatter seed，把读 cache 固化到 `ctx.dist_*` 本地缓存中；对 WRITE tensor 还会固化 `local_write_slots / local_write_globals / local_target_slots / local_write_values`，并在 all-rank 元数据上做 unique-writer 校验、预建 `write_layout` 和 `exchange_plan`。route 泛化后，`DistributedTensorState<T>` 继续保留旧单 route 字段，同时新增 `local_target_slots_by_route`、`exchange_plans_by_route` 和 `halo_plans_by_route`。
-- 代码生成已经有真实的 `DistributedFollowup` run path；对支持的 WRITE tensor，distributed branch 会在 kernel 之后调用 `publish_local_writes_with_halo_or_exchange(...)`，先把本 rank 写出的 subset 回填到本地 distributed cache，再优先按 `halo_plan` 发布到远端 reader cache；如果 halo compact 不支持，则继续使用 generalized `exchange_plan`。
+- 代码生成已经有真实的 `DistributedFollowup` run path；对支持的 WRITE tensor，distributed branch 会在 kernel 之后调用 `publish_local_writes_with_halo_or_exchange(...)`，先把本 rank 写出的 subset 回填到本地 distributed cache，再优先按 `halo_plan` 发布到远端 reader cache；如果 halo compact 不支持，则继续使用 generalized `exchange_plan`。对最终只从 reader distributed cache materialize 的 no-root path，当前新增了 `publish_local_writes_with_halo_or_exchange_cache_only(...)`，避免每步维护无用 writer authoritative value buffer。
 - 对只有一个 post-shell sibling loop、且 loop body 内每条 top-level 语句都形如 `reader[i +/- C] = writer[i +/- C]` 的一维 affine copy/shift，分析层会基于 AST 生成显式 route 列表，并把原 sibling loop 从 `main` 中删除；run path 会逐 route 把 WRITE tensor 的发布结果更新到对应 READ tensor 的 distributed cache。这已经覆盖括号/空白变化、compound body、一个 writer fanout 到多个 reader，以及多个 writer 各自发布到 reader。
 - 一维 route 的 `targetOffset` 统一按 `readerIndex.offset - writerIndex.offset` 计算，并保留 `AffineIndex1D { loopVar, offset }`、writer/reader index 和原 statement 指针。二维 Matrix route 不再复用单个 linear `targetOffset`，而是记录 row/col affine index、writer/reader cols 和二维 delta，避免 interior slice 到 full Matrix 时行 stride 不同造成映射错误。任一 sibling assignment 不满足当前窄语法，或者 writer route 域不能被当前 shell input work-item domain 覆盖，当前 loop 都不做 distributed follow-up；如果整站已证明是 supported root-bridge site，则继续走 root-centric helper + distributed cache refresh，否则保守回到旧通信路径。
 - no-root-bridge steady-state site 现在不再在每轮 `run()` 末尾把 READ cache gather 回 root，而是生成 `__dacpp_mpi_stencil_materialize_xxx(ctx, args...)`，并在 lowered outer loop 之后调用一次。compatibility wrapper 仍保持 `ctx; init; run; materialize;` 的可见语义；root-bridge case 仍保留每轮 root-visible 状态供 helper 使用。
@@ -710,7 +710,7 @@ root pack -> Scatterv input window -> kernel -> Gatherv output -> root apply -> 
 - `mpiPhaseCHalo1D` 验证了 stride-1 规则 1D route 可以从 generalized `ExchangePlan` 派生 halo span，并通过 `publish_local_writes_with_halo_or_exchange(...)` 保持结果和 baseline 一致。
 - `mpiPhaseCHaloWide1D` 曾复现间歇性 mismatch；根因不是缺少 kernel wait 或 MPI wait，而是 root bridge layout 在非 root rank 上没有一致记录 root writer payload，导致 root -> distributed cache bridge 的 exchange plan 不对称。同时 wide stride route 的 writer 域不被 input work-item domain 覆盖，当前已保守走 root-centric helper/root-bridge fallback，不再误走 distributed route。
 - `mpiDistributedStencil2DRowBlock` 验证了 V1 2D row-block Matrix no-root-bridge 路径：`route detected next->state offset=(1,1)`、`build_target_slots_for_globals_2d_offset(...)`、`build_exchange_plan_from_layouts_2d_offset(...)`、`build_halo_plan_from_exchange_plan(...)`、`publish_local_writes_with_halo_or_exchange(...)` 都生成，运行结果和 baseline 一致。
-- `stencil1.0` 验证了 V1 2D Matrix root-bridge 路径：`route detected matOut->matIn offset=(1,1)`、`partial-exchange enabled (root-bridge)`、`build_exchange_plan_from_layouts_2d_offset(...)`、writer -> reader publish、root helper bridge 都生成。生成代码中，interior `matIn[i][j] = matOut[i-1][j-1]` copy loop 和两个边界 loop 都被替换成 root-centric region helper；每个 helper 在 root 上更新 `matIn` 后通过 `exchange_values_by_slots(...)` 刷新 distributed `matIn` cache，运行结果和 baseline 一致。
+- `stencil1.0` 现在验证的是 V1 2D Matrix no-root hot path：`route detected matOut->matIn offset=(1,1)`、plain `partial-exchange enabled`、`boundary-local update detected stmt`、`build_exchange_plan_from_layouts_2d_offset(...)`、writer -> reader cache-only publish、boundary-local slot plan 和 loop 后 materialize 都生成。生成代码中，interior `matIn[i][j] = matOut[i-1][j-1]` copy loop 不再生成 root helper，两个简单 copy boundary loop 也不再在 root 执行；每步主状态留在 `ctx.dist_mat.local_cache`，循环后由 `__dacpp_mpi_stencil_materialize_stencilShell_stencil(...)` 一次 gather 回 root-visible `matIn`。
 - `waveEquation1.0` 验证了多 Matrix 参数的 V1 2D Matrix root-bridge 路径：`route detected matNext->matCur offset=(1,1)`、`partial-exchange enabled (root-bridge)`、`build_exchange_plan_from_layouts_2d_offset(...)`、writer -> reader publish、四个 root-centric helper 都生成。四个 sibling loop 中，`matPrev <- matCur`、`matCur <- matNext` 和边界清零目前都保守在 root helper 执行，helper 后按实际写入 tensor 刷新对应 distributed cache。
 - `jacobi1.0` 已经能正常通过 MPI stencil loop lowering，但它不是当前 Phase C 的纯 Vector 或纯 Matrix stencil：shell 同时包含 `Matrix<float>` 和多个 `Vector<float>`，calc 读取矩阵行和全量 `x` 后写 `x_new[i]`，循环后还有 `tensor2Array` 收敛判断和 `x = x_new`。因此当前期望路径是明确的 `partial-exchange disabled: phase-c does not support mixed Vector/Matrix sites`，并走 fallback correctness path，而不是误判成 2D Matrix route。fallback 现在会用通用 AST/语义判断做两类 READ 输入缓存：`A`、`b`、`nums` 作为 loop-invariant 输入在 `init()` 中 scatter 一次；`x` 被识别为顶层 whole-tensor loop-carried assignment `x <- x_new`，因此也只在 `init()` 初始 scatter 一次，后续每轮在 `x_new` 的 `Gatherv + Bcast` 后从 `global_out_x_new` 重打包刷新 `ctx.local_x`。
 - 对正向 1D `READ/WRITE` loop stencil，distributed cache 已经是 steady-state 的 shell state；shell 输出不再默认依赖每步 root gather/apply 作为主路径。
@@ -718,11 +718,11 @@ root pack -> Scatterv input window -> kernel -> Gatherv output -> root apply -> 
 
 这次还没有完成的部分也需要明确：
 
-- 当前 no-helper steady-state 只支持可证明的 simple route；多个 2D Matrix sibling loop 已能逐 loop 尝试 route/root-helper/fallback，但真实 `stencil1.0` / `waveEquation1.0` 仍因 root-visible helper 和边界语义保守走 root-bridge correctness path。
+- 当前 no-helper steady-state 只支持可证明的 simple route；多个 2D Matrix sibling loop 已能逐 loop 尝试 route/root-helper/fallback。`stencil1.0` 已经从 root-bridge 热路径迁移到 no-root distributed boundary-local path；`waveEquation1.0` 仍因多状态迁移和边界语义保守走 root-bridge correctness path。
 - 当前 route IR 已支持一个 sibling loop 内的多 route，也支持 V1 2D nested loop 的 `reader[i+a][j+b] = writer[i+c][j+d]` route，但仍是窄实现：mapping 来源只支持 AST 可证明的简单 copy/shift assignment，还不是复杂表达式、函数调用、复杂多维索引或通用数据流路由。
 - root bridge 目前仍是保守实现，writer 侧按 root-authoritative dense cover 建计划，还不是精确 helper-written subset。
 - `liuliang1.0` 已经不再因为 calc 内 `new_rho[0]` 写后读被 Phase C guard 拦住；当前会启用 partial-exchange root-bridge 路径，但多个 sibling loop 仍保守交给 root-centric helper + bridge。
-- `stencil1.0` / `waveEquation1.0` 当前只是接入了真实 Matrix 用例的 root-bridge correctness path，不是性能完成路径。它们每步仍保留 root-visible output gather、root-centric copy/boundary helper，以及 dense root bridge refresh；和正常手写 row-block halo MPI stencil 的通信形态还有本质差距。
+- `waveEquation1.0` 当前仍只是接入真实 Matrix 用例的 root-bridge correctness path，不是性能完成路径。它每步仍保留 root-visible output gather、root-centric state/boundary helper，以及 dense root bridge refresh；和正常手写 row-block halo MPI stencil 的通信形态还有本质差距。`stencil1.0` 的 root gather/helper/bridge 热路径已移除，但 generated kernel 仍使用通用 slot/view 间接寻址和 SYCL buffer 构造，距离手写 row-block 仍有约 1.3x 差距。
 - `jacobi1.0` 当前仍是 loop-lowered correctness fallback，不是 Phase C partial-exchange 优化；不过 fallback 已经能把 loop-invariant READ 输入缓存到 `init()`，并能识别安全的顶层 `READ 输入 <- WRITE 输出` loop-carried whole-tensor assignment，用输出广播结果刷新下一轮输入，避免每轮重复 scatter `A`、`b`、`nums` 和 `x`。mixed Matrix/Vector iterative solver 的下一步仍需要独立的 distributed vector follow-up / reduction / state-swap 设计。
 - 2D tile halo、真实 in-place `READ_WRITE`、mixed Matrix/Vector solver、复杂函数调用路由和 one-shot MPI wrapper integration 都还在后续范围内，但 V1 row-block Matrix 路径已经完成。
 
@@ -796,8 +796,8 @@ for i in 1 2 3 4 5 6 7 8 9 10; do bash test_mpi.sh mpiPhaseCHaloWide1D || exit 1
 - `mpiPhaseCHaloWide1D`：覆盖 5 点、stride-2 输入窗口。当前不再误判为 distributed route；`step2.log` 中有 `partial-exchange enabled (root-bridge)`，没有 `route detected next->state`，生成代码有 `root_bridge_plan` 和 `__dacpp_mpi_region_wideShell_wide_step_stmt_0`，没有 `publish_local_writes_with_halo_or_exchange(...)`。这说明 wide stride route 域不满足当前 distributed route 覆盖条件时会保守回到 root helper + bridge。
 - `mpiDistributedStencil2DRowBlock`：`step2.log` 中有 `route detected next->state offset=(1,1)`、plain `partial-exchange enabled` 和 `halo-exchange enabled route=next->state`。生成代码在 `init()` 中设置 `ctx.use_partial_exchange = true`，用 `build_target_slots_for_globals_2d_offset(...)` 与 `build_exchange_plan_from_layouts_2d_offset(..., next_cols, state_cols, 1, 1, ...)` 建二维 route，再从 exchange plan 派生 halo plan；`run()` 后调用 `publish_local_writes_with_halo_or_exchange(..., ctx.dist_state.local_cache, ...)`；lowered outer loop 里每轮只调用 `__dacpp_mpi_stencil_run_heat2dShell_heat2d_step(...)`，循环后一次 `__dacpp_mpi_stencil_materialize_heat2dShell_heat2d_step(...)`；生成文件中没有 `root_bridge_plan = dacpp::mpi::build_exchange_plan_from_layouts(...)`。
 - `mpiDistributedStencil2DRowBlock` 的 materialize 路径也符合二维 stride 设计：root gather authoritative `next` WRITE values 后，使用 `map_2d_global_with_offset(ctx.output_layout_next.globals[...], next_cols, state_cols, 1, 1)` 映射回 full `state`，不是用一维 scalar offset 写回。
-- `stencil1.0`：`step2.log` 中有 `route detected matOut->matIn offset=(1,1)`、`partial-exchange enabled (root-bridge)` 和 `halo-exchange enabled route=matOut->matIn`。生成代码在 `init()` 中为 `matIn` 建 root dense bridge plan，同时用 `build_target_slots_for_globals_2d_offset(...)` 与 `build_exchange_plan_from_layouts_2d_offset(..., out_cols, mat_cols, 1, 1, ...)` 建 `matOut -> matIn` route；`run()` 后先 `publish_local_writes_with_halo_or_exchange(..., ctx.dist_mat.local_cache, ...)`，再把 `matOut` gather/apply 到 root-visible `matOut`。
-- `stencil1.0` 的 post-shell 结构符合保守 root-authoritative bridge：主循环中原 shell 被替换为 `__dacpp_mpi_stencil_run_stencilShell_stencil(...)`，interior copy loop 被替换为 `__dacpp_mpi_region_stencilShell_stencil_stmt_0(...)`，两个边界 loop 被替换为 `_stmt_1(...)` 和 `_stmt_2(...)`；三个 helper 都只在 root 执行原始写 `matIn` 的循环，然后用 `exchange_values_by_slots(...)` 刷新 `ctx.dist_mat.local_cache`。partial path 下 `__dacpp_mpi_stencil_materialize_stencilShell_stencil(...)` 直接返回，这是预期行为，因为 root 可见状态每轮已由 gather/root helper/root bridge 维护。
+- `stencil1.0`：`step2.log` 中有 `route detected matOut->matIn offset=(1,1)`、plain `partial-exchange enabled`、`halo-exchange enabled route=matOut->matIn` 和 `boundary-local update detected stmt`。生成代码用 `build_target_slots_for_globals_2d_offset(...)` 与 `build_exchange_plan_from_layouts_2d_offset(..., out_cols, mat_cols, 1, 1, ...)` 建 `matOut -> matIn` route；`init()` 中还为四条简单边界 copy 生成 `// DACPP boundary-local slot plan: matIn`，预计算 target/source slots。
+- `stencil1.0` 的 post-shell 结构已经不再是 root-authoritative bridge：主循环中原 shell 被替换为 `__dacpp_mpi_stencil_run_stencilShell_stencil(...)`，interior copy loop 和两个 boundary loop 都从 `main` 删除，没有 `__dacpp_mpi_region_stencilShell_stencil_stmt_0`，也没有 `root_bridge_plan = dacpp::mpi::build_exchange_plan_from_layouts(...)`。distributed branch 在 kernel 后调用 `publish_local_writes_with_halo_or_exchange_cache_only(..., ctx.dist_mat.local_cache, ...)`，随后按预计算 slot pair 执行四条 `// DACPP distributed boundary-local update: matIn`；partial path 下 `__dacpp_mpi_stencil_materialize_stencilShell_stencil(...)` 在 lowered outer loop 后一次 gather `ctx.dist_mat.local_cache` 并写回 root-visible `matIn`。
 - `waveEquation1.0`：`step2.log` 中有 `route detected matNext->matCur offset=(1,1)`、`partial-exchange enabled (root-bridge)` 和 `halo-exchange enabled route=matNext->matCur`。生成代码设置 `ctx.use_partial_exchange = true`，为 `matCur` 和 `matPrev` 分别建立 root bridge plan，为 `matNext -> matCur` 建 2D offset exchange plan；`run()` 后先 publish 到 `ctx.dist_cur.local_cache`，再 gather `matNext` 到 root-visible state。四个 sibling loop 被替换为 `_stmt_0` 到 `_stmt_3` root helpers，并在 helper 后刷新对应 distributed cache。
 - `jacobi1.0`：`step2.log` 中有 `Found outermost while loop for <->`、`partial-exchange disabled: phase-c does not support mixed Vector/Matrix sites`、`FallbackCache input A/b/nums cached in init`，以及 `FallbackCache input x cached in init refresh-from x_new`。生成代码显式设置 `ctx.use_partial_exchange = false`；`init()` 对 `A`、`b`、`nums` 和初始 `x` 做一次 `tensor2Array + pack + MPI_Scatterv` 到 `ctx.local_*`，`run()` 复用这些 cached local buffer。`x_new` 仍 `MPI_Gatherv` 后按 all-ranks-needed 生成 `MPI_Bcast`；随后生成 `pack_values_by_globals_parallel_range_into(global_out_x_new, ctx.plan_x.pack.globals.data(), ctx.plan_x.pack.globals.size(), ctx.local_x)`，用广播后的 `x_new` 全局结果刷新下一轮 `x` 的本地 pack buffer。生成文件没有 `__dacpp_mpi_region_jacobiShell_jacobi` 和 `publish_local_writes_with_halo_or_exchange(...)`。这是正确的保守路径，不是 2D Matrix Phase C 的 runtime fallback 伪通过。
 - `mpiDistributedStencilMultiRoute1D`：一个 sibling loop 中有两个独立 writer -> reader route，结构断言覆盖 route vector 初始化、两个 publish call、materialize 函数，以及无 root bridge。
@@ -813,32 +813,30 @@ Benchmark 结果：
 - 临时 benchmark 目录：`/Volumes/QUQ/working/mpi_tmp/stencil1_bench`。
 - 口径：只计运行阶段，不计翻译 / 编译，也不使用外部进程 wall time；两边都用 SYCL buffer。
 - 规模：`NX=NY=1024`，`TIME_STEPS=200`，`mpirun -np 4`。
-- 翻译器版本计时范围：`MPI_Barrier` 后进入 outer time-step loop，循环体包含 `__dacpp_mpi_stencil_run_stencilShell_stencil(...)`、interior copy helper 和两个 boundary helper；loop 后 `MPI_Barrier`，再用 `MPI_Reduce(max)` 取最慢 rank 时间。
+- 翻译器版本计时范围：`MPI_Barrier` 后进入 outer time-step loop，循环体每步只调用 `__dacpp_mpi_stencil_run_stencilShell_stencil(...)`；loop 后调用一次 `__dacpp_mpi_stencil_materialize_stencilShell_stencil(...)`，再 `MPI_Barrier` 并用 `MPI_Reduce(max)` 取最慢 rank 时间。
 - 手写标准版本：粗粒度 row-block MPI + SYCL buffer；每步只做上下整行 halo exchange、本地 compute/copy/boundary kernels；不做 overlap、persistent request、GPU-direct、tile/corner 微优化。
-- 两边 sample 一致：`4.95766918985e-06`。
+- 专用脚本：`bash bench_stencil_mpi.sh`，可用 `STENCIL_BENCH_NX`、`STENCIL_BENCH_NY`、`STENCIL_BENCH_TIME_STEPS`、`STENCIL_BENCH_RANKS`、`STENCIL_BENCH_RUNS` 覆盖默认口径。
 
 运行时间：
 
 ```text
 translated MPI stencil:
-25.0584s, 24.6291s, 25.8627s
-median = 25.0584s
+0.199452s, 0.200817s, 0.200622s
+median = 0.200622s
 
 hand-written coarse MPI+SYCL buffer:
-0.177454s, 0.173004s, 0.195793s
-median = 0.177454s
+0.147787s, 0.166576s, 0.155463s
+median = 0.155463s
 ```
 
-按中位数看，当前翻译器 `stencil1.0` 路径约慢 `141x`。
+按中位数看，当前翻译器 `stencil1.0` 路径约为手写粗粒度 MPI+SYCL row-block 的 `1.29x`。
 
 差距来源判断：
 
-- 主要不是 buffer-vs-USM，也不是进程启动噪声；这次只看大规模 runtime loop，且标准版也用 buffer。
-- 当前翻译器 `stencil1.0` 仍是 root-bridge path：每步 local kernel 后会 `publish_local_writes_with_halo_or_exchange(...)`，但同时还会 `MPI_Gatherv` interior `matOut` 到 root，并在 root 上维护 root-visible `matOut`。
-- post-shell 处理仍在 root 上执行完整 interior copy loop 和两个 boundary loop；每个 helper 后都会通过 root bridge 刷新 distributed `matIn` cache。
-- root bridge 目前是 dense/root-authoritative 方案，不是精确 helper-written subset，因此每步有接近 full Matrix 的 root -> distributed cache refresh 压力。
-- 手写标准 row-block 版本不维护每步 root-visible全局状态，只保持主状态分布式，并交换上下邻居 halo row；通信量和同步模式接近规则 stencil 的自然形态。
-- 因此 `stencil1.0` 下一步不能停在“已接入 root-bridge correctness path”，必须继续接入 distributed post-shell / boundary，目标是消掉每步 root gather、root helper 和 dense root bridge，让真实用例也走接近 `mpiDistributedStencil2DRowBlock` 的 no-root-bridge row-block 主路径。
+- root gather、root helper 和 dense root bridge 热路径已经移除；这就是从旧 `25.0584s` median 降到 `0.200622s` median 的主要原因。
+- `stencil1.0` 每步主状态现在留在 distributed cache 中，kernel 后通过 2D offset halo/exchange 发布 `matOut -> matIn`，边界在本地 slot cache 上更新，最终只在 loop 后 materialize 一次。
+- 和手写粗粒度 row-block 的剩余差距主要来自生成代码仍使用通用 item-space pack、`slots/key_offsets` 和 `View2D` 间接寻址；每步还会构造 SYCL buffers。手写版本则直接按 row-block 线性索引运行本地 kernel。
+- 下一步性能方向不是再消 root bridge，而是识别规则 2D stencil fast kernel，直接生成 row/col 线性索引和更少的 buffer/view 机械层。
 
 Broadcast analyze 结构断言：
 
