@@ -1,0 +1,3 @@
+SYCL_NOT_CONTAINS:<->
+SYCL_CONTAINS:ODDEVEN_oddeven(array2_tensor, array_out2_tensor)
+SYCL_CONTAINS:__dacpp_mpi_stencil_run_ODDEVEN_oddeven

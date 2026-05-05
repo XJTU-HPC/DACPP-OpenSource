@@ -727,6 +727,34 @@ bool parseBoundaryMatrixAccessAST(const clang::Expr* expr,
     return true;
 }
 
+bool parseBoundaryVectorAccessAST(const clang::Expr* expr,
+                                  const RouteLoopInfo& loopInfo,
+                                  clang::ASTContext* context,
+                                  std::string& tensorName,
+                                  bool& usesLoop,
+                                  int& offset,
+                                  std::string& exprText) {
+    const clang::Expr* indexExpr = nullptr;
+    const clang::Expr* baseExpr = getSubscriptBaseExpr(expr, indexExpr);
+    if (!baseExpr || !indexExpr) {
+        return false;
+    }
+
+    baseExpr = ignoreTransparentExpr(baseExpr);
+    const auto* baseRef = llvm::dyn_cast_or_null<clang::DeclRefExpr>(baseExpr);
+    if (!baseRef || !baseRef->getDecl()) {
+        return false;
+    }
+
+    if (!parseLoopOrIntegerIndexExpr(indexExpr, loopInfo, usesLoop, offset,
+                                     exprText, context)) {
+        return false;
+    }
+
+    tensorName = baseRef->getDecl()->getNameAsString();
+    return true;
+}
+
 std::string compactExprText(std::string text) {
     text.erase(std::remove_if(text.begin(), text.end(),
                               [](unsigned char c) {
@@ -1051,6 +1079,76 @@ bool tryCollectDistributedFollowup2D(DistributedStencilSitePlan& plan,
     return true;
 }
 
+bool tryCollectReadCacheTransition2D(DistributedStencilSitePlan& plan,
+                                     DacppFile* dacppFile,
+                                     Shell* shell,
+                                     const std::vector<IOTYPE>& transportModes,
+                                     const clang::Stmt* stmt) {
+    const auto* forStmt = llvm::dyn_cast_or_null<clang::ForStmt>(stmt);
+    if (!forStmt) {
+        return false;
+    }
+
+    RouteLoopInfo2D info;
+    if (!extractRouteLoopInfo2D(
+            forStmt, dacppFile->getContext(),
+            dacppFile->getBufferRegionPlan(), info)) {
+        return false;
+    }
+
+    std::vector<RouteAssignment> assignments;
+    if (!collectNestedLoopAssignments2D(forStmt, assignments) ||
+        assignments.empty()) {
+        return false;
+    }
+
+    std::vector<ReadCacheStateTransition> transitions;
+    transitions.reserve(assignments.size());
+    for (const RouteAssignment& assignment : assignments) {
+        std::string readerTensor;
+        std::string writerTensor;
+        AffineIndex2D readerIndex;
+        AffineIndex2D writerIndex;
+        if (!parseAffineMatrixAccessAST(assignment.lhs, info,
+                                        readerTensor, readerIndex) ||
+            !parseAffineMatrixAccessAST(assignment.rhs, info,
+                                        writerTensor, writerIndex)) {
+            return false;
+        }
+        if (!isEffectiveReader(writerTensor, shell, transportModes) ||
+            !isEffectiveReader(readerTensor, shell, transportModes)) {
+            return false;
+        }
+        const int writerIdx = findShellParamIndex(shell, writerTensor);
+        const int readerIdx = findShellParamIndex(shell, readerTensor);
+        if (writerIdx < 0 || readerIdx < 0) {
+            return false;
+        }
+
+        ReadCacheStateTransition transition;
+        transition.writerTensor = writerTensor;
+        transition.readerTensor = readerTensor;
+        transition.writerParamIndex = writerIdx;
+        transition.readerParamIndex = readerIdx;
+        transition.rank = 2;
+        transition.writerIndex2D = writerIndex;
+        transition.readerIndex2D = readerIndex;
+        transition.targetRowOffset = readerIndex.rowOffset - writerIndex.rowOffset;
+        transition.targetColOffset = readerIndex.colOffset - writerIndex.colOffset;
+        transition.stmt = assignment.stmt;
+        transitions.push_back(transition);
+        llvm::outs() << "[DACPP][MPI][PhaseC] read-cache transition detected "
+                     << writerTensor << "->" << readerTensor
+                     << " offset=(" << transition.targetRowOffset << ","
+                     << transition.targetColOffset << ")\n";
+    }
+
+    plan.readCacheTransitions.insert(plan.readCacheTransitions.end(),
+                                     transitions.begin(), transitions.end());
+    plan.distributedFollowupStmts.push_back(stmt);
+    return true;
+}
+
 bool tryCollectBoundaryLocalUpdate2D(DistributedStencilSitePlan& plan,
                                      DacppFile* dacppFile,
                                      Shell* shell,
@@ -1156,7 +1254,9 @@ bool tryCollectBoundaryLocalUpdate2D(DistributedStencilSitePlan& plan,
 
         BoundaryLocalUpdate update;
         update.tensorName = targetTensor;
+        update.sourceTensorName = sourceTensor;
         update.paramIndex = paramIdx;
+        update.sourceParamIndex = findShellParamIndex(shell, sourceTensor);
         update.rank = 2;
         update.targetRow = targetRow;
         update.targetCol = targetCol;
@@ -1170,6 +1270,107 @@ bool tryCollectBoundaryLocalUpdate2D(DistributedStencilSitePlan& plan,
         update.targetColUsesLoop = targetColUsesLoop;
         update.sourceRowUsesLoop = sourceRowUsesLoop;
         update.sourceColUsesLoop = sourceColUsesLoop;
+        update.constantRhs = constantRhs;
+        update.constantValue = constantValue;
+        update.stmt = assignment.stmt;
+        updates.push_back(update);
+    }
+
+    plan.boundaryLocalUpdates.insert(plan.boundaryLocalUpdates.end(),
+                                     updates.begin(), updates.end());
+    plan.boundaryLocalStmts.push_back(stmt);
+    llvm::outs() << "[DACPP][MPI][PhaseC] boundary-local update detected stmt\n";
+    return true;
+}
+
+bool tryCollectBoundaryLocalUpdate1D(DistributedStencilSitePlan& plan,
+                                     DacppFile* dacppFile,
+                                     Shell* shell,
+                                     const std::vector<IOTYPE>& transportModes,
+                                     const clang::Stmt* stmt) {
+    const auto* forStmt = llvm::dyn_cast_or_null<clang::ForStmt>(stmt);
+    if (!forStmt || !dacppFile || !dacppFile->getContext()) {
+        return false;
+    }
+
+    RouteLoopInfo loopInfo;
+    if (!extractRouteLoopInfo(forStmt, dacppFile->getContext(),
+                              dacppFile->getBufferRegionPlan(), loopInfo)) {
+        return false;
+    }
+
+    std::vector<RouteAssignment> assignments;
+    if (!collectTopLevelAssignments(forStmt->getBody(), assignments) ||
+        assignments.empty()) {
+        return false;
+    }
+
+    std::vector<BoundaryLocalUpdate> updates;
+    updates.reserve(assignments.size());
+    for (const RouteAssignment& assignment : assignments) {
+        std::string targetTensor;
+        bool targetUsesLoop = false;
+        int targetOffset = 0;
+        std::string targetExpr;
+        if (!parseBoundaryVectorAccessAST(assignment.lhs, loopInfo,
+                                          dacppFile->getContext(),
+                                          targetTensor, targetUsesLoop,
+                                          targetOffset, targetExpr)) {
+            return false;
+        }
+
+        std::string sourceTensor;
+        bool sourceUsesLoop = false;
+        int sourceOffset = 0;
+        std::string sourceExpr;
+        bool constantRhs = false;
+        std::string constantValue;
+        if (parseBoundaryVectorAccessAST(assignment.rhs, loopInfo,
+                                         dacppFile->getContext(),
+                                         sourceTensor, sourceUsesLoop,
+                                         sourceOffset, sourceExpr)) {
+            if (targetUsesLoop || sourceUsesLoop) {
+                return false;
+            }
+        } else if (int literal = 0; parseIntegerLiteralExpr(assignment.rhs, literal)) {
+            sourceTensor = targetTensor;
+            sourceUsesLoop = targetUsesLoop;
+            sourceOffset = targetOffset;
+            sourceExpr = targetExpr;
+            constantRhs = true;
+            constantValue = std::to_string(literal);
+            if (targetUsesLoop) {
+                return false;
+            }
+        } else {
+            return false;
+        }
+
+        const int targetParamIdx = findShellParamIndex(shell, targetTensor);
+        if (targetParamIdx < 0 ||
+            targetParamIdx >= static_cast<int>(transportModes.size()) ||
+            transportModes[targetParamIdx] == IOTYPE::WRITE) {
+            return false;
+        }
+        const int sourceParamIdx = findShellParamIndex(shell, sourceTensor);
+        if (!constantRhs &&
+            (sourceParamIdx < 0 ||
+             sourceParamIdx >= static_cast<int>(transportModes.size()))) {
+            return false;
+        }
+
+        BoundaryLocalUpdate update;
+        update.tensorName = targetTensor;
+        update.sourceTensorName = sourceTensor;
+        update.paramIndex = targetParamIdx;
+        update.sourceParamIndex = sourceParamIdx;
+        update.rank = 1;
+        update.targetRow = targetOffset;
+        update.sourceRow = sourceOffset;
+        update.targetRowExpr = targetExpr;
+        update.sourceRowExpr = sourceExpr;
+        update.targetRowUsesLoop = targetUsesLoop;
+        update.sourceRowUsesLoop = sourceUsesLoop;
         update.constantRhs = constantRhs;
         update.constantValue = constantValue;
         update.stmt = assignment.stmt;
@@ -1240,15 +1441,25 @@ DistributedStencilSitePlan analyzeDistributedStencilSite(
     }
 
     std::vector<RootCentricPostRegion> rootRegions;
-    const bool allowDistributedFollowup = regionPlan.siblingStmts.size() == 1;
     for (const clang::Stmt* stmt : regionPlan.siblingStmts) {
-        if (allowDistributedFollowup && hasVectorParam &&
+        if (hasVectorParam &&
             tryCollectDistributedFollowup(plan, dacppFile, shell, effectiveModes,
                                           transportModes, stmt)) {
             continue;
         }
+        if (hasVectorParam && rootRegions.empty() &&
+            !plan.followupMappings.empty() &&
+            tryCollectBoundaryLocalUpdate1D(plan, dacppFile, shell,
+                                            transportModes, stmt)) {
+            continue;
+        }
         if (hasMatrixParam &&
             tryCollectDistributedFollowup2D(plan, dacppFile, shell, effectiveModes,
+                                            transportModes, stmt)) {
+            continue;
+        }
+        if (hasMatrixParam &&
+            tryCollectReadCacheTransition2D(plan, dacppFile, shell,
                                             transportModes, stmt)) {
             continue;
         }

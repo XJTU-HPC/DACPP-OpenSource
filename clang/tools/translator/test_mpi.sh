@@ -23,6 +23,7 @@ MPI_TESTS=(
     "jacobi1.0"
     "mandel1.0"
     "imageAdjustment1.0"
+    "oddeven0.1"
     "vectorAddCombo"
     "gradientSum"
     "mpiBroadcastRootOnlyCout"
@@ -250,6 +251,12 @@ for test_name in "${MPI_TESTS[@]}"; do
     if ! run_in_env "$work_dir/step2.log" "dacpp '$mpi_dac' --mode=buffer --mpi && acpp-compile '$mpi_sycl' '$mpi_bin'"; then
         echo "[FAIL] MPI translate/compile failed."
         head -n 20 "$work_dir/step2.log"
+        FAILED=$((FAILED + 1))
+        continue
+    fi
+    if grep -Fq "<->" "$mpi_sycl"; then
+        echo "[FAIL] Generated MPI SYCL still contains a DACPP <-> expression."
+        grep -Fn "<->" "$mpi_sycl" | head -n 5
         FAILED=$((FAILED + 1))
         continue
     fi

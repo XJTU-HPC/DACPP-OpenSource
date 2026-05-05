@@ -198,7 +198,7 @@ public:
 
     FunctionDecl *calcFunc = dyn_cast<FunctionDecl>(declRefExpr->getDecl());
     if (dacExprMap.find(functionDecl) != dacExprMap.end()) {
-      if (dacExprMap[functionDecl].count(calcFunc) == 1) {
+      if (!MpiOpt && dacExprMap[functionDecl].count(calcFunc) == 1) {
         return;
       }
     } else {

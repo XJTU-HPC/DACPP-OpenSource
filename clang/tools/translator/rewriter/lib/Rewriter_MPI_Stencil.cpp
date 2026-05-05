@@ -61,6 +61,34 @@ std::string joinShellCallArgs(const clang::BinaryOperator* dacExpr,
     return args;
 }
 
+std::string getDeclRefName(const clang::Expr* expr) {
+    if (!expr) {
+        return "";
+    }
+    const auto* declRef = dacppTranslator::getNode<clang::DeclRefExpr>(
+        const_cast<clang::Expr*>(expr));
+    if (!declRef || !declRef->getDecl()) {
+        return "";
+    }
+    return declRef->getDecl()->getNameAsString();
+}
+
+std::string wrapperNameForDacExpr(const clang::BinaryOperator* dacExpr) {
+    const clang::CallExpr* shellCall = getShellCallExpr(dacExpr);
+    if (!shellCall || !shellCall->getDirectCallee()) {
+        return "";
+    }
+
+    const clang::Expr* calcExpr =
+        dacppTranslator::Expression::shellLHS_p(dacExpr) ? dacExpr->getRHS()
+                                                         : dacExpr->getLHS();
+    const std::string calcName = getDeclRefName(calcExpr);
+    if (calcName.empty()) {
+        return "";
+    }
+    return shellCall->getDirectCallee()->getNameAsString() + "_" + calcName;
+}
+
 void insertMainMPISetup(dacppTranslator::DacppFile* dacppFile,
                         clang::Rewriter* rewriter,
                         const clang::FunctionDecl* mainFunc) {
@@ -153,6 +181,7 @@ void Rewriter::rewriteMPIStencil() {
     rewriter->InsertText(dacppFile->node->getBeginLoc(), generated);
     insertMainMPISetup(dacppFile, rewriter, dacppFile->getMainFunction());
 
+    std::set<const clang::BinaryOperator*> rewrittenDacExprs;
     for (int exprIdx = 0; exprIdx < dacppFile->getNumExpression(); ++exprIdx) {
         Expression* expr = dacppFile->getExpression(exprIdx);
         Shell* shell = expr->getShell();
@@ -180,6 +209,7 @@ void Rewriter::rewriteMPIStencil() {
             }
             runCall += ")";
             rewriter->ReplaceText(dacExpr->getSourceRange(), runCall);
+            rewrittenDacExprs.insert(dacExpr);
 
             std::string materializeCall = "\n    " +
                 mpi_stencil_rewriter::materializeFunctionName(shell, calc) +
@@ -247,6 +277,24 @@ void Rewriter::rewriteMPIStencil() {
 
         std::string wrapperCall = mpi_stencil_rewriter::wrapperName(shell, calc) + "(" + argText + ")";
         rewriter->ReplaceText(dacExpr->getSourceRange(), wrapperCall);
+        rewrittenDacExprs.insert(dacExpr);
+    }
+
+    // Wrapper generation is intentionally deduplicated by shell/calc pair, but
+    // every source-level <-> occurrence still needs to be rewritten. Duplicate
+    // calls such as odd-even's two ODDEVEN <-> oddeven sites are present in
+    // dacExprs even when only one Expression was generated.
+    for (const clang::BinaryOperator* dacExpr : dacppFile->dacExprs) {
+        if (!dacExpr || rewrittenDacExprs.count(dacExpr) != 0) {
+            continue;
+        }
+        const std::string wrapper = wrapperNameForDacExpr(dacExpr);
+        if (wrapper.empty()) {
+            continue;
+        }
+        const std::string argText = joinShellCallArgs(dacExpr, dacppFile->getContext());
+        rewriter->ReplaceText(dacExpr->getSourceRange(),
+                              wrapper + "(" + argText + ")");
     }
 
     dacppFile->setMainAlreadyRewritten(true);

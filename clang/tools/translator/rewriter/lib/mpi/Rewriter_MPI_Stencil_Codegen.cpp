@@ -814,6 +814,16 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
                     std::to_string(updateIdx) + ";\n";
         }
     }
+    if (!distributedSitePlan.readCacheTransitions.empty()) {
+        for (std::size_t transitionIdx = 0;
+             transitionIdx < distributedSitePlan.readCacheTransitions.size();
+             ++transitionIdx) {
+            code += "    std::vector<int32_t> read_cache_transition_target_slots_" +
+                    std::to_string(transitionIdx) + ";\n";
+            code += "    std::vector<int32_t> read_cache_transition_source_slots_" +
+                    std::to_string(transitionIdx) + ";\n";
+        }
+    }
     code += "};\n\n";
 
     code += "void " + initName + "(" + ctxType + "& ctx";
@@ -1064,6 +1074,13 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
                 Param* shellParam = shell->getParam(update.paramIndex);
                 const std::string& calcName = calcParam->getName();
                 const std::string& tensorName = shellParam->getName();
+                std::string sourceCalcName = calcName;
+                std::string sourceTensorName = tensorName;
+                if (update.sourceParamIndex >= 0 &&
+                    update.sourceParamIndex < shell->getNumShellParams()) {
+                    sourceCalcName = calc->getParam(update.sourceParamIndex)->getName();
+                    sourceTensorName = shell->getParam(update.sourceParamIndex)->getName();
+                }
                 const std::string rowExpr =
                     update.targetRowUsesLoop ? "__dacpp_idx" : update.targetRowExpr;
                 const std::string colExpr =
@@ -1077,6 +1094,42 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
                         tensorName + "\n";
                 code += "    ctx.boundary_local_target_slots_" + idx + ".clear();\n";
                 code += "    ctx.boundary_local_source_slots_" + idx + ".clear();\n";
+                if (update.rank == 1) {
+                    code += "    {\n";
+                    code += "        const int64_t __dacpp_size = static_cast<int64_t>(" +
+                            tensorName + ".getSize());\n";
+                    code += "        const int64_t __dacpp_target_global = " +
+                            (update.targetRowUsesLoop ? "__dacpp_idx" : update.targetRowExpr) +
+                            ";\n";
+                    code += "        if (__dacpp_target_global >= 0 && __dacpp_target_global < __dacpp_size) {\n";
+                    code += "            const int32_t __dacpp_target_slot = dacpp::mpi::try_lookup_local_slot(ctx.plan_" +
+                            calcName + ".pack, __dacpp_target_global);\n";
+                    code += "            if (__dacpp_target_slot >= 0) {\n";
+                    if (update.constantRhs) {
+                        code += "                ctx.boundary_local_target_slots_" + idx +
+                                ".push_back(__dacpp_target_slot);\n";
+                    } else {
+                        code += "                const int64_t __dacpp_source_size = static_cast<int64_t>(" +
+                                sourceTensorName + ".getSize());\n";
+                        code += "                const int64_t __dacpp_source_global = " +
+                                (update.sourceRowUsesLoop ? "__dacpp_idx" : update.sourceRowExpr) +
+                                ";\n";
+                        code += "                if (__dacpp_source_global >= 0 && __dacpp_source_global < __dacpp_source_size) {\n";
+                        code += "                    const int32_t __dacpp_source_slot = dacpp::mpi::try_lookup_local_slot(ctx.plan_" +
+                                sourceCalcName + ".pack, __dacpp_source_global);\n";
+                        code += "                    if (__dacpp_source_slot >= 0) {\n";
+                        code += "                        ctx.boundary_local_target_slots_" + idx +
+                                ".push_back(__dacpp_target_slot);\n";
+                        code += "                        ctx.boundary_local_source_slots_" + idx +
+                                ".push_back(__dacpp_source_slot);\n";
+                        code += "                    }\n";
+                        code += "                }\n";
+                    }
+                    code += "            }\n";
+                    code += "        }\n";
+                    code += "    }\n";
+                    continue;
+                }
                 code += "    {\n";
                 code += "        const int64_t __dacpp_rows = static_cast<int64_t>(" +
                         tensorName + ".getShape(0));\n";
@@ -1117,6 +1170,60 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
             }
         }
     }
+        if (!distributedSitePlan.readCacheTransitions.empty()) {
+            for (std::size_t transitionIdx = 0;
+                 transitionIdx < distributedSitePlan.readCacheTransitions.size();
+                 ++transitionIdx) {
+                const auto& transition =
+                    distributedSitePlan.readCacheTransitions[transitionIdx];
+                if (transition.writerParamIndex < 0 ||
+                    transition.readerParamIndex < 0 ||
+                    transition.rank != 2) {
+                    code += "    ctx.partial_exchange_disable_reason = \"phase-c unsupported read-cache transition\";\n";
+                    code += "    ctx.use_partial_exchange = false;\n";
+                    continue;
+                }
+                const std::string& writerCalcName =
+                    calc->getParam(transition.writerParamIndex)->getName();
+                const std::string& readerCalcName =
+                    calc->getParam(transition.readerParamIndex)->getName();
+                const std::string writerCols = writerCalcName + "_read_cache_cols_" +
+                                               std::to_string(transitionIdx);
+                const std::string readerCols = readerCalcName + "_read_cache_cols_" +
+                                               std::to_string(transitionIdx);
+                const std::string idx = std::to_string(transitionIdx);
+                code += "    // DACPP read-cache state transition slot plan: " +
+                        transition.writerTensor + " -> " +
+                        transition.readerTensor + "\n";
+                code += "    ctx.read_cache_transition_target_slots_" + idx + ".clear();\n";
+                code += "    ctx.read_cache_transition_source_slots_" + idx + ".clear();\n";
+                code += "    {\n";
+                code += "        const int " + writerCols + " = " +
+                        shell->getParam(transition.writerParamIndex)->getName() +
+                        ".getShape(1);\n";
+                code += "        const int " + readerCols + " = " +
+                        shell->getParam(transition.readerParamIndex)->getName() +
+                        ".getShape(1);\n";
+                code += "        const auto& __dacpp_transition_globals = ctx.plan_" +
+                        writerCalcName + ".pack.globals;\n";
+                code += "        for (int64_t __dacpp_source_global : __dacpp_transition_globals) {\n";
+                code += "            const int32_t __dacpp_source_slot = dacpp::mpi::try_lookup_local_slot(ctx.plan_" +
+                        writerCalcName + ".pack, __dacpp_source_global);\n";
+                code += "            if (__dacpp_source_slot < 0) continue;\n";
+                code += "            const int64_t __dacpp_target_global = dacpp::mpi::map_2d_global_with_offset(__dacpp_source_global, " +
+                        writerCols + ", " + readerCols + ", " +
+                        std::to_string(transition.targetRowOffset) + ", " +
+                        std::to_string(transition.targetColOffset) + ");\n";
+                code += "            if (__dacpp_target_global < 0) continue;\n";
+                code += "            const int32_t __dacpp_target_slot = dacpp::mpi::try_lookup_local_slot(ctx.plan_" +
+                        readerCalcName + ".pack, __dacpp_target_global);\n";
+                code += "            if (__dacpp_target_slot < 0) continue;\n";
+                code += "            ctx.read_cache_transition_source_slots_" + idx + ".push_back(__dacpp_source_slot);\n";
+                code += "            ctx.read_cache_transition_target_slots_" + idx + ".push_back(__dacpp_target_slot);\n";
+                code += "        }\n";
+                code += "    }\n";
+            }
+        }
     } else {
         code += "    ctx.use_partial_exchange = false;\n";
         code += "    ctx.partial_exchange_disable_reason = \"" +
@@ -1420,6 +1527,40 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
         code += "            q.wait();\n";
         code += "        }\n";
         code += "    }\n";
+        if (!distributedSitePlan.readCacheTransitions.empty()) {
+            for (std::size_t transitionIdx = 0;
+                 transitionIdx < distributedSitePlan.readCacheTransitions.size();
+                 ++transitionIdx) {
+                const auto& transition =
+                    distributedSitePlan.readCacheTransitions[transitionIdx];
+                if (transition.writerParamIndex < 0 ||
+                    transition.readerParamIndex < 0) {
+                    continue;
+                }
+                const std::string& writerCalcName =
+                    calc->getParam(transition.writerParamIndex)->getName();
+                const std::string& readerCalcName =
+                    calc->getParam(transition.readerParamIndex)->getName();
+                const std::string idx = std::to_string(transitionIdx);
+                code += "    // DACPP read-cache state transition: " +
+                        transition.writerTensor + " -> " +
+                        transition.readerTensor + "\n";
+                code += "    {\n";
+                code += "        const std::size_t __dacpp_transition_count = ctx.read_cache_transition_target_slots_" +
+                        idx + ".size();\n";
+                code += "        for (std::size_t __dacpp_transition_i = 0; __dacpp_transition_i < __dacpp_transition_count; ++__dacpp_transition_i) {\n";
+                code += "            const int32_t __dacpp_source_slot = ctx.read_cache_transition_source_slots_" +
+                        idx + "[__dacpp_transition_i];\n";
+                code += "            const int32_t __dacpp_target_slot = ctx.read_cache_transition_target_slots_" +
+                        idx + "[__dacpp_transition_i];\n";
+                code += "            local_" + readerCalcName +
+                        "[static_cast<std::size_t>(__dacpp_target_slot)] = local_" +
+                        writerCalcName +
+                        "[static_cast<std::size_t>(__dacpp_source_slot)];\n";
+                code += "        }\n";
+                code += "    }\n";
+            }
+        }
         for (int paramIdx = 0; paramIdx < shell->getNumShellParams(); ++paramIdx) {
             if (transportModes[paramIdx] == IOTYPE::READ) {
                 continue;
@@ -1473,6 +1614,11 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
                 Param* shellParam = shell->getParam(update.paramIndex);
                 const std::string& calcName = calcParam->getName();
                 const std::string& tensorName = shellParam->getName();
+                std::string sourceCalcName = calcName;
+                if (update.sourceParamIndex >= 0 &&
+                    update.sourceParamIndex < shell->getNumShellParams()) {
+                    sourceCalcName = calc->getParam(update.sourceParamIndex)->getName();
+                }
                 const std::string idx = std::to_string(
                     static_cast<std::size_t>(&update - distributedSitePlan.boundaryLocalUpdates.data()));
                 code += "    // DACPP distributed boundary-local update: " +
@@ -1496,7 +1642,7 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
                             idx + "[__dacpp_boundary_i];\n";
                     code += "            local_" + calcName +
                             "[static_cast<std::size_t>(__dacpp_target_slot)] = local_" +
-                            calcName + "[static_cast<std::size_t>(__dacpp_source_slot)];\n";
+                            sourceCalcName + "[static_cast<std::size_t>(__dacpp_source_slot)];\n";
                     code += "        }\n";
                 }
                 code += "    }\n";

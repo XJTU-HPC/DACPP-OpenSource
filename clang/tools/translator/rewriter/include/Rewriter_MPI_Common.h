@@ -69,9 +69,27 @@ struct DistributedFollowupMapping {
     const clang::Stmt* stmt = nullptr;
 };
 
+struct ReadCacheStateTransition {
+    std::string writerTensor;
+    std::string readerTensor;
+    int writerParamIndex = -1;
+    int readerParamIndex = -1;
+    int rank = 1;
+    AffineIndex1D writerIndex;
+    AffineIndex1D readerIndex;
+    AffineIndex2D writerIndex2D;
+    AffineIndex2D readerIndex2D;
+    int targetOffset = 0;
+    int targetRowOffset = 0;
+    int targetColOffset = 0;
+    const clang::Stmt* stmt = nullptr;
+};
+
 struct BoundaryLocalUpdate {
     std::string tensorName;
+    std::string sourceTensorName;
     int paramIndex = -1;
+    int sourceParamIndex = -1;
     int rank = 2;
     int targetRow = 0;
     int targetCol = 0;
@@ -97,6 +115,7 @@ struct DistributedStencilSitePlan {
     std::set<std::string> distributedTensors;
     std::set<std::string> rootBridgeTensors;
     std::vector<DistributedFollowupMapping> followupMappings;
+    std::vector<ReadCacheStateTransition> readCacheTransitions;
     std::vector<const clang::Stmt*> distributedFollowupStmts;
     std::vector<BoundaryLocalUpdate> boundaryLocalUpdates;
     std::vector<const clang::Stmt*> boundaryLocalStmts;
