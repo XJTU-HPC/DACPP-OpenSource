@@ -7,6 +7,7 @@
 #include "clang/AST/Expr.h"
 #include "clang/AST/ParentMapContext.h"
 #include "clang/AST/Stmt.h"
+#include "clang/Lex/Lexer.h"
 
 #include "Rewriter_MPI_Common.h"
 
@@ -24,10 +25,32 @@ inline const clang::CallExpr* getShellCallExpr(
         return nullptr;
     }
 
+    if (const auto* lhsCall =
+            llvm::dyn_cast<clang::CallExpr>(dacExpr->getLHS()->IgnoreParenImpCasts())) {
+        return lhsCall;
+    }
+    if (const auto* rhsCall =
+            llvm::dyn_cast<clang::CallExpr>(dacExpr->getRHS()->IgnoreParenImpCasts())) {
+        return rhsCall;
+    }
+
     clang::Expr* shellExpr =
         dacppTranslator::Expression::shellLHS_p(dacExpr) ? dacExpr->getLHS()
                                                          : dacExpr->getRHS();
-    return dacppTranslator::getNode<clang::CallExpr>(shellExpr);
+    if (!shellExpr) {
+        return dacppTranslator::getNode<clang::CallExpr>(
+            const_cast<clang::BinaryOperator*>(dacExpr));
+    }
+
+    shellExpr = shellExpr->IgnoreParenImpCasts();
+    if (const auto* directCall = llvm::dyn_cast<clang::CallExpr>(shellExpr)) {
+        return directCall;
+    }
+    if (const auto* nestedCall = dacppTranslator::getNode<clang::CallExpr>(shellExpr)) {
+        return nestedCall;
+    }
+    return dacppTranslator::getNode<clang::CallExpr>(
+        const_cast<clang::BinaryOperator*>(dacExpr));
 }
 
 inline bool containsStmt(const clang::Stmt* root, const clang::Stmt* needle) {
@@ -88,6 +111,50 @@ inline std::string extractBaseDeclName(const clang::Expr* expr) {
     return "";
 }
 
+inline std::string extractBaseNameFromSourceText(const clang::Expr* expr,
+                                                 clang::ASTContext& context) {
+    if (!expr) {
+        return "";
+    }
+
+    std::string text = clang::Lexer::getSourceText(
+                           clang::CharSourceRange::getTokenRange(
+                               expr->getSourceRange()),
+                           context.getSourceManager(),
+                           context.getLangOpts())
+                           .str();
+    if (text.empty()) {
+        return "";
+    }
+
+    const auto isIdentStart = [](char c) {
+        return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '_';
+    };
+    const auto isIdentChar = [&](char c) {
+        return isIdentStart(c) || (c >= '0' && c <= '9');
+    };
+
+    for (std::size_t idx = 0; idx < text.size(); ++idx) {
+        if (!isIdentStart(text[idx])) {
+            continue;
+        }
+
+        std::size_t end = idx + 1;
+        while (end < text.size() && isIdentChar(text[end])) {
+            ++end;
+        }
+
+        if (end + 1 < text.size() && text[end] == ':' && text[end + 1] == ':') {
+            idx = end + 1;
+            continue;
+        }
+
+        return text.substr(idx, end - idx);
+    }
+
+    return "";
+}
+
 inline std::string resolveActualTensorName(
     const std::string& shellParamName,
     const clang::BinaryOperator* dacExpr) {
@@ -108,8 +175,23 @@ inline std::string resolveActualTensorName(
         if (!param || param->getNameAsString() != shellParamName) {
             continue;
         }
+        const auto* dre = dacppTranslator::getNode<clang::DeclRefExpr>(
+            const_cast<clang::Expr*>(shellCall->getArg(paramIdx)));
+        if (dre && dre->getDecl()) {
+            return dre->getDecl()->getNameAsString();
+        }
         const std::string actualName = extractBaseDeclName(shellCall->getArg(paramIdx));
-        return actualName.empty() ? shellParamName : actualName;
+        if (!actualName.empty()) {
+            return actualName;
+        }
+        if (const auto* directCallee = shellCall->getDirectCallee()) {
+            const std::string textName = extractBaseNameFromSourceText(
+                shellCall->getArg(paramIdx), directCallee->getASTContext());
+            if (!textName.empty()) {
+                return textName;
+            }
+        }
+        return shellParamName;
     }
     return shellParamName;
 }

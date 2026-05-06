@@ -7,12 +7,57 @@
 #include "clang/AST/Expr.h"
 #include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/AST/Stmt.h"
+#include "llvm/Support/raw_ostream.h"
 
 #include "Rewriter_MPI_OutputAnalysis_Internal.h"
 
 namespace dacppTranslator {
 namespace mpi_rewriter {
 namespace {
+
+std::set<std::string> collectTensorNameCandidates(
+    const std::string& tensorName,
+    const clang::BinaryOperator* currentDacExpr) {
+    std::set<std::string> names;
+    if (!tensorName.empty()) {
+        names.insert(tensorName);
+    }
+
+    if (const auto* shellCall = detail::getShellCallExpr(currentDacExpr)) {
+        if (const auto* callee = shellCall->getDirectCallee()) {
+            for (unsigned paramIdx = 0;
+                 paramIdx < callee->getNumParams() &&
+                 paramIdx < shellCall->getNumArgs();
+                 ++paramIdx) {
+                const auto* param = callee->getParamDecl(paramIdx);
+                if (!param || param->getNameAsString() != tensorName) {
+                    continue;
+                }
+                const std::string directName =
+                    detail::extractBaseDeclName(shellCall->getArg(paramIdx));
+                if (!directName.empty()) {
+                    names.insert(directName);
+                } else {
+                    const std::string textName =
+                        detail::extractBaseNameFromSourceText(
+                            shellCall->getArg(paramIdx),
+                            callee->getASTContext());
+                    if (!textName.empty()) {
+                        names.insert(textName);
+                    }
+                }
+                break;
+            }
+        }
+    }
+
+    const std::string actualTensorName =
+        detail::resolveActualTensorName(tensorName, currentDacExpr);
+    if (!actualTensorName.empty()) {
+        names.insert(actualTensorName);
+    }
+    return names;
+}
 
 class TensorUseVisitor : public clang::RecursiveASTVisitor<TensorUseVisitor> {
 public:
@@ -201,6 +246,19 @@ public:
     }
 };
 
+void mergeTensorUseVisitorState(TensorUseVisitor& accum,
+                                const TensorUseVisitor& current) {
+    accum.HasPostDacRead =
+        accum.HasPostDacRead || current.HasPostDacRead;
+    accum.HasReadOutsideRootRegion =
+        accum.HasReadOutsideRootRegion || current.HasReadOutsideRootRegion;
+    accum.HasReadInsideRootRegion =
+        accum.HasReadInsideRootRegion || current.HasReadInsideRootRegion;
+    accum.RootOnlyPropagationTargets.insert(
+        current.RootOnlyPropagationTargets.begin(),
+        current.RootOnlyPropagationTargets.end());
+}
+
 bool isRootOnlyObservableAfterDac(
     DacppFile* dacppFile,
     const std::string& tensorName,
@@ -298,12 +356,25 @@ OutputSyncRequirement classifyOutputSyncRequirement(
         return OutputSyncRequirement::DistributedFollowup;
     }
 
-    const std::string actualTensorName =
-        detail::resolveActualTensorName(tensorName, currentDacExpr);
-    TensorUseVisitor visitor(actualTensorName, dacppFile->dacExprs,
-                             currentDacExpr, dacppFile->getContext(),
-                             rootRegionStmts);
-    visitor.TraverseStmt(const_cast<clang::Stmt*>(dacppFile->getMainBody()));
+    const std::set<std::string> candidateNames =
+        collectTensorNameCandidates(tensorName, currentDacExpr);
+    TensorUseVisitor visitor("", dacppFile->dacExprs, currentDacExpr,
+                             dacppFile->getContext(), rootRegionStmts);
+    for (const std::string& candidateName : candidateNames) {
+        TensorUseVisitor candidateVisitor(
+            candidateName, dacppFile->dacExprs, currentDacExpr,
+            dacppFile->getContext(), rootRegionStmts);
+        candidateVisitor.TraverseStmt(
+            const_cast<clang::Stmt*>(dacppFile->getMainBody()));
+        mergeTensorUseVisitorState(visitor, candidateVisitor);
+    }
+    llvm::outs() << "[DACPP][MPI][OutputSyncDebug] shell=" << tensorName
+                 << " candidates=" << candidateNames.size()
+                 << " post=" << visitor.HasPostDacRead
+                 << " outside=" << visitor.HasReadOutsideRootRegion
+                 << " inside=" << visitor.HasReadInsideRootRegion
+                 << " propagated=" << visitor.RootOnlyPropagationTargets.size()
+                 << "\n";
 
     if (!visitor.HasPostDacRead) {
         return OutputSyncRequirement::RootOnly;
