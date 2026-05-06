@@ -1,7 +1,4 @@
-#ifndef DACPP_MPI_VIEWS_H
-#define DACPP_MPI_VIEWS_H
-
-#include "KernelViews.h"
-#include "RegionViews.h"
-
-#endif
+// Facade: re-exports view types from common/.
+// Consumers include "mpi/Views.h"; actual definitions live in common/.
+#include "common/KernelViews.h"
+#include "common/RegionViews.h"
