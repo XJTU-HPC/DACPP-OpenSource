@@ -7,8 +7,8 @@ LOG_NOT_CONTAINS:[DACPP][MPI][PhaseC] site waveEqShell_waveEq partial-exchange e
 SYCL_CONTAINS:ctx.use_partial_exchange = true;
 SYCL_CONTAINS:build_exchange_plan_from_layouts_2d_offset
 SYCL_CONTAINS:publish_local_writes_with_halo_or_exchange
-SYCL_CONTAINS:wave_direct_slots_buffer
-SYCL_CONTAINS:wave_direct_next_stale_slots
+SYCL_CONTAINS:ctx.wave.direct_kernel.slots_buffer
+SYCL_CONTAINS:ctx.wave.direct_kernel.next_stale_slots
 SYCL_CONTAINS:prepare_halo_exchange_runtime
 SYCL_CONTAINS:halo_runtimes_by_route
 SYCL_CONTAINS:build_local_span_pairs_from_slots

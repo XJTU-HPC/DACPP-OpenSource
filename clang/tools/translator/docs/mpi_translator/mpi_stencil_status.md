@@ -56,6 +56,7 @@ __dacpp_mpi_stencil_materialize_xxx(ctx, ...);
 含义：
 
 - `ctx`：保存 MPI rank/size、SYCL queue、AccessPattern、PackPlan、ItemRange、cached layouts、distributed cache 和复用 buffer。
+- `ctx.wave`：保存 wave specialization 独占的 direct-kernel metadata、route fast-path、read-cache transition fast-path；generic ctx 表面不再散落 `use_wave_*` / `wave_direct_*` 字段。
 - `init()`：循环外执行一次，初始化稳定 metadata、rank-local item range、pack/layout/exchange plan，并 seed 初始 READ cache。
 - `run()`：每步执行 kernel、必要通信、writer -> reader publish、boundary-local update、read-cache transition。
 - `run()` 内的 read-cache transition 和 writer publish helper 复用 ctx 中的 SYCL queue，避免 helper 内部每步重复创建 queue。
@@ -84,6 +85,9 @@ Stencil / Phase C 分析和生成：
 - `clang/tools/translator/rewriter/include/Rewriter_MPI_Stencil_Common.h`
 - `clang/tools/translator/rewriter/lib/mpi/Rewriter_MPI_Stencil_Analysis.cpp`
 - `clang/tools/translator/rewriter/lib/mpi/Rewriter_MPI_Stencil_Codegen.cpp`
+- `clang/tools/translator/rewriter/lib/mpi/Rewriter_MPI_Stencil_Codegen_Utils.cpp`
+- `clang/tools/translator/rewriter/lib/mpi/Rewriter_MPI_Stencil_Codegen_Wave.cpp`
+- `clang/tools/translator/rewriter/lib/mpi/Rewriter_MPI_Stencil_Codegen_Internal.h`
 
 输出一致性和 root-only 输出：
 
@@ -103,6 +107,9 @@ Runtime helper：
 - `clang/tools/translator/dpcppLib/include/mpi/StencilTypes.h`
 - `clang/tools/translator/dpcppLib/include/mpi/StencilLayout.h`
 - `clang/tools/translator/dpcppLib/include/mpi/StencilExchange.h`
+- `clang/tools/translator/dpcppLib/include/mpi/StencilExchangePlan.h`
+- `clang/tools/translator/dpcppLib/include/mpi/StencilExchangeRuntime.h`
+- `clang/tools/translator/dpcppLib/include/mpi/WaveExchangeSpecialization.h`
 - `clang/tools/translator/dpcppLib/include/mpi/Views.h`
 - `clang/tools/translator/dpcppLib/include/mpi/Wrapper*.h`
 
@@ -113,6 +120,17 @@ Runtime helper：
 - `phase_c_halo_plan_2026-05-04.md`
 - `mpi_stencil_logic_2026-05-06.md`
 - `wave_specialization_split_plan_2026-05-06.md`
+
+### 3.1 当前代码分层
+
+| 层 | 主要文件 | 职责 |
+|---|---|---|
+| Translator 入口 | `translator.cpp`, `Rewriter_MPI.cpp`, `Rewriter_MPI_Stencil.cpp` | 识别 `--mpi`、登记 stencil site、在普通 wrapper 与 stencil loop path 之间分流 |
+| Phase C 分析 | `Rewriter_MPI_Stencil_Analysis.cpp` | 判断站点能否进入 distributed Phase C，提取 route、read-cache transition、boundary-local update、root-bridge 需求 |
+| Stencil codegen orchestration | `Rewriter_MPI_Stencil_Codegen.cpp` | 生成 `ctx/init/run/materialize` 主骨架，串起 fallback、distributed route、materialize 语义 |
+| Stencil codegen helper | `Rewriter_MPI_Stencil_Codegen_Utils.cpp`, `Rewriter_MPI_Stencil_Codegen_Wave.cpp`, `Rewriter_MPI_Stencil_Codegen_Internal.h` | 前者负责 AST/fallback-input/pattern-init 工具，后者只负责 wave specialization emission |
+| Runtime state / plan | `StencilTypes.h`, `StencilLayout.h`, `StencilExchangePlan.h` | 定义 distributed tensor / wave specialization state，构造 target slots、exchange plan、halo plan |
+| Runtime execution | `StencilExchangeRuntime.h`, `WaveExchangeSpecialization.h`, `StencilExchange.h` | 执行 pack/scatter/exchange/publish；`StencilExchange.h` 只是聚合头，wave span/row-copy fast path 已完全独立 |
 
 ## 4. 已完成能力
 
@@ -213,6 +231,10 @@ only materialize at observable point
 - `SlotSpan`
 - `PeerHaloExchange`
 - `HaloExchangePlan`
+- `WaveRouteFastPathState`
+- `WaveReadCacheTransitionFastPathState`
+- `WaveDirectKernelState`
+- `WaveSpecializationState`
 
 已落地 helper：
 
@@ -227,6 +249,7 @@ only materialize at observable point
 - `build_halo_plan_from_exchange_plan()`
 - `publish_local_writes_with_halo_or_exchange()`
 - `publish_local_writes_with_halo_or_exchange_cache_only()`
+- `publish_local_writes_with_span_pairs_or_exchange_cache_only()`
 
 Route IR 当前支持：
 
@@ -540,8 +563,8 @@ wave 1024 单点以 `8.2` 里的 `2.02x` 为准。
 当前推进重心先集中在 `waveEquation1.0`。其它应用和泛化路线暂时只做 correctness / structure 回归，不主动展开新优化，避免多线并行把判断噪声放大。
 
 1. `waveEquation1.0` 剩余差距治理
-   - 1024/200 口径为 `2.02x`，2048/800 当前 6 轮均值口径为 `2.81x`；translated 主循环均值 `3.118328s`，coarse 均值 `1.110522s`。
-   - 2048/800 profile 显示 per-step `kernel avg=2.413ms`、`publish avg=1.029ms`、`read_transition avg=0.810ms`；boundary 仍可忽略，root bridge 为 0。
+   - 1024/200 口径为 `2.02x`，2048/800 当前 6 轮均值口径为 `2.76x`；translated 主循环均值 `3.082805s`，coarse 均值 `1.118177s`。
+   - 2048/800 profile 显示 per-step `kernel avg=2.503ms`、`publish avg=1.069ms`、`read_transition avg=0.771ms`；boundary 仍可忽略，root bridge 为 0。
    - spike step 主要由 `publish` 抬头驱动，而不是 kernel 回弹；因此后续优先继续压 `publish/read_transition` span path 的 row-span / host-side scatter 常数。
    - wave kernel 结构已经压过一轮，后续重点放在 `matCur -> matPrev` state transition 和 `matNext -> matCur` publish 的结构成本，同时保持 boundary-local update 语义不变。
    - root helper/root bridge 不进入 wave 路径，Phase C eligibility guard 继续保持保守。
@@ -566,4 +589,4 @@ wave 1024 单点以 `8.2` 里的 `2.02x` 为准。
 
 ## 11. 一句话总结
 
-MPI stencil 路径已经完成 Phase 1、输出一致性分类、root-only 输出 rewrite、loop-lowered `ctx/init/run/materialize`、Phase C distributed cache / route / halo 基础设施，以及 1D boundary-local、2D boundary-local、2D READ-cache state transition。`liuliang1.0`、`stencil1.0`、`waveEquation1.0` 处于 no-root distributed path；`waveEquation1.0` 还包含 guarded direct-kernel path，1024/200 口径为 `2.02x`，2048/800 当前 6 轮均值口径为 `2.81x`，translated 主循环均值为 `3.118328s`；`jacobi1.0` 保持 mixed Vector/Matrix fallback。14 个非 `mpi*` 应用和完整 MPI suite 均通过。后续重点放在 `waveEquation1.0` 的 transition / publish 结构成本和生命周期融合，优先继续压 publish/read-transition 的 span path 和 host-side scatter 常数，`stencil1.0`、`FOuLa1.0`、`jacobi1.0` 和 Phase C 泛化路线只保留回归。
+MPI stencil 路径已经完成 Phase 1、输出一致性分类、root-only 输出 rewrite、loop-lowered `ctx/init/run/materialize`、Phase C distributed cache / route / halo 基础设施，以及本轮的 wave/generic 结构解耦与 runtime/codegen 拆分。`liuliang1.0`、`stencil1.0`、`waveEquation1.0` 处于 no-root distributed path；`waveEquation1.0` 还包含 guarded direct-kernel path，1024/200 口径为 `2.02x`，2048/800 当前 6 轮均值口径为 `2.76x`，translated 主循环均值为 `3.082805s`；`jacobi1.0` 保持 mixed Vector/Matrix fallback。14 个非 `mpi*` 应用和完整 MPI suite 均通过。后续重点放在 `waveEquation1.0` 的 transition / publish 结构成本和生命周期融合，优先继续压 publish/read-transition 的 span path 和 host-side scatter 常数，`stencil1.0`、`FOuLa1.0`、`jacobi1.0` 和 Phase C 泛化路线只保留回归。

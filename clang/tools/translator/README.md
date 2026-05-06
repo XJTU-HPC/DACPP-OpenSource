@@ -1,6 +1,6 @@
 # DACPP Translator
 
-更新时间：2026-05-03
+更新时间：2026-05-06
 
 `clang/tools/translator` 是 DACPP 到 C++/SYCL 的 source-to-source translator 主目录。当前主线以 buffer 生成路径为核心，并支持 `--mpi` 生成 MPI + SYCL 代码。
 
@@ -151,7 +151,13 @@ bash test_mpi.sh waveEquation1.0 stencil1.0 FOuLa1.0 mpiDenseCoverSibling1.0
 - `rewriter/lib/mpi/Rewriter_MPI_Stencil_Analysis.cpp`
   - MPI stencil site 能力分析和 distributed-followup 判定。
 - `rewriter/lib/mpi/Rewriter_MPI_Stencil_Codegen.cpp`
-  - MPI stencil `ctx/init/run` 主 codegen。
+  - MPI stencil `ctx/init/run/materialize` 主骨架和 orchestration。
+- `rewriter/lib/mpi/Rewriter_MPI_Stencil_Codegen_Utils.cpp`
+  - stencil codegen 的 AST/fallback-input/pattern-init helper。
+- `rewriter/lib/mpi/Rewriter_MPI_Stencil_Codegen_Wave.cpp`
+  - wave specialization 专属 code emission。
+- `rewriter/lib/mpi/Rewriter_MPI_Stencil_Codegen_Internal.h`
+  - stencil codegen 内部共享声明。
 - `rewriter/lib/mpi/Rewriter_MPI_OutputAnalysis.cpp`
   - MPI 输出同步分类、broadcast 需求分析。
 - `rewriter/lib/mpi/Rewriter_MPI_PrintRewrite.cpp`
@@ -175,11 +181,25 @@ bash test_mpi.sh waveEquation1.0 stencil1.0 FOuLa1.0 mpiDenseCoverSibling1.0
 - `dpcppLib/include/mpi/StencilTypes.h`
 - `dpcppLib/include/mpi/StencilLayout.h`
 - `dpcppLib/include/mpi/StencilExchange.h`
-  - MPI stencil / partial-exchange / root-bridge 的 layout、distributed cache 和 slot exchange helper。
+- `dpcppLib/include/mpi/StencilExchangePlan.h`
+- `dpcppLib/include/mpi/StencilExchangeRuntime.h`
+- `dpcppLib/include/mpi/WaveExchangeSpecialization.h`
+  - `StencilExchange.h` 现在只是聚合头；plan/layout、generic exchange execution、wave span/row-copy fast path 已分层拆开。
 - `dpcppLib/include/mpi/Views.h`
   - view 聚合头，转入 `KernelViews.h` 和 `RegionViews.h`。
 
 `archive/` 和 `docs/**/archive/` 只保留历史材料，不代表当前主线。
+
+### 4.1 当前 MPI stencil 代码分层
+
+| 层 | 主要文件 | 职责 |
+|---|---|---|
+| 入口与分流 | `translator.cpp`, `Rewriter_MPI.cpp`, `Rewriter_MPI_Stencil.cpp` | 识别 `--mpi`，登记 stencil site，并在普通 wrapper / stencil path 之间分流 |
+| 分析层 | `Rewriter_MPI_Stencil_Analysis.cpp` | 提取 distributed route、read-cache transition、boundary-local update、root-bridge 需求 |
+| Codegen 主骨架 | `Rewriter_MPI_Stencil_Codegen.cpp` | 生成 `ctx/init/run/materialize` 主流程，控制 fallback 和 distributed choreography |
+| Codegen specialization/helper | `Rewriter_MPI_Stencil_Codegen_Utils.cpp`, `Rewriter_MPI_Stencil_Codegen_Wave.cpp` | 前者放通用 helper，后者只放 wave specialization emission |
+| Runtime state / plan | `StencilTypes.h`, `StencilLayout.h`, `StencilExchangePlan.h` | 定义 distributed state，并构造 slots / exchange plan / halo plan |
+| Runtime execution | `StencilExchangeRuntime.h`, `WaveExchangeSpecialization.h` | 执行 scatter/exchange/publish；wave 的 span-pair / row-copy fast path 已独立出去 |
 
 ## 5. 当前 MPI 逻辑摘要
 
@@ -204,7 +224,13 @@ for (...) {
 }
 ```
 
-当前 MPI stencil Phase 1 已完成：
+当前生成逻辑的结构边界是：
+
+- generic orchestration 负责 `ctx/init/run/materialize` 主骨架；
+- wave specialization 只通过 `ctx.wave` 挂接自己的 direct-kernel metadata 和 fast-path state；
+- runtime plan 构造、generic exchange 执行、wave span/row-copy fast path 已分到不同头文件，不再混在一个大块 helper 里。
+
+当前 MPI stencil 主线已完成：
 
 - pattern / binding / pack plan / rank range 在 `init()` 中初始化。
 - input/output gathered layout 在 `init()` 中缓存。
@@ -212,6 +238,8 @@ for (...) {
 - `run()` 中删除重复 metadata gather，只保留每步数据通信。
 - `WRITE` 参数每轮 kernel 前重置本地 buffer，保持 fresh vector 语义。
 - profiling timing collective 只在 `DACPP_MPI_PROFILE=1` 时执行。
+- wave specialization state 统一收进 `ctx.wave`，generic ctx 不再直接持有 `use_wave_*` / `wave_direct_*` 字段。
+- runtime helper 已按 `plan/layout`、`generic exchange execution`、`wave specialization execution` 三层拆开。
 
 当前仍在设计中的问题：
 

@@ -37,6 +37,8 @@ set(REWRITER_SOURCES
   rewriter/lib/mpi/Rewriter_MPI_Wrapper_Codegen.cpp
   rewriter/lib/mpi/Rewriter_MPI_Stencil_Analysis.cpp
   rewriter/lib/mpi/Rewriter_MPI_Stencil_Codegen.cpp
+  rewriter/lib/mpi/Rewriter_MPI_Stencil_Codegen_Utils.cpp
+  rewriter/lib/mpi/Rewriter_MPI_Stencil_Codegen_Wave.cpp
   rewriter/lib/mpi/Rewriter_MPI_PostRegion_Analysis.cpp
   rewriter/lib/mpi/Rewriter_MPI_PostRegion_Codegen.cpp
   rewriter/lib/Multiple_template.cpp

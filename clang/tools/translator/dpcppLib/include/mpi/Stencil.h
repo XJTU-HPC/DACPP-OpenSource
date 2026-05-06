@@ -4,5 +4,6 @@
 #include "StencilTypes.h"
 #include "StencilLayout.h"
 #include "StencilExchange.h"
+#include "WaveExchangeSpecialization.h"
 
 #endif

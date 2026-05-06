@@ -1,630 +1,14 @@
-#include <algorithm>
+#include <set>
 #include <string>
-#include <unordered_map>
 #include <vector>
 
-#include "clang/AST/ExprCXX.h"
-#include "clang/AST/RecursiveASTVisitor.h"
-#include "Rewriter_MPI_Stencil_Common.h"
+#include "Rewriter_MPI_Stencil_Codegen_Internal.h"
 #include "llvm/Support/raw_ostream.h"
 
 namespace dacppTranslator {
 namespace mpi_stencil_rewriter {
 
-namespace {
-
-std::vector<const mpi_rewriter::DistributedFollowupMapping*> findFollowupMappingsForWriter(
-    const mpi_rewriter::DistributedStencilSitePlan& plan,
-    const std::string& writerTensor) {
-    std::vector<const mpi_rewriter::DistributedFollowupMapping*> result;
-    for (const auto& mapping : plan.followupMappings) {
-        if (mapping.writerTensor == writerTensor) {
-            result.push_back(&mapping);
-        }
-    }
-    return result;
-}
-
-int findDefaultReaderIndex(const std::vector<IOTYPE>& transportModes) {
-    for (int candidateIdx = 0; candidateIdx < static_cast<int>(transportModes.size());
-         ++candidateIdx) {
-        if (transportModes[candidateIdx] != IOTYPE::WRITE) {
-            return candidateIdx;
-        }
-    }
-    return -1;
-}
-
-std::string buildParamNameList(Shell* shell) {
-    std::string args;
-    for (int paramIdx = 0; paramIdx < shell->getNumParams(); ++paramIdx) {
-        if (!args.empty()) {
-            args += ", ";
-        }
-        args += shell->getParam(paramIdx)->getName();
-    }
-    return args;
-}
-
-class NamedDeclRefVisitor
-    : public clang::RecursiveASTVisitor<NamedDeclRefVisitor> {
-public:
-    explicit NamedDeclRefVisitor(std::string targetName)
-        : targetName_(std::move(targetName)) {}
-
-    bool VisitDeclRefExpr(clang::DeclRefExpr* dre) {
-        if (dre && dre->getDecl() &&
-            dre->getDecl()->getNameAsString() == targetName_) {
-            found_ = true;
-        }
-        return !found_;
-    }
-
-    bool found() const { return found_; }
-
-private:
-    std::string targetName_;
-    bool found_ = false;
-};
-
-bool exprReferencesName(const clang::Expr* expr, const std::string& name) {
-    if (!expr || name.empty()) {
-        return false;
-    }
-    NamedDeclRefVisitor visitor(name);
-    visitor.TraverseStmt(const_cast<clang::Expr*>(expr));
-    return visitor.found();
-}
-
-const clang::Expr* stripExpr(const clang::Expr* expr) {
-    while (expr) {
-        expr = expr->IgnoreParenImpCasts();
-        if (const auto* materialized =
-                llvm::dyn_cast<clang::MaterializeTemporaryExpr>(expr)) {
-            expr = materialized->getSubExpr();
-            continue;
-        }
-        if (const auto* cleanup = llvm::dyn_cast<clang::ExprWithCleanups>(expr)) {
-            expr = cleanup->getSubExpr();
-            continue;
-        }
-        if (const auto* bind = llvm::dyn_cast<clang::CXXBindTemporaryExpr>(expr)) {
-            expr = bind->getSubExpr();
-            continue;
-        }
-        return expr;
-    }
-    return nullptr;
-}
-
-std::string directBaseDeclName(const clang::Expr* expr) {
-    expr = stripExpr(expr);
-    if (!expr) {
-        return "";
-    }
-    if (const auto* dre = llvm::dyn_cast<clang::DeclRefExpr>(expr)) {
-        return dre->getDecl() ? dre->getDecl()->getNameAsString() : "";
-    }
-    if (const auto* subscript = llvm::dyn_cast<clang::ArraySubscriptExpr>(expr)) {
-        return directBaseDeclName(subscript->getBase());
-    }
-    if (const auto* member = llvm::dyn_cast<clang::MemberExpr>(expr)) {
-        return directBaseDeclName(member->getBase());
-    }
-    if (const auto* unary = llvm::dyn_cast<clang::UnaryOperator>(expr)) {
-        if (unary->getOpcode() == clang::UO_Deref ||
-            unary->getOpcode() == clang::UO_AddrOf) {
-            return directBaseDeclName(unary->getSubExpr());
-        }
-    }
-    if (const auto* opCall = llvm::dyn_cast<clang::CXXOperatorCallExpr>(expr)) {
-        if ((opCall->getOperator() == clang::OO_Subscript ||
-             opCall->getOperator() == clang::OO_Call) &&
-            opCall->getNumArgs() > 0) {
-            return directBaseDeclName(opCall->getArg(0));
-        }
-    }
-    if (const auto* memberCall =
-            llvm::dyn_cast<clang::CXXMemberCallExpr>(expr)) {
-        return directBaseDeclName(memberCall->getImplicitObjectArgument());
-    }
-    return "";
-}
-
-bool isWholeDeclExprNamed(const clang::Expr* expr, const std::string& name) {
-    expr = stripExpr(expr);
-    const auto* dre = llvm::dyn_cast_or_null<clang::DeclRefExpr>(expr);
-    return dre && dre->getDecl() && dre->getDecl()->getNameAsString() == name;
-}
-
-class TensorWriteVisitor
-    : public clang::RecursiveASTVisitor<TensorWriteVisitor> {
-public:
-    explicit TensorWriteVisitor(std::string targetName)
-        : targetName_(std::move(targetName)) {}
-
-    bool TraverseBinaryOperator(clang::BinaryOperator* binary) {
-        if (!binary || hasWrite_) {
-            return !hasWrite_;
-        }
-        if (binary->isAssignmentOp()) {
-            if (exprReferencesName(binary->getLHS(), targetName_)) {
-                hasWrite_ = true;
-                return false;
-            }
-            TraverseStmt(binary->getRHS());
-            return !hasWrite_;
-        }
-        return clang::RecursiveASTVisitor<TensorWriteVisitor>::
-            TraverseBinaryOperator(binary);
-    }
-
-    bool TraverseUnaryOperator(clang::UnaryOperator* unary) {
-        if (!unary || hasWrite_) {
-            return !hasWrite_;
-        }
-        if (unary->isIncrementDecrementOp() &&
-            exprReferencesName(unary->getSubExpr(), targetName_)) {
-            hasWrite_ = true;
-            return false;
-        }
-        return clang::RecursiveASTVisitor<TensorWriteVisitor>::
-            TraverseUnaryOperator(unary);
-    }
-
-    bool TraverseCXXOperatorCallExpr(clang::CXXOperatorCallExpr* opCall) {
-        if (!opCall || hasWrite_) {
-            return !hasWrite_;
-        }
-        if (opCall->isAssignmentOp()) {
-            if (opCall->getNumArgs() > 0 &&
-                exprReferencesName(opCall->getArg(0), targetName_)) {
-                hasWrite_ = true;
-                return false;
-            }
-            for (unsigned argIdx = 1; argIdx < opCall->getNumArgs(); ++argIdx) {
-                TraverseStmt(opCall->getArg(argIdx));
-                if (hasWrite_) {
-                    return false;
-                }
-            }
-            return true;
-        }
-        return clang::RecursiveASTVisitor<TensorWriteVisitor>::
-            TraverseCXXOperatorCallExpr(opCall);
-    }
-
-    bool TraverseCXXMemberCallExpr(clang::CXXMemberCallExpr* call) {
-        if (!call || hasWrite_) {
-            return !hasWrite_;
-        }
-        const clang::CXXMethodDecl* method = call->getMethodDecl();
-        if (method && !method->isConst() &&
-            exprReferencesName(call->getImplicitObjectArgument(), targetName_)) {
-            hasWrite_ = true;
-            return false;
-        }
-        return clang::RecursiveASTVisitor<TensorWriteVisitor>::
-            TraverseCXXMemberCallExpr(call);
-    }
-
-    bool TraverseCallExpr(clang::CallExpr* call) {
-        if (!call || hasWrite_) {
-            return !hasWrite_;
-        }
-        if (!llvm::isa<clang::CXXMemberCallExpr>(call) &&
-            !llvm::isa<clang::CXXOperatorCallExpr>(call)) {
-            for (const clang::Expr* arg : call->arguments()) {
-                if (exprReferencesName(arg, targetName_)) {
-                    hasWrite_ = true;
-                    return false;
-                }
-            }
-        }
-        return clang::RecursiveASTVisitor<TensorWriteVisitor>::
-            TraverseCallExpr(call);
-    }
-
-    bool hasWrite() const { return hasWrite_; }
-
-private:
-    std::string targetName_;
-    bool hasWrite_ = false;
-};
-
-bool stmtWritesTensorName(const clang::Stmt* stmt, const std::string& name) {
-    if (!stmt || name.empty()) {
-        return false;
-    }
-    TensorWriteVisitor visitor(name);
-    visitor.TraverseStmt(const_cast<clang::Stmt*>(stmt));
-    return visitor.hasWrite();
-}
-
-class LoopCarriedInputAssignmentVisitor
-    : public clang::RecursiveASTVisitor<LoopCarriedInputAssignmentVisitor> {
-public:
-    explicit LoopCarriedInputAssignmentVisitor(std::string targetName)
-        : targetName_(std::move(targetName)) {}
-
-    bool TraverseBinaryOperator(clang::BinaryOperator* binary) {
-        if (!binary || invalid_) {
-            return !invalid_;
-        }
-        if (binary->isAssignmentOp() && exprReferencesName(binary->getLHS(),
-                                                           targetName_)) {
-            recordTargetWrite(binary->getLHS());
-            return !invalid_;
-        }
-        return clang::RecursiveASTVisitor<LoopCarriedInputAssignmentVisitor>::
-            TraverseBinaryOperator(binary);
-    }
-
-    bool TraverseUnaryOperator(clang::UnaryOperator* unary) {
-        if (!unary || invalid_) {
-            return !invalid_;
-        }
-        if (unary->isIncrementDecrementOp() &&
-            directBaseDeclName(unary->getSubExpr()) == targetName_) {
-            invalid_ = true;
-            return false;
-        }
-        return clang::RecursiveASTVisitor<LoopCarriedInputAssignmentVisitor>::
-            TraverseUnaryOperator(unary);
-    }
-
-    bool TraverseCXXOperatorCallExpr(clang::CXXOperatorCallExpr* opCall) {
-        if (!opCall || invalid_) {
-            return !invalid_;
-        }
-        if (opCall->isAssignmentOp() && opCall->getNumArgs() > 0 &&
-            exprReferencesName(opCall->getArg(0), targetName_)) {
-            recordTargetWrite(opCall->getArg(0));
-            return !invalid_;
-        }
-        if ((opCall->getOperator() == clang::OO_PlusPlus ||
-             opCall->getOperator() == clang::OO_MinusMinus) &&
-            opCall->getNumArgs() > 0 &&
-            directBaseDeclName(opCall->getArg(0)) == targetName_) {
-            invalid_ = true;
-            return false;
-        }
-        return clang::RecursiveASTVisitor<LoopCarriedInputAssignmentVisitor>::
-            TraverseCXXOperatorCallExpr(opCall);
-    }
-
-    bool TraverseCXXMemberCallExpr(clang::CXXMemberCallExpr* call) {
-        if (!call || invalid_) {
-            return !invalid_;
-        }
-        if (directBaseDeclName(call->getImplicitObjectArgument()) == targetName_) {
-            const clang::CXXMethodDecl* method = call->getMethodDecl();
-            if (!method || !method->isConst()) {
-                invalid_ = true;
-                return false;
-            }
-        }
-        return clang::RecursiveASTVisitor<LoopCarriedInputAssignmentVisitor>::
-            TraverseCXXMemberCallExpr(call);
-    }
-
-    bool TraverseCallExpr(clang::CallExpr* call) {
-        if (!call || invalid_) {
-            return !invalid_;
-        }
-        if (!llvm::isa<clang::CXXMemberCallExpr>(call) &&
-            !llvm::isa<clang::CXXOperatorCallExpr>(call)) {
-            for (const clang::Expr* arg : call->arguments()) {
-                if (directBaseDeclName(arg) == targetName_) {
-                    invalid_ = true;
-                    return false;
-                }
-            }
-        }
-        return clang::RecursiveASTVisitor<LoopCarriedInputAssignmentVisitor>::
-            TraverseCallExpr(call);
-    }
-
-    bool hasAnyTargetWrite() const { return targetWriteCount_ > 0; }
-    bool hasUnsafeTargetWrite() const { return invalid_; }
-    int targetWriteCount() const { return targetWriteCount_; }
-
-private:
-    void recordTargetWrite(const clang::Expr* lhs) {
-        ++targetWriteCount_;
-        if (!isWholeDeclExprNamed(lhs, targetName_)) {
-            invalid_ = true;
-        }
-    }
-
-    std::string targetName_;
-    bool invalid_ = false;
-    int targetWriteCount_ = 0;
-};
-
-bool stmtIsDirectWholeTensorAssignmentFromAny(
-    const clang::Stmt* stmt,
-    const std::string& targetName,
-    const std::unordered_map<std::string, int>& sourceParamByActualName,
-    int& sourceParamIndex) {
-    const auto* expr = llvm::dyn_cast_or_null<clang::Expr>(stmt);
-    expr = stripExpr(expr);
-    if (!expr) {
-        return false;
-    }
-
-    const clang::Expr* lhs = nullptr;
-    const clang::Expr* rhs = nullptr;
-    bool simpleAssign = false;
-    if (const auto* binary = llvm::dyn_cast<clang::BinaryOperator>(expr)) {
-        if (binary->isAssignmentOp()) {
-            lhs = binary->getLHS();
-            rhs = binary->getRHS();
-            simpleAssign = binary->getOpcode() == clang::BO_Assign;
-        }
-    } else if (const auto* opCall =
-                   llvm::dyn_cast<clang::CXXOperatorCallExpr>(expr)) {
-        if (opCall->isAssignmentOp() && opCall->getNumArgs() > 1) {
-            lhs = opCall->getArg(0);
-            rhs = opCall->getArg(1);
-            simpleAssign = opCall->getOperator() == clang::OO_Equal;
-        }
-    }
-
-    if (!simpleAssign || !isWholeDeclExprNamed(lhs, targetName)) {
-        return false;
-    }
-    const std::string sourceName = directBaseDeclName(rhs);
-    auto it = sourceParamByActualName.find(sourceName);
-    if (it == sourceParamByActualName.end()) {
-        return false;
-    }
-    sourceParamIndex = it->second;
-    return true;
-}
-
-bool fallbackOutputBroadcasts(DacppFile* dacppFile,
-                              const std::string& tensorName,
-                              const clang::BinaryOperator* dacExpr) {
-    const mpi_rewriter::OutputSyncRequirement syncRequirement =
-        mpi_rewriter::classifyOutputSyncRequirement(dacppFile, tensorName, dacExpr);
-    return syncRequirement ==
-               mpi_rewriter::OutputSyncRequirement::DistributedFollowup
-               ? true
-               : mpi_rewriter::requiresBroadcast(syncRequirement);
-}
-
-int findLoopCarriedInputSourceParam(
-    DacppFile* dacppFile,
-    Shell* shell,
-    Calc* calc,
-    const clang::BinaryOperator* dacExpr,
-    int targetParamIndex,
-    const std::vector<std::string>& actualTensorNames,
-    const std::vector<IOTYPE>& transportModes,
-    const std::vector<bool>& aliasesAnyOtherParam) {
-    if (!dacppFile || !shell || !calc || !dacExpr || targetParamIndex < 0 ||
-        targetParamIndex >= static_cast<int>(actualTensorNames.size()) ||
-        targetParamIndex >= static_cast<int>(transportModes.size()) ||
-        transportModes[targetParamIndex] != IOTYPE::READ ||
-        aliasesAnyOtherParam[static_cast<std::size_t>(targetParamIndex)]) {
-        return -1;
-    }
-
-    const auto& regionPlan = dacppFile->getBufferRegionPlan();
-    if (!regionPlan.enabled || regionPlan.dacExpr != dacExpr ||
-        regionPlan.siblingStmts.empty()) {
-        return -1;
-    }
-
-    const std::string& targetActualName =
-        actualTensorNames[static_cast<std::size_t>(targetParamIndex)];
-    if (targetActualName.empty()) {
-        return -1;
-    }
-
-    std::unordered_map<std::string, int> sourceParamByActualName;
-    for (int sourceIdx = 0; sourceIdx < shell->getNumShellParams(); ++sourceIdx) {
-        if (sourceIdx == targetParamIndex ||
-            sourceIdx >= static_cast<int>(transportModes.size()) ||
-            sourceIdx >= static_cast<int>(actualTensorNames.size()) ||
-            transportModes[sourceIdx] != IOTYPE::WRITE ||
-            aliasesAnyOtherParam[static_cast<std::size_t>(sourceIdx)] ||
-            calc->getParam(sourceIdx)->getBasicType() !=
-                calc->getParam(targetParamIndex)->getBasicType() ||
-            mpi_rewriter::inferViewRank(shell->getShellParam(sourceIdx),
-                                        calc->getParam(sourceIdx)) !=
-                mpi_rewriter::inferViewRank(shell->getShellParam(targetParamIndex),
-                                            calc->getParam(targetParamIndex)) ||
-            !fallbackOutputBroadcasts(dacppFile, shell->getParam(sourceIdx)->getName(),
-                                      dacExpr)) {
-            continue;
-        }
-        const std::string& sourceActualName =
-            actualTensorNames[static_cast<std::size_t>(sourceIdx)];
-        if (sourceActualName.empty() || sourceActualName == targetActualName) {
-            continue;
-        }
-        bool sourceWrittenBySibling = false;
-        for (const clang::Stmt* stmt : regionPlan.siblingStmts) {
-            if (stmtWritesTensorName(stmt, sourceActualName)) {
-                sourceWrittenBySibling = true;
-                break;
-            }
-        }
-        if (!sourceWrittenBySibling) {
-            sourceParamByActualName.emplace(sourceActualName, sourceIdx);
-        }
-    }
-    if (sourceParamByActualName.empty()) {
-        return -1;
-    }
-
-    int directAssignmentSourceIdx = -1;
-    bool sawDirectAssignment = false;
-    LoopCarriedInputAssignmentVisitor writeVisitor(targetActualName);
-    for (const clang::Stmt* stmt : regionPlan.siblingStmts) {
-        int candidateSourceIdx = -1;
-        if (stmtIsDirectWholeTensorAssignmentFromAny(
-                stmt, targetActualName, sourceParamByActualName,
-                candidateSourceIdx)) {
-            if (sawDirectAssignment ||
-                (directAssignmentSourceIdx >= 0 &&
-                 directAssignmentSourceIdx != candidateSourceIdx)) {
-                return -1;
-            }
-            sawDirectAssignment = true;
-            directAssignmentSourceIdx = candidateSourceIdx;
-        }
-
-        writeVisitor.TraverseStmt(const_cast<clang::Stmt*>(stmt));
-        if (writeVisitor.hasUnsafeTargetWrite()) {
-            return -1;
-        }
-    }
-    if (writeVisitor.targetWriteCount() != 1) {
-        return -1;
-    }
-    return sawDirectAssignment && directAssignmentSourceIdx >= 0
-               ? directAssignmentSourceIdx
-               : -1;
-}
-
-bool isFallbackInputCacheCandidate(DacppFile* dacppFile,
-                                   const clang::BinaryOperator* dacExpr,
-                                   const std::string& actualTensorName,
-                                   IOTYPE transportMode) {
-    if (!dacppFile || !dacExpr || actualTensorName.empty() ||
-        transportMode != IOTYPE::READ) {
-        return false;
-    }
-
-    const auto& regionPlan = dacppFile->getBufferRegionPlan();
-    if (!regionPlan.enabled || regionPlan.dacExpr != dacExpr) {
-        return false;
-    }
-
-    for (const clang::Stmt* stmt : regionPlan.siblingStmts) {
-        if (stmtWritesTensorName(stmt, actualTensorName)) {
-            return false;
-        }
-    }
-    return true;
-}
-
-std::string resolveActualTensorName(const std::string& shellParamName,
-                                    const clang::BinaryOperator* dacExpr) {
-    if (!dacExpr) {
-        return shellParamName;
-    }
-    const clang::CallExpr* shellCall =
-        dacppTranslator::getNode<clang::CallExpr>(
-            dacppTranslator::Expression::shellLHS_p(dacExpr) ? dacExpr->getLHS()
-                                                             : dacExpr->getRHS());
-    if (!shellCall) {
-        return shellParamName;
-    }
-    const clang::FunctionDecl* callee = shellCall->getDirectCallee();
-    if (!callee) {
-        return shellParamName;
-    }
-    for (unsigned paramIdx = 0;
-         paramIdx < callee->getNumParams() && paramIdx < shellCall->getNumArgs();
-         ++paramIdx) {
-        const clang::ParmVarDecl* param = callee->getParamDecl(paramIdx);
-        if (!param || param->getNameAsString() != shellParamName) {
-            continue;
-        }
-        const auto* dre = dacppTranslator::getNode<clang::DeclRefExpr>(
-            const_cast<clang::Expr*>(shellCall->getArg(paramIdx)));
-        if (dre && dre->getDecl()) {
-            return dre->getDecl()->getNameAsString();
-        }
-    }
-    return shellParamName;
-}
-
-void appendPatternInitForContext(std::string& code,
-                                 Shell* shell,
-                                 Calc* calc,
-                                 const std::unordered_map<std::string, mpi_rewriter::SplitBindMeta>& splitMeta,
-                                 const std::vector<IOTYPE>& transportModes,
-                                 const std::vector<IOTYPE>& itemDomainModes,
-                                 const std::string& ctxVar) {
-    for (int paramIdx = 0; paramIdx < shell->getNumShellParams(); ++paramIdx) {
-        ShellParam* shellParam = shell->getShellParam(paramIdx);
-        Param* shellWrapperParam = shell->getParam(paramIdx);
-        Param* calcParam = calc->getParam(paramIdx);
-        const std::string& name = calcParam->getName();
-        const std::string& tensorName = shellWrapperParam->getName();
-        const std::string patternName = ctxVar + ".pattern_" + name;
-        const IOTYPE mode = transportModes[paramIdx];
-
-        code += "    " + patternName + " = dacpp::mpi::AccessPattern{};\n";
-        code += "    " + patternName + ".param_id = " + std::to_string(paramIdx) + ";\n";
-        code += "    " + patternName + ".name = \"" + name + "\";\n";
-        code += "    " + patternName + ".mode = " + mpi_rewriter::toPlannerMode(mode) + ";\n";
-        code += "    " + patternName + ".data_info.dim = " + tensorName + ".getDim();\n";
-        code += "    for (int dim = 0; dim < " + tensorName + ".getDim(); ++dim) " +
-                patternName + ".data_info.dimLength.push_back(" + tensorName + ".getShape(dim));\n";
-
-        for (int splitIdx = 0; splitIdx < shellParam->getNumSplit(); ++splitIdx) {
-            Split* split = shellParam->getSplit(splitIdx);
-            if (!split || split->getId() == "void") {
-                continue;
-            }
-
-            auto metaIt = splitMeta.find(split->getId());
-            mpi_rewriter::SplitBindMeta bindMeta;
-            if (metaIt != splitMeta.end()) {
-                bindMeta = metaIt->second;
-            }
-
-            const bool isIndex = split->type == "IndexSplit";
-            const std::string opName = "pattern_" + name + "_op_" + std::to_string(splitIdx);
-
-            code += "    Dac_Op " + opName + ";\n";
-            code += "    " + opName + ".setDimId(" + std::to_string(split->getDimIdx()) + ");\n";
-            code += "    " + opName + ".size = " +
-                    std::to_string(isIndex ? 1 : static_cast<RegularSplit*>(split)->getSplitSize()) + ";\n";
-            code += "    " + opName + ".stride = " +
-                    std::to_string(isIndex ? 1 : static_cast<RegularSplit*>(split)->getSplitStride()) + ";\n";
-            if (isIndex) {
-                code += "    " + opName + ".SetSplitSize(" + tensorName +
-                        ".getShape(" + std::to_string(split->getDimIdx()) + "));\n";
-            } else {
-                code += "    " + opName + ".SetSplitSize((" + tensorName +
-                        ".getShape(" + std::to_string(split->getDimIdx()) + ") - " +
-                        std::to_string(static_cast<RegularSplit*>(split)->getSplitSize()) + ") / " +
-                        std::to_string(static_cast<RegularSplit*>(split)->getSplitStride()) + " + 1);\n";
-            }
-            code += "    " + patternName + ".param_ops.push_back(" + opName + ");\n";
-            code += "    " + patternName + ".bind_set_id.push_back(" +
-                    std::to_string(bindMeta.bindId) + ");\n";
-            code += "    " + patternName + ".bind_offset_expr.push_back(\"" +
-                    bindMeta.offset + "\");\n";
-            code += "    " + patternName + ".is_index_op.push_back(" +
-                    std::string(isIndex ? "true" : "false") + ");\n";
-        }
-
-        code += "    " + patternName + ".partition_shape = dacpp::mpi::init_partition_shape(" +
-                patternName + ");\n";
-        code += "    " + patternName + ".bind_split_sizes = dacpp::mpi::init_bind_split_sizes(" +
-                patternName + ");\n";
-        if (paramIdx < static_cast<int>(itemDomainModes.size()) &&
-            itemDomainModes[paramIdx] != IOTYPE::WRITE) {
-            code += "    if (" + ctxVar + ".binding_split_sizes.size() < " + patternName +
-                    ".bind_split_sizes.size()) " + ctxVar + ".binding_split_sizes.resize(" + patternName +
-                    ".bind_split_sizes.size(), 1);\n";
-            code += "    for (std::size_t bind_i = 0; bind_i < " + patternName + ".bind_split_sizes.size(); ++bind_i) {\n";
-            code += "        " + ctxVar + ".binding_split_sizes[bind_i] = std::max<int64_t>(" +
-                    ctxVar + ".binding_split_sizes[bind_i], " + patternName + ".bind_split_sizes[bind_i]);\n";
-            code += "    }\n";
-        }
-    }
-}
-
-}  // namespace
+using namespace detail;
 
 std::string wrapperName(Shell* shell, Calc* calc) {
     return shell->getName() + "_" + calc->getName();
@@ -678,15 +62,8 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
     const auto splitMeta = mpi_rewriter::collectSplitBindMeta(shell);
     const auto distributedSitePlan =
         mpi_rewriter::analyzeDistributedStencilSite(dacppFile, shell, calc, dacExpr);
-    const bool isWaveEquationSite =
-        shell->getName() == "waveEqShell" && calc->getName() == "waveEq";
-    const bool canUseWaveDirectKernel =
-        isWaveEquationSite &&
-        distributedSitePlan.supported &&
-        !distributedSitePlan.hasRootBridge &&
-        distributedSitePlan.followupMappings.size() == 1 &&
-        distributedSitePlan.readCacheTransitions.size() == 1 &&
-        shell->getNumShellParams() == 3;
+    const WaveSpecializationCodegenConfig waveCodegenConfig =
+        buildWaveSpecializationCodegenConfig(shell, calc, distributedSitePlan);
     const bool useDistributedReaderMaterialize =
         distributedSitePlan.supported &&
         !distributedSitePlan.hasRootBridge &&
@@ -787,18 +164,13 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
     code += "    int mpi_size = 1;\n";
     code += "    bool use_partial_exchange = false;\n";
     code += "    bool use_contiguous_kernel_views = false;\n";
-    code += "    bool use_wave_span_pairs = false;\n";
-    code += "    bool use_wave_direct_kernel = false;\n";
     code += "    std::string partial_exchange_disable_reason;\n";
     code += "    std::unique_ptr<sycl::queue> q;\n";
-    code += "    std::vector<int64_t> binding_split_sizes;\n";
-    code += "    int64_t total_items = 1;\n";
-    code += "    dacpp::mpi::ItemRange item_range{};\n";
-    code += "    int64_t local_item_count = 0;\n";
-    code += "    std::vector<int32_t> wave_direct_slots;\n";
-    code += "    std::unique_ptr<sycl::buffer<int32_t, 1>> wave_direct_slots_buffer;\n";
-    code += "    std::vector<int32_t> wave_direct_next_stale_slots;\n";
-    code += "    bool wave_direct_can_sparse_clear = false;\n";
+        code += "    std::vector<int64_t> binding_split_sizes;\n";
+        code += "    int64_t total_items = 1;\n";
+        code += "    dacpp::mpi::ItemRange item_range{};\n";
+        code += "    int64_t local_item_count = 0;\n";
+        appendWaveContextFields(code);
     for (int paramIdx = 0; paramIdx < shell->getNumShellParams(); ++paramIdx) {
         const std::string& calcName = calc->getParam(paramIdx)->getName();
         const std::string elemType = calc->getParam(paramIdx)->getBasicType();
@@ -838,16 +210,6 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
                     std::to_string(transitionIdx) + ";\n";
             code += "    std::vector<int32_t> read_cache_transition_source_slots_" +
                     std::to_string(transitionIdx) + ";\n";
-            code += "    std::vector<dacpp::mpi::SlotSpan> read_cache_transition_target_spans_" +
-                    std::to_string(transitionIdx) + ";\n";
-            code += "    std::vector<dacpp::mpi::SlotSpan> read_cache_transition_source_spans_" +
-                    std::to_string(transitionIdx) + ";\n";
-            code += "    std::vector<dacpp::mpi::ContiguousRowCopyBlock> read_cache_transition_row_copy_blocks_" +
-                    std::to_string(transitionIdx) + ";\n";
-            code += "    bool read_cache_transition_use_span_pairs_" +
-                    std::to_string(transitionIdx) + " = false;\n";
-            code += "    bool read_cache_transition_use_row_copy_blocks_" +
-                    std::to_string(transitionIdx) + " = false;\n";
         }
     }
     code += "};\n\n";
@@ -868,8 +230,8 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
     code += "    for (int64_t split_size : ctx.binding_split_sizes) ctx.total_items *= split_size;\n";
     code += "    ctx.item_range = dacpp::mpi::get_rank_item_range(ctx.total_items, ctx.mpi_rank, ctx.mpi_size);\n";
     code += "    ctx.local_item_count = ctx.item_range.size();\n";
-    code += "    ctx.use_wave_span_pairs = " + std::string(isWaveEquationSite ? "true" : "false") + ";\n";
-    code += "    ctx.use_wave_direct_kernel = " + std::string(canUseWaveDirectKernel ? "true" : "false") + ";\n";
+    appendWaveInitFlags(code, waveCodegenConfig, shell->getNumShellParams(),
+                        distributedSitePlan.readCacheTransitions.size());
     for (int paramIdx = 0; paramIdx < shell->getNumShellParams(); ++paramIdx) {
         const std::string& calcName = calc->getParam(paramIdx)->getName();
         const std::string actualTensorName =
@@ -943,71 +305,7 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
                 calcName + ", ctx.local_item_count, dacpp::mpi::partition_element_count(ctx.pattern_" +
                 calcName + "));\n";
     }
-    if (canUseWaveDirectKernel) {
-        code += "    if (ctx.use_wave_direct_kernel) {\n";
-        code += "        const std::size_t __dacpp_wave_items = static_cast<std::size_t>(ctx.local_item_count);\n";
-        code += "        if (ctx.plan_cur.item_key_offsets.size() != __dacpp_wave_items || ctx.plan_prev.item_key_offsets.size() != __dacpp_wave_items || ctx.plan_next.item_key_offsets.size() != __dacpp_wave_items) {\n";
-        code += "            ctx.use_wave_direct_kernel = false;\n";
-        code += "        } else {\n";
-        code += "            ctx.wave_direct_slots.resize(__dacpp_wave_items * 7);\n";
-        code += "            std::vector<unsigned char> __dacpp_wave_written(ctx.plan_next.pack.globals.size(), static_cast<unsigned char>(0));\n";
-        code += "            bool __dacpp_wave_slots_valid = true;\n";
-        code += "            for (std::size_t __dacpp_item = 0; __dacpp_item < __dacpp_wave_items; ++__dacpp_item) {\n";
-        code += "                const int32_t __dacpp_cur_base = ctx.plan_cur.item_key_offsets[__dacpp_item];\n";
-        code += "                const int32_t __dacpp_prev_base = ctx.plan_prev.item_key_offsets[__dacpp_item];\n";
-        code += "                const int32_t __dacpp_next_base = ctx.plan_next.item_key_offsets[__dacpp_item];\n";
-        code += "                if (__dacpp_cur_base < 0 || __dacpp_prev_base < 0 || __dacpp_next_base < 0 || static_cast<std::size_t>(__dacpp_cur_base + 7) >= ctx.plan_cur.compact_slots.size() || static_cast<std::size_t>(__dacpp_prev_base) >= ctx.plan_prev.compact_slots.size() || static_cast<std::size_t>(__dacpp_next_base) >= ctx.plan_next.compact_slots.size()) {\n";
-        code += "                    ctx.use_wave_direct_kernel = false;\n";
-        code += "                    __dacpp_wave_slots_valid = false;\n";
-        code += "                    break;\n";
-        code += "                }\n";
-        code += "                const std::size_t __dacpp_slot_base = __dacpp_item * 7;\n";
-        code += "                ctx.wave_direct_slots[__dacpp_slot_base + 0] = ctx.plan_cur.compact_slots[static_cast<std::size_t>(__dacpp_cur_base + 4)];\n";
-        code += "                ctx.wave_direct_slots[__dacpp_slot_base + 1] = ctx.plan_cur.compact_slots[static_cast<std::size_t>(__dacpp_cur_base + 1)];\n";
-        code += "                ctx.wave_direct_slots[__dacpp_slot_base + 2] = ctx.plan_cur.compact_slots[static_cast<std::size_t>(__dacpp_cur_base + 7)];\n";
-        code += "                ctx.wave_direct_slots[__dacpp_slot_base + 3] = ctx.plan_cur.compact_slots[static_cast<std::size_t>(__dacpp_cur_base + 3)];\n";
-        code += "                ctx.wave_direct_slots[__dacpp_slot_base + 4] = ctx.plan_cur.compact_slots[static_cast<std::size_t>(__dacpp_cur_base + 5)];\n";
-        code += "                ctx.wave_direct_slots[__dacpp_slot_base + 5] = ctx.plan_prev.compact_slots[static_cast<std::size_t>(__dacpp_prev_base)];\n";
-        code += "                ctx.wave_direct_slots[__dacpp_slot_base + 6] = ctx.plan_next.compact_slots[static_cast<std::size_t>(__dacpp_next_base)];\n";
-        code += "                const int32_t __dacpp_center_slot = ctx.wave_direct_slots[__dacpp_slot_base + 0];\n";
-        code += "                const int32_t __dacpp_up_slot = ctx.wave_direct_slots[__dacpp_slot_base + 1];\n";
-        code += "                const int32_t __dacpp_down_slot = ctx.wave_direct_slots[__dacpp_slot_base + 2];\n";
-        code += "                const int32_t __dacpp_left_slot = ctx.wave_direct_slots[__dacpp_slot_base + 3];\n";
-        code += "                const int32_t __dacpp_right_slot = ctx.wave_direct_slots[__dacpp_slot_base + 4];\n";
-        code += "                const int32_t __dacpp_prev_slot = ctx.wave_direct_slots[__dacpp_slot_base + 5];\n";
-        code += "                const int32_t __dacpp_next_slot = ctx.wave_direct_slots[__dacpp_slot_base + 6];\n";
-        code += "                const bool __dacpp_cur_slot_valid = __dacpp_center_slot >= 0 && __dacpp_up_slot >= 0 && __dacpp_down_slot >= 0 && __dacpp_left_slot >= 0 && __dacpp_right_slot >= 0 && static_cast<std::size_t>(__dacpp_center_slot) < ctx.plan_cur.pack.globals.size() && static_cast<std::size_t>(__dacpp_up_slot) < ctx.plan_cur.pack.globals.size() && static_cast<std::size_t>(__dacpp_down_slot) < ctx.plan_cur.pack.globals.size() && static_cast<std::size_t>(__dacpp_left_slot) < ctx.plan_cur.pack.globals.size() && static_cast<std::size_t>(__dacpp_right_slot) < ctx.plan_cur.pack.globals.size();\n";
-        code += "                const bool __dacpp_prev_slot_valid = __dacpp_prev_slot >= 0 && static_cast<std::size_t>(__dacpp_prev_slot) < ctx.plan_prev.pack.globals.size();\n";
-        code += "                const bool __dacpp_next_slot_valid = __dacpp_next_slot >= 0 && static_cast<std::size_t>(__dacpp_next_slot) < ctx.plan_next.pack.globals.size();\n";
-        code += "                if (!__dacpp_cur_slot_valid || !__dacpp_prev_slot_valid || !__dacpp_next_slot_valid) {\n";
-        code += "                    ctx.use_wave_direct_kernel = false;\n";
-        code += "                    __dacpp_wave_slots_valid = false;\n";
-        code += "                    break;\n";
-        code += "                }\n";
-        code += "                __dacpp_wave_written[static_cast<std::size_t>(__dacpp_next_slot)] = static_cast<unsigned char>(1);\n";
-        code += "            }\n";
-        code += "            if (ctx.use_wave_direct_kernel && __dacpp_wave_slots_valid) {\n";
-        code += "                ctx.wave_direct_can_sparse_clear = true;\n";
-        code += "                ctx.wave_direct_next_stale_slots.clear();\n";
-        code += "                ctx.wave_direct_next_stale_slots.reserve(ctx.plan_next.pack.globals.size());\n";
-        code += "                for (std::size_t __dacpp_slot = 0; __dacpp_slot < __dacpp_wave_written.size(); ++__dacpp_slot) {\n";
-        code += "                    if (__dacpp_wave_written[__dacpp_slot] == static_cast<unsigned char>(0)) {\n";
-        code += "                        ctx.wave_direct_next_stale_slots.push_back(static_cast<int32_t>(__dacpp_slot));\n";
-        code += "                    }\n";
-        code += "                }\n";
-        code += "                if (ctx.wave_direct_slots.empty()) {\n";
-        code += "                    ctx.wave_direct_slots_buffer = std::make_unique<sycl::buffer<int32_t, 1>>(sycl::range<1>(0));\n";
-        code += "                } else {\n";
-        code += "                    ctx.wave_direct_slots_buffer = std::make_unique<sycl::buffer<int32_t, 1>>(ctx.wave_direct_slots.data(), sycl::range<1>(ctx.wave_direct_slots.size()));\n";
-        code += "                }\n";
-        code += "            } else {\n";
-        code += "                ctx.wave_direct_can_sparse_clear = false;\n";
-        code += "                ctx.wave_direct_next_stale_slots.clear();\n";
-        code += "                ctx.wave_direct_slots_buffer.reset();\n";
-        code += "            }\n";
-        code += "        }\n";
-        code += "    }\n";
-    }
+    appendWaveDirectKernelMetadataInit(code, waveCodegenConfig);
     if (distributedSitePlan.supported) {
         code += "    ctx.use_partial_exchange = true;\n";
         for (int paramIdx = 0; paramIdx < shell->getNumShellParams(); ++paramIdx) {
@@ -1080,16 +378,9 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
                 if (!followupMappings.empty()) {
                     code += "    ctx.dist_" + calcName + ".local_target_slots_by_route.resize(" +
                             std::to_string(followupMappings.size()) + ");\n";
-                    code += "    ctx.dist_" + calcName + ".local_write_spans_by_route.resize(" +
+                    code += "    ctx.wave.route_fast_paths_by_param[" +
+                            std::to_string(paramIdx) + "].resize(" +
                             std::to_string(followupMappings.size()) + ");\n";
-                    code += "    ctx.dist_" + calcName + ".local_target_spans_by_route.resize(" +
-                            std::to_string(followupMappings.size()) + ");\n";
-                    code += "    ctx.dist_" + calcName + ".local_row_copy_blocks_by_route.resize(" +
-                            std::to_string(followupMappings.size()) + ");\n";
-                    code += "    ctx.dist_" + calcName + ".use_span_pairs_by_route.resize(" +
-                            std::to_string(followupMappings.size()) + ", false);\n";
-                    code += "    ctx.dist_" + calcName + ".use_row_copy_blocks_by_route.resize(" +
-                            std::to_string(followupMappings.size()) + ", false);\n";
                     code += "    ctx.dist_" + calcName + ".exchange_plans_by_route.resize(" +
                             std::to_string(followupMappings.size()) + ");\n";
                     code += "    ctx.dist_" + calcName + ".halo_plans_by_route.resize(" +
@@ -1141,14 +432,12 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
                         code += "        dacpp::mpi::prepare_halo_exchange_runtime(ctx.dist_" + calcName + ".halo_plans_by_route[" + std::to_string(routeIdx) + "], ctx.dist_" + calcName + ".halo_runtimes_by_route[" + std::to_string(routeIdx) + "]);\n";
                         code += "    }\n";
                         if (routeIdx == 0) {
-                            code += "    if (ctx.use_wave_span_pairs) {\n";
-                            code += "        std::string __dacpp_wave_span_reason;\n";
-                            code += "        ctx.dist_" + calcName + ".use_span_pairs_by_route[" + std::to_string(routeIdx) + "] = dacpp::mpi::build_local_span_pairs_from_slots(ctx.dist_" + calcName + ".local_write_slots, ctx.dist_" + calcName + ".local_target_slots_by_route[" + std::to_string(routeIdx) + "], ctx.dist_" + calcName + ".local_write_spans_by_route[" + std::to_string(routeIdx) + "], ctx.dist_" + calcName + ".local_target_spans_by_route[" + std::to_string(routeIdx) + "], &__dacpp_wave_span_reason);\n";
-                            code += "        if (ctx.dist_" + calcName + ".use_span_pairs_by_route[" + std::to_string(routeIdx) + "]) {\n";
-                            code += "            std::string __dacpp_wave_row_reason;\n";
-                            code += "            ctx.dist_" + calcName + ".use_row_copy_blocks_by_route[" + std::to_string(routeIdx) + "] = dacpp::mpi::build_contiguous_row_copy_blocks_from_span_pairs(ctx.dist_" + calcName + ".local_write_spans_by_route[" + std::to_string(routeIdx) + "], ctx.dist_" + calcName + ".local_target_spans_by_route[" + std::to_string(routeIdx) + "], ctx.dist_" + calcName + ".local_row_copy_blocks_by_route[" + std::to_string(routeIdx) + "], &__dacpp_wave_row_reason);\n";
-                            code += "        }\n";
-                            code += "    }\n";
+                            appendWaveRouteFastPathInit(
+                                code, waveCodegenConfig,
+                                waveRouteFastPathExpr(paramIdx,
+                                                      std::to_string(routeIdx)),
+                                "ctx.dist_" + calcName,
+                                std::to_string(routeIdx));
                         }
                         llvm::outs() << "[DACPP][MPI][PhaseC] halo-exchange enabled route="
                                      << tensorName << "->"
@@ -1163,11 +452,8 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
                     if (readerIdx >= 0) {
                         const std::string& readerCalcName = calc->getParam(readerIdx)->getName();
                         code += "    ctx.dist_" + calcName + ".local_target_slots_by_route.resize(1);\n";
-                        code += "    ctx.dist_" + calcName + ".local_write_spans_by_route.resize(1);\n";
-                        code += "    ctx.dist_" + calcName + ".local_target_spans_by_route.resize(1);\n";
-                        code += "    ctx.dist_" + calcName + ".local_row_copy_blocks_by_route.resize(1);\n";
-                        code += "    ctx.dist_" + calcName + ".use_span_pairs_by_route.resize(1, false);\n";
-                        code += "    ctx.dist_" + calcName + ".use_row_copy_blocks_by_route.resize(1, false);\n";
+                        code += "    ctx.wave.route_fast_paths_by_param[" +
+                                std::to_string(paramIdx) + "].resize(1);\n";
                         code += "    ctx.dist_" + calcName + ".exchange_plans_by_route.resize(1);\n";
                         code += "    ctx.dist_" + calcName + ".halo_plans_by_route.resize(1);\n";
                         code += "    ctx.dist_" + calcName + ".halo_runtimes_by_route.resize(1);\n";
@@ -1181,14 +467,10 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
                         code += "    if (ctx.dist_" + calcName + ".halo_plans_by_route[0].supported) {\n";
                         code += "        dacpp::mpi::prepare_halo_exchange_runtime(ctx.dist_" + calcName + ".halo_plans_by_route[0], ctx.dist_" + calcName + ".halo_runtimes_by_route[0]);\n";
                         code += "    }\n";
-                        code += "    if (ctx.use_wave_span_pairs) {\n";
-                        code += "        std::string __dacpp_wave_span_reason;\n";
-                        code += "        ctx.dist_" + calcName + ".use_span_pairs_by_route[0] = dacpp::mpi::build_local_span_pairs_from_slots(ctx.dist_" + calcName + ".local_write_slots, ctx.dist_" + calcName + ".local_target_slots_by_route[0], ctx.dist_" + calcName + ".local_write_spans_by_route[0], ctx.dist_" + calcName + ".local_target_spans_by_route[0], &__dacpp_wave_span_reason);\n";
-                        code += "        if (ctx.dist_" + calcName + ".use_span_pairs_by_route[0]) {\n";
-                        code += "            std::string __dacpp_wave_row_reason;\n";
-                        code += "            ctx.dist_" + calcName + ".use_row_copy_blocks_by_route[0] = dacpp::mpi::build_contiguous_row_copy_blocks_from_span_pairs(ctx.dist_" + calcName + ".local_write_spans_by_route[0], ctx.dist_" + calcName + ".local_target_spans_by_route[0], ctx.dist_" + calcName + ".local_row_copy_blocks_by_route[0], &__dacpp_wave_row_reason);\n";
-                        code += "        }\n";
-                        code += "    }\n";
+                        appendWaveRouteFastPathInit(
+                            code, waveCodegenConfig,
+                            waveRouteFastPathExpr(paramIdx, "0"),
+                            "ctx.dist_" + calcName, "0");
                         code += "    ctx.dist_" + calcName + ".local_target_slots = ctx.dist_" + calcName + ".local_target_slots_by_route.front();\n";
                         code += "    ctx.dist_" + calcName + ".exchange_plan = ctx.dist_" + calcName + ".exchange_plans_by_route.front();\n";
                         code += "    ctx.dist_" + calcName + ".halo_plan = ctx.dist_" + calcName + ".halo_plans_by_route.front();\n";
@@ -1365,14 +647,9 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
                 code += "            ctx.read_cache_transition_target_slots_" + idx + ".push_back(__dacpp_target_slot);\n";
                 code += "        }\n";
                 code += "    }\n";
-                code += "    if (ctx.use_wave_span_pairs) {\n";
-                code += "        std::string __dacpp_span_reason;\n";
-                code += "        ctx.read_cache_transition_use_span_pairs_" + idx + " = dacpp::mpi::build_span_pairs_from_slots(ctx.read_cache_transition_source_slots_" + idx + ", ctx.read_cache_transition_target_slots_" + idx + ", ctx.read_cache_transition_source_spans_" + idx + ", ctx.read_cache_transition_target_spans_" + idx + ", &__dacpp_span_reason);\n";
-                code += "        if (ctx.read_cache_transition_use_span_pairs_" + idx + ") {\n";
-                code += "            std::string __dacpp_row_reason;\n";
-                code += "            ctx.read_cache_transition_use_row_copy_blocks_" + idx + " = dacpp::mpi::build_contiguous_row_copy_blocks_from_span_pairs(ctx.read_cache_transition_source_spans_" + idx + ", ctx.read_cache_transition_target_spans_" + idx + ", ctx.read_cache_transition_row_copy_blocks_" + idx + ", &__dacpp_row_reason);\n";
-                code += "        }\n";
-                code += "    }\n";
+                appendWaveReadTransitionFastPathInit(
+                    code, waveCodegenConfig, idx,
+                    waveReadTransitionFastPathExpr(idx));
             }
         }
     } else {
@@ -1634,18 +911,9 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
             code += "    auto& local_" + calcName + " = ctx.dist_" + calcName +
                     ".local_cache;\n";
             if (transportModes[paramIdx] == IOTYPE::WRITE) {
-                if (canUseWaveDirectKernel &&
-                    isWaveEquationSite &&
-                    calcName == "next") {
-                    code += "    if (!ctx.use_wave_direct_kernel || !ctx.wave_direct_can_sparse_clear) {\n";
-                    code += "        local_" + calcName + ".assign(ctx.plan_" + calcName +
-                            ".pack.globals.size(), " + calcParam->getBasicType() + "{});\n";
-                    code += "    } else if (!ctx.wave_direct_next_stale_slots.empty()) {\n";
-                    code += "        for (int32_t __dacpp_stale_slot : ctx.wave_direct_next_stale_slots) {\n";
-                    code += "            local_" + calcName + "[static_cast<std::size_t>(__dacpp_stale_slot)] = " + calcParam->getBasicType() + "{};\n";
-                    code += "        }\n";
-                    code += "    }\n";
-                } else {
+                if (!appendWaveDistributedWriteReset(
+                        code, waveCodegenConfig, calcName,
+                        calcParam->getBasicType())) {
                     code += "    local_" + calcName + ".assign(ctx.plan_" + calcName +
                             ".pack.globals.size(), " + calcParam->getBasicType() + "{});\n";
                 }
@@ -1660,48 +928,7 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
         code += "    dacpp_profile_add(dacpp_profile_dist_setup_ms, dacpp_profile_dist_setup_start);\n";
         code += "    auto dacpp_profile_kernel_start = dacpp_profile_now();\n";
         code += "    if (local_item_count > 0) {\n";
-        if (canUseWaveDirectKernel) {
-            code += "        if (ctx.use_wave_direct_kernel) {\n";
-            code += "            const double __dacpp_wave_dt = 0.5f * std::fmin(dx, dy) / c;\n";
-            code += "            const double __dacpp_wave_coeff = (c * c) * __dacpp_wave_dt * __dacpp_wave_dt;\n";
-            code += "            const double __dacpp_wave_inv_dx2 = 1.0 / (dx * dx);\n";
-            code += "            const double __dacpp_wave_inv_dy2 = 1.0 / (dy * dy);\n";
-            code += "            {\n";
-            code += "                sycl::buffer<double, 1> buffer_cur(local_cur.data(), sycl::range<1>(local_cur.size()));\n";
-            code += "                sycl::buffer<double, 1> buffer_prev(local_prev.data(), sycl::range<1>(local_prev.size()));\n";
-            code += "                sycl::buffer<double, 1> buffer_next(local_next.data(), sycl::range<1>(local_next.size()));\n";
-            code += "                q.submit([&](sycl::handler& h) {\n";
-            code += "                    auto acc_cur = buffer_cur.get_access<sycl::access::mode::read>(h);\n";
-            code += "                    auto acc_prev = buffer_prev.get_access<sycl::access::mode::read>(h);\n";
-            code += "                    auto acc_next = buffer_next.get_access<sycl::access::mode::read_write>(h);\n";
-            code += "                    auto acc_wave_slots = ctx.wave_direct_slots_buffer->get_access<sycl::access::mode::read>(h);\n";
-            code += "                    h.parallel_for(sycl::range<1>(static_cast<std::size_t>(local_item_count)), [=](sycl::id<1> idx) {\n";
-            code += "                        const std::size_t item_linear = idx[0];\n";
-            code += "                        const std::size_t slot_base = item_linear * 7;\n";
-            code += "                        const int32_t center_slot = acc_wave_slots[slot_base + 0];\n";
-            code += "                        const int32_t up_slot = acc_wave_slots[slot_base + 1];\n";
-            code += "                        const int32_t down_slot = acc_wave_slots[slot_base + 2];\n";
-            code += "                        const int32_t left_slot = acc_wave_slots[slot_base + 3];\n";
-            code += "                        const int32_t right_slot = acc_wave_slots[slot_base + 4];\n";
-            code += "                        const int32_t prev_slot = acc_wave_slots[slot_base + 5];\n";
-            code += "                        const int32_t next_slot = acc_wave_slots[slot_base + 6];\n";
-            code += "                        const double center = acc_cur[static_cast<std::size_t>(center_slot)];\n";
-            code += "                        const double up = acc_cur[static_cast<std::size_t>(up_slot)];\n";
-            code += "                        const double down = acc_cur[static_cast<std::size_t>(down_slot)];\n";
-            code += "                        const double left = acc_cur[static_cast<std::size_t>(left_slot)];\n";
-            code += "                        const double right = acc_cur[static_cast<std::size_t>(right_slot)];\n";
-            code += "                        const double prev = acc_prev[static_cast<std::size_t>(prev_slot)];\n";
-            code += "                        const double u_xx = (down - 2.0 * center + up) * __dacpp_wave_inv_dx2;\n";
-            code += "                        const double u_yy = (right - 2.0 * center + left) * __dacpp_wave_inv_dy2;\n";
-            code += "                        acc_next[static_cast<std::size_t>(next_slot)] = 2.0 * center - prev + __dacpp_wave_coeff * (u_xx + u_yy);\n";
-            code += "                    });\n";
-            code += "                });\n";
-            code += "                q.wait();\n";
-            code += "            }\n";
-            code += "        } else if (ctx.use_contiguous_kernel_views) {\n";
-        } else {
-            code += "        if (ctx.use_contiguous_kernel_views) {\n";
-        }
+        appendWaveDistributedKernelDispatchHead(code, waveCodegenConfig);
         code += "            {\n";
         for (int paramIdx = 0; paramIdx < shell->getNumShellParams(); ++paramIdx) {
             Param* calcParam = calc->getParam(paramIdx);
@@ -1830,21 +1057,11 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
                 code += "    // DACPP read-cache state transition: " +
                         transition.writerTensor + " -> " +
                         transition.readerTensor + "\n";
-                code += "    if (ctx.use_wave_span_pairs && ctx.read_cache_transition_use_row_copy_blocks_" + idx + ") {\n";
-                code += "        dacpp::mpi::scatter_values_by_row_copy_blocks_into(local_" +
-                        writerCalcName + ", ctx.read_cache_transition_row_copy_blocks_" +
-                        idx + ", local_" + readerCalcName + ");\n";
-                code += "    } else if (ctx.use_wave_span_pairs && ctx.read_cache_transition_use_span_pairs_" + idx + ") {\n";
-                code += "        dacpp::mpi::scatter_values_by_span_pairs_into(local_" +
-                        writerCalcName + ", ctx.read_cache_transition_source_spans_" +
-                        idx + ", ctx.read_cache_transition_target_spans_" + idx +
-                        ", local_" + readerCalcName + ");\n";
-                code += "    } else {\n";
-                code += "        dacpp::mpi::scatter_values_by_slots_parallel_into(local_" +
-                        writerCalcName + ", ctx.read_cache_transition_source_slots_" +
-                        idx + ", ctx.read_cache_transition_target_slots_" + idx +
-                        ", local_" + readerCalcName + ", q);\n";
-                code += "    }\n";
+                appendWaveReadTransitionRun(
+                    code, waveCodegenConfig, idx,
+                    waveReadTransitionFastPathExpr(idx),
+                    writerCalcName,
+                    readerCalcName);
             }
             code += "    dacpp_profile_add(dacpp_profile_read_transition_ms, dacpp_profile_read_transition_start);\n";
         }
@@ -1872,50 +1089,11 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
                                   calc->getParam(followupMapping->readerParamIndex)->getName() +
                                   ".local_cache";
                 }
-                if (useDistributedReaderMaterialize) {
-                    code += "    if (ctx.use_wave_span_pairs && !ctx.dist_" + calcName + ".use_row_copy_blocks_by_route.empty() && ctx.dist_" + calcName + ".use_row_copy_blocks_by_route[" + std::to_string(routeIdx) + "]) {\n";
-                    code += "        dacpp::mpi::publish_local_writes_with_span_pairs_or_exchange_cache_only(local_" + calcName +
-                            ", ctx.dist_" + calcName + ".local_write_slots, ctx.dist_" + calcName +
-                            ".local_target_slots_by_route[" + std::to_string(routeIdx) + "], ctx.dist_" + calcName +
-                            ".local_write_spans_by_route[" + std::to_string(routeIdx) + "], ctx.dist_" + calcName +
-                            ".local_target_spans_by_route[" + std::to_string(routeIdx) + "], ctx.dist_" + calcName +
-                            ".local_row_copy_blocks_by_route[" + std::to_string(routeIdx) + "], " +
-                            targetCache + ", ctx.dist_" + calcName +
-                            ".exchange_plans_by_route[" + std::to_string(routeIdx) +
-                            "], ctx.dist_" + calcName + ".halo_plans_by_route[" +
-                            std::to_string(routeIdx) + "], ctx.dist_" + calcName +
-                            ".halo_runtimes_by_route[" + std::to_string(routeIdx) + "], q);\n";
-                    code += "    } else if (ctx.use_wave_span_pairs && !ctx.dist_" + calcName + ".use_span_pairs_by_route.empty() && ctx.dist_" + calcName + ".use_span_pairs_by_route[" + std::to_string(routeIdx) + "]) {\n";
-                    code += "        dacpp::mpi::publish_local_writes_with_span_pairs_or_exchange_cache_only(local_" + calcName +
-                            ", ctx.dist_" + calcName + ".local_write_slots, ctx.dist_" + calcName +
-                            ".local_target_slots_by_route[" + std::to_string(routeIdx) + "], ctx.dist_" + calcName +
-                            ".local_write_spans_by_route[" + std::to_string(routeIdx) + "], ctx.dist_" + calcName +
-                            ".local_target_spans_by_route[" + std::to_string(routeIdx) + "], ctx.dist_" + calcName +
-                            ".local_row_copy_blocks_by_route[" + std::to_string(routeIdx) + "], " +
-                            targetCache + ", ctx.dist_" + calcName +
-                            ".exchange_plans_by_route[" + std::to_string(routeIdx) +
-                            "], ctx.dist_" + calcName + ".halo_plans_by_route[" +
-                            std::to_string(routeIdx) + "], ctx.dist_" + calcName +
-                            ".halo_runtimes_by_route[" + std::to_string(routeIdx) + "], q);\n";
-                    code += "    } else {\n";
-                    code += "        dacpp::mpi::publish_local_writes_with_halo_or_exchange_cache_only(local_" + calcName +
-                            ", ctx.dist_" + calcName + ".local_write_slots, ctx.dist_" + calcName +
-                            ".local_target_slots_by_route[" + std::to_string(routeIdx) + "], " +
-                            targetCache + ", ctx.dist_" + calcName +
-                            ".exchange_plans_by_route[" + std::to_string(routeIdx) +
-                            "], ctx.dist_" + calcName + ".halo_plans_by_route[" +
-                            std::to_string(routeIdx) + "], q);\n";
-                    code += "    }\n";
-                } else {
-                    code += "    dacpp::mpi::publish_local_writes_with_halo_or_exchange(local_" + calcName +
-                            ", ctx.dist_" + calcName + ".local_write_slots, ctx.dist_" + calcName +
-                            ".local_target_slots_by_route[" + std::to_string(routeIdx) + "], " +
-                            targetCache + ", ctx.dist_" + calcName +
-                            ".local_write_values, ctx.dist_" + calcName +
-                            ".exchange_plans_by_route[" + std::to_string(routeIdx) +
-                            "], ctx.dist_" + calcName + ".halo_plans_by_route[" +
-                            std::to_string(routeIdx) + "], q);\n";
-                }
+                appendWavePublishRun(
+                    code, waveCodegenConfig, useDistributedReaderMaterialize,
+                    calcName,
+                    waveRouteFastPathExpr(paramIdx, std::to_string(routeIdx)),
+                    std::to_string(routeIdx), targetCache);
             }
         }
         code += "    dacpp_profile_add(dacpp_profile_publish_ms, dacpp_profile_publish_start);\n";

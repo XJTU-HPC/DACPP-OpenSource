@@ -2,8 +2,10 @@
 #define DACPP_MPI_STENCIL_TYPES_H
 
 #include <cstdint>
+#include <memory>
 #include <mpi.h>
 #include <string>
+#include <sycl/sycl.hpp>
 #include <vector>
 
 #include "CoreTypes.h"
@@ -67,6 +69,38 @@ struct HaloExchangePlan {
     std::vector<PeerHaloExchange> recv_transfers;
 };
 
+struct WaveRouteFastPathState {
+    std::vector<SlotSpan> local_write_spans;
+    std::vector<SlotSpan> local_target_spans;
+    std::vector<ContiguousRowCopyBlock> local_row_copy_blocks;
+    bool use_span_pairs = false;
+    bool use_row_copy_blocks = false;
+};
+
+struct WaveReadCacheTransitionFastPathState {
+    std::vector<SlotSpan> source_spans;
+    std::vector<SlotSpan> target_spans;
+    std::vector<ContiguousRowCopyBlock> row_copy_blocks;
+    bool use_span_pairs = false;
+    bool use_row_copy_blocks = false;
+};
+
+struct WaveDirectKernelState {
+    std::vector<int32_t> slots;
+    std::unique_ptr<sycl::buffer<int32_t, 1>> slots_buffer;
+    std::vector<int32_t> next_stale_slots;
+    bool can_sparse_clear = false;
+};
+
+struct WaveSpecializationState {
+    bool use_span_pairs = false;
+    bool use_direct_kernel = false;
+    std::vector<std::vector<WaveRouteFastPathState>> route_fast_paths_by_param;
+    std::vector<WaveReadCacheTransitionFastPathState>
+        read_cache_transition_fast_paths;
+    WaveDirectKernelState direct_kernel;
+};
+
 template <typename T>
 struct HaloExchangeRuntime {
     std::vector<std::vector<T>> send_buffers;
@@ -85,16 +119,6 @@ struct DistributedTensorState {
     std::vector<int32_t> local_write_slots;
     std::vector<int32_t> local_target_slots;
     std::vector<std::vector<int32_t>> local_target_slots_by_route;
-    std::vector<std::vector<SlotSpan>> local_write_spans_by_route;
-    std::vector<std::vector<SlotSpan>> local_target_spans_by_route;
-    std::vector<std::vector<ContiguousRowCopyBlock>> local_row_copy_blocks_by_route;
-    std::vector<bool> use_span_pairs_by_route;
-    std::vector<bool> use_row_copy_blocks_by_route;
-    std::vector<std::vector<SlotSpan>> read_cache_transition_source_spans;
-    std::vector<std::vector<SlotSpan>> read_cache_transition_target_spans;
-    std::vector<std::vector<ContiguousRowCopyBlock>> read_cache_transition_row_copy_blocks;
-    std::vector<bool> read_cache_transition_use_span_pairs;
-    std::vector<bool> read_cache_transition_use_row_copy_blocks;
     std::vector<int64_t> local_write_globals;
     AllRankIndexLayout read_layout;
     AllRankIndexLayout write_layout;
