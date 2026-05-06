@@ -112,6 +112,7 @@ Runtime helper：
 - `phase_c_routes_materialize_2026-05-04.md`
 - `phase_c_halo_plan_2026-05-04.md`
 - `mpi_stencil_logic_2026-05-06.md`
+- `wave_specialization_split_plan_2026-05-06.md`
 
 ## 4. 已完成能力
 
@@ -423,32 +424,34 @@ root_bridge=0.000ms writeback=0.000ms
 
 1024/200 口径主要用于回归；它确认 direct-kernel 路径压低了 kernel 固定成本，同时没有把 `publish/read_transition` 推成新的主瓶颈。
 
-2048/800 大规模基准：
+2048/800 大规模基准（当前基线）：
 
 ```text
-DACPP_MPI_PROFILE=1 WAVE_BENCH_RUNS=1 WAVE_BENCH_NX=2048 WAVE_BENCH_NY=2048 WAVE_BENCH_TIME_STEPS=800 bash bench_wave_mpi.sh
+DACPP_MPI_PROFILE=1 WAVE_BENCH_RUNS=6 WAVE_BENCH_NX=2048 WAVE_BENCH_NY=2048 WAVE_BENCH_TIME_STEPS=800 bash bench_wave_mpi.sh
 
-translated MPI wave:
-time_sec=4.03928
+translated MPI wave avg:
+3.082805s
 
-hand-written coarse MPI+SYCL wave:
-seconds=1.17266
+hand-written coarse MPI+SYCL wave avg:
+1.118177s
 
-ratio:
-3.44x
+ratio avg:
+2.76x
 
-per-step representative profile:
-kernel≈2.3~2.9ms
-read_transition≈0.95~1.12ms
-publish≈1.3~1.8ms
-boundary≈0.01~0.02ms
-dist_setup≈0.3~2.0ms
+per-step overall profile summary (4800 steps):
+kernel avg=2.503ms median=2.408ms p95=2.753ms
+read_transition avg=0.771ms median=0.730ms p95=0.920ms
+publish avg=1.069ms median=0.911ms p95=1.774ms
+boundary avg=0.012ms
+dist_setup avg=0.001ms
 ```
 
-2048/800 口径下，translated 主循环为 `4.03928s`，coarse 为 `1.17266s`，时间比率为 `3.44x`。和 `4.45576s` 的上一版同口径结果相比，translated 主循环下降约 `9.3%`。该口径显示：
+2048/800 口径下，当前 6 轮交替跑的平均值为 translated `3.082805s`、coarse `1.118177s`、比率 `2.76x`。和文档上一版的 `4.03928s / 1.17266s / 3.44x` 相比，translated 主循环继续下降；和 span-path 调整前的 `3.118328s / 1.110522s / 2.81x` 相比，也有小幅改善。该口径显示：
 
 - wave direct kernel 已经带来实质收益，说明通用 `View`/slot 间接访问确实占据了主成本。
-- `kernel` 仍是单项大头，但 `publish + read_transition` 已经进入同一数量级；后续应优先处理 state transition / publish 结构，而不是继续做更细碎的 kernel helper 微调。
+- `kernel` 仍是单项大头，但更慢 step 的抬头主要来自 `publish`，不是 kernel 回弹。以 `wrapper_total_ms(max)` 超过整体 p95 的 240 个 spike step 计，主导 bucket 归因为 `publish=204`、`read_transition=21`、`kernel=15`。
+- span-path 的 local-only/filter + contiguous-row fast path 已接入；`read_transition` 从约 `0.810ms` 下降到 `0.771ms`，`publish` 的 p95 从约 `1.890ms` 下降到 `1.774ms`，但 `publish` 尾部 spike 仍然存在。
+- `publish + read_transition` 仍与 `kernel` 处于同一数量级；后续应继续优先处理 state transition / publish 结构，而不是继续做更细碎的 kernel helper 微调。
 - boundary 可忽略，不值得继续专门优化。
 - root helper / root bridge 仍然为 0，说明这次 kernel 内优化没有把 wave 拉回旧的 root-centric 退路。
 
@@ -512,7 +515,7 @@ wave 1024 单点以 `8.2` 里的 `2.02x` 为准。
 已保留但收益有限：
 
 - guarded `ContiguousView1D/2D` kernel view：只在 PackPlan 证明 `compact_slots == 0..N-1` 且 `item_key_offsets == item * partition_size` 时启用；correctness 通过，结构更简单，但 `stencil1.0` / `waveEquation1.0` 1024 profile 显示主要瓶颈仍是 kernel / buffer / publish 常数。
-- wave-specific span-pair transition/publish path：已接入并保持 correctness，但 2048/800 口径下主热点仍然是 kernel；这条路径可以保留，但不应再作为下一阶段主攻方向。
+- wave-specific span-pair transition/publish path：已接入并保持 correctness；当前 2048/800 口径显示常态主项仍是 kernel，但尾部 spike 更多由 publish 拉高，因此下一阶段应继续沿 wave span path 压低 publish/read-transition 的 host-side scatter 与 row-span copy 常数。
 - wave-specific direct kernel：已接入并保持 correctness；当前 1024/200 从约 `2.57x` 降到 `2.02x`，2048/800 主循环从 `4.46s` 降到 `4.04s`，说明这条窄口径 wave-first 路线是值得保留的。
 
 ## 9. 尚未完成 / 风险
@@ -537,8 +540,9 @@ wave 1024 单点以 `8.2` 里的 `2.02x` 为准。
 当前推进重心先集中在 `waveEquation1.0`。其它应用和泛化路线暂时只做 correctness / structure 回归，不主动展开新优化，避免多线并行把判断噪声放大。
 
 1. `waveEquation1.0` 剩余差距治理
-   - 1024/200 口径为 `2.02x`，2048/800 口径为 `3.44x`；2048/800 translated 主循环为 `4.03928s`，coarse 为 `1.17266s`。
-   - 2048/800 profile 显示 per-step `kernel≈2.3~2.9ms`、`publish≈1.3~1.8ms`、`read_transition≈0.95~1.12ms`；boundary 仍可忽略，root bridge 为 0。
+   - 1024/200 口径为 `2.02x`，2048/800 当前 6 轮均值口径为 `2.81x`；translated 主循环均值 `3.118328s`，coarse 均值 `1.110522s`。
+   - 2048/800 profile 显示 per-step `kernel avg=2.413ms`、`publish avg=1.029ms`、`read_transition avg=0.810ms`；boundary 仍可忽略，root bridge 为 0。
+   - spike step 主要由 `publish` 抬头驱动，而不是 kernel 回弹；因此后续优先继续压 `publish/read_transition` span path 的 row-span / host-side scatter 常数。
    - wave kernel 结构已经压过一轮，后续重点放在 `matCur -> matPrev` state transition 和 `matNext -> matCur` publish 的结构成本，同时保持 boundary-local update 语义不变。
    - root helper/root bridge 不进入 wave 路径，Phase C eligibility guard 继续保持保守。
 
@@ -562,4 +566,4 @@ wave 1024 单点以 `8.2` 里的 `2.02x` 为准。
 
 ## 11. 一句话总结
 
-MPI stencil 路径已经完成 Phase 1、输出一致性分类、root-only 输出 rewrite、loop-lowered `ctx/init/run/materialize`、Phase C distributed cache / route / halo 基础设施，以及 1D boundary-local、2D boundary-local、2D READ-cache state transition。`liuliang1.0`、`stencil1.0`、`waveEquation1.0` 处于 no-root distributed path；`waveEquation1.0` 还包含 guarded direct-kernel path，1024/200 口径为 `2.02x`，2048/800 口径为 `3.44x`，translated 主循环为 `4.03928s`；`jacobi1.0` 保持 mixed Vector/Matrix fallback。14 个非 `mpi*` 应用和完整 MPI suite 均通过。后续重点放在 `waveEquation1.0` 的 transition / publish 结构成本和生命周期融合，`stencil1.0`、`FOuLa1.0`、`jacobi1.0` 和 Phase C 泛化路线只保留回归。
+MPI stencil 路径已经完成 Phase 1、输出一致性分类、root-only 输出 rewrite、loop-lowered `ctx/init/run/materialize`、Phase C distributed cache / route / halo 基础设施，以及 1D boundary-local、2D boundary-local、2D READ-cache state transition。`liuliang1.0`、`stencil1.0`、`waveEquation1.0` 处于 no-root distributed path；`waveEquation1.0` 还包含 guarded direct-kernel path，1024/200 口径为 `2.02x`，2048/800 当前 6 轮均值口径为 `2.81x`，translated 主循环均值为 `3.118328s`；`jacobi1.0` 保持 mixed Vector/Matrix fallback。14 个非 `mpi*` 应用和完整 MPI suite 均通过。后续重点放在 `waveEquation1.0` 的 transition / publish 结构成本和生命周期融合，优先继续压 publish/read-transition 的 span path 和 host-side scatter 常数，`stencil1.0`、`FOuLa1.0`、`jacobi1.0` 和 Phase C 泛化路线只保留回归。

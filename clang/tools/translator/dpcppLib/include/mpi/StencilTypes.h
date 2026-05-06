@@ -2,6 +2,7 @@
 #define DACPP_MPI_STENCIL_TYPES_H
 
 #include <cstdint>
+#include <mpi.h>
 #include <string>
 #include <vector>
 
@@ -38,6 +39,15 @@ struct SlotSpan {
     int32_t stride = 1;
 };
 
+struct ContiguousRowCopyBlock {
+    int32_t source_begin = 0;
+    int32_t target_begin = 0;
+    int32_t row_width = 0;
+    int32_t row_count = 0;
+    int32_t source_row_stride = 0;
+    int32_t target_row_stride = 0;
+};
+
 struct PeerHaloExchange {
     int peer_rank = -1;
     std::vector<SlotSpan> local_spans;
@@ -58,6 +68,13 @@ struct HaloExchangePlan {
 };
 
 template <typename T>
+struct HaloExchangeRuntime {
+    std::vector<std::vector<T>> send_buffers;
+    std::vector<std::vector<T>> recv_buffers;
+    std::vector<MPI_Request> requests;
+};
+
+template <typename T>
 struct DistributedTensorState {
     bool enabled = false;
     bool seeded = false;
@@ -70,10 +87,14 @@ struct DistributedTensorState {
     std::vector<std::vector<int32_t>> local_target_slots_by_route;
     std::vector<std::vector<SlotSpan>> local_write_spans_by_route;
     std::vector<std::vector<SlotSpan>> local_target_spans_by_route;
+    std::vector<std::vector<ContiguousRowCopyBlock>> local_row_copy_blocks_by_route;
     std::vector<bool> use_span_pairs_by_route;
+    std::vector<bool> use_row_copy_blocks_by_route;
     std::vector<std::vector<SlotSpan>> read_cache_transition_source_spans;
     std::vector<std::vector<SlotSpan>> read_cache_transition_target_spans;
+    std::vector<std::vector<ContiguousRowCopyBlock>> read_cache_transition_row_copy_blocks;
     std::vector<bool> read_cache_transition_use_span_pairs;
+    std::vector<bool> read_cache_transition_use_row_copy_blocks;
     std::vector<int64_t> local_write_globals;
     AllRankIndexLayout read_layout;
     AllRankIndexLayout write_layout;
@@ -82,7 +103,9 @@ struct DistributedTensorState {
     std::vector<ExchangePlan> exchange_plans_by_route;
     ExchangePlan root_bridge_plan;
     HaloExchangePlan halo_plan;
+    HaloExchangeRuntime<T> halo_runtime;
     std::vector<HaloExchangePlan> halo_plans_by_route;
+    std::vector<HaloExchangeRuntime<T>> halo_runtimes_by_route;
     PackMap root_bridge_pack;
 };
 

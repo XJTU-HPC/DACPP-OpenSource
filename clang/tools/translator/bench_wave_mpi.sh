@@ -11,6 +11,11 @@ NY_VALUE="${WAVE_BENCH_NY:-1024}"
 TIME_STEPS_VALUE="${WAVE_BENCH_TIME_STEPS:-200}"
 MPI_RANKS="${WAVE_BENCH_RANKS:-4}"
 RUNS="${WAVE_BENCH_RUNS:-3}"
+RUN_TIMEOUT_SEC="${WAVE_BENCH_TIMEOUT_SEC:-600}"
+POST_TIME_GRACE_SEC="${WAVE_BENCH_POST_TIME_GRACE_SEC:-2}"
+
+ACTIVE_RUNNER=""
+ACTIVE_BIN=""
 
 rm -rf "$BENCH_DIR"
 mkdir -p "$BENCH_DIR"
@@ -67,19 +72,17 @@ disable_coarse_result_dump() {
     local path="$1"
     python3 - "$path" <<'PY'
 from pathlib import Path
+import re
 import sys
 
 path = Path(sys.argv[1])
 src = path.read_text()
-start_marker = '        std::cout << "{";\n'
-end_marker = '        std::cout << "}" << std::endl;\n'
-start = src.find(start_marker)
-if start == -1:
-    raise SystemExit(f"failed to find coarse result dump start in {path}")
-end = src.find(end_marker, start)
-if end == -1:
-    raise SystemExit(f"failed to find coarse result dump end in {path}")
-updated = src[:start] + src[end + len(end_marker):]
+updated = re.sub(
+    r'\n\s*std::cout << "\{";\n[\s\S]*?\n\s*std::cout << "\}" << std::endl;\s*\n',
+    "\n",
+    src,
+    count=1,
+)
 if updated == src:
     raise SystemExit(f"failed to remove coarse result dump from {path}")
 path.write_text(updated)
@@ -134,6 +137,14 @@ else:
 PY
 }
 
+average() {
+    python3 - "$@" <<'PY'
+import sys
+vals = [float(x) for x in sys.argv[1:]]
+print(f"{sum(vals) / len(vals):.6f}")
+PY
+}
+
 extract_time() {
     local log="$1"
     python3 - "$log" <<'PY'
@@ -151,26 +162,101 @@ print(matches[-1])
 PY
 }
 
-run_samples() {
+terminate_runner_tree() {
+    local runner="$1"
+    local bin="$2"
+
+    if [[ -n "$runner" ]] && kill -0 "$runner" 2>/dev/null; then
+        pkill -P "$runner" || true
+        kill "$runner" || true
+        sleep 1
+    fi
+
+    if [[ -n "$runner" ]]; then
+        pkill -P "$runner" || true
+        pkill -9 -P "$runner" || true
+        kill -9 "$runner" || true
+    fi
+
+    [[ -n "$bin" ]] && pkill -f "$bin" || true
+}
+
+cleanup_active_runner() {
+    if [[ -n "$ACTIVE_RUNNER" ]]; then
+        terminate_runner_tree "$ACTIVE_RUNNER" "$ACTIVE_BIN"
+        ACTIVE_RUNNER=""
+        ACTIVE_BIN=""
+    fi
+}
+
+trap cleanup_active_runner EXIT INT TERM
+
+run_sample_once() {
     local label="$1"
     local bin="$2"
-    for run in $(seq 1 "$RUNS"); do
-        local log="$BENCH_DIR/${label}_${run}.log"
-        DYLD_LIBRARY_PATH="$ACPP_ROOT/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}" \
-            mpirun -np "$MPI_RANKS" "$bin" > "$log" 2>&1
-        local t
-        t="$(extract_time "$log")" || {
-            echo "[FAIL] missing timing for $label run $run"
-            cat "$log"
-            exit 1
-        }
-        if [[ "$label" == "translated" ]]; then
-            translated_times+=("$t")
-        else
-            coarse_times+=("$t")
+    local run="$3"
+    local log="$BENCH_DIR/${label}_${run}.log"
+    local t=""
+    local deadline=$((SECONDS + RUN_TIMEOUT_SEC))
+
+    rm -f "$log"
+    pkill -f "$bin" || true
+
+    DYLD_LIBRARY_PATH="$ACPP_ROOT/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}" \
+        mpirun -np "$MPI_RANKS" "$bin" > "$log" 2>&1 &
+    ACTIVE_RUNNER="$!"
+    ACTIVE_BIN="$bin"
+
+    while true; do
+        if [[ -f "$log" ]] && t="$(extract_time "$log" 2>/dev/null)"; then
+            break
         fi
-        echo "  $label run $run: ${t}s"
+        if ! kill -0 "$ACTIVE_RUNNER" 2>/dev/null; then
+            break
+        fi
+        if (( SECONDS >= deadline )); then
+            echo "[FAIL] timeout waiting for $label run $run timing"
+            [[ -f "$log" ]] && cat "$log"
+            terminate_runner_tree "$ACTIVE_RUNNER" "$ACTIVE_BIN"
+            ACTIVE_RUNNER=""
+            ACTIVE_BIN=""
+            exit 1
+        fi
+        sleep 1
     done
+
+    if [[ -z "$t" ]]; then
+        if [[ -f "$log" ]] && t="$(extract_time "$log" 2>/dev/null)"; then
+            :
+        else
+            echo "[FAIL] missing timing for $label run $run"
+            [[ -f "$log" ]] && cat "$log"
+            terminate_runner_tree "$ACTIVE_RUNNER" "$ACTIVE_BIN"
+            ACTIVE_RUNNER=""
+            ACTIVE_BIN=""
+            exit 1
+        fi
+    fi
+
+    local grace_deadline=$((SECONDS + POST_TIME_GRACE_SEC))
+    while kill -0 "$ACTIVE_RUNNER" 2>/dev/null && (( SECONDS < grace_deadline )); do
+        sleep 1
+    done
+
+    if kill -0 "$ACTIVE_RUNNER" 2>/dev/null; then
+        terminate_runner_tree "$ACTIVE_RUNNER" "$ACTIVE_BIN"
+    fi
+
+    wait "$ACTIVE_RUNNER" 2>/dev/null || true
+    ACTIVE_RUNNER=""
+    ACTIVE_BIN=""
+
+    if [[ "$label" == "translated" ]]; then
+        translated_times+=("$t")
+    else
+        coarse_times+=("$t")
+    fi
+    echo "  $label run $run: ${t}s"
 }
 
 DAC_SRC="$BENCH_DIR/wave.bench.dac.cpp"
@@ -207,16 +293,26 @@ acpp-compile "$COARSE_BENCH_SRC" "$COARSE_BIN" > "$BENCH_DIR/coarse_compile.log"
     cat "$BENCH_DIR/coarse_compile.log"
     exit 1
 }
+chmod +x "$TRANSLATED_BIN" "$COARSE_BIN"
 
 echo "[4/4] run benchmark: NX=$NX_VALUE NY=$NY_VALUE TIME_STEPS=$TIME_STEPS_VALUE np=$MPI_RANKS runs=$RUNS"
 translated_times=()
 coarse_times=()
-run_samples translated "$TRANSLATED_BIN"
-run_samples coarse "$COARSE_BIN"
+for run in $(seq 1 "$RUNS"); do
+    if (( run % 2 == 1 )); then
+        run_sample_once coarse "$COARSE_BIN" "$run"
+        run_sample_once translated "$TRANSLATED_BIN" "$run"
+    else
+        run_sample_once translated "$TRANSLATED_BIN" "$run"
+        run_sample_once coarse "$COARSE_BIN" "$run"
+    fi
+done
 
 translated_median="$(median "${translated_times[@]}")"
 coarse_median="$(median "${coarse_times[@]}")"
-ratio="$(python3 - "$translated_median" "$coarse_median" <<'PY'
+translated_avg="$(average "${translated_times[@]}")"
+coarse_avg="$(average "${coarse_times[@]}")"
+avg_ratio="$(python3 - "$translated_avg" "$coarse_avg" <<'PY'
 import sys
 a = float(sys.argv[1])
 b = float(sys.argv[2])
@@ -225,7 +321,9 @@ PY
 )"
 
 echo
+echo "translated avg: ${translated_avg}s"
+echo "coarse MPI+SYCL avg: ${coarse_avg}s"
+echo "ratio translated/coarse (avg): ${avg_ratio}x"
 echo "translated median: ${translated_median}s"
 echo "coarse MPI+SYCL median: ${coarse_median}s"
-echo "ratio translated/coarse: ${ratio}x"
 echo "bench dir: $BENCH_DIR"
