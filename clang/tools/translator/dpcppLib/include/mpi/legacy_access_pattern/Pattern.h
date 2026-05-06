@@ -9,9 +9,9 @@
 #include <string>
 #include <vector>
 
-#include "CoreTypes.h"
+#include "../common/CoreTypes.h"
 #include "DataReconstructor.new.h"
-#include "Profile.h"
+#include "../common/Profile.h"
 #include "dacInfo.h"
 
 namespace dacpp {

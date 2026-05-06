@@ -8,7 +8,7 @@
 #include <sycl/sycl.hpp>
 #include <vector>
 
-#include "CoreTypes.h"
+#include "../common/CoreTypes.h"
 
 namespace dacpp {
 namespace mpi {

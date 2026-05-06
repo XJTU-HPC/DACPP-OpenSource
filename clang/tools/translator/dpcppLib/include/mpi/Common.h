@@ -1,9 +1,6 @@
-#ifndef DACPP_MPI_COMMON_H
-#define DACPP_MPI_COMMON_H
-
-#include "CoreTypes.h"
-#include "Profile.h"
-#include "MpiTypes.h"
-#include "Pattern.h"
-
-#endif
+// Facade: re-exports from subdirectories.
+// Consumers include "mpi/Common.h"; actual definitions live in common/ and legacy_access_pattern/.
+#include "common/CoreTypes.h"
+#include "common/Profile.h"
+#include "common/MpiTypes.h"
+#include "legacy_access_pattern/Pattern.h"

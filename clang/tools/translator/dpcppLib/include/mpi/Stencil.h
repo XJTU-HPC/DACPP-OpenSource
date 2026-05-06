@@ -1,9 +1,3 @@
-#ifndef DACPP_MPI_STENCIL_H
-#define DACPP_MPI_STENCIL_H
-
-#include "StencilTypes.h"
-#include "StencilLayout.h"
-#include "StencilExchange.h"
-#include "WaveExchangeSpecialization.h"
-
-#endif
+// Facade: re-exports stencil runtime from subdirectory.
+// Consumers include "mpi/Stencil.h"; actual definitions live in stencil/.
+#include "stencil/Stencil.h"

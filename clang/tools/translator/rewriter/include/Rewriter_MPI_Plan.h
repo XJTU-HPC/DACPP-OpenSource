@@ -44,6 +44,16 @@ struct MpiPlanResult {
     std::string reason;
 };
 
+// Legacy AccessPattern wrapper path.
+struct LegacyWrapperPlan : MpiPlanResult {
+    DacExprNode exprNode;
+};
+
+// Stencil Phase-C path.
+struct StencilPhaseCPlan : MpiPlanResult {
+    DacExprNode exprNode;
+};
+
 struct MpiLoweringPlan {
     MpiPlanKind overallKind = MpiPlanKind::Unsupported;
     std::vector<DacExprNode> exprNodes;

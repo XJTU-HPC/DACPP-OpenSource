@@ -6,7 +6,7 @@
 #include <unordered_map>
 #include <vector>
 
-#include "PackMap.h"
+#include "../legacy_access_pattern/PackMap.h"
 #include "StencilLayout.h"
 
 namespace dacpp {

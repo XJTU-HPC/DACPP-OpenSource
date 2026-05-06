@@ -7,7 +7,7 @@
 #include <string>
 #include <vector>
 
-#include "CoreTypes.h"
+#include "../common/CoreTypes.h"
 
 namespace dacpp {
 namespace mpi {
