@@ -1,6 +1,6 @@
 # Operator-Resident Communication Model — 实施进度
 
-日期：2026-05-06
+日期：2026-05-06（最后更新）
 分支：`tqc-2`
 
 设计文档：[operator_resident_communication_model_2026-05-06.md](./operator_resident_communication_model_2026-05-06.md)
@@ -13,109 +13,115 @@
 
 设计文档第 12 节定义了 8 个实施步骤。下表列出每步的状态和关键交付物。
 
-| 步骤 | 状态 | 说明 |
-|------|------|------|
-| 1. 建立目录骨架和 planner | **已完成** | `36f92415e` |
-| 2. 老实现收口为 legacy | **已完成** | 同上 |
-| 3. Stencil 与 wrapper 解耦 | **部分完成** | 文件已分层；stencil 分析仍直接消费 AST 散函数，尚未完全通过 plan 接口 |
-| 4. operator-resident 分析（不改生成） | **未开始** | |
-| 5. 1D element-wise chain codegen | **未开始** | vectorAddCombo |
-| 6. 2D matrix row-block codegen | **未开始** | imageAdjustment1.0 |
-| 7. row-wise reduction codegen | **未开始** | gradientSum |
-| 8. 扩展 profile 和 benchmark | **未开始** | |
+| 步骤 | 状态 | 提交 | 说明 |
+|------|------|------|------|
+| 1. 建立目录骨架和 planner | **已完成** | `36f92415e` | rewriter/lib/mpi/ 分四层 + Rewriter_MPI_Plan.h |
+| 2. 老实现收口为 legacy | **已完成** | 同上 | 文件重命名归入 legacy_access_pattern/ |
+| 3. Stencil 与 wrapper 解耦 | **已完成** | `c6d13283d` + `f8d528bee` | dpcppLib 也分层；plan 类型已扩展；逐表达式 plan |
+| 4. operator-resident 分析（不改生成） | **未开始** | | 下一步 |
+| 5. 1D element-wise chain codegen | **未开始** | | vectorAddCombo |
+| 6. 2D matrix row-block codegen | **未开始** | | imageAdjustment1.0 |
+| 7. row-wise reduction codegen | **未开始** | | gradientSum |
+| 8. 扩展 profile 和 benchmark | **未开始** | | |
 
 ---
 
 ## 2. 已完成工作详情
 
-### 2.1 目录重构（步骤 1-2）
+### 2.1 Rewriter 侧目录重构（步骤 1-2）
 
 提交 `36f92415e refactor: restructure MPI rewriter into shared/legacy/stencil directories`
-
-将 `rewriter/lib/mpi/` 从平铺结构重组为四层子目录：
 
 ```
 rewriter/lib/mpi/
   shared/                           # 模型无关的共享工具
-    MpiTypes.cpp                    ← Rewriter_MPI_Types.cpp
-    OutputSyncAnalysis.cpp          ← Rewriter_MPI_OutputAnalysis.cpp
-    OutputSyncAnalysis_Internal.h   ← Rewriter_MPI_OutputAnalysis_Internal.h
-    PrintRewrite.cpp                ← Rewriter_MPI_PrintRewrite.cpp
-    ParamModeAnalysis.cpp           ← Rewriter_MPI_ParamAnalysis.cpp
-    PostRegionAnalysis.cpp          ← Rewriter_MPI_PostRegion_Analysis.cpp
-    PostRegionCodegen.cpp           ← Rewriter_MPI_PostRegion_Codegen.cpp
-    PostRegion_Internal.h           ← Rewriter_MPI_PostRegion_Internal.h
-    MpiPlanBuilder.cpp              # 新增：plan builder 实现
+    MpiPlanBuilder.cpp              # plan builder 实现
+    MpiTypes.cpp
+    OutputSyncAnalysis.cpp
+    OutputSyncAnalysis_Internal.h
+    ParamModeAnalysis.cpp
+    PostRegionAnalysis.cpp
+    PostRegionCodegen.cpp
+    PostRegion_Internal.h
+    PrintRewrite.cpp
 
   legacy_access_pattern/            # 以 AccessPattern/PackPlan 为中心的普通 wrapper
-    PatternInit.cpp                 ← Rewriter_MPI_Pattern.cpp
-    WrapperCodegen.cpp              ← Rewriter_MPI_Wrapper_Codegen.cpp
+    PatternInit.cpp
+    WrapperCodegen.cpp
 
   stencil_phase_c/                  # loop stencil Phase-C 路径
-    StencilAnalysis.cpp             ← Rewriter_MPI_Stencil_Analysis.cpp
-    StencilAnalysisUtils.cpp        ← Rewriter_MPI_Stencil_Analysis_Utils.cpp
-    StencilRouteParse.cpp           ← Rewriter_MPI_Stencil_Analysis_RouteParse.cpp
-    StencilFollowupCollect.cpp      ← Rewriter_MPI_Stencil_Analysis_Collect.cpp
-    StencilAnalysis_Internal.h      ← Rewriter_MPI_Stencil_Analysis_Internal.h
-    StencilCodegen.cpp              ← Rewriter_MPI_Stencil_Codegen.cpp
-    StencilCodegenUtils.cpp         ← Rewriter_MPI_Stencil_Codegen_Utils.cpp
-    WaveSpecialization.cpp          ← Rewriter_MPI_Stencil_Codegen_Wave.cpp
-    StencilCodegen_Internal.h       ← Rewriter_MPI_Stencil_Codegen_Internal.h
+    StencilAnalysis.cpp
+    StencilAnalysisUtils.cpp
+    StencilRouteParse.cpp
+    StencilFollowupCollect.cpp
+    StencilAnalysis_Internal.h
+    StencilCodegen.cpp
+    StencilCodegenUtils.cpp
+    WaveSpecialization.cpp
+    StencilCodegen_Internal.h
 
-  operator_resident/                # 轻量算子链快路径（当前为空占位）
+  operator_resident/                # 轻量算子链快路径（空占位）
     .gitkeep
 ```
 
-### 2.2 新增抽象类型（步骤 1 的一部分）
+### 2.2 运行时头文件重构（步骤 3 的一部分）
+
+提交 `c6d13283d` + `f8d528bee`
+
+```
+dpcppLib/include/mpi/
+  Common.h                          # facade → common/ + legacy_access_pattern/
+  Wrapper.h                         # facade → legacy_access_pattern/Wrapper.h
+  Stencil.h                         # facade → stencil/Stencil.h
+  Views.h                           # facade → common/KernelViews.h + common/RegionViews.h
+  Pack.h                            # facade → Wrapper.h + Stencil.h
+
+  common/                           # 跨路径共享基础
+    CoreTypes.h                     # ItemRange, PackMap, AccessMode 等核心类型
+    Profile.h                       # profiling 工具
+    MpiTypes.h                      # MPI 数据类型映射
+    KernelViews.h                   # View1D, View2DRow 等
+    RegionViews.h                   # Region packed element views
+
+  legacy_access_pattern/            # 普通 wrapper 运行时
+    Pattern.h                       # AccessPattern 定义（依赖外部 DataReconstructor）
+    PackMap.h                       # global-to-local 索引映射
+    WrapperPack.h                   # build_input_pack_plan 等包装函数
+    Wrapper.h                       # 聚合头
+
+  stencil/                          # stencil Phase-C 运行时
+    StencilTypes.h
+    StencilLayout.h
+    StencilExchangePlan.h
+    StencilExchangeRuntime.h
+    StencilExchange.h
+    WaveExchangeSpecialization.h
+    Stencil.h                       # 聚合头
+
+  operator_resident/                # 未来算子链快路径运行时（空占位）
+```
+
+**facade 机制**：顶层 `Common.h` / `Wrapper.h` / `Stencil.h` / `Views.h` 不设自己的 include guard，只做 `#include` 转发。这样避免与移动文件的 guard 冲突。生成代码中的 `#include "mpi/Common.h"` 等路径不需要改变。
+
+### 2.3 Plan 类型与逐表达式分发
 
 **文件：** `rewriter/include/Rewriter_MPI_Plan.h`
 
 ```cpp
-namespace dacppTranslator::mpi_rewriter {
-
-struct MpiAnalysisContext {
-    DacppFile *dacppFile = nullptr;
-};
-
-struct DacExprNode {
-    int exprIndex = -1;
-    Expression *expr = nullptr;
-    Shell *shell = nullptr;
-    Calc *calc = nullptr;
-    const clang::BinaryOperator *dacExpr = nullptr;
-    const clang::Stmt *parentStmt = nullptr;
-};
-
-enum class MpiPlanKind {
-    LegacyAccessPattern,
-    StencilPhaseC,
-    OperatorResident,
-    Unsupported
-};
-
-struct MpiPlanResult {
-    MpiPlanKind kind = MpiPlanKind::Unsupported;
-    int exprIndex = -1;
-    std::string reason;
-};
-
-struct MpiLoweringPlan {
-    MpiPlanKind overallKind = MpiPlanKind::Unsupported;
-    std::vector<DacExprNode> exprNodes;
-    std::vector<MpiPlanResult> exprResults;
-};
-
-MpiLoweringPlan buildMpiLoweringPlan(DacppFile *dacppFile);
-}
+struct MpiAnalysisContext { DacppFile *dacppFile; };
+struct DacExprNode { exprIndex, expr, shell, calc, dacExpr, parentStmt; };
+enum class MpiPlanKind { LegacyAccessPattern, StencilPhaseC, OperatorResident, Unsupported };
+struct MpiPlanResult { kind, exprIndex, reason };
+struct LegacyWrapperPlan : MpiPlanResult { exprNode; };
+struct StencilPhaseCPlan : MpiPlanResult { exprNode; };
+struct MpiLoweringPlan { overallKind, exprNodes[], exprResults[] };
 ```
 
 **文件：** `rewriter/lib/mpi/shared/MpiPlanBuilder.cpp`
 
-当前实现：遍历所有 Expression 构建 `DacExprNode`，用 `hasMPIStencilSites()` 判断走 StencilPhaseC 还是 LegacyAccessPattern。**尚未实现 operator-resident 分支。**
+逐表达式构建 plan：对每个 Expression 检查是否属于 stencil site（通过 `getMPIStencilSites()` 匹配 `exprIndex`），是则标记 `StencilPhaseC`，否则标记 `LegacyAccessPattern`。
 
-### 2.3 Rewriter_MPI.cpp 接入
-
-`Rewriter_MPI.cpp` 的 `rewriteMPI()` 已改为通过 `buildMpiLoweringPlan()` 分发：
+**`Rewriter_MPI.cpp` 接入：**
 
 ```cpp
 void Rewriter::rewriteMPI() {
@@ -130,30 +136,22 @@ void Rewriter::rewriteMPI() {
 
 ### 2.4 未动的文件
 
-以下文件在重构中未修改，后续步骤可能需要改动：
+以下文件在重构中未修改：
 
-- `dpcppLib/include/mpi/` 下所有 17 个运行时头文件（生成代码 include 这些，改了会影响输出）
-- `dpcppLib/include/MPIPlanner.h`（生成代码的主入口 include）
-- `rewriter/include/Rewriter_MPI_Common.h`（所有 MPI rewriter 文件的共享 facade）
-- `rewriter/include/Rewriter_MPI_Stencil_Common.h`（stencil rewriter 的共享 facade）
+- `dpcppLib/include/MPIPlanner.h`（生成代码的主 include 入口）
+- `rewriter/include/Rewriter_MPI_Common.h`（所有 MPI rewriter 共享的 facade 头）
+- `rewriter/include/Rewriter_MPI_Stencil_Common.h`（stencil rewriter 共享头）
 - `rewriter/include/Rewriter.h`（Rewriter 类定义）
+- `parser/` 下所有文件
+- `translator.cpp`
 
 ---
 
 ## 3. 待完成工作
 
-### 3.1 步骤 3：完善 Stencil 与 wrapper 解耦
+### 3.1 步骤 4：operator-resident 分析（不改生成）
 
-当前状态：文件已物理分离到 `stencil_phase_c/` 和 `legacy_access_pattern/`，但 stencil 分析和 codegen 仍直接通过 `Rewriter_MPI_Common.h` 中的散函数访问 AST。
-
-待做：
-- stencil 分析改为只消费 `DacExprNode` / `MpiAnalysisContext`
-- stencil codegen 改为只消费 `StencilPhaseCPlan`（需在 `Rewriter_MPI_Plan.h` 中扩展）
-- 验证 stencil test suite 全过
-
-### 3.2 步骤 4：operator-resident 分析（不改生成）
-
-在 `operator_resident/` 下实现链识别分析。**不改 codegen，只输出 debug log。**
+在 `rewriter/lib/mpi/operator_resident/` 下实现链识别分析。**不改 codegen，只输出 debug log。**
 
 需要实现的文件：
 
@@ -184,11 +182,11 @@ operator_resident/
 4. 新路径 unsupported 时不报错，只记录 reason 并回退
 ```
 
-### 3.3 步骤 5：1D element-wise chain codegen
+### 3.2 步骤 5：1D element-wise chain codegen
 
 目标用例：`vectorAddCombo`（设计文档 7.1 节）
 
-需要在 `operator_resident/` 下新增 codegen 文件，并在 `dpcppLib/include/mpi/operator_resident/` 下新增运行时头文件。
+需要在 `rewriter/lib/mpi/operator_resident/` 下新增 codegen 文件，并在 `dpcppLib/include/mpi/operator_resident/` 下新增运行时头文件。
 
 生成代码形态（设计文档第 6 节）：
 
@@ -204,19 +202,19 @@ __dacpp_mpi_operator_chain_materialize_xxx(ctx, ...);
 - Scalar Broadcast：`dataList{in[i], bias[{}], out[i]}`
 - 简单临时 Tensor 链：`tmp/shifted` 不 materialize
 
-### 3.4 步骤 6：2D matrix row-block
+### 3.3 步骤 6：2D matrix row-block
 
 目标用例：`imageAdjustment1.0`（设计文档 7.2 节）
 
 支持模式（设计文档 4.3 节）：`dataList{image[idx1][idx2], image2[idx1][idx2]}`
 
-### 3.5 步骤 7：row-wise reduction
+### 3.4 步骤 7：row-wise reduction
 
 目标用例：`gradientSum`（设计文档 7.3 节）
 
 支持模式（设计文档 4.4 节）：`dataList{matGrads[{}][idx1], matNeuronSum[idx1][idx2]}`
 
-### 3.6 步骤 8：benchmark 和 profile
+### 3.5 步骤 8：benchmark 和 profile
 
 基准数据（设计文档第 10 节）：
 
@@ -235,14 +233,14 @@ __dacpp_mpi_operator_chain_materialize_xxx(ctx, ...);
 | 文件 | 作用 |
 |------|------|
 | `rewriter/lib/Rewriter_MPI.cpp` | MPI 总入口，分发 wrapper/stencil/未来 operator-resident |
-| `rewriter/lib/mpi/shared/MpiPlanBuilder.cpp` | plan builder，当前只区分 stencil/legacy，待扩展 operator-resident |
-| `rewriter/include/Rewriter_MPI_Plan.h` | 抽象类型定义（DacExprNode、MpiPlanKind、MpiLoweringPlan 等） |
+| `rewriter/lib/mpi/shared/MpiPlanBuilder.cpp` | plan builder，当前区分 stencil/legacy，待扩展 operator-resident |
+| `rewriter/include/Rewriter_MPI_Plan.h` | 抽象类型（DacExprNode、MpiPlanKind、MpiLoweringPlan、LegacyWrapperPlan、StencilPhaseCPlan） |
 | `rewriter/include/Rewriter_MPI_Common.h` | 所有 MPI rewriter 共享的 facade 头（函数声明、数据结构） |
 | `rewriter/include/Rewriter_MPI_Stencil_Common.h` | stencil rewriter 共享头 |
 | `rewriter/lib/mpi/legacy_access_pattern/WrapperCodegen.cpp` | 当前普通 MPI wrapper 的 codegen |
 | `rewriter/lib/mpi/stencil_phase_c/StencilCodegen.cpp` | stencil Phase-C codegen 主骨架 |
 | `dpcppLib/include/MPIPlanner.h` | 生成代码的主 include 入口 |
-| `dpcppLib/include/mpi/Common.h` | 运行时聚合头 |
+| `dpcppLib/include/mpi/Common.h` | 运行时 facade |
 | `CMakeLists.txt` | 构建配置，REWRITER_SOURCES 列表 |
 
 ---
@@ -268,7 +266,7 @@ bash test_mpi.sh vectorAddCombo imageAdjustment1.0 gradientSum
 
 - **不改源码语法**：DACPP 源码中 `<->` 语法不变
 - **不改 CLI**：`--mpi`、`--mpi-output-sync` 等参数不变
-- **不改运行时头文件 include 路径**：`MPIPlanner.h`、`mpi/Common.h` 等公共入口不变
+- **不改运行时 include 路径**：`MPIPlanner.h`、`mpi/Common.h` 等公共 facade 入口不变（内部可转发到子目录）
 - **不改 stencil 主路径**：Phase-C 逻辑独立，不受 operator-resident 影响
 - **fallback 安全**：operator-resident 分析失败时回退 legacy，不改变语义
 - **`Rewriter_MPI_Common.h` 暂不拆分**：当前作为 facade 保留，新代码不要再往里追加散函数

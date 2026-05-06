@@ -145,60 +145,83 @@ bash test_mpi.sh waveEquation1.0 stencil1.0 FOuLa1.0 mpiDenseCoverSibling1.0
 - `rewriter/lib/buffer_template_new.cpp`
   - 当前普通 buffer 主线和 buffer region 生成。
 - `rewriter/lib/Rewriter_MPI.cpp`
-  - MPI 总入口，负责普通 MPI wrapper 和 MPI stencil 路径分流。
-- `rewriter/lib/mpi/Rewriter_MPI_Wrapper_Codegen.cpp`
-  - 普通 MPI wrapper codegen。
-- `rewriter/lib/mpi/Rewriter_MPI_Stencil_Analysis.cpp`
-  - MPI stencil analysis 的 public entrypoint，负责总体编排。
-- `rewriter/lib/mpi/Rewriter_MPI_Stencil_Analysis_Utils.cpp`
-  - tensor/source-text/split-domain helper。
-- `rewriter/lib/mpi/Rewriter_MPI_Stencil_Analysis_RouteParse.cpp`
-  - route / boundary AST 解析和 assignment 提取。
-- `rewriter/lib/mpi/Rewriter_MPI_Stencil_Analysis_Collect.cpp`
-  - distributed followup、read-transition、boundary-local update collector。
-- `rewriter/lib/mpi/Rewriter_MPI_Stencil_Analysis_Internal.h`
-  - stencil analysis 内部共享声明。
-- `rewriter/lib/mpi/Rewriter_MPI_Stencil_Codegen.cpp`
-  - MPI stencil `ctx/init/run/materialize` 主骨架和 orchestration。
-- `rewriter/lib/mpi/Rewriter_MPI_Stencil_Codegen_Utils.cpp`
-  - stencil codegen 的 AST/fallback-input/pattern-init helper。
-- `rewriter/lib/mpi/Rewriter_MPI_Stencil_Codegen_Wave.cpp`
-  - wave specialization 专属 code emission。
-- `rewriter/lib/mpi/Rewriter_MPI_Stencil_Codegen_Internal.h`
-  - stencil codegen 内部共享声明。
-- `rewriter/lib/mpi/Rewriter_MPI_OutputAnalysis.cpp`
-  - MPI 输出同步分类、broadcast 需求分析。
-- `rewriter/lib/mpi/Rewriter_MPI_PrintRewrite.cpp`
-  - `.print()` / `std::cout` 的 root-only 改写。
-- `rewriter/lib/mpi/Rewriter_MPI_ParamAnalysis.cpp`
-  - 参数读写模式推断和语句访问摘要。
-- `rewriter/lib/mpi/Rewriter_MPI_PostRegion_Analysis.cpp`
-  - post-shell root-centric region 识别。
-- `rewriter/lib/mpi/Rewriter_MPI_PostRegion_Codegen.cpp`
-  - post-shell root-centric region helper 生成。
-- `rewriter/lib/mpi/Rewriter_MPI_Pattern.cpp`
-  - AccessPattern、PackPlan 相关生成。
-- `dpcppLib/include/MPIPlanner.h`
-  - MPI 生成代码的统一兼容入口，生成文件仍只需要 include 这个头。
-- `dpcppLib/include/mpi/Common.h`
-  - 共享基础 runtime 聚合头，转入 `CoreTypes.h`、`Profile.h`、`MpiTypes.h`、`Pattern.h`。
-- `dpcppLib/include/mpi/Wrapper.h`
-- `dpcppLib/include/mpi/WrapperPack.h`
-  - 普通 MPI wrapper 的 pack plan、global pack、writeback helper。
-- `dpcppLib/include/mpi/Stencil.h`
-- `dpcppLib/include/mpi/StencilTypes.h`
-- `dpcppLib/include/mpi/StencilLayout.h`
-- `dpcppLib/include/mpi/StencilExchange.h`
-- `dpcppLib/include/mpi/StencilExchangePlan.h`
-- `dpcppLib/include/mpi/StencilExchangeRuntime.h`
-- `dpcppLib/include/mpi/WaveExchangeSpecialization.h`
-  - `StencilExchange.h` 现在只是聚合头；plan/layout、generic exchange execution、wave span/row-copy fast path 已分层拆开。
-- `dpcppLib/include/mpi/Views.h`
-  - view 聚合头，转入 `KernelViews.h` 和 `RegionViews.h`。
+  - MPI 总入口。通过 `buildMpiLoweringPlan()` 分发到 stencil 或 wrapper 路径。
+- `rewriter/include/Rewriter_MPI_Plan.h`
+  - MPI plan 抽象类型（MpiAnalysisContext、DacExprNode、MpiPlanKind、MpiLoweringPlan 等）。
 
-`archive/` 和 `docs/**/archive/` 只保留历史材料，不代表当前主线。
+### 4.1 MPI Rewriter 分层
 
-### 4.1 当前 MPI stencil 代码分层
+MPI rewriter 代码按职责分四层目录：
+
+```
+rewriter/lib/mpi/
+  shared/                       # 模型无关的共享工具
+    MpiPlanBuilder.cpp          # buildMpiLoweringPlan() 实现
+    MpiTypes.cpp                # MPI 数据类型映射
+    OutputSyncAnalysis.cpp      # MPI 输出同步分类、broadcast 需求分析
+    ParamModeAnalysis.cpp       # 参数读写模式推断和语句访问摘要
+    PrintRewrite.cpp            # .print() / std::cout 的 root-only 改写
+    PostRegionAnalysis.cpp      # post-shell root-centric region 识别
+    PostRegionCodegen.cpp       # post-shell root-centric region helper 生成
+
+  legacy_access_pattern/        # 以 AccessPattern/PackPlan 为中心的普通 wrapper
+    PatternInit.cpp             # AccessPattern、PackPlan 相关生成
+    WrapperCodegen.cpp          # 普通 MPI wrapper codegen
+
+  stencil_phase_c/              # loop stencil Phase-C 路径
+    StencilAnalysis.cpp         # MPI stencil analysis 的 public entrypoint
+    StencilAnalysisUtils.cpp    # tensor/source-text/split-domain helper
+    StencilRouteParse.cpp       # route / boundary AST 解析和 assignment 提取
+    StencilFollowupCollect.cpp  # distributed followup、read-transition、boundary-local update collector
+    StencilCodegen.cpp          # MPI stencil ctx/init/run/materialize 主骨架
+    StencilCodegenUtils.cpp     # stencil codegen 的 AST/fallback-input/pattern-init helper
+    WaveSpecialization.cpp      # wave specialization 专属 code emission
+
+  operator_resident/            # 轻量算子链快路径（规划中）
+```
+
+共享 facade 头文件：
+- `rewriter/include/Rewriter_MPI_Common.h` — 所有 MPI rewriter 共享的函数声明和数据结构
+- `rewriter/include/Rewriter_MPI_Stencil_Common.h` — stencil rewriter 专用声明
+
+### 4.2 MPI 运行时头文件分层
+
+```
+dpcppLib/include/
+  MPIPlanner.h                  # 生成代码的主 include 入口
+  mpi/
+    Common.h                    # facade → common/ + legacy_access_pattern/
+    Wrapper.h                   # facade → legacy_access_pattern/Wrapper.h
+    Stencil.h                   # facade → stencil/Stencil.h
+    Views.h                     # facade → common/KernelViews.h + common/RegionViews.h
+    Pack.h                      # facade → Wrapper.h + Stencil.h
+
+    common/                     # 跨路径共享基础
+      CoreTypes.h               # ItemRange, PackMap, AccessMode 等核心类型
+      Profile.h                 # profiling 工具
+      MpiTypes.h                # MPI 数据类型映射
+      KernelViews.h             # View1D, View2DRow 等
+      RegionViews.h             # Region packed element views
+
+    legacy_access_pattern/      # 普通 wrapper 运行时
+      Pattern.h                 # AccessPattern 定义
+      PackMap.h                 # global-to-local 索引映射
+      WrapperPack.h             # build_input_pack_plan 等包装函数
+      Wrapper.h                 # 聚合头
+
+    stencil/                    # stencil Phase-C 运行时
+      StencilTypes.h            # stencil 数据结构
+      StencilLayout.h           # MPI 通信 layout
+      StencilExchangePlan.h     # exchange plan 构造
+      StencilExchangeRuntime.h  # SYCL 加速 exchange 执行
+      StencilExchange.h         # 聚合头
+      WaveExchangeSpecialization.h  # wave span/row-copy 快速路径
+      Stencil.h                 # 聚合头
+
+    operator_resident/          # 未来算子链快路径运行时（规划中）
+```
+
+### 4.4 当前 MPI stencil 代码分层
 
 | 层 | 主要文件 | 职责 |
 |---|---|---|
