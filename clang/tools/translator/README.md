@@ -149,7 +149,15 @@ bash test_mpi.sh waveEquation1.0 stencil1.0 FOuLa1.0 mpiDenseCoverSibling1.0
 - `rewriter/lib/mpi/Rewriter_MPI_Wrapper_Codegen.cpp`
   - 普通 MPI wrapper codegen。
 - `rewriter/lib/mpi/Rewriter_MPI_Stencil_Analysis.cpp`
-  - MPI stencil site 能力分析和 distributed-followup 判定。
+  - MPI stencil analysis 的 public entrypoint，负责总体编排。
+- `rewriter/lib/mpi/Rewriter_MPI_Stencil_Analysis_Utils.cpp`
+  - tensor/source-text/split-domain helper。
+- `rewriter/lib/mpi/Rewriter_MPI_Stencil_Analysis_RouteParse.cpp`
+  - route / boundary AST 解析和 assignment 提取。
+- `rewriter/lib/mpi/Rewriter_MPI_Stencil_Analysis_Collect.cpp`
+  - distributed followup、read-transition、boundary-local update collector。
+- `rewriter/lib/mpi/Rewriter_MPI_Stencil_Analysis_Internal.h`
+  - stencil analysis 内部共享声明。
 - `rewriter/lib/mpi/Rewriter_MPI_Stencil_Codegen.cpp`
   - MPI stencil `ctx/init/run/materialize` 主骨架和 orchestration。
 - `rewriter/lib/mpi/Rewriter_MPI_Stencil_Codegen_Utils.cpp`
@@ -195,7 +203,8 @@ bash test_mpi.sh waveEquation1.0 stencil1.0 FOuLa1.0 mpiDenseCoverSibling1.0
 | 层 | 主要文件 | 职责 |
 |---|---|---|
 | 入口与分流 | `translator.cpp`, `Rewriter_MPI.cpp`, `Rewriter_MPI_Stencil.cpp` | 识别 `--mpi`，登记 stencil site，并在普通 wrapper / stencil path 之间分流 |
-| 分析层 | `Rewriter_MPI_Stencil_Analysis.cpp` | 提取 distributed route、read-cache transition、boundary-local update、root-bridge 需求 |
+| 分析主骨架 | `Rewriter_MPI_Stencil_Analysis.cpp` | 只保留 Phase C 站点判定和 public entrypoint 编排 |
+| 分析 helper | `Rewriter_MPI_Stencil_Analysis_Utils.cpp`, `Rewriter_MPI_Stencil_Analysis_RouteParse.cpp`, `Rewriter_MPI_Stencil_Analysis_Collect.cpp`, `Rewriter_MPI_Stencil_Analysis_Internal.h` | 分别负责 tensor/split helper、route AST 解析、followup/transition/boundary collector 和内部共享声明 |
 | Codegen 主骨架 | `Rewriter_MPI_Stencil_Codegen.cpp` | 生成 `ctx/init/run/materialize` 主流程，控制 fallback 和 distributed choreography |
 | Codegen specialization/helper | `Rewriter_MPI_Stencil_Codegen_Utils.cpp`, `Rewriter_MPI_Stencil_Codegen_Wave.cpp` | 前者放通用 helper，后者只放 wave specialization emission |
 | Runtime state / plan | `StencilTypes.h`, `StencilLayout.h`, `StencilExchangePlan.h` | 定义 distributed state，并构造 slots / exchange plan / halo plan |
