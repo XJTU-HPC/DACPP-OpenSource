@@ -1,6 +1,6 @@
 #include <string>
 
-#include "Rewriter_MPI_Stencil_Codegen_Internal.h"
+#include "StencilCodegen_Internal.h"
 
 namespace dacppTranslator {
 namespace mpi_stencil_rewriter {

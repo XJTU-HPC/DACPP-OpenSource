@@ -8,7 +8,7 @@
 #include "clang/Rewrite/Core/Rewriter.h"
 
 #include "Rewriter_MPI_Common.h"
-#include "mpi/Rewriter_MPI_PostRegion_Internal.h"
+#include "mpi/shared/PostRegion_Internal.h"
 #include "Rewriter_MPI_Stencil_Common.h"
 
 namespace {

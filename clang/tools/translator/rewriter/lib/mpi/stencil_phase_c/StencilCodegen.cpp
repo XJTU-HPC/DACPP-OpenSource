@@ -2,7 +2,7 @@
 #include <string>
 #include <vector>
 
-#include "Rewriter_MPI_Stencil_Codegen_Internal.h"
+#include "StencilCodegen_Internal.h"
 #include "llvm/Support/raw_ostream.h"
 
 namespace dacppTranslator {

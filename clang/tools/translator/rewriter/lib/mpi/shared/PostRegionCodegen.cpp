@@ -5,7 +5,7 @@
 #include "clang/AST/Expr.h"
 #include "clang/Lex/Lexer.h"
 
-#include "Rewriter_MPI_PostRegion_Internal.h"
+#include "PostRegion_Internal.h"
 
 namespace dacppTranslator {
 namespace mpi_rewriter {

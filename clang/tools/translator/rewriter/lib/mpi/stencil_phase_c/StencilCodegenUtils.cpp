@@ -5,7 +5,7 @@
 
 #include "clang/AST/ExprCXX.h"
 #include "clang/AST/RecursiveASTVisitor.h"
-#include "Rewriter_MPI_Stencil_Codegen_Internal.h"
+#include "StencilCodegen_Internal.h"
 
 namespace dacppTranslator {
 namespace mpi_stencil_rewriter {

@@ -9,7 +9,7 @@
 #include "clang/AST/Stmt.h"
 #include "llvm/Support/raw_ostream.h"
 
-#include "Rewriter_MPI_OutputAnalysis_Internal.h"
+#include "OutputSyncAnalysis_Internal.h"
 
 namespace dacppTranslator {
 namespace mpi_rewriter {

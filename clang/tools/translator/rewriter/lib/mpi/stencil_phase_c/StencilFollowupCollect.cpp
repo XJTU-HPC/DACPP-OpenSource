@@ -3,7 +3,7 @@
 
 #include "llvm/Support/raw_ostream.h"
 
-#include "Rewriter_MPI_Stencil_Analysis_Internal.h"
+#include "StencilAnalysis_Internal.h"
 
 namespace dacppTranslator {
 namespace mpi_rewriter {

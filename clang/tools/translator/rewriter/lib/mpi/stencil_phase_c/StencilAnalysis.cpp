@@ -3,8 +3,8 @@
 
 #include "llvm/Support/raw_ostream.h"
 
-#include "Rewriter_MPI_PostRegion_Internal.h"
-#include "Rewriter_MPI_Stencil_Analysis_Internal.h"
+#include "../shared/PostRegion_Internal.h"
+#include "StencilAnalysis_Internal.h"
 
 namespace dacppTranslator {
 namespace mpi_rewriter {

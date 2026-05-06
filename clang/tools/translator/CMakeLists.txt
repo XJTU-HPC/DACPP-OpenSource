@@ -29,21 +29,25 @@ set(REWRITER_SOURCES
   rewriter/lib/universal_template.cpp
   rewriter/lib/Rewriter_MPI.cpp
   rewriter/lib/Rewriter_MPI_Stencil.cpp
-  rewriter/lib/mpi/Rewriter_MPI_OutputAnalysis.cpp
-  rewriter/lib/mpi/Rewriter_MPI_PrintRewrite.cpp
-  rewriter/lib/mpi/Rewriter_MPI_ParamAnalysis.cpp
-  rewriter/lib/mpi/Rewriter_MPI_Types.cpp
-  rewriter/lib/mpi/Rewriter_MPI_Pattern.cpp
-  rewriter/lib/mpi/Rewriter_MPI_Wrapper_Codegen.cpp
-  rewriter/lib/mpi/Rewriter_MPI_Stencil_Analysis.cpp
-  rewriter/lib/mpi/Rewriter_MPI_Stencil_Analysis_Utils.cpp
-  rewriter/lib/mpi/Rewriter_MPI_Stencil_Analysis_RouteParse.cpp
-  rewriter/lib/mpi/Rewriter_MPI_Stencil_Analysis_Collect.cpp
-  rewriter/lib/mpi/Rewriter_MPI_Stencil_Codegen.cpp
-  rewriter/lib/mpi/Rewriter_MPI_Stencil_Codegen_Utils.cpp
-  rewriter/lib/mpi/Rewriter_MPI_Stencil_Codegen_Wave.cpp
-  rewriter/lib/mpi/Rewriter_MPI_PostRegion_Analysis.cpp
-  rewriter/lib/mpi/Rewriter_MPI_PostRegion_Codegen.cpp
+  # --- MPI shared ---
+  rewriter/lib/mpi/shared/MpiTypes.cpp
+  rewriter/lib/mpi/shared/OutputSyncAnalysis.cpp
+  rewriter/lib/mpi/shared/PrintRewrite.cpp
+  rewriter/lib/mpi/shared/ParamModeAnalysis.cpp
+  rewriter/lib/mpi/shared/PostRegionAnalysis.cpp
+  rewriter/lib/mpi/shared/PostRegionCodegen.cpp
+  rewriter/lib/mpi/shared/MpiPlanBuilder.cpp
+  # --- MPI legacy access pattern ---
+  rewriter/lib/mpi/legacy_access_pattern/PatternInit.cpp
+  rewriter/lib/mpi/legacy_access_pattern/WrapperCodegen.cpp
+  # --- MPI stencil phase C ---
+  rewriter/lib/mpi/stencil_phase_c/StencilAnalysis.cpp
+  rewriter/lib/mpi/stencil_phase_c/StencilAnalysisUtils.cpp
+  rewriter/lib/mpi/stencil_phase_c/StencilRouteParse.cpp
+  rewriter/lib/mpi/stencil_phase_c/StencilFollowupCollect.cpp
+  rewriter/lib/mpi/stencil_phase_c/StencilCodegen.cpp
+  rewriter/lib/mpi/stencil_phase_c/StencilCodegenUtils.cpp
+  rewriter/lib/mpi/stencil_phase_c/WaveSpecialization.cpp
   rewriter/lib/Multiple_template.cpp
 )
 

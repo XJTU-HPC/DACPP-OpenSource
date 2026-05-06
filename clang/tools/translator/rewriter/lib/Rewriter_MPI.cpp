@@ -6,11 +6,13 @@
 #include "clang/Rewrite/Core/Rewriter.h"
 
 #include "Rewriter_MPI_Common.h"
+#include "Rewriter_MPI_Plan.h"
 
 namespace dacppTranslator {
 
 void Rewriter::rewriteMPI() {
-    if (dacppFile && dacppFile->hasMPIStencilSites()) {
+    auto plan = mpi_rewriter::buildMpiLoweringPlan(dacppFile);
+    if (plan.overallKind == mpi_rewriter::MpiPlanKind::StencilPhaseC) {
         rewriteMPIStencil();
         return;
     }
