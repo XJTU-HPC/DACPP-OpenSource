@@ -507,6 +507,7 @@ inline std::vector<SlotSpan> compact_slots_to_spans(
         return {};
     }
     int32_t previous = span_begin;
+    int32_t stride = 1;
     int32_t count = 1;
     for (std::size_t idx = 1; idx < local_slots.size(); ++idx) {
         const int32_t slot = local_slots[idx];
@@ -522,7 +523,16 @@ inline std::vector<SlotSpan> compact_slots_to_spans(
             }
             return {};
         }
-        if (slot == previous + 1) {
+        if (count == 1) {
+            stride = slot - previous;
+            if (stride <= 0) {
+                if (unsupported_reason) {
+                    *unsupported_reason = "halo transfer slots are not monotonic";
+                }
+                return {};
+            }
+            ++count;
+        } else if (slot == previous + stride) {
             ++count;
         } else if (slot == previous) {
             if (unsupported_reason) {
@@ -530,14 +540,78 @@ inline std::vector<SlotSpan> compact_slots_to_spans(
             }
             return {};
         } else {
-            spans.push_back(SlotSpan{span_begin, count});
+            spans.push_back(SlotSpan{span_begin, count, stride});
             span_begin = slot;
+            stride = 1;
             count = 1;
         }
         previous = slot;
     }
-    spans.push_back(SlotSpan{span_begin, count});
+    spans.push_back(SlotSpan{span_begin, count, stride});
     return spans;
+}
+
+inline bool build_span_pairs_from_slots(
+    const std::vector<int32_t>& source_slots,
+    const std::vector<int32_t>& target_slots,
+    std::vector<SlotSpan>& source_spans,
+    std::vector<SlotSpan>& target_spans,
+    std::string* unsupported_reason = nullptr) {
+    source_spans.clear();
+    target_spans.clear();
+
+    if (source_slots.size() != target_slots.size()) {
+        if (unsupported_reason) {
+            *unsupported_reason = "source/target slot counts differ";
+        }
+        return false;
+    }
+    if (source_slots.empty()) {
+        return true;
+    }
+
+    std::size_t idx = 0;
+    while (idx < source_slots.size()) {
+        const int32_t source_begin = source_slots[idx];
+        const int32_t target_begin = target_slots[idx];
+        if (source_begin < 0 || target_begin < 0) {
+            if (unsupported_reason) {
+                *unsupported_reason = "span pair contains negative slot";
+            }
+            return false;
+        }
+
+        int32_t source_stride = 1;
+        int32_t target_stride = 1;
+        std::size_t count = 1;
+        if (idx + 1 < source_slots.size()) {
+            source_stride = source_slots[idx + 1] - source_slots[idx];
+            target_stride = target_slots[idx + 1] - target_slots[idx];
+            if (source_stride <= 0 || target_stride <= 0) {
+                if (unsupported_reason) {
+                    *unsupported_reason = "span pair contains non-monotonic slots";
+                }
+                return false;
+            }
+            count = 2;
+            idx += 2;
+            while (idx < source_slots.size() &&
+                   source_slots[idx] == source_slots[idx - 1] + source_stride &&
+                   target_slots[idx] == target_slots[idx - 1] + target_stride) {
+                ++count;
+                ++idx;
+            }
+        } else {
+            ++idx;
+        }
+
+        source_spans.push_back(
+            SlotSpan{source_begin, static_cast<int32_t>(count), source_stride});
+        target_spans.push_back(
+            SlotSpan{target_begin, static_cast<int32_t>(count), target_stride});
+    }
+
+    return true;
 }
 
 inline HaloExchangePlan build_halo_plan_from_exchange_plan(
@@ -756,8 +830,8 @@ inline void pack_values_by_spans_into(const std::vector<T>& local_data,
     std::size_t out_idx = 0;
     for (const SlotSpan& span : spans) {
         for (int32_t offset = 0; offset < span.count; ++offset) {
-            values[out_idx++] =
-                local_data[static_cast<std::size_t>(span.begin + offset)];
+            values[out_idx++] = local_data[static_cast<std::size_t>(
+                span.begin + offset * span.stride)];
         }
     }
 }
@@ -772,11 +846,40 @@ inline void unpack_values_by_spans_into(const std::vector<T>& values,
             if (in_idx >= values.size()) {
                 return;
             }
-            const int32_t slot = span.begin + offset;
+            const int32_t slot = span.begin + offset * span.stride;
             if (slot >= 0 && static_cast<std::size_t>(slot) < target.size()) {
                 target[static_cast<std::size_t>(slot)] = values[in_idx];
             }
             ++in_idx;
+        }
+    }
+}
+
+template <typename T>
+inline void scatter_values_by_span_pairs_into(
+    const std::vector<T>& source,
+    const std::vector<SlotSpan>& source_spans,
+    const std::vector<SlotSpan>& target_spans,
+    std::vector<T>& target) {
+    const std::size_t count =
+        std::min(source_spans.size(), target_spans.size());
+    for (std::size_t idx = 0; idx < count; ++idx) {
+        const SlotSpan& source_span = source_spans[idx];
+        const SlotSpan& target_span = target_spans[idx];
+        const int32_t span_count =
+            std::min(source_span.count, target_span.count);
+        for (int32_t offset = 0; offset < span_count; ++offset) {
+            const int32_t source_slot =
+                source_span.begin + offset * source_span.stride;
+            const int32_t target_slot =
+                target_span.begin + offset * target_span.stride;
+            if (source_slot < 0 || target_slot < 0 ||
+                static_cast<std::size_t>(source_slot) >= source.size() ||
+                static_cast<std::size_t>(target_slot) >= target.size()) {
+                continue;
+            }
+            target[static_cast<std::size_t>(target_slot)] =
+                source[static_cast<std::size_t>(source_slot)];
         }
     }
 }
@@ -1008,6 +1111,57 @@ inline void publish_local_writes_with_halo_or_exchange_cache_only(
 
     exchange_values_by_slots(local_write_source, exchange_plan, local_cache,
                              comm);
+}
+
+template <typename T>
+inline void publish_local_writes_with_span_pairs_or_exchange_cache_only(
+    const std::vector<T>& local_write_source,
+    const std::vector<int32_t>& local_write_slots,
+    const std::vector<int32_t>& local_target_slots,
+    const std::vector<SlotSpan>& local_write_spans,
+    const std::vector<SlotSpan>& local_target_spans,
+    std::vector<T>& local_cache,
+    const ExchangePlan& exchange_plan,
+    const HaloExchangePlan& halo_plan,
+    sycl::queue& q,
+    MPI_Comm comm = MPI_COMM_WORLD) {
+    if (!local_write_spans.empty() && !local_target_spans.empty()) {
+        scatter_values_by_span_pairs_into(local_write_source, local_write_spans,
+                                          local_target_spans, local_cache);
+    } else if (!local_write_slots.empty()) {
+        scatter_values_by_slots_parallel_into(local_write_source,
+                                              local_write_slots,
+                                              local_target_slots,
+                                              local_cache,
+                                              q);
+    }
+
+    if (halo_plan.supported) {
+        exchange_values_by_halo_spans(local_write_source, halo_plan, local_cache,
+                                      comm);
+        return;
+    }
+
+    exchange_values_by_slots(local_write_source, exchange_plan, local_cache,
+                             comm);
+}
+
+template <typename T>
+inline void publish_local_writes_with_span_pairs_or_exchange_cache_only(
+    const std::vector<T>& local_write_source,
+    const std::vector<int32_t>& local_write_slots,
+    const std::vector<int32_t>& local_target_slots,
+    const std::vector<SlotSpan>& local_write_spans,
+    const std::vector<SlotSpan>& local_target_spans,
+    std::vector<T>& local_cache,
+    const ExchangePlan& exchange_plan,
+    const HaloExchangePlan& halo_plan,
+    MPI_Comm comm = MPI_COMM_WORLD) {
+    sycl::queue q(sycl::default_selector_v);
+    publish_local_writes_with_span_pairs_or_exchange_cache_only(
+        local_write_source, local_write_slots, local_target_slots,
+        local_write_spans, local_target_spans, local_cache, exchange_plan,
+        halo_plan, q, comm);
 }
 
 template <typename T>

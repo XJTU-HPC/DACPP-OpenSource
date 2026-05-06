@@ -1,6 +1,6 @@
 # MPI Translator Stencil / Wrapper / Post-Shell Status
 
-更新时间：2026-05-05
+更新时间：2026-05-06
 
 本文是 MPI translator 当前 stencil / wrapper / post-shell 优化状态的单一入口。它记录当前能做什么、怎么做、如何验证，以及下一步 TODO。
 
@@ -111,6 +111,7 @@ Runtime helper：
 - `phase_c_impl_note_2026-05-03.md`
 - `phase_c_routes_materialize_2026-05-04.md`
 - `phase_c_halo_plan_2026-05-04.md`
+- `mpi_stencil_logic_2026-05-06.md`
 
 ## 4. 已完成能力
 
@@ -258,6 +259,7 @@ Route IR 当前支持：
   - `matNext -> matCur offset=(1,1)` 为 distributed route。
   - 边界清零为 boundary-local update。
   - READ-cache transition 已改为复用 stencil slot-copy helper 和现有 SYCL queue，避免大规模 transition 固定落在生成的 CPU copy loop 上。
+  - 当前 wave codegen 还带有 guarded direct-kernel path：只在 `waveEqShell/waveEq`、单 route、单 read-transition、无 root bridge、3 个 Matrix 参数等 guard 都满足时启用，直接绕过通用 `View` 构造。
   - writer -> reader publish helper 也复用现有 SYCL queue，减少每步 helper 内部临时 queue 构造。
   - 不再生成 root helper / root bridge。
 
@@ -387,7 +389,7 @@ WAVE_BENCH_RUNS=1 bash bench_wave_mpi.sh
 - SYCL buffer
 - 只计 time-step loop runtime，含 loop 后 materialize
 
-修复前灾难慢路径：
+历史基线：
 
 ```text
 translated MPI wave: 51.3173s
@@ -395,31 +397,66 @@ hand-written coarse MPI+SYCL wave: 0.103013s
 ratio: 498.16x
 ```
 
-当前结果：
+1024/200 基准：
 
 ```text
-translated MPI wave: 0.288732s
-hand-written coarse MPI+SYCL wave: 0.112175s
-ratio: 2.57x
+translated MPI wave: 0.243752s
+hand-written coarse MPI+SYCL wave: 0.120383s
+ratio: 2.02x
 ```
 
 结论：每步 root gather/helper/dense bridge 已移除；剩余差距属于 generated code / exchange / buffer 常数，不属于第一阶段灾难慢。
 
-最新 profile / direct-view 复核：
+1024/200 profile：
 
 ```text
 DACPP_MPI_PROFILE=1 WAVE_BENCH_RUNS=1 WAVE_BENCH_NX=1024 WAVE_BENCH_NY=1024 WAVE_BENCH_TIME_STEPS=200 bash bench_wave_mpi.sh
 
-translated MPI wave: 0.291630s
-hand-written coarse MPI+SYCL wave: 0.101942s
-ratio: 2.86x
+translated MPI wave: 0.243752s
+hand-written coarse MPI+SYCL wave: 0.120383s
+ratio: 2.02x
 
 per-step median profile:
-kernel=0.981ms publish=0.309ms read_transition=0.207ms boundary=0.005ms dist_setup=0.054ms
+kernel=0.54~0.83ms publish=0.44~0.57ms read_transition=0.24~0.30ms boundary=0.003~0.012ms dist_setup=0.04~0.08ms
 root_bridge=0.000ms writeback=0.000ms
 ```
 
-`ContiguousView1D/2D` direct-view path 已启用，但 1024 规模 kernel 中位数与之前基本持平；下一步应优先减少每步 SYCL buffer / launch 常数，或做更窄的规则 row-block direct kernel，而不是继续微调 slot-copy。
+1024/200 口径主要用于回归；它确认 direct-kernel 路径压低了 kernel 固定成本，同时没有把 `publish/read_transition` 推成新的主瓶颈。
+
+2048/800 大规模基准：
+
+```text
+DACPP_MPI_PROFILE=1 WAVE_BENCH_RUNS=1 WAVE_BENCH_NX=2048 WAVE_BENCH_NY=2048 WAVE_BENCH_TIME_STEPS=800 bash bench_wave_mpi.sh
+
+translated MPI wave:
+time_sec=4.03928
+
+hand-written coarse MPI+SYCL wave:
+seconds=1.17266
+
+ratio:
+3.44x
+
+per-step representative profile:
+kernel≈2.3~2.9ms
+read_transition≈0.95~1.12ms
+publish≈1.3~1.8ms
+boundary≈0.01~0.02ms
+dist_setup≈0.3~2.0ms
+```
+
+2048/800 口径下，translated 主循环为 `4.03928s`，coarse 为 `1.17266s`，时间比率为 `3.44x`。和 `4.45576s` 的上一版同口径结果相比，translated 主循环下降约 `9.3%`。该口径显示：
+
+- wave direct kernel 已经带来实质收益，说明通用 `View`/slot 间接访问确实占据了主成本。
+- `kernel` 仍是单项大头，但 `publish + read_transition` 已经进入同一数量级；后续应优先处理 state transition / publish 结构，而不是继续做更细碎的 kernel helper 微调。
+- boundary 可忽略，不值得继续专门优化。
+- root helper / root bridge 仍然为 0，说明这次 kernel 内优化没有把 wave 拉回旧的 root-centric 退路。
+
+benchmark harness 需要额外处理输出尾段：
+
+- translated benchmark 输入末尾的 `matCur.print()` 和 coarse baseline 的整矩阵 `std::cout` dump 都会拖长 `mpirun/prterun` 退出过程。
+- `time_sec=` / `seconds=` 都在主循环结束后打印，卡顿来自输出尾段，不来自 wave kernel。
+- `bench_wave_mpi.sh` 已去掉 translated/coarse 两侧的大输出，并启用 `set -euo pipefail`。
 
 ### 8.3 高风险应用粗粒度 benchmark
 
@@ -455,7 +492,7 @@ SWEEP_BENCH_RUNS=3 bash bench_stencil_wave_sweep.sh
 
 默认覆盖 `512 1024 1536` 三个 `NX=NY` 规模，每个规模分别跑 `stencil1.0` 和 `waveEquation1.0`，取现有专用 benchmark 的中位数并汇总到 TSV。这个入口用于降低单点 benchmark 噪声，判断后续复杂度 / 常数优化是否稳定。
 
-当前中等规模复核：
+历史 sweep（仅供趋势参考）：
 
 ```text
 case     nx    time_steps  runs  ratio
@@ -465,6 +502,8 @@ stencil  1024  200         2     1.26x
 wave     1024  200         2     2.57x
 ```
 
+wave 1024 单点以 `8.2` 里的 `2.02x` 为准。
+
 已试验但不保留：
 
 - CPU contiguous slot copy fast path：`stencil1.0` / `waveEquation1.0` 1024 单点均变慢。
@@ -473,6 +512,8 @@ wave     1024  200         2     2.57x
 已保留但收益有限：
 
 - guarded `ContiguousView1D/2D` kernel view：只在 PackPlan 证明 `compact_slots == 0..N-1` 且 `item_key_offsets == item * partition_size` 时启用；correctness 通过，结构更简单，但 `stencil1.0` / `waveEquation1.0` 1024 profile 显示主要瓶颈仍是 kernel / buffer / publish 常数。
+- wave-specific span-pair transition/publish path：已接入并保持 correctness，但 2048/800 口径下主热点仍然是 kernel；这条路径可以保留，但不应再作为下一阶段主攻方向。
+- wave-specific direct kernel：已接入并保持 correctness；当前 1024/200 从约 `2.57x` 降到 `2.02x`，2048/800 主循环从 `4.46s` 降到 `4.04s`，说明这条窄口径 wave-first 路线是值得保留的。
 
 ## 9. 尚未完成 / 风险
 
@@ -496,29 +537,29 @@ wave     1024  200         2     2.57x
 当前推进重心先集中在 `waveEquation1.0`。其它应用和泛化路线暂时只做 correctness / structure 回归，不主动展开新优化，避免多线并行把判断噪声放大。
 
 1. `waveEquation1.0` 剩余差距治理
-   - 当前从 `498x` 灾难 root-centric path 降到约 `2.57x`；多规模 sweep 显示 1024 规模仍是最值得优先看的热路径。
-   - profile 显示 kernel 约 `0.98ms/step`、publish 约 `0.31ms/step`、read-transition 约 `0.21ms/step`；boundary 可忽略，root bridge 为 0。
-   - 短期只围绕 wave 做复杂度和常数优化：减少每步 SYCL buffer / launch 常数，降低 publish / read-transition 开销，保持 `matCur -> matPrev` read-cache transition、`matNext -> matCur` route、boundary-local update 语义不变。
-   - 不引入 root helper/root bridge，不放宽 Phase C eligibility guard；guard 不满足时继续走现有 correctness path。
+   - 1024/200 口径为 `2.02x`，2048/800 口径为 `3.44x`；2048/800 translated 主循环为 `4.03928s`，coarse 为 `1.17266s`。
+   - 2048/800 profile 显示 per-step `kernel≈2.3~2.9ms`、`publish≈1.3~1.8ms`、`read_transition≈0.95~1.12ms`；boundary 仍可忽略，root bridge 为 0。
+   - wave kernel 结构已经压过一轮，后续重点放在 `matCur -> matPrev` state transition 和 `matNext -> matCur` publish 的结构成本，同时保持 boundary-local update 语义不变。
+   - root helper/root bridge 不进入 wave 路径，Phase C eligibility guard 继续保持保守。
 
 2. `waveEquation1.0` 可考虑的非常数优化方向
-   - multi-state transition：在 layout、shape、生命周期完全一致时，把 `matCur -> matPrev` 从 O(local slots) scatter 降为 cache swap/rename；不满足 guard 时保留当前 slot-copy path。
-   - kernel/transition 融合：评估固定 `kernel -> read-transition -> publish` 链能否融合本地 state update 或延迟 publish，减少每步 SYCL launch 和 buffer 生命周期；必须保持 halo 边界语义。
-   - wave 专用 row-block direct kernel：只覆盖当前可证明的规则 2D row-block wave 形态，直接以 row/col domain 生成 kernel，绕过 item-space PackPlan 和每 item View 构造；不泛化到任意 stencil。
-   - wave halo / exchange 压缩：优先把当前 generalized exchange 中的 row-span halo 做轻量化，减少 per-step metadata traversal 和消息处理；不规则访问继续走 generalized fallback。
+   - multi-state transition：在 layout / shape / lifecycle 完全一致时，把 `matCur -> matPrev` 从 slot scatter 降成 cache alias/swap。
+   - kernel/transition/publish 融合：把 direct kernel、transition 和 publish 收束到更少的 SYCL 生命周期里，减少每步 `buffer + q.submit + q.wait()` 固定成本。
+   - row-span halo / exchange 压缩：如果 `publish` 继续抬头，就优先看 wave 规则 row-block 上的 row-span publish path，而不是 generalized metadata traversal。
+   - boundary 生成结构化：boundary-local 仍是 4 段独立 host loop；后续收束 wave 代码形态时，可以顺手把 boundary 合并成规则 row/col 边界处理。
 
 3. wave benchmark / profile 固化
-   - `bench_wave_mpi.sh` 作为当前主要性能 smoke。
-   - 使用 `WAVE_BENCH_RUNS>=3` 和多个 `NX=NY` 规模复核，避免按单点噪声调整实现。
-   - `bench_stencil_wave_sweep.sh` 暂时只用于观察 wave 和确认 stencil 没退化；不以 stencil 提速作为当前目标。
+   - `bench_wave_mpi.sh` 是主要性能 smoke。
+   - `WAVE_BENCH_RUNS>=3` 和多个 `NX=NY` 规模用于复核，避免按单点噪声调整实现。
+   - `bench_stencil_wave_sweep.sh` 只用于观察 wave 和确认 stencil 没退化；不以 stencil 提速作为目标。
    - 每次 wave 优化后至少跑：`cmake --build build --target translator -j8`、`bash test_mpi.sh waveEquation1.0 stencil1.0 jacobi1.0`、`WAVE_BENCH_RUNS=1 bash bench_wave_mpi.sh`；阶段收口再跑完整 `bash test_mpi.sh`。
 
 4. 暂缓项，只保留回归
-   - `stencil1.0`：当前约 `1.3x`，不是灾难慢；暂缓 fast-kernel work，只确认 no-root route / boundary-local / materialize 结构不退化。
-   - `FOuLa1.0`：当前 correctness 通过；暂缓 loop 内临时 view hot path 方案，只保留 smoke 和结构 expectation。
-   - `jacobi1.0`：继续保持 mixed Matrix/Vector Phase C disabled fallback；独立 distributed solver 暂缓设计。
-   - 泛化 Phase C route / boundary / bridge、tile halo / corner halo、helper-written subset bridge：作为后续方向保留，不进入当前 wave-first 阶段。
+   - `stencil1.0`：约 `1.3x`，不属于灾难慢；只确认 no-root route / boundary-local / materialize 结构不退化。
+   - `FOuLa1.0`：correctness 通过；只保留 smoke 和结构 expectation。
+   - `jacobi1.0`：保持 mixed Matrix/Vector Phase C disabled fallback；独立 distributed solver 暂缓设计。
+   - 泛化 Phase C route / boundary / bridge、tile halo / corner halo、helper-written subset bridge：保留为后续方向，不进入当前 wave-first 阶段。
 
 ## 11. 一句话总结
 
-当前 MPI stencil 路径已经完成 Phase 1、输出一致性分类、root-only 输出 rewrite、loop-lowered `ctx/init/run/materialize`、Phase C distributed cache / route / halo 基础设施，以及 1D boundary-local、2D boundary-local、2D READ-cache state transition。`liuliang1.0`、`stencil1.0`、`waveEquation1.0` 已从灾难 root-centric 热路径迁移到 no-root distributed path；`jacobi1.0` 保持正确的 mixed Vector/Matrix fallback。14 个非 `mpi*` 应用和完整 MPI suite 当前均通过。下一阶段先把重心放在 `waveEquation1.0`：围绕 kernel / publish / read-transition 的常数和必要的非常数优化做窄口径推进；`stencil1.0`、`FOuLa1.0`、`jacobi1.0` 和 Phase C 泛化路线暂时只保留回归，不主动展开。
+MPI stencil 路径已经完成 Phase 1、输出一致性分类、root-only 输出 rewrite、loop-lowered `ctx/init/run/materialize`、Phase C distributed cache / route / halo 基础设施，以及 1D boundary-local、2D boundary-local、2D READ-cache state transition。`liuliang1.0`、`stencil1.0`、`waveEquation1.0` 处于 no-root distributed path；`waveEquation1.0` 还包含 guarded direct-kernel path，1024/200 口径为 `2.02x`，2048/800 口径为 `3.44x`，translated 主循环为 `4.03928s`；`jacobi1.0` 保持 mixed Vector/Matrix fallback。14 个非 `mpi*` 应用和完整 MPI suite 均通过。后续重点放在 `waveEquation1.0` 的 transition / publish 结构成本和生命周期融合，`stencil1.0`、`FOuLa1.0`、`jacobi1.0` 和 Phase C 泛化路线只保留回归。

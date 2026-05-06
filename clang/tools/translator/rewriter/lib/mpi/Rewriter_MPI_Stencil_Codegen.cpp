@@ -678,6 +678,15 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
     const auto splitMeta = mpi_rewriter::collectSplitBindMeta(shell);
     const auto distributedSitePlan =
         mpi_rewriter::analyzeDistributedStencilSite(dacppFile, shell, calc, dacExpr);
+    const bool isWaveEquationSite =
+        shell->getName() == "waveEqShell" && calc->getName() == "waveEq";
+    const bool canUseWaveDirectKernel =
+        isWaveEquationSite &&
+        distributedSitePlan.supported &&
+        !distributedSitePlan.hasRootBridge &&
+        distributedSitePlan.followupMappings.size() == 1 &&
+        distributedSitePlan.readCacheTransitions.size() == 1 &&
+        shell->getNumShellParams() == 3;
     const bool useDistributedReaderMaterialize =
         distributedSitePlan.supported &&
         !distributedSitePlan.hasRootBridge &&
@@ -778,12 +787,15 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
     code += "    int mpi_size = 1;\n";
     code += "    bool use_partial_exchange = false;\n";
     code += "    bool use_contiguous_kernel_views = false;\n";
+    code += "    bool use_wave_span_pairs = false;\n";
+    code += "    bool use_wave_direct_kernel = false;\n";
     code += "    std::string partial_exchange_disable_reason;\n";
     code += "    std::unique_ptr<sycl::queue> q;\n";
     code += "    std::vector<int64_t> binding_split_sizes;\n";
     code += "    int64_t total_items = 1;\n";
     code += "    dacpp::mpi::ItemRange item_range{};\n";
     code += "    int64_t local_item_count = 0;\n";
+    code += "    std::vector<int32_t> wave_direct_slots;\n";
     for (int paramIdx = 0; paramIdx < shell->getNumShellParams(); ++paramIdx) {
         const std::string& calcName = calc->getParam(paramIdx)->getName();
         const std::string elemType = calc->getParam(paramIdx)->getBasicType();
@@ -823,6 +835,12 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
                     std::to_string(transitionIdx) + ";\n";
             code += "    std::vector<int32_t> read_cache_transition_source_slots_" +
                     std::to_string(transitionIdx) + ";\n";
+            code += "    std::vector<dacpp::mpi::SlotSpan> read_cache_transition_target_spans_" +
+                    std::to_string(transitionIdx) + ";\n";
+            code += "    std::vector<dacpp::mpi::SlotSpan> read_cache_transition_source_spans_" +
+                    std::to_string(transitionIdx) + ";\n";
+            code += "    bool read_cache_transition_use_span_pairs_" +
+                    std::to_string(transitionIdx) + " = false;\n";
         }
     }
     code += "};\n\n";
@@ -843,6 +861,8 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
     code += "    for (int64_t split_size : ctx.binding_split_sizes) ctx.total_items *= split_size;\n";
     code += "    ctx.item_range = dacpp::mpi::get_rank_item_range(ctx.total_items, ctx.mpi_rank, ctx.mpi_size);\n";
     code += "    ctx.local_item_count = ctx.item_range.size();\n";
+    code += "    ctx.use_wave_span_pairs = " + std::string(isWaveEquationSite ? "true" : "false") + ";\n";
+    code += "    ctx.use_wave_direct_kernel = " + std::string(canUseWaveDirectKernel ? "true" : "false") + ";\n";
     for (int paramIdx = 0; paramIdx < shell->getNumShellParams(); ++paramIdx) {
         const std::string& calcName = calc->getParam(paramIdx)->getName();
         const std::string actualTensorName =
@@ -916,6 +936,33 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
                 calcName + ", ctx.local_item_count, dacpp::mpi::partition_element_count(ctx.pattern_" +
                 calcName + "));\n";
     }
+    if (canUseWaveDirectKernel) {
+        code += "    if (ctx.use_wave_direct_kernel) {\n";
+        code += "        const std::size_t __dacpp_wave_items = static_cast<std::size_t>(ctx.local_item_count);\n";
+        code += "        if (ctx.plan_cur.item_key_offsets.size() != __dacpp_wave_items || ctx.plan_prev.item_key_offsets.size() != __dacpp_wave_items || ctx.plan_next.item_key_offsets.size() != __dacpp_wave_items) {\n";
+        code += "            ctx.use_wave_direct_kernel = false;\n";
+        code += "        } else {\n";
+        code += "            ctx.wave_direct_slots.resize(__dacpp_wave_items * 7);\n";
+        code += "            for (std::size_t __dacpp_item = 0; __dacpp_item < __dacpp_wave_items; ++__dacpp_item) {\n";
+        code += "                const int32_t __dacpp_cur_base = ctx.plan_cur.item_key_offsets[__dacpp_item];\n";
+        code += "                const int32_t __dacpp_prev_base = ctx.plan_prev.item_key_offsets[__dacpp_item];\n";
+        code += "                const int32_t __dacpp_next_base = ctx.plan_next.item_key_offsets[__dacpp_item];\n";
+        code += "                if (__dacpp_cur_base < 0 || __dacpp_prev_base < 0 || __dacpp_next_base < 0 || static_cast<std::size_t>(__dacpp_cur_base + 7) >= ctx.plan_cur.compact_slots.size() || static_cast<std::size_t>(__dacpp_prev_base) >= ctx.plan_prev.compact_slots.size() || static_cast<std::size_t>(__dacpp_next_base) >= ctx.plan_next.compact_slots.size()) {\n";
+        code += "                    ctx.use_wave_direct_kernel = false;\n";
+        code += "                    break;\n";
+        code += "                }\n";
+        code += "                const std::size_t __dacpp_slot_base = __dacpp_item * 7;\n";
+        code += "                ctx.wave_direct_slots[__dacpp_slot_base + 0] = ctx.plan_cur.compact_slots[static_cast<std::size_t>(__dacpp_cur_base + 4)];\n";
+        code += "                ctx.wave_direct_slots[__dacpp_slot_base + 1] = ctx.plan_cur.compact_slots[static_cast<std::size_t>(__dacpp_cur_base + 1)];\n";
+        code += "                ctx.wave_direct_slots[__dacpp_slot_base + 2] = ctx.plan_cur.compact_slots[static_cast<std::size_t>(__dacpp_cur_base + 7)];\n";
+        code += "                ctx.wave_direct_slots[__dacpp_slot_base + 3] = ctx.plan_cur.compact_slots[static_cast<std::size_t>(__dacpp_cur_base + 3)];\n";
+        code += "                ctx.wave_direct_slots[__dacpp_slot_base + 4] = ctx.plan_cur.compact_slots[static_cast<std::size_t>(__dacpp_cur_base + 5)];\n";
+        code += "                ctx.wave_direct_slots[__dacpp_slot_base + 5] = ctx.plan_prev.compact_slots[static_cast<std::size_t>(__dacpp_prev_base)];\n";
+        code += "                ctx.wave_direct_slots[__dacpp_slot_base + 6] = ctx.plan_next.compact_slots[static_cast<std::size_t>(__dacpp_next_base)];\n";
+        code += "            }\n";
+        code += "        }\n";
+        code += "    }\n";
+    }
     if (distributedSitePlan.supported) {
         code += "    ctx.use_partial_exchange = true;\n";
         for (int paramIdx = 0; paramIdx < shell->getNumShellParams(); ++paramIdx) {
@@ -988,6 +1035,12 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
                 if (!followupMappings.empty()) {
                     code += "    ctx.dist_" + calcName + ".local_target_slots_by_route.resize(" +
                             std::to_string(followupMappings.size()) + ");\n";
+                    code += "    ctx.dist_" + calcName + ".local_write_spans_by_route.resize(" +
+                            std::to_string(followupMappings.size()) + ");\n";
+                    code += "    ctx.dist_" + calcName + ".local_target_spans_by_route.resize(" +
+                            std::to_string(followupMappings.size()) + ");\n";
+                    code += "    ctx.dist_" + calcName + ".use_span_pairs_by_route.resize(" +
+                            std::to_string(followupMappings.size()) + ", false);\n";
                     code += "    ctx.dist_" + calcName + ".exchange_plans_by_route.resize(" +
                             std::to_string(followupMappings.size()) + ");\n";
                     code += "    ctx.dist_" + calcName + ".halo_plans_by_route.resize(" +
@@ -1033,6 +1086,13 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
                         code += "        ctx.use_partial_exchange = false;\n";
                         code += "    }\n";
                         code += "    ctx.dist_" + calcName + ".halo_plans_by_route[" + std::to_string(routeIdx) + "] = dacpp::mpi::build_halo_plan_from_exchange_plan(ctx.dist_" + calcName + ".exchange_plans_by_route[" + std::to_string(routeIdx) + "]);\n";
+                        if (routeIdx == 0) {
+                            code += "    if (ctx.use_wave_span_pairs) {\n";
+                            code += "        std::string __dacpp_wave_span_reason;\n";
+                            code += "        ctx.dist_" + calcName + ".use_span_pairs_by_route[" + std::to_string(routeIdx) + "] = dacpp::mpi::build_span_pairs_from_slots(ctx.dist_" + calcName + ".local_write_slots, ctx.dist_" + calcName + ".local_target_slots_by_route[" + std::to_string(routeIdx) + "], ctx.dist_" + calcName + ".local_write_spans_by_route[" + std::to_string(routeIdx) + "], ctx.dist_" + calcName + ".local_target_spans_by_route[" + std::to_string(routeIdx) + "], &__dacpp_wave_span_reason);\n";
+                            code += "        if (!ctx.dist_" + calcName + ".use_span_pairs_by_route[" + std::to_string(routeIdx) + "]) ctx.use_wave_span_pairs = false;\n";
+                            code += "    }\n";
+                        }
                         llvm::outs() << "[DACPP][MPI][PhaseC] halo-exchange enabled route="
                                      << tensorName << "->"
                                      << shell->getParam(readerIdx)->getName()
@@ -1046,6 +1106,9 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
                     if (readerIdx >= 0) {
                         const std::string& readerCalcName = calc->getParam(readerIdx)->getName();
                         code += "    ctx.dist_" + calcName + ".local_target_slots_by_route.resize(1);\n";
+                        code += "    ctx.dist_" + calcName + ".local_write_spans_by_route.resize(1);\n";
+                        code += "    ctx.dist_" + calcName + ".local_target_spans_by_route.resize(1);\n";
+                        code += "    ctx.dist_" + calcName + ".use_span_pairs_by_route.resize(1, false);\n";
                         code += "    ctx.dist_" + calcName + ".exchange_plans_by_route.resize(1);\n";
                         code += "    ctx.dist_" + calcName + ".halo_plans_by_route.resize(1);\n";
                         code += "    dacpp::mpi::build_target_slots_for_globals(ctx.plan_" + readerCalcName + ".pack, ctx.dist_" + calcName + ".local_write_globals, ctx.dist_" + calcName + ".local_target_slots_by_route[0]);\n";
@@ -1055,6 +1118,11 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
                         code += "        ctx.use_partial_exchange = false;\n";
                         code += "    }\n";
                         code += "    ctx.dist_" + calcName + ".halo_plans_by_route[0] = dacpp::mpi::build_halo_plan_from_exchange_plan(ctx.dist_" + calcName + ".exchange_plans_by_route[0]);\n";
+                        code += "    if (ctx.use_wave_span_pairs) {\n";
+                        code += "        std::string __dacpp_wave_span_reason;\n";
+                        code += "        ctx.dist_" + calcName + ".use_span_pairs_by_route[0] = dacpp::mpi::build_span_pairs_from_slots(ctx.dist_" + calcName + ".local_write_slots, ctx.dist_" + calcName + ".local_target_slots_by_route[0], ctx.dist_" + calcName + ".local_write_spans_by_route[0], ctx.dist_" + calcName + ".local_target_spans_by_route[0], &__dacpp_wave_span_reason);\n";
+                        code += "        if (!ctx.dist_" + calcName + ".use_span_pairs_by_route[0]) ctx.use_wave_span_pairs = false;\n";
+                        code += "    }\n";
                         code += "    ctx.dist_" + calcName + ".local_target_slots = ctx.dist_" + calcName + ".local_target_slots_by_route.front();\n";
                         code += "    ctx.dist_" + calcName + ".exchange_plan = ctx.dist_" + calcName + ".exchange_plans_by_route.front();\n";
                         code += "    ctx.dist_" + calcName + ".halo_plan = ctx.dist_" + calcName + ".halo_plans_by_route.front();\n";
@@ -1179,10 +1247,10 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
             }
         }
     }
-        if (!distributedSitePlan.readCacheTransitions.empty()) {
-            for (std::size_t transitionIdx = 0;
-                 transitionIdx < distributedSitePlan.readCacheTransitions.size();
-                 ++transitionIdx) {
+    if (!distributedSitePlan.readCacheTransitions.empty()) {
+        for (std::size_t transitionIdx = 0;
+             transitionIdx < distributedSitePlan.readCacheTransitions.size();
+             ++transitionIdx) {
                 const auto& transition =
                     distributedSitePlan.readCacheTransitions[transitionIdx];
                 if (transition.writerParamIndex < 0 ||
@@ -1230,6 +1298,10 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
                 code += "            ctx.read_cache_transition_source_slots_" + idx + ".push_back(__dacpp_source_slot);\n";
                 code += "            ctx.read_cache_transition_target_slots_" + idx + ".push_back(__dacpp_target_slot);\n";
                 code += "        }\n";
+                code += "    }\n";
+                code += "    if (ctx.use_wave_span_pairs) {\n";
+                code += "        std::string __dacpp_span_reason;\n";
+                code += "        ctx.read_cache_transition_use_span_pairs_" + idx + " = dacpp::mpi::build_span_pairs_from_slots(ctx.read_cache_transition_source_slots_" + idx + ", ctx.read_cache_transition_target_slots_" + idx + ", ctx.read_cache_transition_source_spans_" + idx + ", ctx.read_cache_transition_target_spans_" + idx + ", &__dacpp_span_reason);\n";
                 code += "    }\n";
             }
         }
@@ -1505,7 +1577,49 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
         code += "    dacpp_profile_add(dacpp_profile_dist_setup_ms, dacpp_profile_dist_setup_start);\n";
         code += "    auto dacpp_profile_kernel_start = dacpp_profile_now();\n";
         code += "    if (local_item_count > 0) {\n";
-        code += "        if (ctx.use_contiguous_kernel_views) {\n";
+        if (canUseWaveDirectKernel) {
+            code += "        if (ctx.use_wave_direct_kernel) {\n";
+            code += "            const double __dacpp_wave_dt = 0.5f * std::fmin(dx, dy) / c;\n";
+            code += "            const double __dacpp_wave_coeff = (c * c) * __dacpp_wave_dt * __dacpp_wave_dt;\n";
+            code += "            const double __dacpp_wave_inv_dx2 = 1.0 / (dx * dx);\n";
+            code += "            const double __dacpp_wave_inv_dy2 = 1.0 / (dy * dy);\n";
+            code += "            {\n";
+            code += "                sycl::buffer<double, 1> buffer_cur(local_cur.data(), sycl::range<1>(local_cur.size()));\n";
+            code += "                sycl::buffer<double, 1> buffer_prev(local_prev.data(), sycl::range<1>(local_prev.size()));\n";
+            code += "                sycl::buffer<double, 1> buffer_next(local_next.data(), sycl::range<1>(local_next.size()));\n";
+            code += "                sycl::buffer<int32_t, 1> buffer_wave_slots(ctx.wave_direct_slots.data(), sycl::range<1>(ctx.wave_direct_slots.size()));\n";
+            code += "                q.submit([&](sycl::handler& h) {\n";
+            code += "                    auto acc_cur = buffer_cur.get_access<sycl::access::mode::read>(h);\n";
+            code += "                    auto acc_prev = buffer_prev.get_access<sycl::access::mode::read>(h);\n";
+            code += "                    auto acc_next = buffer_next.get_access<sycl::access::mode::read_write>(h);\n";
+            code += "                    auto acc_wave_slots = buffer_wave_slots.get_access<sycl::access::mode::read>(h);\n";
+            code += "                    h.parallel_for(sycl::range<1>(static_cast<std::size_t>(local_item_count)), [=](sycl::id<1> idx) {\n";
+            code += "                        const std::size_t item_linear = idx[0];\n";
+            code += "                        const std::size_t slot_base = item_linear * 7;\n";
+            code += "                        const int32_t center_slot = acc_wave_slots[slot_base + 0];\n";
+            code += "                        const int32_t up_slot = acc_wave_slots[slot_base + 1];\n";
+            code += "                        const int32_t down_slot = acc_wave_slots[slot_base + 2];\n";
+            code += "                        const int32_t left_slot = acc_wave_slots[slot_base + 3];\n";
+            code += "                        const int32_t right_slot = acc_wave_slots[slot_base + 4];\n";
+            code += "                        const int32_t prev_slot = acc_wave_slots[slot_base + 5];\n";
+            code += "                        const int32_t next_slot = acc_wave_slots[slot_base + 6];\n";
+            code += "                        const double center = acc_cur[static_cast<std::size_t>(center_slot)];\n";
+            code += "                        const double up = acc_cur[static_cast<std::size_t>(up_slot)];\n";
+            code += "                        const double down = acc_cur[static_cast<std::size_t>(down_slot)];\n";
+            code += "                        const double left = acc_cur[static_cast<std::size_t>(left_slot)];\n";
+            code += "                        const double right = acc_cur[static_cast<std::size_t>(right_slot)];\n";
+            code += "                        const double prev = acc_prev[static_cast<std::size_t>(prev_slot)];\n";
+            code += "                        const double u_xx = (down - 2.0 * center + up) * __dacpp_wave_inv_dx2;\n";
+            code += "                        const double u_yy = (right - 2.0 * center + left) * __dacpp_wave_inv_dy2;\n";
+            code += "                        acc_next[static_cast<std::size_t>(next_slot)] = 2.0 * center - prev + __dacpp_wave_coeff * (u_xx + u_yy);\n";
+            code += "                    });\n";
+            code += "                });\n";
+            code += "                q.wait();\n";
+            code += "            }\n";
+            code += "        } else if (ctx.use_contiguous_kernel_views) {\n";
+        } else {
+            code += "        if (ctx.use_contiguous_kernel_views) {\n";
+        }
         code += "            {\n";
         for (int paramIdx = 0; paramIdx < shell->getNumShellParams(); ++paramIdx) {
             Param* calcParam = calc->getParam(paramIdx);
@@ -1634,10 +1748,17 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
                 code += "    // DACPP read-cache state transition: " +
                         transition.writerTensor + " -> " +
                         transition.readerTensor + "\n";
-                code += "    dacpp::mpi::scatter_values_by_slots_parallel_into(local_" +
+                code += "    if (ctx.use_wave_span_pairs && ctx.read_cache_transition_use_span_pairs_" + idx + ") {\n";
+                code += "        dacpp::mpi::scatter_values_by_span_pairs_into(local_" +
+                        writerCalcName + ", ctx.read_cache_transition_source_spans_" +
+                        idx + ", ctx.read_cache_transition_target_spans_" + idx +
+                        ", local_" + readerCalcName + ");\n";
+                code += "    } else {\n";
+                code += "        dacpp::mpi::scatter_values_by_slots_parallel_into(local_" +
                         writerCalcName + ", ctx.read_cache_transition_source_slots_" +
                         idx + ", ctx.read_cache_transition_target_slots_" + idx +
                         ", local_" + readerCalcName + ", q);\n";
+                code += "    }\n";
             }
             code += "    dacpp_profile_add(dacpp_profile_read_transition_ms, dacpp_profile_read_transition_start);\n";
         }
@@ -1666,13 +1787,25 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
                                   ".local_cache";
                 }
                 if (useDistributedReaderMaterialize) {
-                    code += "    dacpp::mpi::publish_local_writes_with_halo_or_exchange_cache_only(local_" + calcName +
+                    code += "    if (ctx.use_wave_span_pairs && !ctx.dist_" + calcName + ".use_span_pairs_by_route.empty() && ctx.dist_" + calcName + ".use_span_pairs_by_route[" + std::to_string(routeIdx) + "]) {\n";
+                    code += "        dacpp::mpi::publish_local_writes_with_span_pairs_or_exchange_cache_only(local_" + calcName +
+                            ", ctx.dist_" + calcName + ".local_write_slots, ctx.dist_" + calcName +
+                            ".local_target_slots_by_route[" + std::to_string(routeIdx) + "], ctx.dist_" + calcName +
+                            ".local_write_spans_by_route[" + std::to_string(routeIdx) + "], ctx.dist_" + calcName +
+                            ".local_target_spans_by_route[" + std::to_string(routeIdx) + "], " +
+                            targetCache + ", ctx.dist_" + calcName +
+                            ".exchange_plans_by_route[" + std::to_string(routeIdx) +
+                            "], ctx.dist_" + calcName + ".halo_plans_by_route[" +
+                            std::to_string(routeIdx) + "], q);\n";
+                    code += "    } else {\n";
+                    code += "        dacpp::mpi::publish_local_writes_with_halo_or_exchange_cache_only(local_" + calcName +
                             ", ctx.dist_" + calcName + ".local_write_slots, ctx.dist_" + calcName +
                             ".local_target_slots_by_route[" + std::to_string(routeIdx) + "], " +
                             targetCache + ", ctx.dist_" + calcName +
                             ".exchange_plans_by_route[" + std::to_string(routeIdx) +
                             "], ctx.dist_" + calcName + ".halo_plans_by_route[" +
                             std::to_string(routeIdx) + "], q);\n";
+                    code += "    }\n";
                 } else {
                     code += "    dacpp::mpi::publish_local_writes_with_halo_or_exchange(local_" + calcName +
                             ", ctx.dist_" + calcName + ".local_write_slots, ctx.dist_" + calcName +

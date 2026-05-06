@@ -35,6 +35,7 @@ struct PeerSlotExchange {
 struct SlotSpan {
     int32_t begin = 0;
     int32_t count = 0;
+    int32_t stride = 1;
 };
 
 struct PeerHaloExchange {
@@ -67,6 +68,12 @@ struct DistributedTensorState {
     std::vector<int32_t> local_write_slots;
     std::vector<int32_t> local_target_slots;
     std::vector<std::vector<int32_t>> local_target_slots_by_route;
+    std::vector<std::vector<SlotSpan>> local_write_spans_by_route;
+    std::vector<std::vector<SlotSpan>> local_target_spans_by_route;
+    std::vector<bool> use_span_pairs_by_route;
+    std::vector<std::vector<SlotSpan>> read_cache_transition_source_spans;
+    std::vector<std::vector<SlotSpan>> read_cache_transition_target_spans;
+    std::vector<bool> read_cache_transition_use_span_pairs;
     std::vector<int64_t> local_write_globals;
     AllRankIndexLayout read_layout;
     AllRankIndexLayout write_layout;

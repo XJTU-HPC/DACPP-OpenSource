@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-set -uo pipefail
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" &> /dev/null && pwd)"
 source "$SCRIPT_DIR/env.sh"
@@ -46,6 +46,43 @@ src = re.sub(r"#define WAVE_NX\s+\d+", f"#define WAVE_NX {nx}", src, count=1)
 src = re.sub(r"#define WAVE_NY\s+\d+", f"#define WAVE_NY {ny}", src, count=1)
 src = re.sub(r"#define WAVE_TIME_STEPS\s+\d+", f"#define WAVE_TIME_STEPS {steps}", src, count=1)
 Path(out).write_text(src)
+PY
+}
+
+disable_final_print() {
+    local path="$1"
+    python3 - "$path" <<'PY'
+from pathlib import Path
+import re
+import sys
+
+path = Path(sys.argv[1])
+src = path.read_text()
+src = re.sub(r"\n\s*matCur\.print\(\);\s*\n", "\n", src, count=1)
+path.write_text(src)
+PY
+}
+
+disable_coarse_result_dump() {
+    local path="$1"
+    python3 - "$path" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+src = path.read_text()
+start_marker = '        std::cout << "{";\n'
+end_marker = '        std::cout << "}" << std::endl;\n'
+start = src.find(start_marker)
+if start == -1:
+    raise SystemExit(f"failed to find coarse result dump start in {path}")
+end = src.find(end_marker, start)
+if end == -1:
+    raise SystemExit(f"failed to find coarse result dump end in {path}")
+updated = src[:start] + src[end + len(end_marker):]
+if updated == src:
+    raise SystemExit(f"failed to remove coarse result dump from {path}")
+path.write_text(updated)
 PY
 }
 
@@ -147,6 +184,10 @@ COARSE_BIN="$BENCH_DIR/coarse_mpi_sycl_bin"
 copy_and_scale_dac "$SCRIPT_DIR/tests/waveEquation1.0/waveEquation.dac.cpp" "$DAC_SRC"
 cp "$DAC_SRC" "$MPI_DAC_SRC"
 copy_and_scale_coarse "$COARSE_SRC" "$COARSE_BENCH_SRC"
+disable_final_print "$DAC_SRC"
+disable_final_print "$MPI_DAC_SRC"
+disable_final_print "$COARSE_BENCH_SRC"
+disable_coarse_result_dump "$COARSE_BENCH_SRC"
 
 echo "[1/4] translate DACPP MPI wave"
 dacpp "$MPI_DAC_SRC" --mode=buffer --mpi > "$BENCH_DIR/translate.log" 2>&1 || {
