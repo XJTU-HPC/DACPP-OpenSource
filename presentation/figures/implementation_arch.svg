@@ -1,0 +1,137 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 550" width="900" height="550" font-family="Arial, Helvetica, sans-serif">
+  <rect width="900" height="550" fill="#FFFFFF"/>
+  <defs>
+    <marker id="arrow-default" markerWidth="10" markerHeight="10" refX="8" refY="4" orient="auto" markerUnits="strokeWidth">
+      <polygon points="0 0, 8 4, 0 8" fill="#555555"/>
+    </marker>
+    <marker id="arrow-c0" markerWidth="10" markerHeight="10" refX="8" refY="4" orient="auto" markerUnits="strokeWidth">
+      <polygon points="0 0, 8 4, 0 8" fill="#2563EB"/>
+    </marker>
+    <marker id="arrow-c1" markerWidth="10" markerHeight="10" refX="8" refY="4" orient="auto" markerUnits="strokeWidth">
+      <polygon points="0 0, 8 4, 0 8" fill="#10B981"/>
+    </marker>
+    <marker id="arrow-c2" markerWidth="10" markerHeight="10" refX="8" refY="4" orient="auto" markerUnits="strokeWidth">
+      <polygon points="0 0, 8 4, 0 8" fill="#7C3AED"/>
+    </marker>
+    <marker id="arrow-c3" markerWidth="10" markerHeight="10" refX="8" refY="4" orient="auto" markerUnits="strokeWidth">
+      <polygon points="0 0, 8 4, 0 8" fill="#EA580C"/>
+    </marker>
+    <marker id="arrow-c4" markerWidth="10" markerHeight="10" refX="8" refY="4" orient="auto" markerUnits="strokeWidth">
+      <polygon points="0 0, 8 4, 0 8" fill="#C62828"/>
+    </marker>
+    <marker id="arrow-c5" markerWidth="10" markerHeight="10" refX="8" refY="4" orient="auto" markerUnits="strokeWidth">
+      <polygon points="0 0, 8 4, 0 8" fill="#0D47A1"/>
+    </marker>
+    <marker id="arrow-c6" markerWidth="10" markerHeight="10" refX="8" refY="4" orient="auto" markerUnits="strokeWidth">
+      <polygon points="0 0, 8 4, 0 8" fill="#1B5E20"/>
+    </marker>
+    <marker id="arrow-c7" markerWidth="10" markerHeight="10" refX="8" refY="4" orient="auto" markerUnits="strokeWidth">
+      <polygon points="0 0, 8 4, 0 8" fill="#4A148C"/>
+    </marker>
+    <marker id="arrow-c8" markerWidth="10" markerHeight="10" refX="8" refY="4" orient="auto" markerUnits="strokeWidth">
+      <polygon points="0 0, 8 4, 0 8" fill="#BF360C"/>
+    </marker>
+    <marker id="arrow-c9" markerWidth="10" markerHeight="10" refX="8" refY="4" orient="auto" markerUnits="strokeWidth">
+      <polygon points="0 0, 8 4, 0 8" fill="#37474F"/>
+    </marker>
+  </defs>
+  <path d="M 125.0,141.0 L 255.0,143.8" stroke="#888888" stroke-width="2" fill="none" marker-end="url(#arrow-default)"/>
+  <path d="M 235.0,141.9 L 255.0,142.7" stroke="#888888" stroke-width="2" fill="none" marker-end="url(#arrow-default)"/>
+  <path d="M 310.0,167.5 L 310.0,242.5" stroke="#4682B4" stroke-width="2" fill="none" marker-end="url(#arrow-default)"/>
+  <rect x="279.6" y="187.0" width="60.8" height="16" fill="#FFFFFF" rx="3" opacity="0.85"/>
+  <text x="310.0" y="199.0" font-size="11" fill="#777777" text-anchor="middle">produces</text>
+  <path d="M 450.0,167.5 L 450.0,242.5" stroke="#4682B4" stroke-width="2" fill="none" marker-end="url(#arrow-default)"/>
+  <rect x="419.6" y="187.0" width="60.8" height="16" fill="#FFFFFF" rx="3" opacity="0.85"/>
+  <text x="450.0" y="199.0" font-size="11" fill="#777777" text-anchor="middle">produces</text>
+  <path d="M 590.0,167.5 L 590.0,242.5" stroke="#4682B4" stroke-width="2" fill="none" marker-end="url(#arrow-default)"/>
+  <rect x="559.6" y="187.0" width="60.8" height="16" fill="#FFFFFF" rx="3" opacity="0.85"/>
+  <text x="590.0" y="199.0" font-size="11" fill="#777777" text-anchor="middle">produces</text>
+  <path d="M 336.2,287.5 L 420.8,360.0" stroke="#CC8800" stroke-width="2" fill="none" marker-end="url(#arrow-default)" stroke-dasharray="8,4"/>
+  <path d="M 450.0,287.5 L 450.0,360.0" stroke="#CC8800" stroke-width="2" fill="none" marker-end="url(#arrow-default)" stroke-dasharray="8,4"/>
+  <path d="M 563.8,287.5 L 479.2,360.0" stroke="#CC8800" stroke-width="2" fill="none" marker-end="url(#arrow-default)" stroke-dasharray="8,4"/>
+  <path d="M 420.8,410.0 L 327.5,490.0" stroke="#228B22" stroke-width="2" fill="none" marker-end="url(#arrow-default)"/>
+  <rect x="340.5" y="432.0" width="67.4" height="16" fill="#FFFFFF" rx="3" opacity="0.85"/>
+  <text x="374.2" y="444.0" font-size="11" fill="#777777" text-anchor="middle">generates</text>
+  <path d="M 456.2,410.0 L 476.2,490.0" stroke="#228B22" stroke-width="2" fill="none" marker-end="url(#arrow-default)"/>
+  <path d="M 493.8,410.0 L 633.8,490.0" stroke="#228B22" stroke-width="2" fill="none" marker-end="url(#arrow-default)"/>
+  <path d="M 123.1,242.5 Q 208.9,231.6 266.9,167.5" stroke="#CC8800" stroke-width="2" fill="none" marker-end="url(#arrow-default)" stroke-dasharray="8,4"/>
+  <rect x="171.5" y="200.3" width="60.8" height="16" fill="#FFFFFF" rx="3" opacity="0.85"/>
+  <text x="201.9" y="212.3" font-size="11" fill="#777777" text-anchor="middle">dispatch</text>
+  <rect x="50.0" y="20.0" width="800.0" height="30.0" fill="#1E3A5F" stroke="#1E3A5F" stroke-width="2" rx="0"/>
+  <text x="450.0" y="41.3" font-size="18" fill="#FFFFFF" text-anchor="middle" font-weight="bold">Shell-Derived Resident Partition: Implementation Architecture</text>
+  <rect x="50.0" y="52.5" width="800.0" height="25.0" fill="#F8F9FA" stroke="#F8F9FA" stroke-width="2" rx="0"/>
+  <text x="450.0" y="69.2" font-size="12" fill="#666666" text-anchor="middle" font-weight="bold">Translator-side analysis and code generation for MPI operator-resident communication</text>
+  <rect x="25.0" y="87.5" width="150.0" height="25.0" fill="#E8E8E8" stroke="#888888" stroke-width="2" rx="0"/>
+  <text x="100.0" y="104.5" font-size="13" fill="#555555" text-anchor="middle" font-weight="bold">Input</text>
+  <rect x="35.0" y="117.5" width="90.0" height="45.0" fill="#E8E8E8" stroke="#888888" stroke-width="2" rx="8"/>
+  <text x="80.0" y="136.9" font-size="14" fill="#333333" text-anchor="middle" font-weight="bold">DACPP Source</text>
+  <text x="80.0" y="152.9" font-size="14" fill="#333333" text-anchor="middle" font-weight="bold">with &lt;-&gt;</text>
+  <rect x="145.0" y="117.5" width="90.0" height="45.0" fill="#E8E8E8" stroke="#888888" stroke-width="2" rx="8"/>
+  <text x="190.0" y="136.9" font-size="14" fill="#333333" text-anchor="middle" font-weight="bold">AST with</text>
+  <text x="190.0" y="152.9" font-size="14" fill="#333333" text-anchor="middle" font-weight="bold">Shell/Calc</text>
+  <rect x="325.0" y="87.5" width="150.0" height="25.0" fill="#B8D4E8" stroke="#4682B4" stroke-width="2" rx="0"/>
+  <text x="400.0" y="104.5" font-size="13" fill="#4682B4" text-anchor="middle" font-weight="bold">Analysis Layer</text>
+  <rect x="255.0" y="122.5" width="110.0" height="45.0" fill="#B8D4E8" stroke="#4682B4" stroke-width="2" rx="8"/>
+  <text x="310.0" y="141.9" font-size="14" fill="#333333" text-anchor="middle" font-weight="bold">ShellPartition</text>
+  <text x="310.0" y="157.9" font-size="14" fill="#333333" text-anchor="middle" font-weight="bold">Analysis</text>
+  <rect x="395.0" y="122.5" width="110.0" height="45.0" fill="#B8D4E8" stroke="#4682B4" stroke-width="2" rx="8"/>
+  <text x="450.0" y="141.9" font-size="14" fill="#333333" text-anchor="middle" font-weight="bold">Chain</text>
+  <text x="450.0" y="157.9" font-size="14" fill="#333333" text-anchor="middle" font-weight="bold">Analysis</text>
+  <rect x="535.0" y="122.5" width="110.0" height="45.0" fill="#B8D4E8" stroke="#4682B4" stroke-width="2" rx="8"/>
+  <text x="590.0" y="141.9" font-size="14" fill="#333333" text-anchor="middle" font-weight="bold">Residency</text>
+  <text x="590.0" y="157.9" font-size="14" fill="#333333" text-anchor="middle" font-weight="bold">Analysis</text>
+  <rect x="325.0" y="207.5" width="150.0" height="25.0" fill="#FFFACD" stroke="#CC8800" stroke-width="2" rx="0"/>
+  <text x="400.0" y="224.6" font-size="13" fill="#996600" text-anchor="middle" font-weight="bold">Plan Layer</text>
+  <rect x="255.0" y="242.5" width="110.0" height="45.0" fill="#FFFACD" stroke="#CC8800" stroke-width="2" rx="8"/>
+  <text x="310.0" y="261.9" font-size="14" fill="#333333" text-anchor="middle" font-weight="bold">ShellPartition</text>
+  <text x="310.0" y="277.9" font-size="14" fill="#333333" text-anchor="middle" font-weight="bold">Plan</text>
+  <rect x="395.0" y="242.5" width="110.0" height="45.0" fill="#FFFACD" stroke="#CC8800" stroke-width="2" rx="8"/>
+  <text x="450.0" y="261.9" font-size="14" fill="#333333" text-anchor="middle" font-weight="bold">OperatorResident</text>
+  <text x="450.0" y="277.9" font-size="14" fill="#333333" text-anchor="middle" font-weight="bold">Chain Plan</text>
+  <rect x="535.0" y="242.5" width="110.0" height="45.0" fill="#FFFACD" stroke="#CC8800" stroke-width="2" rx="8"/>
+  <text x="590.0" y="261.9" font-size="14" fill="#333333" text-anchor="middle" font-weight="bold">Tensor</text>
+  <text x="590.0" y="277.9" font-size="14" fill="#333333" text-anchor="middle" font-weight="bold">Residency State</text>
+  <rect x="325.0" y="327.5" width="150.0" height="25.0" fill="#90EE90" stroke="#228B22" stroke-width="2" rx="0"/>
+  <text x="400.0" y="344.6" font-size="13" fill="#228B22" text-anchor="middle" font-weight="bold">Codegen Layer</text>
+  <rect x="385.0" y="360.0" width="130.0" height="50.0" fill="#90EE90" stroke="#228B22" stroke-width="2" rx="8"/>
+  <text x="450.0" y="381.9" font-size="14" fill="#333333" text-anchor="middle" font-weight="bold">OperatorResident</text>
+  <text x="450.0" y="397.9" font-size="14" fill="#333333" text-anchor="middle" font-weight="bold">Codegen</text>
+  <rect x="325.0" y="447.5" width="150.0" height="25.0" fill="#E8F4F8" stroke="#4682B4" stroke-width="2" rx="0"/>
+  <text x="400.0" y="464.6" font-size="13" fill="#4682B4" text-anchor="middle" font-weight="bold">Output</text>
+  <rect x="240.0" y="490.0" width="140.0" height="30.0" fill="#FFFFFF" stroke="#4682B4" stroke-width="2" rx="0"/>
+  <text x="310.0" y="508.5" font-size="10" fill="#333333" text-anchor="middle" font-weight="bold">__dacpp_mpi_or_chain_ctx_X</text>
+  <rect x="405.0" y="490.0" width="150.0" height="30.0" fill="#FFFFFF" stroke="#4682B4" stroke-width="2" rx="0"/>
+  <text x="480.0" y="508.5" font-size="10" fill="#333333" text-anchor="middle" font-weight="bold">__dacpp_mpi_or_chain_init_X()</text>
+  <rect x="585.0" y="490.0" width="150.0" height="30.0" fill="#FFFFFF" stroke="#4682B4" stroke-width="2" rx="0"/>
+  <text x="660.0" y="508.5" font-size="10" fill="#333333" text-anchor="middle" font-weight="bold">__dacpp_mpi_or_chain_run_X()</text>
+  <rect x="725.0" y="87.5" width="110.0" height="25.0" fill="#F5F5F5" stroke="#CCCCCC" stroke-width="2" rx="0"/>
+  <text x="780.0" y="104.2" font-size="12" fill="#555555" text-anchor="middle" font-weight="bold">File Structure</text>
+  <rect x="690.0" y="30.0" width="140.0" height="200.0" fill="#FAFAFA" stroke="#CCCCCC" stroke-width="2" rx="0"/>
+  <text x="760.0" y="61.6" font-size="9" fill="#333333" text-anchor="middle" font-weight="bold">rewriter/</text>
+  <text x="760.0" y="72.7" font-size="9" fill="#333333" text-anchor="middle" font-weight="bold">├── include/</text>
+  <text x="760.0" y="83.7" font-size="9" fill="#333333" text-anchor="middle" font-weight="bold">│   └─ Rewriter_MPI_</text>
+  <text x="760.0" y="94.7" font-size="9" fill="#333333" text-anchor="middle" font-weight="bold">│        OperatorResident.h</text>
+  <text x="760.0" y="105.7" font-size="9" fill="#333333" text-anchor="middle" font-weight="bold">└─ lib/mpi/</text>
+  <text x="760.0" y="116.7" font-size="9" fill="#333333" text-anchor="middle" font-weight="bold">    └─ operator_resident/</text>
+  <text x="760.0" y="127.7" font-size="9" fill="#333333" text-anchor="middle" font-weight="bold">       ├─ ShellPartition</text>
+  <text x="760.0" y="138.7" font-size="9" fill="#333333" text-anchor="middle" font-weight="bold">       │    Analysis.cpp</text>
+  <text x="760.0" y="149.7" font-size="9" fill="#333333" text-anchor="middle" font-weight="bold">       ├─ OperatorChain</text>
+  <text x="760.0" y="160.7" font-size="9" fill="#333333" text-anchor="middle" font-weight="bold">       │    Analysis.cpp</text>
+  <text x="760.0" y="171.7" font-size="9" fill="#333333" text-anchor="middle" font-weight="bold">       ├─ Residency</text>
+  <text x="760.0" y="182.7" font-size="9" fill="#333333" text-anchor="middle" font-weight="bold">       │    Analysis.cpp</text>
+  <text x="760.0" y="193.7" font-size="9" fill="#333333" text-anchor="middle" font-weight="bold">       └─ OperatorResident</text>
+  <text x="760.0" y="204.7" font-size="9" fill="#333333" text-anchor="middle" font-weight="bold">            Codegen.cpp</text>
+  <rect x="725.0" y="327.5" width="110.0" height="25.0" fill="#F5F5F5" stroke="#CCCCCC" stroke-width="2" rx="0"/>
+  <text x="780.0" y="344.2" font-size="12" fill="#555555" text-anchor="middle" font-weight="bold">Runtime Headers</text>
+  <rect x="690.0" y="320.0" width="140.0" height="100.0" fill="#FAFAFA" stroke="#CCCCCC" stroke-width="2" rx="0"/>
+  <text x="760.0" y="340.1" font-size="9" fill="#333333" text-anchor="middle" font-weight="bold">dpcppLib/include/mpi/</text>
+  <text x="760.0" y="351.1" font-size="9" fill="#333333" text-anchor="middle" font-weight="bold">└─ operator_resident/</text>
+  <text x="760.0" y="362.1" font-size="9" fill="#333333" text-anchor="middle" font-weight="bold">   ├─ OperatorResident</text>
+  <text x="760.0" y="373.1" font-size="9" fill="#333333" text-anchor="middle" font-weight="bold">   │    Types.h</text>
+  <text x="760.0" y="384.1" font-size="9" fill="#333333" text-anchor="middle" font-weight="bold">   ├─ OperatorResident</text>
+  <text x="760.0" y="395.1" font-size="9" fill="#333333" text-anchor="middle" font-weight="bold">   │    Runtime.h</text>
+  <text x="760.0" y="406.1" font-size="9" fill="#333333" text-anchor="middle" font-weight="bold">   └─ OperatorResident.h</text>
+  <rect x="15.0" y="242.5" width="130.0" height="45.0" fill="#FFD700" stroke="#CC8800" stroke-width="2" rx="8"/>
+  <text x="80.0" y="261.9" font-size="14" fill="#333333" text-anchor="middle" font-weight="bold">MpiPlanBuilder</text>
+  <text x="80.0" y="277.9" font-size="14" fill="#333333" text-anchor="middle" font-weight="bold">(dispatcher)</text>
+</svg>

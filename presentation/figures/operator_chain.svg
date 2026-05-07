@@ -1,0 +1,104 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 580" width="900" height="580" font-family="Arial, Helvetica, sans-serif">
+  <rect width="900" height="580" fill="#FFFFFF"/>
+  <defs>
+    <marker id="arrow-default" markerWidth="10" markerHeight="10" refX="8" refY="4" orient="auto" markerUnits="strokeWidth">
+      <polygon points="0 0, 8 4, 0 8" fill="#555555"/>
+    </marker>
+    <marker id="arrow-c0" markerWidth="10" markerHeight="10" refX="8" refY="4" orient="auto" markerUnits="strokeWidth">
+      <polygon points="0 0, 8 4, 0 8" fill="#2563EB"/>
+    </marker>
+    <marker id="arrow-c1" markerWidth="10" markerHeight="10" refX="8" refY="4" orient="auto" markerUnits="strokeWidth">
+      <polygon points="0 0, 8 4, 0 8" fill="#10B981"/>
+    </marker>
+    <marker id="arrow-c2" markerWidth="10" markerHeight="10" refX="8" refY="4" orient="auto" markerUnits="strokeWidth">
+      <polygon points="0 0, 8 4, 0 8" fill="#7C3AED"/>
+    </marker>
+    <marker id="arrow-c3" markerWidth="10" markerHeight="10" refX="8" refY="4" orient="auto" markerUnits="strokeWidth">
+      <polygon points="0 0, 8 4, 0 8" fill="#EA580C"/>
+    </marker>
+    <marker id="arrow-c4" markerWidth="10" markerHeight="10" refX="8" refY="4" orient="auto" markerUnits="strokeWidth">
+      <polygon points="0 0, 8 4, 0 8" fill="#C62828"/>
+    </marker>
+    <marker id="arrow-c5" markerWidth="10" markerHeight="10" refX="8" refY="4" orient="auto" markerUnits="strokeWidth">
+      <polygon points="0 0, 8 4, 0 8" fill="#0D47A1"/>
+    </marker>
+    <marker id="arrow-c6" markerWidth="10" markerHeight="10" refX="8" refY="4" orient="auto" markerUnits="strokeWidth">
+      <polygon points="0 0, 8 4, 0 8" fill="#1B5E20"/>
+    </marker>
+    <marker id="arrow-c7" markerWidth="10" markerHeight="10" refX="8" refY="4" orient="auto" markerUnits="strokeWidth">
+      <polygon points="0 0, 8 4, 0 8" fill="#4A148C"/>
+    </marker>
+    <marker id="arrow-c8" markerWidth="10" markerHeight="10" refX="8" refY="4" orient="auto" markerUnits="strokeWidth">
+      <polygon points="0 0, 8 4, 0 8" fill="#BF360C"/>
+    </marker>
+    <marker id="arrow-c9" markerWidth="10" markerHeight="10" refX="8" refY="4" orient="auto" markerUnits="strokeWidth">
+      <polygon points="0 0, 8 4, 0 8" fill="#37474F"/>
+    </marker>
+  </defs>
+  <path d="M 190.0,144.1 Q 256.6,176.2 325.0,148.3" stroke="#4682B4" stroke-width="2" fill="none" marker-end="url(#arrow-default)" stroke-dasharray="8,4"/>
+  <path d="M 190.0,142.9 Q 321.8,175.8 455.0,148.8" stroke="#4682B4" stroke-width="2" fill="none" marker-end="url(#arrow-default)" stroke-dasharray="8,4"/>
+  <path d="M 88.9,189.0 Q 195.6,274.0 328.4,305.0" stroke="#4682B4" stroke-width="2" fill="none" marker-end="url(#arrow-default)" stroke-dasharray="8,4"/>
+  <path d="M 190.0,170.4 Q 453.6,191.2 715.0,151.9" stroke="#4682B4" stroke-width="2" fill="none" marker-end="url(#arrow-default)" stroke-dasharray="8,4"/>
+  <path d="M 134.7,224.0 Q 379.3,300.4 635.0,317.8" stroke="#4682B4" stroke-width="2" fill="none" marker-end="url(#arrow-default)" stroke-dasharray="8,4"/>
+  <path d="M 190.0,196.6 Q 390.6,206.0 585.0,155.7" stroke="#4682B4" stroke-width="2" fill="none" marker-end="url(#arrow-default)" stroke-dasharray="8,4"/>
+  <path d="M 445.0,330.0 L 475.0,330.0" stroke="#228B22" stroke-width="2" fill="none" marker-end="url(#arrow-default)"/>
+  <rect x="426.3" y="312.0" width="67.4" height="16" fill="#FFFFFF" rx="3" opacity="0.85"/>
+  <text x="460.0" y="324.0" font-size="11" fill="#777777" text-anchor="middle">local_tmp</text>
+  <path d="M 605.0,330.0 L 635.0,330.0" stroke="#228B22" stroke-width="2" fill="none" marker-end="url(#arrow-default)"/>
+  <rect x="573.1" y="312.0" width="93.8" height="16" fill="#FFFFFF" rx="3" opacity="0.85"/>
+  <text x="620.0" y="324.0" font-size="11" fill="#777777" text-anchor="middle">local_shifted</text>
+  <path d="M 675.0,355.0 L 542.5,487.5" stroke="#CC8800" stroke-width="2" fill="none" marker-end="url(#arrow-default)"/>
+  <rect x="50.0" y="20.0" width="800.0" height="30.0" fill="#1E3A5F" stroke="#1E3A5F" stroke-width="2" rx="0"/>
+  <text x="450.0" y="41.3" font-size="18" fill="#FFFFFF" text-anchor="middle" font-weight="bold">Operator Chain: Intermediate Tensor Residency</text>
+  <rect x="50.0" y="52.5" width="800.0" height="25.0" fill="#F8F9FA" stroke="#F8F9FA" stroke-width="2" rx="0"/>
+  <text x="450.0" y="69.2" font-size="12" fill="#666666" text-anchor="middle" font-weight="bold">No gather/scatter between kernels - data stays distributed</text>
+  <rect x="10.0" y="87.5" width="180.0" height="25.0" fill="#E8F4F8" stroke="#4682B4" stroke-width="2" rx="0"/>
+  <text x="100.0" y="104.9" font-size="14" fill="#4682B4" text-anchor="middle" font-weight="bold">Source DACPP Code</text>
+  <rect x="-70.0" y="126.0" width="260.0" height="28.0" fill="#F5F5F5" stroke="#CCCCCC" stroke-width="2" rx="0"/>
+  <text x="60.0" y="143.8" font-size="11" fill="#333333" text-anchor="middle" font-weight="bold">VADD(a, b, tmp) &lt;-&gt; vadd</text>
+  <rect x="-70.0" y="161.0" width="260.0" height="28.0" fill="#F5F5F5" stroke="#CCCCCC" stroke-width="2" rx="0"/>
+  <text x="60.0" y="178.8" font-size="11" fill="#333333" text-anchor="middle" font-weight="bold">VSHIFT(tmp, bias, shifted) &lt;-&gt; vshift</text>
+  <rect x="-70.0" y="196.0" width="260.0" height="28.0" fill="#F5F5F5" stroke="#CCCCCC" stroke-width="2" rx="0"/>
+  <text x="60.0" y="213.8" font-size="11" fill="#333333" text-anchor="middle" font-weight="bold">VADD(shifted, c, out) &lt;-&gt; vadd</text>
+  <rect x="250.0" y="85.0" width="400.0" height="30.0" fill="#B8D4E8" stroke="#4682B4" stroke-width="2" rx="0"/>
+  <text x="450.0" y="104.9" font-size="14" fill="#4682B4" text-anchor="middle" font-weight="bold">Init Phase</text>
+  <rect x="325.0" y="127.5" width="110.0" height="45.0" fill="#87CEEB" stroke="#4682B4" stroke-width="2" rx="8"/>
+  <text x="380.0" y="146.9" font-size="14" fill="#333333" text-anchor="middle" font-weight="bold">MPI_Scatterv</text>
+  <text x="380.0" y="162.9" font-size="14" fill="#333333" text-anchor="middle" font-weight="bold">a → local_a</text>
+  <rect x="455.0" y="127.5" width="110.0" height="45.0" fill="#87CEEB" stroke="#4682B4" stroke-width="2" rx="8"/>
+  <text x="510.0" y="146.9" font-size="14" fill="#333333" text-anchor="middle" font-weight="bold">MPI_Scatterv</text>
+  <text x="510.0" y="162.9" font-size="14" fill="#333333" text-anchor="middle" font-weight="bold">b → local_b</text>
+  <rect x="585.0" y="127.5" width="110.0" height="45.0" fill="#87CEEB" stroke="#4682B4" stroke-width="2" rx="8"/>
+  <text x="640.0" y="146.9" font-size="14" fill="#333333" text-anchor="middle" font-weight="bold">MPI_Scatterv</text>
+  <text x="640.0" y="162.9" font-size="14" fill="#333333" text-anchor="middle" font-weight="bold">c → local_c</text>
+  <rect x="715.0" y="127.5" width="110.0" height="45.0" fill="#98FB98" stroke="#228B22" stroke-width="2" rx="8"/>
+  <text x="770.0" y="146.9" font-size="14" fill="#333333" text-anchor="middle" font-weight="bold">MPI_Bcast</text>
+  <text x="770.0" y="162.9" font-size="14" fill="#333333" text-anchor="middle" font-weight="bold">bias → local_bias</text>
+  <rect x="470.0" y="190.0" width="180.0" height="40.0" fill="#FFFACD" stroke="#CC8800" stroke-width="2" rx="0"/>
+  <text x="560.0" y="207.3" font-size="11" fill="#333333" text-anchor="middle" font-weight="bold">Allocate:</text>
+  <text x="560.0" y="220.3" font-size="11" fill="#333333" text-anchor="middle" font-weight="bold">local_tmp, local_shifted, local_out</text>
+  <rect x="250.0" y="265.0" width="400.0" height="30.0" fill="#90EE90" stroke="#228B22" stroke-width="2" rx="0"/>
+  <text x="450.0" y="284.9" font-size="14" fill="#228B22" text-anchor="middle" font-weight="bold">Run Phase</text>
+  <rect x="315.0" y="305.0" width="130.0" height="50.0" fill="#90EE90" stroke="#228B22" stroke-width="2" rx="8"/>
+  <text x="380.0" y="326.9" font-size="14" fill="#333333" text-anchor="middle" font-weight="bold">Kernel 1</text>
+  <text x="380.0" y="342.9" font-size="14" fill="#333333" text-anchor="middle" font-weight="bold">local_tmp = local_a + local_b</text>
+  <rect x="475.0" y="305.0" width="130.0" height="50.0" fill="#90EE90" stroke="#228B22" stroke-width="2" rx="8"/>
+  <text x="540.0" y="326.9" font-size="14" fill="#333333" text-anchor="middle" font-weight="bold">Kernel 2</text>
+  <text x="540.0" y="342.9" font-size="14" fill="#333333" text-anchor="middle" font-weight="bold">local_shifted = tmp + bias</text>
+  <rect x="635.0" y="305.0" width="130.0" height="50.0" fill="#90EE90" stroke="#228B22" stroke-width="2" rx="8"/>
+  <text x="700.0" y="326.9" font-size="14" fill="#333333" text-anchor="middle" font-weight="bold">Kernel 3</text>
+  <text x="700.0" y="342.9" font-size="14" fill="#333333" text-anchor="middle" font-weight="bold">local_out = shifted + local_c</text>
+  <rect x="450.0" y="382.5" width="180.0" height="35.0" fill="#FF6B6B" stroke="#CC0000" stroke-width="2" rx="0"/>
+  <text x="540.0" y="397.2" font-size="12" fill="#FFFFFF" text-anchor="middle" font-weight="bold">Data stays LOCAL</text>
+  <text x="540.0" y="411.2" font-size="12" fill="#FFFFFF" text-anchor="middle" font-weight="bold">NO MPI between kernels!</text>
+  <rect x="250.0" y="445.0" width="400.0" height="30.0" fill="#FFD700" stroke="#CC8800" stroke-width="2" rx="0"/>
+  <text x="450.0" y="464.9" font-size="14" fill="#996600" text-anchor="middle" font-weight="bold">Materialize Phase</text>
+  <rect x="445.0" y="487.5" width="150.0" height="45.0" fill="#FFD700" stroke="#CC8800" stroke-width="2" rx="8"/>
+  <text x="520.0" y="506.9" font-size="14" fill="#333333" text-anchor="middle" font-weight="bold">MPI_Gatherv</text>
+  <text x="520.0" y="522.9" font-size="14" fill="#333333" text-anchor="middle" font-weight="bold">local_out → out_tensor</text>
+  <rect x="20.0" y="467.5" width="80.0" height="25.0" fill="#FF6B6B" stroke="#CC0000" stroke-width="2" rx="0"/>
+  <text x="60.0" y="484.2" font-size="12" fill="#FFFFFF" text-anchor="middle" font-weight="bold">VS Legacy:</text>
+  <rect x="-10.0" y="487.5" width="140.0" height="45.0" fill="#FFF0F5" stroke="#DB7093" stroke-width="2" rx="8"/>
+  <text x="60.0" y="507.2" font-size="12" fill="#333333" text-anchor="middle" font-weight="bold">Legacy: 9+ MPI calls</text>
+  <text x="60.0" y="521.2" font-size="12" fill="#333333" text-anchor="middle" font-weight="bold">New: 4-5 MPI calls</text>
+</svg>

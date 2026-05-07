@@ -1,0 +1,38 @@
+{
+  "canvas": {"width": 900, "height": 580},
+  "nodes": [
+    {"id": "title", "label": "Operator Chain: Intermediate Tensor Residency", "x": 450, "y": 35, "width": 800, "height": 30, "shape": "rect", "fill": "#1E3A5F", "stroke": "#1E3A5F", "text_color": "#FFFFFF", "font_size": 18, "bold": true},
+    {"id": "subtitle", "label": "No gather/scatter between kernels - data stays distributed", "x": 450, "y": 65, "width": 800, "height": 25, "shape": "rect", "fill": "#F8F9FA", "stroke": "#F8F9FA", "text_color": "#666666", "font_size": 12, "italic": true},
+    {"id": "source_header", "label": "Source DACPP Code", "x": 100, "y": 100, "width": 180, "height": 25, "shape": "rect", "fill": "#E8F4F8", "stroke": "#4682B4", "text_color": "#4682B4", "font_size": 14, "bold": true},
+    {"id": "code1", "label": "VADD(a, b, tmp) <-> vadd", "x": 60, "y": 140, "width": 260, "height": 28, "shape": "rect", "fill": "#F5F5F5", "stroke": "#CCCCCC", "font_size": 11, "font_family": "monospace"},
+    {"id": "code2", "label": "VSHIFT(tmp, bias, shifted) <-> vshift", "x": 60, "y": 175, "width": 260, "height": 28, "shape": "rect", "fill": "#F5F5F5", "stroke": "#CCCCCC", "font_size": 11, "font_family": "monospace"},
+    {"id": "code3", "label": "VADD(shifted, c, out) <-> vadd", "x": 60, "y": 210, "width": 260, "height": 28, "shape": "rect", "fill": "#F5F5F5", "stroke": "#CCCCCC", "font_size": 11, "font_family": "monospace"},
+    {"id": "init_header", "label": "Init Phase", "x": 450, "y": 100, "width": 400, "height": 30, "shape": "rect", "fill": "#B8D4E8", "stroke": "#4682B4", "text_color": "#4682B4", "font_size": 14, "bold": true},
+    {"id": "scatter_a", "label": "MPI_Scatterv\na → local_a", "x": 380, "y": 150, "width": 110, "height": 45, "shape": "rounded", "fill": "#87CEEB", "stroke": "#4682B4"},
+    {"id": "scatter_b", "label": "MPI_Scatterv\nb → local_b", "x": 510, "y": 150, "width": 110, "height": 45, "shape": "rounded", "fill": "#87CEEB", "stroke": "#4682B4"},
+    {"id": "scatter_c", "label": "MPI_Scatterv\nc → local_c", "x": 640, "y": 150, "width": 110, "height": 45, "shape": "rounded", "fill": "#87CEEB", "stroke": "#4682B4"},
+    {"id": "bcast_bias", "label": "MPI_Bcast\nbias → local_bias", "x": 770, "y": 150, "width": 110, "height": 45, "shape": "rounded", "fill": "#98FB98", "stroke": "#228B22"},
+    {"id": "alloc_note", "label": "Allocate:\nlocal_tmp, local_shifted, local_out", "x": 560, "y": 210, "width": 180, "height": 40, "shape": "rect", "fill": "#FFFACD", "stroke": "#CC8800", "font_size": 11},
+    {"id": "run_header", "label": "Run Phase", "x": 450, "y": 280, "width": 400, "height": 30, "shape": "rect", "fill": "#90EE90", "stroke": "#228B22", "text_color": "#228B22", "font_size": 14, "bold": true},
+    {"id": "kernel1", "label": "Kernel 1\nlocal_tmp = local_a + local_b", "x": 380, "y": 330, "width": 130, "height": 50, "shape": "rounded", "fill": "#90EE90", "stroke": "#228B22"},
+    {"id": "kernel2", "label": "Kernel 2\nlocal_shifted = tmp + bias", "x": 540, "y": 330, "width": 130, "height": 50, "shape": "rounded", "fill": "#90EE90", "stroke": "#228B22"},
+    {"id": "kernel3", "label": "Kernel 3\nlocal_out = shifted + local_c", "x": 700, "y": 330, "width": 130, "height": 50, "shape": "rounded", "fill": "#90EE90", "stroke": "#228B22"},
+    {"id": "local_note", "label": "Data stays LOCAL\nNO MPI between kernels!", "x": 540, "y": 400, "width": 180, "height": 35, "shape": "rect", "fill": "#FF6B6B", "stroke": "#CC0000", "text_color": "#FFFFFF", "font_size": 12, "bold": true},
+    {"id": "mat_header", "label": "Materialize Phase", "x": 450, "y": 460, "width": 400, "height": 30, "shape": "rect", "fill": "#FFD700", "stroke": "#CC8800", "text_color": "#996600", "font_size": 14, "bold": true},
+    {"id": "gather_final", "label": "MPI_Gatherv\nlocal_out → out_tensor", "x": 520, "y": 510, "width": 150, "height": 45, "shape": "rounded", "fill": "#FFD700", "stroke": "#CC8800"},
+    {"id": "comparison", "label": "VS Legacy:", "x": 60, "y": 480, "width": 80, "height": 25, "shape": "rect", "fill": "#FF6B6B", "stroke": "#CC0000", "text_color": "#FFFFFF", "font_size": 12, "bold": true},
+    {"id": "comparison_detail", "label": "Legacy: 9+ MPI calls\nNew: 4-5 MPI calls", "x": 60, "y": 510, "width": 140, "height": 45, "shape": "rounded", "fill": "#FFF0F5", "stroke": "#DB7093", "font_size": 12}
+  ],
+  "edges": [
+    {"from": "code1", "to": "scatter_a", "color": "#4682B4", "style": "dashed", "curve": true},
+    {"from": "code1", "to": "scatter_b", "color": "#4682B4", "style": "dashed", "curve": true},
+    {"from": "code2", "to": "kernel1", "color": "#4682B4", "style": "dashed", "curve": true},
+    {"from": "code2", "to": "bcast_bias", "color": "#4682B4", "style": "dashed", "curve": true},
+    {"from": "code3", "to": "kernel3", "color": "#4682B4", "style": "dashed", "curve": true},
+    {"from": "code3", "to": "scatter_c", "color": "#4682B4", "style": "dashed", "curve": true},
+    {"from": "kernel1", "to": "kernel2", "color": "#228B22", "style": "solid", "label": "local_tmp"},
+    {"from": "kernel2", "to": "kernel3", "color": "#228B22", "style": "solid", "label": "local_shifted"},
+    {"from": "kernel3", "to": "gather_final", "color": "#CC8800", "style": "solid"}
+  ],
+  "groups": []
+}
