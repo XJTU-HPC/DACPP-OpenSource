@@ -103,7 +103,7 @@ ShellPartitionPlan analyzeShellPartition(const DacExprNode& node) {
         return plan;
     }
 
-    const auto paramModes = inferEffectiveParamModes(shell, calc);
+    const auto paramModes = inferPhaseCTransportParamModes(shell, calc);
     const auto splitMeta = collectSplitBindMeta(shell);
 
     std::map<int, BindDomain> bindDomainsById;
@@ -126,15 +126,11 @@ ShellPartitionPlan analyzeShellPartition(const DacExprNode& node) {
         paramPlan.shellParamName = shellWrapperParam->getName();
         paramPlan.calcParamName = calcParam->getName();
         paramPlan.actualTensorName = shellWrapperParam->getName();
-        paramPlan.reads = paramModes[paramIdx] == IOTYPE::READ ||
-                          paramModes[paramIdx] == IOTYPE::READ_WRITE;
-        paramPlan.writes = paramModes[paramIdx] == IOTYPE::WRITE ||
-                           paramModes[paramIdx] == IOTYPE::READ_WRITE;
-
-        if (paramModes[paramIdx] == IOTYPE::READ_WRITE) {
-            reject(plan, "read_write parameter unsupported");
-            return plan;
-        }
+        const IOTYPE transportMode = paramModes[paramIdx];
+        paramPlan.reads = transportMode == IOTYPE::READ ||
+                          transportMode == IOTYPE::READ_WRITE;
+        paramPlan.writes = transportMode == IOTYPE::WRITE ||
+                           transportMode == IOTYPE::READ_WRITE;
 
         bool onlyVoid = shellParam->getNumSplit() > 0;
         bool hasIndex = false;
@@ -292,6 +288,12 @@ ShellPartitionPlan analyzeShellPartition(const DacExprNode& node) {
             }
         } else {
             reject(plan, "parameter has no supported split");
+            return plan;
+        }
+
+        if (transportMode == IOTYPE::READ_WRITE &&
+            paramPlan.access != ParamAccessKind::OutputDirect) {
+            reject(plan, "read_write parameter unsupported");
             return plan;
         }
 

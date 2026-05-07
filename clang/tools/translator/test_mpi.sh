@@ -23,6 +23,8 @@ MPI_TESTS=(
     "jacobi1.0"
     "mandel1.0"
     "imageAdjustment1.0"
+    "mpiOrReadWriteAccumulate1D"
+    "mpiOrReadWriteAccumulate2D"
     "oddeven0.1"
     "vectorAddCombo"
     "gradientSum"

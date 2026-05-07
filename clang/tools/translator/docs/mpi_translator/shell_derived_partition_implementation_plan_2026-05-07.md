@@ -409,6 +409,7 @@ cmake --build build --target translator -j8
 
 cd clang/tools/translator
 bash test_mpi.sh vectorAddCombo imageAdjustment1.0 mandel1.0 decay1.0
+bash test_mpi.sh mpiOrReadWriteAccumulate1D mpiOrReadWriteAccumulate2D
 bash test_mpi.sh matMul1.0 gradientSum DFT1.0 jacobi1.0 stencil1.0 \
   waveEquation1.0 FOuLa1.0 MDP1.0 liuliang1.0 oddeven0.1
 ```
@@ -417,9 +418,10 @@ bash test_mpi.sh matMul1.0 gradientSum DFT1.0 jacobi1.0 stencil1.0 \
 
 - `vectorAddCombo`：chain length 3，layout `Contiguous1D`，`tmp_tensor` / `shifted_tensor` 不 materialize。
 - `imageAdjustment1.0`：chain length 2，layout `RowBlock2D`，`image_tensor2` 不 materialize。
+- `mpiOrReadWriteAccumulate1D` / `mpiOrReadWriteAccumulate2D`：确认 `READ_WRITE OutputDirect` 放宽不会把邻近 direct shell 误接成错误通信形态；两者都应继续走 direct OR path，且输出旧值通过 local scatter 保留。
 - accepted OR 输出不包含 `AccessPattern` / `PackPlan`。
 - final output 才出现 `MPI_Gatherv`。
-- DFT/Jacobi 等 full payload 模式正确 fallback。
+- `MpiPlanResult.reason` 不再固定写成 `"shell-derived phase 1/2"`，而是按实际 accepted OR layout 生成诊断文案。
 
 ---
 
@@ -698,6 +700,7 @@ Analysis 层实现已完成，支持识别以下 layout：
 Phase 3 已启用两个经过验证的 codegen path：
 - `ReplicatedFullTensor`：`DFT1.0` 走 OR codegen，root `tensor2Array()` 后 `MPI_Bcast` 全量 tensor，direct 1D 输入继续 `MPI_Scatterv`，最终输出 `MPI_Gatherv` + `array2Tensor()`。
 - `RowPartitionFullRow`：`gradientSum` 走 OR codegen，root 按 output ownership pack 每个 local output item 对应的 full payload，local calc 通过 full payload view 访问，最终输出 `MPI_Gatherv` + `array2Tensor()`。
+- `READ_WRITE OutputDirect`（受限放宽）：仅对 accepted direct OR output 参数保留旧值分片语义，当前用于 `matMul1.0`，并由 `mpiOrReadWriteAccumulate1D` / `mpiOrReadWriteAccumulate2D` 作为 guard regression 覆盖。
 
 当前 `supportedPhaseLayout()` 已启用：
 - `Contiguous1D`
@@ -705,10 +708,10 @@ Phase 3 已启用两个经过验证的 codegen path：
 - `ReplicatedFullTensor`
 - `RowPartitionFullRow`
 
-已接受的 DFT / gradientSum OR path 不再生成 legacy `AccessPattern` / `PackPlan`。
+已接受的 DFT / gradientSum / jacobi / matMul OR path 不再生成 legacy `AccessPattern` / `PackPlan`。
 
 ### 仍未完成
 
-- `jacobi1.0` 仍 fallback：需要同时处理 `RowPartitionFullRow` + `ReplicatedFullTensor` 的混合 full-payload 输入。
-- `matMul1.0` 仍 fallback：当前 full-payload IR/codegen 尚未处理该形态里的 read-write / ownership 细节。
-- `RowPartitionFullRow` 目前只覆盖 gradientSum 需要的 2D full payload 场景，更广泛的 Phase 3 泛化后续再推进。
+- `jacobi1.0` 已走 OR path：`A[{idx1}][{}]` 按 1D output ownership scatter full row payload，`x[{}]` 走 full tensor broadcast，`x_new` 在 `MPI_Gatherv` 后再 broadcast 回所有 rank 以支持 loop 内 `tensor2Array()` / convergence check。
+- `matMul1.0` 已走 OR path：按 `matC[idx1][idx2]` 的 2D output ownership 划分，`matA[idx1][{}]` / `matB[{}][idx2]` 都按 output ownership pack full payload，`matC` 保留 output-direct `READ_WRITE` 本地分片语义，最终 `MPI_Gatherv` + `array2Tensor()`。
+- `RowPartitionFullRow` 当前覆盖 `gradientSum` 的 2D output ownership、`jacobi1.0` 的 1D output ownership + `ReplicatedFullTensor` 混合输入，以及 `matMul1.0` 的双 full-payload 输入。

@@ -126,7 +126,9 @@ void emitRowPartitionFullRowScatter(std::string& code,
     code += "        for (int r = 0; r < mpi_size; ++r) {\n";
     code += "            for (int64_t local_i = 0; local_i < __or_counts[r]; ++local_i) {\n";
     code += "                const int64_t item_global = static_cast<int64_t>(__or_displs[r]) + local_i;\n";
-    if (indexedBindPos == 0) {
+    if (plan.signature.bindOrder.size() == 1) {
+        code += "                const int64_t indexed_value = item_global;\n";
+    } else if (indexedBindPos == 0) {
         code += "                const int64_t indexed_value = item_global / __or_cols;\n";
     } else {
         code += "                const int64_t indexed_value = item_global % __or_cols;\n";
@@ -192,6 +194,8 @@ void emitParamLocalStorage(std::string& code,
             emitReplicatedFullTensorBroadcast(code, plan, param);
         } else if (param.access == ParamAccessKind::RowPartitionFullRow) {
             emitRowPartitionFullRowScatter(code, plan, param);
+        } else if (param.writes && param.reads) {
+            emitResidentOrScatter(code, plan, param);
         } else if (param.writes) {
             emitOutputBuffer(code, plan, param);
         } else {

@@ -57,8 +57,8 @@ bool assignRowPartitionFullRowLayout(ShellPartitionPlan& plan,
         rejectReason = "RowPartitionFullRow missing output ownership bind";
         return false;
     }
-    if (plan.signature.bindOrder.size() != 2) {
-        rejectReason = "RowPartitionFullRow currently supports 2D output ownership";
+    if (plan.signature.bindOrder.size() > 2) {
+        rejectReason = "RowPartitionFullRow currently supports 1D/2D output ownership";
         return false;
     }
 
@@ -109,8 +109,35 @@ bool assignRowPartitionFullRowLayout(ShellPartitionPlan& plan,
             }
         }
         if (param.access == ParamAccessKind::ReplicatedFullTensor) {
-            rejectReason = "RowPartitionFullRow with ReplicatedFullTensor not supported";
-            return false;
+            if (param.writes) {
+                rejectReason = "ReplicatedFullTensor write not supported";
+                return false;
+            }
+            if (!param.reads) {
+                rejectReason = "ReplicatedFullTensor parameter must be read-only";
+                return false;
+            }
+            if (param.indexDim != -1 || !param.bindOrder.empty()) {
+                rejectReason = "ReplicatedFullTensor cannot have indexed bind";
+                return false;
+            }
+            if (static_cast<int>(param.voidDims.size()) > 2) {
+                rejectReason = "ReplicatedFullTensor too many dimensions (>2)";
+                return false;
+            }
+            int64_t paramTotalSize = 1;
+            bool hasUnknownDimSize = false;
+            for (int64_t dimSize : param.voidDimSizes) {
+                if (dimSize > 0) {
+                    paramTotalSize *= dimSize;
+                } else {
+                    hasUnknownDimSize = true;
+                }
+            }
+            if (!hasUnknownDimSize && paramTotalSize > 10000000) {
+                rejectReason = "ReplicatedFullTensor too large for broadcast (>10M elements)";
+                return false;
+            }
         }
     }
 

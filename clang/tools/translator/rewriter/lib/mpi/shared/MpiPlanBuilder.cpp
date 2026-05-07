@@ -36,6 +36,18 @@ bool isStencilSiteExpr(DacppFile *dacppFile, int exprIdx) {
     return false;
 }
 
+std::string operatorResidentReason(const OperatorResidentChainPlan& chain,
+                                   int exprIndex) {
+    for (const auto& exprPlan : chain.exprPlans) {
+        if (exprPlan.exprIndex != exprIndex) {
+            continue;
+        }
+        return std::string("shell-derived operator-resident ") +
+               localLayoutKindName(exprPlan.signature.layout);
+    }
+    return "shell-derived operator-resident";
+}
+
 } // anonymous namespace
 
 MpiLoweringPlan buildMpiLoweringPlan(DacppFile *dacppFile) {
@@ -109,9 +121,12 @@ MpiLoweringPlan buildMpiLoweringPlan(DacppFile *dacppFile) {
             result.kind = MpiPlanKind::OperatorResident;
             result.operatorResidentChainId =
                 plan.operatorResidentChainByExpr[node.exprIndex];
-            result.reason = "shell-derived phase 1/2";
+            result.reason = operatorResidentReason(
+                plan.residentChains[result.operatorResidentChainId],
+                node.exprIndex);
         } else if (isStencilSiteExpr(dacppFile, node.exprIndex)) {
             result.kind = MpiPlanKind::StencilPhaseC;
+            result.reason = "stencil phase-c";
         } else {
             result.kind = MpiPlanKind::LegacyAccessPattern;
             if (node.exprIndex >= 0 &&
@@ -119,6 +134,9 @@ MpiLoweringPlan buildMpiLoweringPlan(DacppFile *dacppFile) {
                     static_cast<int>(plan.shellPartitionPlans.size())) {
                 result.reason =
                     plan.shellPartitionPlans[node.exprIndex].rejectReason;
+                if (result.reason.empty()) {
+                    result.reason = "legacy access-pattern fallback";
+                }
             }
         }
 

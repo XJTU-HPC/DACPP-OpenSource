@@ -101,6 +101,7 @@ struct ParamAccessPlan {
     bool readFromResident = false;
     bool writeToResident = false;
     bool materializeAfterWrite = false;
+    bool broadcastMaterializedOutput = false;
 
     // Payload metadata for RowPartitionFullRow/ReplicatedFullTensor
     PayloadDirection payloadDirection = PayloadDirection::Unknown;

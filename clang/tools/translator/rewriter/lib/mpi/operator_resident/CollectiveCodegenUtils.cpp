@@ -108,6 +108,23 @@ void emitGatherMaterialize(std::string& code,
     code += "    if (mpi_rank == 0) {\n";
     code += "        " + paramVarName(param) + ".array2Tensor(" + global +
             ");\n";
+    if (param.broadcastMaterializedOutput) {
+        code += "        if (!" + global + ".empty()) {\n";
+        code += "            MPI_Bcast(" + global + ".data(), " +
+                mpiPayloadCountExpr(paramVarName(param) + ".getSize()", type) +
+                ", " + mpiType + ", 0, MPI_COMM_WORLD);\n";
+        code += "        }\n";
+        code += "    } else {\n";
+        code += "        " + global + ".resize(static_cast<std::size_t>(" +
+                paramVarName(param) + ".getSize()));\n";
+        code += "        if (!" + global + ".empty()) {\n";
+        code += "            MPI_Bcast(" + global + ".data(), " +
+                mpiPayloadCountExpr(paramVarName(param) + ".getSize()", type) +
+                ", " + mpiType + ", 0, MPI_COMM_WORLD);\n";
+        code += "        }\n";
+        code += "        " + paramVarName(param) + ".array2Tensor(" + global +
+                ");\n";
+    }
     code += "    }\n";
 }
 

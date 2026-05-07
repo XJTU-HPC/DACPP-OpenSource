@@ -1,26 +1,17 @@
 LOG_CONTAINS:[DAC-Translator] Found outermost while loop for <->
-LOG_CONTAINS:[DACPP][MPI][PhaseC] site jacobiShell_jacobi partial-exchange disabled: phase-c does not support mixed Vector/Matrix sites
-LOG_CONTAINS:[DACPP][MPI][FallbackCache] input A cached in init
-LOG_CONTAINS:[DACPP][MPI][FallbackCache] input b cached in init
-LOG_CONTAINS:[DACPP][MPI][FallbackCache] input x cached in init refresh-from x_new
-LOG_CONTAINS:[DACPP][MPI][FallbackCache] input nums cached in init
+LOG_CONTAINS:[DACPP][MPI][OR] expr=0 shell=jacobiShell layout=RowPartitionFullRow partition=accepted
+LOG_CONTAINS:[DACPP][MPI][OR]   param=A access=RowPartitionFullRow
+LOG_CONTAINS:[DACPP][MPI][OR]   param=x access=ReplicatedFullTensor
 LOG_CONTAINS:[DACPP][MPI] output x_new sync=all-ranks-needed
-SYCL_CONTAINS:ctx.use_partial_exchange = false;
-SYCL_CONTAINS:ctx.partial_exchange_disable_reason = "phase-c does not support mixed Vector/Matrix sites";
-SYCL_CONTAINS:if (!ctx.use_partial_exchange) {
-SYCL_CONTAINS:// DACPP fallback cached input: A
-SYCL_CONTAINS:// DACPP fallback cached input: b
-SYCL_CONTAINS:// DACPP fallback cached input: nums
-SYCL_CONTAINS:// DACPP fallback loop-carried input: x <- x_new
-SYCL_CONTAINS:// DACPP fallback cached input reused: A
-SYCL_CONTAINS:// DACPP fallback cached input reused: b
-SYCL_CONTAINS:// DACPP fallback cached input reused: nums
-SYCL_CONTAINS:// DACPP fallback loop-carried input reused: x
-SYCL_CONTAINS:// DACPP fallback loop-carried input refreshed: x <- x_new
-SYCL_CONTAINS:pack_values_by_globals_parallel_range_into(global_out_x_new, ctx.plan_x.pack.globals.data(), ctx.plan_x.pack.globals.size(), ctx.local_x);
-SYCL_NOT_CONTAINS:x.tensor2Array(global_x);
+LOG_CONTAINS:[DACPP][MPI][OR] chain=0 layout=RowPartitionFullRow length=1 chain=accepted codegen=enabled
+LOG_NOT_CONTAINS:[DACPP][MPI][PhaseC]
+SYCL_CONTAINS:void __dacpp_mpi_or_jacobiShell_jacobi_0
+SYCL_CONTAINS:const int64_t __or_payload_len_a = __or_arg0.getShape(1);
+SYCL_CONTAINS:MPI_Bcast(__or_local_x.data(), static_cast<int>(__or_full_count_x), MPI_FLOAT, 0, MPI_COMM_WORLD);
+SYCL_CONTAINS:MPI_Bcast(__or_materialized_x_new.data(), __or_arg3.getSize(), MPI_FLOAT, 0, MPI_COMM_WORLD);
+SYCL_CONTAINS:__or_arg3.array2Tensor(__or_materialized_x_new);
 SYCL_CONTAINS:MPI_Scatterv
 SYCL_CONTAINS:MPI_Gatherv
-SYCL_CONTAINS:MPI_Bcast
-SYCL_NOT_CONTAINS:__dacpp_mpi_region_jacobiShell_jacobi
-SYCL_NOT_CONTAINS:publish_local_writes_with_halo_or_exchange
+SYCL_NOT_CONTAINS:AccessPattern
+SYCL_NOT_CONTAINS:PackPlan
+SYCL_NOT_CONTAINS:__dacpp_mpi_stencil_

@@ -12,6 +12,7 @@
 
 #include "ASTParse.h"
 #include "DacppStructure.h"
+#include "Rewriter_MPI_Common.h"
 #include "Rewriter_MPI_OperatorResident.h"
 
 namespace dacppTranslator {
@@ -100,6 +101,25 @@ void fillActualTensorNames(ShellPartitionPlan& plan, DacppFile* dacppFile) {
         if (!actual.empty()) {
             param.actualTensorName = actual;
         }
+    }
+}
+
+void annotateOutputSync(ShellPartitionPlan& plan, DacppFile* dacppFile) {
+    if (!dacppFile) {
+        return;
+    }
+    for (auto& param : plan.params) {
+        if (!param.writes || param.access != ParamAccessKind::OutputDirect) {
+            continue;
+        }
+        const OutputSyncRequirement syncRequirement =
+            classifyOutputSyncRequirement(dacppFile, param.actualTensorName,
+                                          plan.exprNode.dacExpr);
+        param.broadcastMaterializedOutput =
+            requiresBroadcast(syncRequirement);
+        llvm::outs() << "[DACPP][MPI] output " << param.actualTensorName
+                     << " sync="
+                     << outputSyncRequirementName(syncRequirement) << "\n";
     }
 }
 
@@ -202,6 +222,7 @@ std::vector<OperatorResidentChainPlan> buildOperatorResidentChains(
     std::vector<ShellPartitionPlan> plans = shellPlans;
     for (auto& plan : plans) {
         fillActualTensorNames(plan, dacppFile);
+        annotateOutputSync(plan, dacppFile);
     }
 
     std::vector<OperatorResidentChainPlan> chains;

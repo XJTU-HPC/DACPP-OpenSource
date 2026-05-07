@@ -1,0 +1,15 @@
+LOG_CONTAINS:[DACPP][MPI][OR] expr=0 shell=matrixMultiply_shell layout=RowPartitionFullRow partition=accepted
+LOG_CONTAINS:[DACPP][MPI][OR]   param=matA access=RowPartitionFullRow
+LOG_CONTAINS:[DACPP][MPI][OR]   param=matB access=RowPartitionFullRow
+LOG_CONTAINS:[DACPP][MPI][OR]   param=matC access=OutputDirect
+LOG_CONTAINS:[DACPP][MPI] output matC sync=root-only
+LOG_CONTAINS:[DACPP][MPI][OR] chain=0 layout=RowPartitionFullRow length=1 chain=accepted codegen=enabled
+SYCL_CONTAINS:void __dacpp_mpi_or_matrixMultiply_shell_matrixMultiply_calc_0
+SYCL_CONTAINS:const int64_t __or_payload_len_vecA = __or_arg0.getShape(1);
+SYCL_CONTAINS:const int64_t __or_payload_len_vecB = __or_arg1.getShape(0);
+SYCL_CONTAINS:MPI_Scatterv(mpi_rank == 0 ? __or_sendbuf_vecA.data() : nullptr
+SYCL_CONTAINS:MPI_Scatterv(mpi_rank == 0 ? __or_sendbuf_vecB.data() : nullptr
+SYCL_CONTAINS:MPI_Gatherv(__or_local_dotProduct.data()
+SYCL_NOT_CONTAINS:AccessPattern
+SYCL_NOT_CONTAINS:PackPlan
+SYCL_NOT_CONTAINS:__dacpp_mpi_stencil_

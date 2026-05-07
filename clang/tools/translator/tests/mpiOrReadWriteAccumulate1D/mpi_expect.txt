@@ -1,0 +1,9 @@
+LOG_CONTAINS:[DACPP][MPI][OR] expr=0 shell=accumulate1DShell layout=Contiguous1D partition=accepted
+LOG_CONTAINS:[DACPP][MPI] output output_tensor sync=root-only
+SYCL_CONTAINS:void __dacpp_mpi_or_accumulate1DShell_accumulate1D_0
+SYCL_CONTAINS:MPI_Scatterv(mpi_rank == 0 ? __or_global_input.data() : nullptr
+SYCL_CONTAINS:MPI_Scatterv(mpi_rank == 0 ? __or_global_output.data() : nullptr
+SYCL_CONTAINS:MPI_Gatherv(__or_local_output.data()
+SYCL_NOT_CONTAINS:AccessPattern
+SYCL_NOT_CONTAINS:PackPlan
+SYCL_NOT_CONTAINS:MPI_Bcast
