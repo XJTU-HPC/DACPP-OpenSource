@@ -1,34 +1,38 @@
 # Operator-Resident Communication Model — 实施进度
 
-日期：2026-05-06（最后更新）
+日期：2026-05-07（最后更新）
 分支：`tqc-2`
 
 设计文档：[operator_resident_communication_model_2026-05-06.md](./operator_resident_communication_model_2026-05-06.md)
 
-本文档跟踪算子驻留通信模型的实施进度，供接手者快速了解已完成和待完成的工作。
+本文档跟踪算子驻留通信模型的实施进度。
 
 ---
 
-## 1. 实施总览
+## 1. 当前目标
 
-设计文档第 12 节定义了 8 个实施步骤。下表列出每步的状态和关键交付物。
-
-| 步骤 | 状态 | 提交 | 说明 |
-|------|------|------|------|
-| 1. 建立目录骨架和 planner | **已完成** | `36f92415e` | rewriter/lib/mpi/ 分四层 + Rewriter_MPI_Plan.h |
-| 2. 老实现收口为 legacy | **已完成** | 同上 | 文件重命名归入 legacy_access_pattern/ |
-| 3. Stencil 与 wrapper 解耦 | **已完成** | `c6d13283d` + `f8d528bee` | dpcppLib 也分层；plan 类型已扩展；逐表达式 plan |
-| 4. operator-resident 分析（不改生成） | **未开始** | | 下一步 |
-| 5. 1D element-wise chain codegen | **未开始** | | vectorAddCombo |
-| 6. 2D matrix row-block codegen | **未开始** | | imageAdjustment1.0 |
-| 7. row-wise reduction codegen | **未开始** | | gradientSum |
-| 8. 扩展 profile 和 benchmark | **未开始** | | |
+在 DACPP 的编程模型下设计并实现一种**新的 MPI 访问模型**，降低现有 AccessPattern 方案的效率损失。新的访问模型尚未设计，当前阶段完成的是**代码架构重构**——为新模型的接入预留了独立的代码路径和目录空间。
 
 ---
 
-## 2. 已完成工作详情
+## 2. 实施总览
 
-### 2.1 Rewriter 侧目录重构（步骤 1-2）
+| 步骤 | 状态 | 说明 |
+|------|------|------|
+| 1. 建立目录骨架和 plan 类型 | **已完成** | rewriter/lib/mpi/ 分四层 + Rewriter_MPI_Plan.h |
+| 2. 老实现收口为 legacy | **已完成** | 文件重命名归入 legacy_access_pattern/ |
+| 3. Stencil 与 wrapper 解耦 | **已完成** | dpcppLib 也分层；plan 类型已扩展；逐表达式 plan |
+| 4. 分析性能瓶颈并设计新访问模型 | **进行中** | 瓶颈分析已完成（见 4.1），新模型设计未开始 |
+| 5. 实现新访问模型的 translator 侧分析 | **未开始** | 依赖步骤 4 的设计 |
+| 6. 实现新访问模型的 codegen | **未开始** | 依赖步骤 5 |
+| 7. 实现新访问模型的 runtime 头文件 | **未开始** | 依赖步骤 6 |
+| 8. Benchmark 和验证 | **未开始** | |
+
+---
+
+## 3. 已完成工作详情
+
+### 3.1 Rewriter 侧目录重构（步骤 1-2）
 
 提交 `36f92415e refactor: restructure MPI rewriter into shared/legacy/stencil directories`
 
@@ -60,11 +64,11 @@ rewriter/lib/mpi/
     WaveSpecialization.cpp
     StencilCodegen_Internal.h
 
-  operator_resident/                # 轻量算子链快路径（空占位）
+  operator_resident/                # 新访问模型（空占位）
     .gitkeep
 ```
 
-### 2.2 运行时头文件重构（步骤 3 的一部分）
+### 3.2 运行时头文件重构（步骤 3 的一部分）
 
 提交 `c6d13283d` + `f8d528bee`
 
@@ -98,24 +102,26 @@ dpcppLib/include/mpi/
     WaveExchangeSpecialization.h
     Stencil.h                       # 聚合头
 
-  operator_resident/                # 未来算子链快路径运行时（空占位）
+  operator_resident/                # 新访问模型运行时（空占位）
 ```
 
 **facade 机制**：顶层 `Common.h` / `Wrapper.h` / `Stencil.h` / `Views.h` 不设自己的 include guard，只做 `#include` 转发。这样避免与移动文件的 guard 冲突。生成代码中的 `#include "mpi/Common.h"` 等路径不需要改变。
 
-### 2.3 Plan 类型与逐表达式分发
+### 3.3 Plan 类型与逐表达式分发
 
 **文件：** `rewriter/include/Rewriter_MPI_Plan.h`
 
 ```cpp
 struct MpiAnalysisContext { DacppFile *dacppFile; };
-struct DacExprNode { exprIndex, expr, shell, calc, dacExpr, parentStmt; };
+struct DacExprNode { exprIndex, expr, shell, calc, dacExpr, parentStmt };
 enum class MpiPlanKind { LegacyAccessPattern, StencilPhaseC, OperatorResident, Unsupported };
 struct MpiPlanResult { kind, exprIndex, reason };
 struct LegacyWrapperPlan : MpiPlanResult { exprNode; };
 struct StencilPhaseCPlan : MpiPlanResult { exprNode; };
 struct MpiLoweringPlan { overallKind, exprNodes[], exprResults[] };
 ```
+
+注意：`MpiPlanKind::OperatorResident` 已预留为枚举值，但暂无对应的 plan 结构体和分发逻辑。等新访问模型设计完成后再补充。
 
 **文件：** `rewriter/lib/mpi/shared/MpiPlanBuilder.cpp`
 
@@ -134,7 +140,7 @@ void Rewriter::rewriteMPI() {
 }
 ```
 
-### 2.4 未动的文件
+### 3.4 未动的文件
 
 以下文件在重构中未修改：
 
@@ -147,94 +153,113 @@ void Rewriter::rewriteMPI() {
 
 ---
 
-## 3. 待完成工作
+## 4. 下一步工作
 
-### 3.1 步骤 4：operator-resident 分析（不改生成）
+### 4.1 现有方案性能瓶颈分析（已完成）
 
-在 `rewriter/lib/mpi/operator_resident/` 下实现链识别分析。**不改 codegen，只输出 debug log。**
+> 详细 benchmark 数据见 `docs/benchmarks/mpi_sycl_efficiency_benchmark_2026-05-06.md`。
 
-需要实现的文件：
+#### 4.1.1 效率差距总览
 
-```
-operator_resident/
-  OperatorChainAnalysis.cpp    # 扫描 basic block 中连续 <->，尝试构造 OperatorChainPlan
-  OperatorDomainAnalysis.cpp   # 分析输出域和 rank ownership
-  ResidencyAnalysis.cpp        # 分析 tensor 驻留状态
-```
+| 用例 | 效率比（手写 / 自动生成） | 核心特征 |
+|------|--------------------------|----------|
+| imageAdjustment1.0 | ~20x | 2 个连续 `<->`，2D element-wise，中间张量不落地 |
+| vectorAddCombo | ~7x | 3 个连续 `<->`，1D element-wise + scalar broadcast |
+| oddeven0.1 | ~2.8x | 偶奇排序，多轮迭代 |
+| gradientSum | ~2.2x | 行归约，单 `<->` |
 
-核心逻辑（参考设计文档第 3、5 节）：
+#### 4.1.2 根因：per-`<->` 的 root-centric 通信循环
 
-1. 扫描同一 basic block 中顺序出现的 `<->` 表达式
-2. 对每段链检查快路径条件：
-   - 每个 `<->` 的输出域可确定
-   - 参数访问是简单 element-wise / scalar broadcast / row-wise reduction
-   - 中间 WRITE tensor 无 host 侧读取穿插
-3. 成功时输出：`[DACPP][MPI][OR] chain accepted length=N domain=... materialize=...`
-4. 失败时输出：`[DACPP][MPI][OR] chain rejected reason=...; fallback=legacy_access_pattern`
-
-调度集成（修改 `MpiPlanBuilder.cpp`）：
+当前 LegacyAccessPattern 方案对**每一个 `<->` 表达式**独立执行完整的通信周期：
 
 ```
-调度规则（设计文档 9.4 节）：
-1. 先识别 loop stencil site → StencilPhaseC（优先级最高）
-2. 对未被 stencil 接管的 <->，尝试 operator-resident chain
-3. 剩余 <-> → LegacyAccessPattern
-4. 新路径 unsupported 时不报错，只记录 reason 并回退
+对每个 <-> 表达式：
+  1. 构建 AccessPattern + PackPlan（~50 行初始化代码）
+  2. MPI_Gather 全局索引到 rank 0
+  3. Rank 0 计算 root-centric pack plan（slots / offsets）
+  4. MPI_Scatterv 分发数据到各 rank
+  5. SYCL kernel 执行（通过 View1D 间接寻址）
+  6. MPI_Gatherv 收集结果到 rank 0
+  7. Rank 0 写回结果
+  → 约 10 次 MPI 调用 / 表达式
 ```
 
-### 3.2 步骤 5：1D element-wise chain codegen
+对比手写参考代码（以 imageAdjustment1.0 为例，~120 行）：
+```
+1. 按 row range 划分一次，各 rank 获得本地行范围
+2. 各 rank 独立执行 kernel_1（image_1）和 kernel_2（image_2），中间张量不离开本地
+3. 最后一次 MPI_Gatherv 收集最终结果
+→ 约 3 次 MPI 调用
+```
 
-目标用例：`vectorAddCombo`（设计文档 7.1 节）
+#### 4.1.3 中间张量的不必要物化
 
-需要在 `rewriter/lib/mpi/operator_resident/` 下新增 codegen 文件，并在 `dpcppLib/include/mpi/operator_resident/` 下新增运行时头文件。
-
-生成代码形态（设计文档第 6 节）：
+以 imageAdjustment1.0 为例，源码有两个连续 `<->`：
 
 ```cpp
-__dacpp_mpi_operator_chain_ctx_xxx ctx;
-__dacpp_mpi_operator_chain_init_xxx(ctx, ...);
-__dacpp_mpi_operator_chain_run_xxx(ctx, ...);
-__dacpp_mpi_operator_chain_materialize_xxx(ctx, ...);
+image_tensor2 = image_1(image_tensor, brightness, contrast) <-> image_calc_1(...);
+final_tensor  = image_2(image_tensor2, gamma)              <-> image_calc_2(...);
 ```
 
-需要支持的模式（设计文档 4.1、4.2、4.5 节）：
-- Element-Wise 一对一：`dataList{lhs[i], rhs[i], out[i]}`
-- Scalar Broadcast：`dataList{in[i], bias[{}], out[i]}`
-- 简单临时 Tensor 链：`tmp/shifted` 不 materialize
+生成代码中：
+- `wrapper_1` 执行后，`image_tensor2` 被 Gather 到 rank 0 再 Scatter 出去
+- `wrapper_2` 再次 Scatter `image_tensor2` 作为输入
+- `image_tensor2` 从未在 host 端被读取，但经历了完整的 root-centric 往返
 
-### 3.3 步骤 6：2D matrix row-block
+这是 20x 效率损失的主要来源——数据在 rank 间无意义地搬运。
 
-目标用例：`imageAdjustment1.0`（设计文档 7.2 节）
+#### 4.1.4 View1D 间接寻址开销
 
-支持模式（设计文档 4.3 节）：`dataList{image[idx1][idx2], image2[idx1][idx2]}`
+当前方案的 kernel 内部通过 `View1D` 访问数据：
+```cpp
+// 生成的 kernel 代码
+int slot = pack_map.slots[idx];
+auto val = view[slot];  // view 内部还有 key_offsets 间接层
+```
 
-### 3.4 步骤 7：row-wise reduction
+而手写参考代码直接使用 `buffer[local_offset + i]`，无间接寻址。对于 element-wise 操作，shell 的 index 划分已经给出了完整的 rank-本地范围，不需要 slots/offsets 映射表。
 
-目标用例：`gradientSum`（设计文档 7.3 节）
+#### 4.1.5 每 `<->` 独立初始化开销
 
-支持模式（设计文档 4.4 节）：`dataList{matGrads[{}][idx1], matNeuronSum[idx1][idx2]}`
+每个 `<->` 表达式独立构建：
+- `AccessPattern` 对象（遍历全局维度信息）
+- `PackPlan`（计算 slots / offsets / key_counts）
+- SYCL buffer 和临时缓冲区
+- MPI 通信 buffer
 
-### 3.5 步骤 8：benchmark 和 profile
+对于共享相同划分方式的连续 `<->`，这些初始化完全重复。
 
-基准数据（设计文档第 10 节）：
+#### 4.1.6 优化方向
 
-| 用例 | 手写 MPI+SYCL(s) | 当前 DAC-MPI(s) | 效率 |
-|------|------------------:|----------------:|-----:|
-| vectorAddCombo | 0.676 | 4.902 | 0.14 |
-| imageAdjustment1.0 | 0.796 | 15.894 | 0.05 |
-| gradientSum | 0.728 | 1.632 | 0.45 |
+基于以上分析，新的 MPI 访问模型应：
+
+1. **利用 shell 的 index/void 信息建立 rank 数据归属**：shell 中 `index` 标记的维度由 MPI 划分，`{}` 标记的维度广播/本地持有——这足以确定每个 rank 持有哪些数据分片
+2. **跨连续 `<->` 复用划分方案**：当多个 `<->` 共享相同的 index 划分时，rank 数据归属只需计算一次
+3. **中间张量保持分布式**：一个 `<->` 的输出如果仅被后续 `<->` 读取，则不执行 Gather/Scatter，直接在本地传递
+4. **仅在链边界物化**：只有当输出需要被 host 读取或划分方式改变时，才执行完整的 Gather
+5. **消除 View1D 间接寻址**：对于 element-wise / broadcast 模式，直接使用本地范围索引
+
+### 4.2 设计新的 MPI 访问模型
+
+基于上述优化方向，设计具体的通信方案和实现架构。需要定义：
+- 如何从 shell 的 split/index 信息推导 rank 数据归属
+- 如何识别连续 `<->` 链及其中间张量
+- 新的 codegen 路径结构
+- 新的 runtime 头文件接口
+
+### 4.3 实现新模型
+
+设计完成后，在 `operator_resident/` 目录下实现 translator 侧分析和 codegen，在 `dpcppLib/include/mpi/operator_resident/` 下实现 runtime 头文件。
 
 ---
 
-## 4. 关键代码入口
-
-接手者需要了解的核心文件：
+## 5. 关键代码入口
 
 | 文件 | 作用 |
 |------|------|
-| `rewriter/lib/Rewriter_MPI.cpp` | MPI 总入口，分发 wrapper/stencil/未来 operator-resident |
-| `rewriter/lib/mpi/shared/MpiPlanBuilder.cpp` | plan builder，当前区分 stencil/legacy，待扩展 operator-resident |
-| `rewriter/include/Rewriter_MPI_Plan.h` | 抽象类型（DacExprNode、MpiPlanKind、MpiLoweringPlan、LegacyWrapperPlan、StencilPhaseCPlan） |
+| `rewriter/lib/Rewriter_MPI.cpp` | MPI 总入口，分发 wrapper/stencil/未来新模型 |
+| `rewriter/lib/mpi/shared/MpiPlanBuilder.cpp` | plan builder，当前区分 stencil/legacy，预留 OperatorResident |
+| `rewriter/include/Rewriter_MPI_Plan.h` | 抽象类型（DacExprNode、MpiPlanKind、MpiLoweringPlan） |
 | `rewriter/include/Rewriter_MPI_Common.h` | 所有 MPI rewriter 共享的 facade 头（函数声明、数据结构） |
 | `rewriter/include/Rewriter_MPI_Stencil_Common.h` | stencil rewriter 共享头 |
 | `rewriter/lib/mpi/legacy_access_pattern/WrapperCodegen.cpp` | 当前普通 MPI wrapper 的 codegen |
@@ -245,7 +270,7 @@ __dacpp_mpi_operator_chain_materialize_xxx(ctx, ...);
 
 ---
 
-## 5. 验证方法
+## 6. 验证方法
 
 ```bash
 # 构建 translator
@@ -255,18 +280,15 @@ cmake --build build --target translator -j8
 # 全量 MPI 回归（28 个用例）
 cd clang/tools/translator
 bash test_mpi.sh
-
-# 指定用例
-bash test_mpi.sh vectorAddCombo imageAdjustment1.0 gradientSum
 ```
 
 ---
 
-## 6. 设计约束提醒
+## 7. 设计约束提醒
 
 - **不改源码语法**：DACPP 源码中 `<->` 语法不变
 - **不改 CLI**：`--mpi`、`--mpi-output-sync` 等参数不变
 - **不改运行时 include 路径**：`MPIPlanner.h`、`mpi/Common.h` 等公共 facade 入口不变（内部可转发到子目录）
-- **不改 stencil 主路径**：Phase-C 逻辑独立，不受 operator-resident 影响
-- **fallback 安全**：operator-resident 分析失败时回退 legacy，不改变语义
+- **不改 stencil 主路径**：Phase-C 逻辑独立，不受新模型影响
+- **fallback 安全**：新模型不支持的表达式回退 legacy，不改变语义
 - **`Rewriter_MPI_Common.h` 暂不拆分**：当前作为 facade 保留，新代码不要再往里追加散函数
