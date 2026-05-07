@@ -44,18 +44,16 @@ int main(int argc, char** argv) {
 
     sycl::queue q{sycl::default_selector_v};
 
-    // Step 1: Color adjustment — increase red by 50
+    // Step 1: Color adjustment — match the DAC calc, which only writes red.
     {
         sycl::buffer<Pixel, 1> buf_in(image.data(), sycl::range<1>(local_count));
         sycl::buffer<Pixel, 1> buf_out(image2.data(), sycl::range<1>(local_count));
 
         q.submit([&](sycl::handler& h) {
             auto acc_in  = buf_in.get_access<sycl::access::mode::read>(h);
-            auto acc_out = buf_out.get_access<sycl::access::mode::write>(h);
+            auto acc_out = buf_out.get_access<sycl::access::mode::read_write>(h);
             h.parallel_for(sycl::range<1>(local_count), [=](sycl::id<1> idx) {
                 acc_out[idx].r = std::min(255, acc_in[idx].r + 50);
-                acc_out[idx].g = acc_in[idx].g;
-                acc_out[idx].b = acc_in[idx].b;
             });
         });
         q.wait();

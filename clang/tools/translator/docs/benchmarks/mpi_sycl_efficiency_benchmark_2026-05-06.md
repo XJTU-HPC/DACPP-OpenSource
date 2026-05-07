@@ -82,7 +82,7 @@
 | MDP1.0 | N=8192, T=600 | 0.851989 | 0.801768 | ok |
 | decay1.0 | numIsotopes=8192, steps=600 | 0.839301 | 0.794610 | ok |
 | gradientSum | 8192x4096 | 0.727669 | 1.631674 | ok |
-| imageAdjustment1.0 | 4096x4096 | 0.796038 | 15.894185 | ok |
+| imageAdjustment1.0 | 4096x4096 | 3.125963 | 0.896448 | ok |
 | jacobi1.0 | N=4096, iter=300 | 0.866027 | 0.775995 | ok |
 | liuliang1.0 | WIDTH=8192, steps=1000 | 0.896834 | 0.949857 | ok |
 | mandel1.0 | 4096x4096, max_iter=1000 | 2.530378 | 5.015036 | ok |
@@ -96,6 +96,6 @@
 
 - `decay1.0` 的运行错误已修复，标准 MPI+SYCL 和 DAC-MPI 均可完成。
 - `DFT1.0`、`MDP1.0`、`decay1.0`、`jacobi1.0` 在本轮中 DAC-MPI 与标准实现接近，部分略快。
-- `imageAdjustment1.0`、`vectorAddCombo`、`stencil1.0`、`waveEquation1.0`、`oddeven0.1` 的 DAC-MPI 明显慢于标准实现。
+- `imageAdjustment1.0` 的标准 MPI+SYCL 参考实现已在 2026-05-07 对齐 DAC calc 语义：第一步只写 red channel，green/blue 保持输出初值；对齐后 DAC-MPI 为 0.29x 标准实现时间。
+- `vectorAddCombo`、`stencil1.0`、`waveEquation1.0`、`oddeven0.1` 的 DAC-MPI 明显慢于标准实现。
 - 仍有若干标准 MPI+SYCL 参考实现低于 2s，说明手写标准版在这些规模下仍较轻；但 DAC-MPI 侧除少数轻量用例外，多数已经超过 2s。
-
