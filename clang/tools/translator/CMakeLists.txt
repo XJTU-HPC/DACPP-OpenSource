@@ -40,6 +40,11 @@ set(REWRITER_SOURCES
   # --- MPI legacy access pattern ---
   rewriter/lib/mpi/legacy_access_pattern/PatternInit.cpp
   rewriter/lib/mpi/legacy_access_pattern/WrapperCodegen.cpp
+  # --- MPI operator resident / shell-derived phase 1-2 ---
+  rewriter/lib/mpi/operator_resident/ShellPartitionAnalysis.cpp
+  rewriter/lib/mpi/operator_resident/OperatorChainAnalysis.cpp
+  rewriter/lib/mpi/operator_resident/ResidencyAnalysis.cpp
+  rewriter/lib/mpi/operator_resident/OperatorResidentCodegen.cpp
   # --- MPI stencil phase C ---
   rewriter/lib/mpi/stencil_phase_c/StencilAnalysis.cpp
   rewriter/lib/mpi/stencil_phase_c/StencilAnalysisUtils.cpp

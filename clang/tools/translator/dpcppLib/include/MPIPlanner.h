@@ -5,5 +5,6 @@
 #include "mpi/Wrapper.h"
 #include "mpi/Stencil.h"
 #include "mpi/Views.h"
+#include "mpi/operator_resident/OperatorResidentRuntime.h"
 
 #endif

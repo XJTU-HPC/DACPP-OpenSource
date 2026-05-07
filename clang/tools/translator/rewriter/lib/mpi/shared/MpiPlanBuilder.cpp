@@ -1,4 +1,5 @@
 #include "Rewriter_MPI_Plan.h"
+#include "Rewriter_MPI_OperatorResident.h"
 #include "DacppStructure.h"
 #include "Rewriter.h"
 
@@ -48,9 +49,50 @@ MpiLoweringPlan buildMpiLoweringPlan(DacppFile *dacppFile) {
         plan.exprNodes.push_back(buildExprNode(dacppFile, i));
     }
 
-    // Determine overall plan kind.
+    plan.operatorResidentChainByExpr.assign(plan.exprNodes.size(), -1);
+
+    for (const auto &node : plan.exprNodes) {
+        plan.shellPartitionPlans.push_back(analyzeShellPartition(node));
+    }
+
+    plan.residentChains = buildOperatorResidentChains(
+        dacppFile, plan.exprNodes, plan.shellPartitionPlans);
+    for (std::size_t chainIdx = 0; chainIdx < plan.residentChains.size();
+         ++chainIdx) {
+        const auto& chain = plan.residentChains[chainIdx];
+        if (!chain.supported) {
+            continue;
+        }
+        for (const auto& exprPlan : chain.exprPlans) {
+            if (exprPlan.exprIndex >= 0 &&
+                exprPlan.exprIndex <
+                    static_cast<int>(plan.operatorResidentChainByExpr.size())) {
+                plan.operatorResidentChainByExpr[exprPlan.exprIndex] =
+                    static_cast<int>(chainIdx);
+            }
+        }
+    }
+
+    bool hasStencilSiteNeedingPhaseC = false;
     if (dacppFile->hasMPIStencilSites()) {
+        for (const auto& site : dacppFile->getMPIStencilSites()) {
+            const int exprIdx = site.exprIndex;
+            if (exprIdx < 0 ||
+                exprIdx >=
+                    static_cast<int>(plan.operatorResidentChainByExpr.size()) ||
+                plan.operatorResidentChainByExpr[exprIdx] < 0) {
+                hasStencilSiteNeedingPhaseC = true;
+                break;
+            }
+        }
+    }
+
+    // Determine overall plan kind.
+    if (hasStencilSiteNeedingPhaseC) {
         plan.overallKind = MpiPlanKind::StencilPhaseC;
+    } else if (!plan.residentChains.empty() &&
+               plan.residentChains.size() == plan.exprNodes.size()) {
+        plan.overallKind = MpiPlanKind::OperatorResident;
     } else {
         plan.overallKind = MpiPlanKind::LegacyAccessPattern;
     }
@@ -60,10 +102,24 @@ MpiLoweringPlan buildMpiLoweringPlan(DacppFile *dacppFile) {
         MpiPlanResult result;
         result.exprIndex = node.exprIndex;
 
-        if (isStencilSiteExpr(dacppFile, node.exprIndex)) {
+        if (node.exprIndex >= 0 &&
+                   node.exprIndex <
+                       static_cast<int>(plan.operatorResidentChainByExpr.size()) &&
+                   plan.operatorResidentChainByExpr[node.exprIndex] >= 0) {
+            result.kind = MpiPlanKind::OperatorResident;
+            result.operatorResidentChainId =
+                plan.operatorResidentChainByExpr[node.exprIndex];
+            result.reason = "shell-derived phase 1/2";
+        } else if (isStencilSiteExpr(dacppFile, node.exprIndex)) {
             result.kind = MpiPlanKind::StencilPhaseC;
         } else {
             result.kind = MpiPlanKind::LegacyAccessPattern;
+            if (node.exprIndex >= 0 &&
+                node.exprIndex <
+                    static_cast<int>(plan.shellPartitionPlans.size())) {
+                result.reason =
+                    plan.shellPartitionPlans[node.exprIndex].rejectReason;
+            }
         }
 
         plan.exprResults.push_back(result);
