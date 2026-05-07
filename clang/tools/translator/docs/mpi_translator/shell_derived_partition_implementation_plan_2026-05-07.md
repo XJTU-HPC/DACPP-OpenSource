@@ -139,6 +139,26 @@ Operator-Resident Communication Model 的目标：
 - materialize 使用 `MPI_Gatherv` 或 contiguous gather。
 - root 副本更新后，状态变成 `MaterializedRoot`。
 
+循环提升：
+
+位于 `for` / `while` 循环内的 `<->` 使用统一的 loop-lowered shell-derived 结构。该结构把循环不变的通信和 metadata 放入 `init()`，把每步变化的数据和 kernel 放入 `run()`，并在可观察边界使用 `materialize()` 恢复 root-visible tensor：
+
+```cpp
+__dacpp_mpi_shell_ctx_xxx ctx;
+__dacpp_mpi_shell_init_xxx(ctx, ...);
+while (...) {
+    __dacpp_mpi_shell_run_xxx(ctx, ...);
+}
+__dacpp_mpi_shell_materialize_xxx(ctx, ...);
+```
+
+- `init()` 负责 rank ownership、counts/displs、稳定 layout、loop-invariant READ 输入分发、replicated/full payload cache 和可复用 SYCL queue/buffer。
+- `run()` 负责 loop-variant scalar broadcast、每步 kernel、必要的 distributed publish / route / refresh，以及本步必须发生的输出同步。
+- `materialize()` 只在 loop 后或 host 可观察点执行，把 distributed resident/cache 状态恢复为 root-visible tensor。
+- `stencil_window` backend 使用该结构承载 halo、boundary-local、writer-to-reader route 和 read-cache transition。
+- `direct_1d` / `row_block_2d` / `full_payload` backend 同样使用该结构承载 loop-invariant direct inputs。`decay1.0` 这类循环中 direct shell 的目标形态是：`N0s` / `lambdas` 在 `init()` scatter 一次，`t` 在 `run()` broadcast，`local_A` 按 host assignment 或最终输出需求同步。
+- 无法证明实参、shape、bind domain 或 loop-carried state 稳定时，保持普通 per-`<->` wrapper 或 legacy fallback。
+
 Fallback 条件：
 
 - 输出 domain 无法确定。
@@ -461,8 +481,29 @@ bash test_mpi.sh matMul1.0 gradientSum DFT1.0 jacobi1.0 stencil1.0 \
 思路：
 
 - `RegularSplit` 不再 fallback legacy，而由 `stencil_window` backend 接管。
-- 复用现有 `stencil_phase_c` 的 halo / exchange / materialize 能力。
-- planner owner 归入 shell-derived lowering，代码可继续放在 `stencil_phase_c`。
+- `stencil_window` 采用 loop-lowered `ctx/init/run/materialize` 结构，`init()` 固化稳定 layout 和 cache，`run()` 执行 halo/exchange/boundary-local/route，`materialize()` 在 loop 后恢复 root-visible tensor。
+- 现有 `stencil_phase_c` 的 halo、exchange、boundary-local、read-cache transition 和 materialize 能力作为 backend 实现来源，planner ownership 归入 shell-derived lowering。
+- Phase 4 的结构产物同时定义通用 loop-lowered shell-derived contract，供后续 direct/resident/full-payload 循环形态复用。
+
+### Phase 4.5：Loop-Lowered Direct / Resident
+
+目标测试：
+
+- `decay1.0`
+- 循环内稳定 direct/resident shell 的后续用例
+
+新增执行形态：
+
+- `LoopLiftedDirect1D`
+- `LoopLiftedRowBlock2D`
+- `LoopLiftedFullPayload`
+
+思路：
+
+- 对循环不变 READ 输入执行一次性 `init()` scatter/cache，避免每轮重复分发大输入。
+- 对循环变化 scalar、小 replicated 输入、收敛状态或迭代参数在 `run()` 中执行轻量 broadcast/refresh。
+- 对 loop-carried distributed tensor 维持 resident/cache 状态，只在 host assignment、print、unknown call 或最终输出处 materialize。
+- `decay1.0` 的目标结构是 `N0s` / `lambdas` loop-invariant scatter-once，`t` per-step broadcast，`local_A` per-step kernel 后按 `A_tensor[...] = local_A_tensor` 的可观察需求同步。
 
 ### Phase 5：Fixed Block / Odd-even
 
