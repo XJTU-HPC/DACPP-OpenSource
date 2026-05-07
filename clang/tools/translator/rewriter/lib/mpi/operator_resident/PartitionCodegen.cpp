@@ -10,7 +10,8 @@ void emitPartitionCode(std::string& code, const ShellPartitionPlan& plan) {
     const std::string firstTensor =
         paramVarName(plan.params[static_cast<std::size_t>(
             firstDomain.runtimeSizeParam)]);
-    if (plan.signature.layout == LocalLayoutKind::Contiguous1D) {
+    if (plan.signature.layout == LocalLayoutKind::Contiguous1D ||
+        plan.signature.layout == LocalLayoutKind::ReplicatedFullTensor) {
         code += "    const int64_t __or_total_items = " + firstTensor +
                 ".getShape(" + std::to_string(firstDomain.dimId) + ");\n";
         code += "    const auto __or_range = dacpp::mpi::operator_resident::rank_range_1d(__or_total_items, mpi_rank, mpi_size);\n";

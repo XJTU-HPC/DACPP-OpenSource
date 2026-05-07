@@ -32,6 +32,12 @@ void emitResidentOrScatter(std::string& code,
 void emitScalarBroadcast(std::string& code,
                          const ShellPartitionPlan& plan,
                          const ParamAccessPlan& param);
+void emitReplicatedFullTensorBroadcast(std::string& code,
+                                       const ShellPartitionPlan& plan,
+                                       const ParamAccessPlan& param);
+void emitRowPartitionFullRowScatter(std::string& code,
+                                    const ShellPartitionPlan& plan,
+                                    const ParamAccessPlan& param);
 void emitParamLocalStorage(std::string& code,
                            const ShellPartitionPlan& plan);
 void emitPartitionCode(std::string& code, const ShellPartitionPlan& plan);

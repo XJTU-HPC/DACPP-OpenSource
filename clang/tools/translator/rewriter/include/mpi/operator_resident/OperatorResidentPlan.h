@@ -40,6 +40,15 @@ enum class ParamAccessKind {
     Unsupported
 };
 
+// Payload direction describes how void dimensions relate to index dimensions
+enum class PayloadDirection {
+    FullRow,         // e.g., tensor[{}][idx] - void is row, index is col
+    FullColumn,      // e.g., tensor[idx][{}] - void is col, index is row
+    IndexedRowFullCols, // e.g., tensor[idx][{}] with bind on row - indexed row, full cols
+    IndexedColFullRows, // e.g., tensor[{}][idx] with bind on col - indexed col, full rows
+    Unknown
+};
+
 enum class ResidencyKind {
     RootOnly,
     DistributedClean,
@@ -92,6 +101,13 @@ struct ParamAccessPlan {
     bool readFromResident = false;
     bool writeToResident = false;
     bool materializeAfterWrite = false;
+
+    // Payload metadata for RowPartitionFullRow/ReplicatedFullTensor
+    PayloadDirection payloadDirection = PayloadDirection::Unknown;
+    std::vector<int> voidDims;              // Tensor dimensions that are void (index split is separate)
+    std::vector<int64_t> voidDimSizes;      // Size of each void dimension
+    int indexDim = -1;                      // Which tensor dim is indexed (-1 if none)
+    int64_t indexDimSize = 1;               // Size of the indexed dimension
 };
 
 struct ShellPartitionPlan {

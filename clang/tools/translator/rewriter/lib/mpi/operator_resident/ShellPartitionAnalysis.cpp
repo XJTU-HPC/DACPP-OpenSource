@@ -19,7 +19,7 @@ void reject(ShellPartitionPlan& plan, const std::string& reason) {
         plan.exprNode.shell ? plan.exprNode.shell->getName() : "<null>";
     llvm::outs() << "[DACPP][MPI][OR] expr=" << plan.exprIndex
                  << " shell=" << shellName
-                 << " rejected reason=" << reason << "\n";
+                 << " partition=rejected reason=" << reason << "\n";
 }
 
 } // namespace
@@ -70,6 +70,22 @@ const char* paramAccessKindName(ParamAccessKind kind) {
     return "Unsupported";
 }
 
+const char* payloadDirectionName(PayloadDirection dir) {
+    switch (dir) {
+    case PayloadDirection::FullRow:
+        return "FullRow";
+    case PayloadDirection::FullColumn:
+        return "FullColumn";
+    case PayloadDirection::IndexedRowFullCols:
+        return "IndexedRowFullCols";
+    case PayloadDirection::IndexedColFullRows:
+        return "IndexedColFullRows";
+    case PayloadDirection::Unknown:
+        return "Unknown";
+    }
+    return "Unknown";
+}
+
 ShellPartitionPlan analyzeShellPartition(const DacExprNode& node) {
     ShellPartitionPlan plan;
     plan.exprIndex = node.exprIndex;
@@ -91,7 +107,7 @@ ShellPartitionPlan analyzeShellPartition(const DacExprNode& node) {
     const auto splitMeta = collectSplitBindMeta(shell);
 
     std::map<int, BindDomain> bindDomainsById;
-    std::vector<int> firstDirectOrder;
+    std::vector<int> outputDirectOrder;
     bool sawDirectParam = false;
     bool sawWriteParam = false;
     bool sawScalarParam = false;
@@ -122,6 +138,11 @@ ShellPartitionPlan analyzeShellPartition(const DacExprNode& node) {
 
         bool onlyVoid = shellParam->getNumSplit() > 0;
         bool hasIndex = false;
+        std::vector<int> localVoidDims;  // Collect void dims for this param
+        std::vector<int64_t> localVoidDimSizes;
+        int localIndexDim = -1;
+        int64_t localIndexDimSize = 1;
+
         for (int splitIdx = 0; splitIdx < shellParam->getNumSplit(); ++splitIdx) {
             Split* split = shellParam->getSplit(splitIdx);
             if (operator_resident::splitIsRegular(split)) {
@@ -129,10 +150,14 @@ ShellPartitionPlan analyzeShellPartition(const DacExprNode& node) {
                 return plan;
             }
             if (operator_resident::splitIsVoid(split)) {
+                const int voidDimId = split ? split->getDimIdx() : splitIdx;
+                localVoidDims.push_back(voidDimId);
+                localVoidDimSizes.push_back(
+                    operator_resident::shapeValueFor(shell, paramIdx, voidDimId));
                 TensorDimMapping mapping;
                 mapping.tensorName = shellWrapperParam->getName();
                 mapping.shellParamIndex = paramIdx;
-                mapping.tensorDim = split ? split->getDimIdx() : splitIdx;
+                mapping.tensorDim = voidDimId;
                 mapping.kind = ShellDimKind::Void;
                 mapping.splitName = "void";
                 plan.mappings.push_back(mapping);
@@ -159,6 +184,8 @@ ShellPartitionPlan analyzeShellPartition(const DacExprNode& node) {
             paramPlan.bindOrder.push_back(bindId);
             paramPlan.tensorDims.push_back(dimId);
             hasIndex = true;
+            localIndexDim = dimId;
+            localIndexDimSize = operator_resident::shapeValueFor(shell, paramIdx, dimId);
 
             TensorDimMapping mapping;
             mapping.tensorName = shellWrapperParam->getName();
@@ -177,10 +204,6 @@ ShellPartitionPlan analyzeShellPartition(const DacExprNode& node) {
                 domain.runtimeSizeParam = paramIdx;
                 domain.dimId = dimId;
             }
-
-            if (firstDirectOrder.empty() || !sawDirectParam) {
-                firstDirectOrder.push_back(bindId);
-            }
         }
 
         if (onlyVoid && !hasIndex) {
@@ -188,26 +211,84 @@ ShellPartitionPlan analyzeShellPartition(const DacExprNode& node) {
                 reject(plan, "void output unsupported");
                 return plan;
             }
-            if (shellParam->getNumSplit() != 1 ||
-                !operator_resident::isScalarVoidParam(shell, paramIdx) ||
-                !operator_resident::calcUsesParamAsScalar(calc, paramIdx)) {
-                reject(plan, "void tensor is not a 1D scalar");
-                return plan;
+            // Check if it's a scalar void parameter
+            if (shellParam->getNumSplit() == 1 &&
+                operator_resident::isScalarVoidParam(shell, paramIdx) &&
+                operator_resident::calcUsesParamAsScalar(calc, paramIdx)) {
+                paramPlan.access = ParamAccessKind::ReplicatedScalar;
+                sawScalarParam = true;
+            } else {
+                // Full tensor void parameter (e.g., input[{}] in DFT)
+                paramPlan.access = ParamAccessKind::ReplicatedFullTensor;
+                paramPlan.voidDims = localVoidDims;
+                paramPlan.voidDimSizes = localVoidDimSizes;
+                paramPlan.indexDim = -1;
+                paramPlan.indexDimSize = 1;
+                paramPlan.payloadDirection = PayloadDirection::Unknown;
             }
-            paramPlan.access = ParamAccessKind::ReplicatedScalar;
-            sawScalarParam = true;
         } else if (hasIndex) {
+            // Set payload metadata before determining access kind
+            paramPlan.voidDims = localVoidDims;
+            paramPlan.voidDimSizes = localVoidDimSizes;
+            paramPlan.indexDim = localIndexDim;
+            paramPlan.indexDimSize = localIndexDimSize;
+
             if (static_cast<int>(paramPlan.bindOrder.size()) !=
                 shellParam->getNumSplit()) {
-                reject(plan, "direct parameter mixes index and void dims");
-                return plan;
-            }
-            sawDirectParam = true;
-            if (paramPlan.writes) {
-                paramPlan.access = ParamAccessKind::OutputDirect;
-                sawWriteParam = true;
+                // This case handles mixed void + index splits (RowPartitionFullRow)
+                // All void splits are skipped from bindOrder, so bindOrder.size()
+                // will be less than NumSplit
+                paramPlan.access = ParamAccessKind::RowPartitionFullRow;
+
+                // Determine payload direction based on tensor dimension layout
+                // For 2D: tensor[idx][{}] means indexed row with full columns
+                //          tensor[{}][idx] means indexed col with full rows
+                if (localVoidDims.size() == 1 && localIndexDim != -1) {
+                    if (localVoidDims[0] < localIndexDim) {
+                        // Void dim comes before index dim: tensor[{}][idx]
+                        paramPlan.payloadDirection = PayloadDirection::IndexedColFullRows;
+                    } else {
+                        // Index dim comes before void dim: tensor[idx][{}]
+                        paramPlan.payloadDirection = PayloadDirection::IndexedRowFullCols;
+                    }
+                } else {
+                    paramPlan.payloadDirection = PayloadDirection::Unknown;
+                }
+
+                sawDirectParam = true;
+                if (paramPlan.writes) {
+                    sawWriteParam = true;
+                }
             } else {
-                paramPlan.access = ParamAccessKind::DirectMapped;
+                // Pure index parameter
+                sawDirectParam = true;
+                if (paramPlan.writes) {
+                    paramPlan.access = ParamAccessKind::OutputDirect;
+                    sawWriteParam = true;
+
+                    if (outputDirectOrder.empty()) {
+                        outputDirectOrder = paramPlan.bindOrder;
+                    } else if (outputDirectOrder != paramPlan.bindOrder) {
+                        reject(plan, "output direct bind order mismatch");
+                        return plan;
+                    }
+                    for (std::size_t bindIdx = 0;
+                         bindIdx < paramPlan.bindOrder.size() &&
+                         bindIdx < paramPlan.tensorDims.size();
+                         ++bindIdx) {
+                        auto& domain = bindDomainsById[paramPlan.bindOrder[bindIdx]];
+                        domain.bindId = paramPlan.bindOrder[bindIdx];
+                        if (domain.representative.empty()) {
+                            domain.representative =
+                                std::to_string(paramPlan.bindOrder[bindIdx]);
+                        }
+                        domain.offsetExpr = "0";
+                        domain.runtimeSizeParam = paramIdx;
+                        domain.dimId = paramPlan.tensorDims[bindIdx];
+                    }
+                } else {
+                    paramPlan.access = ParamAccessKind::DirectMapped;
+                }
             }
         } else {
             reject(plan, "parameter has no supported split");
@@ -225,9 +306,13 @@ ShellPartitionPlan analyzeShellPartition(const DacExprNode& node) {
         reject(plan, "no direct output parameter");
         return plan;
     }
+    if (outputDirectOrder.empty()) {
+        reject(plan, "missing output ownership domain");
+        return plan;
+    }
 
     plan.signature.bindOrder =
-        operator_resident::uniquePreserveOrder(firstDirectOrder);
+        operator_resident::uniquePreserveOrder(outputDirectOrder);
     for (int bindId : plan.signature.bindOrder) {
         auto it = bindDomainsById.find(bindId);
         if (it == bindDomainsById.end()) {
@@ -252,12 +337,33 @@ ShellPartitionPlan analyzeShellPartition(const DacExprNode& node) {
     llvm::outs() << "[DACPP][MPI][OR] expr=" << plan.exprIndex
                  << " shell=" << shell->getName()
                  << " layout=" << localLayoutKindName(plan.signature.layout)
-                 << " accepted\n";
+                 << " partition=accepted\n";
     for (const auto& param : plan.params) {
         llvm::outs() << "[DACPP][MPI][OR]   param=" << param.shellParamName
                      << " access=" << paramAccessKindName(param.access)
+                     << " direction=" << payloadDirectionName(param.payloadDirection)
                      << " reads=" << (param.reads ? "1" : "0")
-                     << " writes=" << (param.writes ? "1" : "0") << "\n";
+                     << " writes=" << (param.writes ? "1" : "0");
+        if (!param.voidDims.empty()) {
+            llvm::outs() << " voidDims=[";
+            for (std::size_t i = 0; i < param.voidDims.size(); ++i) {
+                if (i > 0) llvm::outs() << ",";
+                llvm::outs() << param.voidDims[i];
+                if (i < param.voidDimSizes.size() && param.voidDimSizes[i] > 0) {
+                    llvm::outs() << "x" << param.voidDimSizes[i];
+                } else if (i < param.voidDimSizes.size()) {
+                    llvm::outs() << "xruntime";
+                }
+            }
+            llvm::outs() << "]";
+        }
+        if (param.indexDim != -1) {
+            llvm::outs() << " indexDim=" << param.indexDim;
+            if (param.indexDimSize > 0) {
+                llvm::outs() << "x" << param.indexDimSize;
+            }
+        }
+        llvm::outs() << "\n";
     }
     for (const auto& mapping : plan.mappings) {
         llvm::outs() << "[DACPP][MPI][OR]   mapping tensor="

@@ -30,6 +30,12 @@ bool assignContiguous1DLayout(ShellPartitionPlan& plan,
 bool assignRowBlock2DLayout(ShellPartitionPlan& plan,
                             bool sawScalarParam,
                             std::string& rejectReason);
+bool assignRowPartitionFullRowLayout(ShellPartitionPlan& plan,
+                                     bool sawScalarParam,
+                                     std::string& rejectReason);
+bool assignReplicatedFullTensorLayout(ShellPartitionPlan& plan,
+                                     bool sawScalarParam,
+                                     std::string& rejectReason);
 bool assignPhaseLayout(ShellPartitionPlan& plan,
                        bool sawScalarParam,
                        std::string& rejectReason);

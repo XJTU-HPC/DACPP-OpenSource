@@ -103,6 +103,15 @@ void fillActualTensorNames(ShellPartitionPlan& plan, DacppFile* dacppFile) {
     }
 }
 
+void logCodegenDisabledFallback(const ShellPartitionPlan& plan) {
+    const std::string shellName =
+        plan.exprNode.shell ? plan.exprNode.shell->getName() : "<null>";
+    llvm::outs() << "[DACPP][MPI][OR] expr=" << plan.exprIndex
+                 << " shell=" << shellName
+                 << " layout=" << localLayoutKindName(plan.signature.layout)
+                 << " codegen=disabled fallback=legacy\n";
+}
+
 std::vector<std::string> outputTensorNames(const ShellPartitionPlan& plan) {
     std::vector<std::string> outputs;
     for (const auto& param : plan.params) {
@@ -144,8 +153,12 @@ bool canAppendToChain(const OperatorResidentChainPlan& chain,
 }
 
 bool supportedPhaseLayout(LocalLayoutKind layout) {
+    // Phase 1/2 plus the currently implemented Phase 3 DFT/gradientSum layouts.
+    // Future Phase 3 shapes still fall back through analysis/codegen gating.
     return layout == LocalLayoutKind::Contiguous1D ||
-           layout == LocalLayoutKind::RowBlock2D;
+           layout == LocalLayoutKind::RowBlock2D ||
+           layout == LocalLayoutKind::ReplicatedFullTensor ||
+           layout == LocalLayoutKind::RowPartitionFullRow;
 }
 
 void finalizeChain(OperatorResidentChainPlan& chain) {
@@ -153,9 +166,13 @@ void finalizeChain(OperatorResidentChainPlan& chain) {
         return;
     }
     analyzeResidency(chain);
+    // Note: chain accepted does not mean OR codegen is enabled for this layout
+    // Check supportedPhaseLayout() to see which layouts actually generate OR code
     llvm::outs() << "[DACPP][MPI][OR] chain=" << chain.chainId
                  << " layout=" << localLayoutKindName(chain.signature.layout)
-                 << " length=" << chain.exprPlans.size() << " accepted\n";
+                 << " length=" << chain.exprPlans.size() << " chain=accepted codegen="
+                 << (supportedPhaseLayout(chain.signature.layout) ? "enabled" : "disabled")
+                 << "\n";
 }
 
 } // namespace
@@ -205,6 +222,9 @@ std::vector<OperatorResidentChainPlan> buildOperatorResidentChains(
         (void)exprNodes;
         if (!plan.supported || !supportedPhaseLayout(plan.signature.layout)) {
             closeCurrent();
+            if (plan.supported && !supportedPhaseLayout(plan.signature.layout)) {
+                logCodegenDisabledFallback(plan);
+            }
             continue;
         }
 

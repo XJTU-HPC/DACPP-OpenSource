@@ -31,6 +31,28 @@ bool assignRowBlock2DLayout(ShellPartitionPlan& plan,
 bool assignPhaseLayout(ShellPartitionPlan& plan,
                        bool sawScalarParam,
                        std::string& rejectReason) {
+    // Check if any parameter uses Phase 3 access kinds
+    bool hasReplicatedFullTensor = false;
+    bool hasRowPartitionFullRow = false;
+    for (const auto& param : plan.params) {
+        if (param.access == ParamAccessKind::ReplicatedFullTensor) {
+            hasReplicatedFullTensor = true;
+        }
+        if (param.access == ParamAccessKind::RowPartitionFullRow) {
+            hasRowPartitionFullRow = true;
+        }
+    }
+
+    // Phase 3: Full payload layouts
+    if (hasReplicatedFullTensor || hasRowPartitionFullRow) {
+        // Determine overall layout based on parameter composition
+        if (hasRowPartitionFullRow) {
+            return assignRowPartitionFullRowLayout(plan, sawScalarParam, rejectReason);
+        }
+        return assignReplicatedFullTensorLayout(plan, sawScalarParam, rejectReason);
+    }
+
+    // Phase 1/2: Legacy layouts
     const std::size_t bindRank = plan.signature.bindOrder.size();
     if (bindRank == 1) {
         return assignContiguous1DLayout(plan, rejectReason);

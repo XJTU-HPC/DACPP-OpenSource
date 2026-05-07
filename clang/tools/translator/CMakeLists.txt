@@ -40,11 +40,12 @@ set(REWRITER_SOURCES
   # --- MPI legacy access pattern ---
   rewriter/lib/mpi/legacy_access_pattern/PatternInit.cpp
   rewriter/lib/mpi/legacy_access_pattern/WrapperCodegen.cpp
-  # --- MPI operator resident / shell-derived phase 1-2 ---
+  # --- MPI operator resident / shell-derived phase 1-3 ---
   rewriter/lib/mpi/operator_resident/SplitBindAnalysis.cpp
   rewriter/lib/mpi/operator_resident/ScalarAccessAnalysis.cpp
   rewriter/lib/mpi/operator_resident/Direct1DPartitionAnalysis.cpp
   rewriter/lib/mpi/operator_resident/RowBlock2DPartitionAnalysis.cpp
+  rewriter/lib/mpi/operator_resident/FullPayloadPartitionAnalysis.cpp
   rewriter/lib/mpi/operator_resident/ShellPartitionAnalysis.cpp
   rewriter/lib/mpi/operator_resident/OperatorChainAnalysis.cpp
   rewriter/lib/mpi/operator_resident/ResidencyAnalysis.cpp

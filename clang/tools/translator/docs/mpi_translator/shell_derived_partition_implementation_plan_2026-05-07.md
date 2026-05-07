@@ -624,3 +624,50 @@ bash test_mpi.sh matMul1.0 gradientSum DFT1.0 jacobi1.0 stencil1.0 \
 - `imageAdjustment1.0` 的 `image_tensor2` 不出现 `tensor2Array()` / `array2Tensor()`。
 - accepted path 出现 `ContiguousView1D` 或 row-block direct buffer。
 - final output 才 `MPI_Gatherv`。
+
+---
+
+## 13. Phase 3 Analysis 状态 (2026-05-07)
+
+### 已完成
+
+Analysis 层实现已完成，支持识别以下 layout：
+
+- `RowPartitionFullRow`：混合 void + index split 的参数（如 `matGrads[{}][idx1]`）
+- `ReplicatedFullTensor`：纯 void split 的非 scalar 参数（如 `input[{}]`）
+
+新增文件：
+- `FullPayloadPartitionAnalysis.cpp` - 实现 `assignRowPartitionFullRowLayout` 和 `assignReplicatedFullTensorLayout`
+
+修改文件：
+- `ShellPartitionAnalysis.cpp` - 更新参数访问类型识别逻辑
+- `RowBlock2DPartitionAnalysis.cpp` - `assignPhaseLayout` 添加 Phase 3 分发
+- `ShellPartitionAnalysis_Internal.h` - 添加新函数声明
+- `CMakeLists.txt` - 添加新源文件
+
+验证结果：
+```
+[DACPP][MPI][OR] expr=0 shell=gradSumShell layout=RowPartitionFullRow accepted
+[DACPP][MPI][OR]   param=matGrads access=RowPartitionFullRow reads=1 writes=0
+[DACPP][MPI][OR]   param=matNeuronSum access=OutputDirect reads=0 writes=1
+```
+
+### Phase 3 Codegen 当前状态
+
+Phase 3 已启用两个经过验证的 codegen path：
+- `ReplicatedFullTensor`：`DFT1.0` 走 OR codegen，root `tensor2Array()` 后 `MPI_Bcast` 全量 tensor，direct 1D 输入继续 `MPI_Scatterv`，最终输出 `MPI_Gatherv` + `array2Tensor()`。
+- `RowPartitionFullRow`：`gradientSum` 走 OR codegen，root 按 output ownership pack 每个 local output item 对应的 full payload，local calc 通过 full payload view 访问，最终输出 `MPI_Gatherv` + `array2Tensor()`。
+
+当前 `supportedPhaseLayout()` 已启用：
+- `Contiguous1D`
+- `RowBlock2D`
+- `ReplicatedFullTensor`
+- `RowPartitionFullRow`
+
+已接受的 DFT / gradientSum OR path 不再生成 legacy `AccessPattern` / `PackPlan`。
+
+### 仍未完成
+
+- `jacobi1.0` 仍 fallback：需要同时处理 `RowPartitionFullRow` + `ReplicatedFullTensor` 的混合 full-payload 输入。
+- `matMul1.0` 仍 fallback：当前 full-payload IR/codegen 尚未处理该形态里的 read-write / ownership 细节。
+- `RowPartitionFullRow` 目前只覆盖 gradientSum 需要的 2D full payload 场景，更广泛的 Phase 3 泛化后续再推进。

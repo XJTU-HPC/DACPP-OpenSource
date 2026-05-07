@@ -31,9 +31,14 @@ void emitKernel(std::string& code, const ShellPartitionPlan& plan) {
         code += "                    auto* __or_data_" + param.calcParamName +
                 " = __or_acc_" + param.calcParamName +
                 ".template get_multi_ptr<sycl::access::decorated::no>().get();\n";
-        const std::string offset =
-            param.access == ParamAccessKind::ReplicatedScalar ? "0"
-                                                              : "item_linear";
+        std::string offset = "item_linear";
+        if (param.access == ParamAccessKind::ReplicatedScalar ||
+            param.access == ParamAccessKind::ReplicatedFullTensor) {
+            offset = "0";
+        } else if (param.access == ParamAccessKind::RowPartitionFullRow) {
+            offset = "static_cast<int>(item_linear * __or_payload_len_" +
+                     param.calcParamName + ")";
+        }
         code += "                    " + viewType(plan, param) + " view_" +
                 param.calcParamName + "{__or_data_" + param.calcParamName +
                 ", " + offset + "};\n";
