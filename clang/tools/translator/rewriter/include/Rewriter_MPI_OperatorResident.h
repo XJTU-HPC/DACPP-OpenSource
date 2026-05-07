@@ -4,7 +4,7 @@
 #include <string>
 #include <vector>
 
-#include "Rewriter_MPI_Plan.h"
+#include "mpi/operator_resident/OperatorResidentPlan.h"
 
 namespace clang {
 class BinaryOperator;

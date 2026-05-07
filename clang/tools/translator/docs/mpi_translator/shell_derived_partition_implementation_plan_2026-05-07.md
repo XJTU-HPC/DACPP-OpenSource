@@ -1,54 +1,166 @@
-# Shell-Derived Resident Partition Model — 实现路径方案
+# Shell-Derived MPI Lowering 与 Operator-Resident 通信模型
 
 日期：2026-05-07
+分支：`tqc-2`
 
-相关文档：
+本文合并并取代：
 
-- [operator_resident_communication_model_2026-05-06.md](./operator_resident_communication_model_2026-05-06.md)
-- [operator_resident_progress_2026-05-06.md](./operator_resident_progress_2026-05-06.md)
+- `archive/operator_resident_communication_model_2026-05-06.md`
+- `archive/operator_resident_progress_2026-05-06.md`
+- 本文件旧版 Phase 1/2 实现计划
 
-本文把 operator-resident 的设计进一步收敛成可实现路径。核心改进是：不再把 shell `dataList` 降级为每个参数的 `AccessPattern`，而是直接把 `dataList` 当成 MPI partition IR，从 `index` / `split` / `{}` 标注推导 rank ownership，并用 tensor residency 跨连续 `<->` 复用该划分。
-
----
-
-## 1. 核心判断
-
-当前 legacy MPI wrapper 的根本问题是通信主轴选错了：
-
-- 当前主轴：每个 `<->`、每个参数、每个 item 访问哪些 global index。
-- 应改为：每个 shell 的 `dataList` 如何定义迭代域、哪些维度被 rank 划分、哪些数据可以 replicated、哪些中间 tensor 应驻留在 rank 本地。
-
-对不含 `dacpp::split` 的 pure `index` / `{}` shell，`dataList` 已经给出完整的 MPI ownership 信息：
-
-| shell 标注 | parser 表示 | MPI 语义 |
-|---|---|---|
-| `idx` / `dacpp::index` | `IndexSplit` | 参与 bind domain，按 item/rank 切分 |
-| `sp` / `dacpp::split` | `RegularSplit` | stencil/window，需要 halo 或 fallback |
-| `{}` | `Split` 且 id 为 `void` | 不随 item 划分，可能是 scalar、dense slice 或 replicated tensor |
-
-因此，第一版 operator-resident 应只接管 pure `index` / `{}` 模式。含 `RegularSplit` 的表达式继续交给 `stencil_phase_c` 或 `legacy_access_pattern`，避免把 halo 问题混入轻量算子链快路径。
+本文档是后续 MPI lowering 工作的 canonical 设计、进度和文件结构计划。
 
 ---
 
-## 2. 相比原方案的改进点
+## 1. 总体目标
 
-### 2.1 Partition 以 bind domain 为中心
+Shell-Derived MPI Lowering 的长期目标是：`clang/tools/translator/tests` 下所有不以 `mpi` 开头的应用测试，最终都能由新的 shell-derived lowering family 覆盖，不再依赖 legacy `AccessPattern` / `PackPlan` 路径。legacy 路径仍保留为未知用户程序和开发期安全 fallback。
 
-原先容易把 partition 直接建在 tensor dim 上，例如“tensor 第 0 维被切分”。这不够稳，因为 DACPP shell 中真正的迭代域是 `binding()` 关系形成的 bind set。现有 parser 中 `Shell::GetBindInfo()` 已经把相关 `index/split` 归入连通分量，legacy 路径的 `collectSplitBindMeta()` 也把它转成 `bindId`。
+当前 legacy MPI wrapper 的核心问题是通信主轴偏低：
 
-新模型应先建立 bind domain：
+- legacy 主轴：每个 `<->`、每个参数、每个 item 访问哪些 global index。
+- 新主轴：shell `dataList` 已经定义了迭代域、rank ownership、local layout、replicated/full payload 输入，以及中间 tensor 是否应继续驻留在 rank 本地。
 
-```cpp
-struct BindDomain {
-    int bindId = -1;
-    std::string representative;      // index 名，例如 "i" / "idx1"
-    std::string offsetExpr = "0";    // binding offset，第一版只接受 "0"
-    int64_t sizeExprParam = -1;       // 可选：来源 shell 参数编号
-    int dimId = -1;                   // 来源 tensor 维度
-};
+新模型不只是一个小的 operator-resident optimization，而是新的默认 MPI lowering family：
+
+```text
+Shell-Derived MPI Lowering
+  direct_1d             1D pure index direct map
+  resident_chain_1d     1D direct map + scalar broadcast + chain residency
+  row_block_2d          2D row-block direct map + chain residency
+  full_payload          {} + index 的 row/full payload 或 replicated full tensor
+  stencil_window        RegularSplit / halo / window
+  fixed_block           odd-even 这类 fixed pair/block partition
 ```
 
-然后再记录 tensor dim 到 bind domain 的映射，而不是反过来：
+`operator_resident` 仍可作为代码目录和日志前缀，但语义上它只是 shell-derived lowering 的一个子 backend。
+
+---
+
+## 2. 背景与性能问题
+
+当前普通 MPI wrapper 和部分 stencil fallback 路径以 `AccessPattern` 为核心：
+
+- 每个 shell 参数独立构造 `AccessPattern`。
+- 每个参数独立 `build_input_pack_plan()` / `build_output_pack_plan()`。
+- 每次 `<->` wrapper 独立准备输入、执行 kernel、收集输出、按需要写回 root tensor。
+
+这种模型很通用，但在轻量算子链里固定通信和 tensor 重建成本偏高。典型低效形态：
+
+```cpp
+VADD(a, b, tmp) <-> vadd;
+VSHIFT(tmp, bias, shifted) <-> vshift;
+VADD(shifted, c, out) <-> vadd;
+```
+
+低效率用例的共同特征：
+
+- element-wise 或 row-wise reduction，单 item 计算量小。
+- 多个 `<->` 串联，中间 tensor 只被后续 `<->` 读取。
+- 输出 tensor 在真正 host 读取前反复被分布式算子消费。
+- 手写 MPI+SYCL 可以按 rank 直接持有本地切片，而 DAC-MPI 仍按参数重新打包/收集。
+
+近期 benchmark 暴露的差距：
+
+| 用例 | 效率比（手写 / 自动生成） | 核心特征 |
+|---|---:|---|
+| `imageAdjustment1.0` | ~20x | 2 个连续 `<->`，2D element-wise，中间张量不落地 |
+| `vectorAddCombo` | ~7x | 3 个连续 `<->`，1D element-wise + scalar broadcast |
+| `oddeven0.1` | ~2.8x | 偶奇排序，多轮迭代 |
+| `gradientSum` | ~2.2x | 行归约，单 `<->` |
+
+legacy per-`<->` root-centric 通信循环大致为：
+
+```text
+对每个 <-> 表达式：
+  1. 构建 AccessPattern + PackPlan
+  2. MPI_Gather 全局索引到 rank 0
+  3. rank 0 计算 root-centric pack plan
+  4. MPI_Scatterv 分发数据
+  5. SYCL kernel 执行
+  6. MPI_Gatherv 收集结果到 rank 0
+  7. rank 0 写回结果
+```
+
+手写 reference 对 `imageAdjustment1.0` 这类程序通常只做：
+
+```text
+1. 按 row range 划分一次，各 rank 获得本地行范围
+2. 各 rank 独立执行 kernel_1 和 kernel_2，中间张量不离开本地
+3. 最后一次 MPI_Gatherv 收集最终结果
+```
+
+因此，新模型的目标是把通信中心从“参数如何被 item 访问”提升到“算子链的数据应该驻留在哪里、什么时候必须通信”。
+
+---
+
+## 3. Operator-Resident 通信模型
+
+### 3.1 模型目标
+
+Operator-Resident Communication Model 的目标：
+
+- 以 `<->` 的输出迭代域作为通信主轴，而不是以每个参数的 `AccessPattern` 作为主轴。
+- 对轻量算子链建立稳定 rank ownership，使输入、输出、中间 tensor 在多个 `<->` 之间复用同一分片。
+- 中间 WRITE tensor 默认保持 distributed resident，不立即 gather 回 root。
+- 只有遇到 host 侧读取、`print()`、`tensor2Array()`、跨 rank 依赖、最终输出等 materialize 边界时，才收集到 root-visible tensor。
+- 标量和小常量使用 replicated/broadcast 状态，不进入 per-item pack。
+- 任何不满足快路径条件的场景，保守回退现有 legacy 路径。
+
+非目标：
+
+- 不立即替代 stencil halo / Phase-C route 主路径。
+- 不处理复杂非仿射索引、动态 shape、复杂别名或通用 `READ_WRITE` 冲突。
+- 不改变 DACPP 源码语法、CLI 或现有普通 MPI wrapper 语义。
+
+### 3.2 通信执行策略
+
+链初始化：
+
+1. 根据第一个输出 tensor 构造 rank ownership。
+2. 检查链内所有 `<->` 的 domain 是否兼容。
+3. 为每个输入 tensor 查询 residency。
+4. 对 `RootOnly` 输入执行一次按 owner range 的 scatter。
+5. 对 `ReplicatedScalar` 输入执行 broadcast。
+6. 为中间 WRITE tensor 分配 rank-local buffer。
+
+链内运行：
+
+- 每个 `<->` 使用同一个 rank ownership。
+- kernel view 直接绑定 rank-local input/output buffer。
+- 对同分片 distributed tensor 不再 pack/unpack。
+- scalar replicated 参数直接传本地 scalar view。
+
+链边界 materialize：
+
+- 若后续代码不读取输出 tensor，可延迟 materialize。
+- 若遇到 `print()`、`tensor2Array()`、host loop 读取、未知函数调用，则 materialize 相关 tensor。
+- materialize 使用 `MPI_Gatherv` 或 contiguous gather。
+- root 副本更新后，状态变成 `MaterializedRoot`。
+
+Fallback 条件：
+
+- 输出 domain 无法确定。
+- 参数 index 非简单直接映射。
+- 同一 tensor 有复杂 `READ_WRITE`。
+- host 侧在链中间读取中间 tensor。
+- 多个输出 tensor ownership 不一致且无法证明安全转换。
+- 动态 shape 或 runtime-dependent split 本阶段无法证明。
+
+---
+
+## 4. 核心 IR
+
+### 4.1 Shell dim 和 bind domain
+
+parser 已经把 `dataList` 拆成：
+
+- `IndexSplit`
+- `RegularSplit`
+- id 为 `"void"` 的普通 `Split`
+
+新 lowering 先以 bind domain 建模，而不是直接以 tensor dim 建模：
 
 ```cpp
 enum class ShellDimKind {
@@ -57,42 +169,27 @@ enum class ShellDimKind {
     Split
 };
 
+struct BindDomain {
+    int bindId = -1;
+    std::string representative;
+    std::string offsetExpr = "0";
+    int64_t runtimeSizeParam = -1;
+    int dimId = -1;
+};
+
 struct TensorDimMapping {
     std::string tensorName;
     int shellParamIndex = -1;
     int tensorDim = -1;
     ShellDimKind kind = ShellDimKind::Void;
-    int bindId = -1;                  // kind == Index 时有效
-    std::string splitName;            // kind == Split 时有效
+    int bindId = -1;
+    std::string splitName;
 };
 ```
 
-这样 `dataList{A[i][j], B[i][j]}`、`dataList{lhs[i], out[i]}`、`dataList{matGrads[{}][idx1], matNeuronSum[idx1][idx2]}` 都能用同一套 IR 表达。
+`collectSplitBindMeta(shell)` / `Shell::GetBindInfo()` 的结果作为 `bindId` 来源。Phase 1/2 只接受 offset 为 `"0"`。
 
-### 2.2 `{}` 必须细分
-
-`{}` 只表示该维度不随当前 item 变化，不等价于 scalar broadcast。
-
-需要区分：
-
-```cpp
-enum class VoidAccessKind {
-    ScalarElement,    // bias[{}]
-    FullRowPayload,   // matGrads[{}][idx1] 这类 row partition + full row payload
-    ReplicatedTensor, // 小 tensor 整体复制，第一版可不主动启用
-    Unsupported
-};
-```
-
-判断原则：
-
-- 如果 tensor rank 为 1，且唯一维度是 `{}`，且 tensor size 为 1 或可证明小，按 `ScalarElement`。
-- 如果 tensor 同时含 `Void` 和 `Index`，按 `FullRowPayload` 或后续更具体 layout 候选，例如 `matGrads[{}][idx1]`。该类模式必须结合 calc view 语义确认，不允许泛化成普通 scalar broadcast。
-- 如果所有维度都是 `{}`，但 size 不可证明为 1，第一版回退，避免误把大 tensor broadcast。
-
-### 2.3 local layout 不用 bool
-
-`isContiguous` 太粗。codegen 需要知道 local buffer 如何映射到 calc view。
+### 4.2 Layout 和访问类别
 
 ```cpp
 enum class LocalLayoutKind {
@@ -100,43 +197,58 @@ enum class LocalLayoutKind {
     RowBlock2D,
     RowPartitionFullRow,
     ReplicatedScalar,
+    ReplicatedFullTensor,
+    StencilWindow1D,
+    StencilWindow2D,
+    FixedBlock,
+    Unsupported
+};
+
+enum class ParamAccessKind {
+    DirectMapped,
+    OutputDirect,
+    ReplicatedScalar,
+    ReplicatedFullTensor,
+    RowPartitionFullRow,
+    StencilWindow,
+    FixedBlock,
     Unsupported
 };
 ```
 
-第一版支持范围：
+Phase 1/2 只实现：
 
-- `Contiguous1D`：`a[i]`、`out[i]`
-- `RowBlock2D`：`image[idx1][idx2]`
-- `RowPartitionFullRow`：按 row/neuron 维划分 ownership，每个 owned row 携带完整 row payload，例如 `gradientSum` 的 `matGrads[{}][idx1]`
-- `ReplicatedScalar`：`bias[{}]`
+- `Contiguous1D`
+- `RowBlock2D`
+- `ReplicatedScalar`
 
-`matGrads[{}][idx1]` 这种形态要先确认现有 DACPP 语义下 `{}` 对应的是 row 内完整列 payload，还是 column/full-height payload。如果无法证明本地 slice 连续，第一版应该保守回退。Phase 3 应把它作为 `RowPartitionFullRow` 专门模式实现，不要塞进泛化的 dense-slice 概念。
+其余枚举是长期覆盖目标的 IR 预留。
 
-### 2.4 继续复用 calc，不内联改写 calc body
-
-实现上不要先把 calc body 重写成 `acc[idx] = ...`。现有 legacy 路径已经生成：
+### 4.3 PartitionSignature
 
 ```cpp
-template <typename V0, typename V1, typename V2>
-inline void vadd_mpi_local(V0 lhs, V1 rhs, V2 out) {
-    out[0] = lhs[0] + rhs[0];
+struct PartitionSignature {
+    std::vector<int64_t> bindSizes;
+    std::vector<int> bindOrder;
+    LocalLayoutKind layout = LocalLayoutKind::Unsupported;
+    std::string linearization; // "1d-linear" / "2d-row-major"
+};
+
+inline bool isCompatibleForChain(const PartitionSignature& lhs,
+                                 const PartitionSignature& rhs) {
+    return lhs.bindSizes == rhs.bindSizes &&
+           lhs.bindOrder == rhs.bindOrder;
 }
 ```
 
-operator-resident 应继续复用这个 local calc wrapper，只是把 view 换成轻量 contiguous view：
+规则：
 
-```cpp
-dacpp::mpi::ContiguousView1D<float> view_lhs{local_lhs.data(), item_linear};
-dacpp::mpi::ContiguousView1D<float> view_out{local_out.data(), item_linear};
-vadd_mpi_local(view_lhs, view_rhs, view_out);
-```
+- chain 兼容性只比较 `bindSizes + bindOrder`。
+- `layout` 和 `linearization` 只用于 codegen 策略选择，不参与 chain 兼容。
+- Phase 1 额外要求 layout 为 `Contiguous1D`。
+- Phase 2 额外要求 layout 为 `RowBlock2D`。
 
-这能避免解析和重写 calc body，风险小很多。
-
-### 2.5 Residency 是和 partition 绑定的状态
-
-只知道 partition 不足以减少通信。必须记录 tensor 当前数据是否已经以同一 partition 驻留在 rank 本地：
+### 4.4 Residency
 
 ```cpp
 enum class ResidencyKind {
@@ -146,13 +258,6 @@ enum class ResidencyKind {
     ReplicatedScalar,
     MaterializedRoot,
     Unknown
-};
-
-struct PartitionSignature {
-    std::vector<int64_t> bindSizes;
-    std::vector<int> bindOrder;
-    LocalLayoutKind layout = LocalLayoutKind::Unsupported;
-    std::string linearization;        // "1d-linear" / "2d-row-major"
 };
 
 struct TensorResidencyState {
@@ -165,493 +270,357 @@ struct TensorResidencyState {
 };
 ```
 
-两个 `<->` 能连成 chain 的条件不是“都用了 index”，而是它们读写中间 tensor 时 `PartitionSignature` 兼容。
+Phase 1/2 当前使用：
 
-Phase 1 不需要完整状态机，只实现并使用以下状态：
+- `RootOnly`
+- `DistributedDirty`
+- `ReplicatedScalar`
+- `MaterializedRoot`
 
-- `RootOnly`：外部输入 tensor 初始状态，进入 chain 时需要 scatter。
-- `DistributedDirty`：rank-local buffer 是最新数据，root tensor 已过期或尚未同步。
-- `ReplicatedScalar`：`bias[{}]` 这类 scalar 已广播到所有 rank。
-- `MaterializedRoot`：final output gather 后 root tensor 有效。
-
-`DistributedClean` 和 `Unknown` 先保留为 IR 扩展点，Phase 1 不依赖它们。
-
-Partition 兼容性也必须明确。`PartitionSignature` 可以保留 `layout` 和 `linearization`，但 chain 兼容只比较 bind domain：
-
-```cpp
-inline bool isCompatibleForChain(const PartitionSignature& lhs,
-                                 const PartitionSignature& rhs) {
-    return lhs.bindSizes == rhs.bindSizes &&
-           lhs.bindOrder == rhs.bindOrder;
-}
-```
-
-`layout` 和 `linearization` 是 codegen 策略选择字段，不参与 chain 兼容性判断。Phase 1 作为实现限制，可以额外要求每个 accepted expression 的 layout 都是 `Contiguous1D`。
+`DistributedClean` 和 `Unknown` 保留为后续扩展点。
 
 ---
 
-## 3. 最终模型
+## 5. Planner 与调度
 
-模型名称建议定为：
+当前 planner 以 `MpiLoweringPlan` 为总线：
+
+```cpp
+struct MpiLoweringPlan {
+    MpiPlanKind overallKind = MpiPlanKind::Unsupported;
+    std::vector<DacExprNode> exprNodes;
+    std::vector<MpiPlanResult> exprResults;
+    std::vector<ShellPartitionPlan> shellPartitionPlans;
+    std::vector<OperatorResidentChainPlan> residentChains;
+    std::vector<int> operatorResidentChainByExpr;
+};
+```
+
+调度要求：
+
+1. 每个 `<->` 有唯一 owner。
+2. accepted chain 的 exprIndex 不再走 legacy wrapper。
+3. unsupported expr 保留 legacy fallback。
+4. stencil Phase-C 仍按现有 stencil site 优先级接管。
+5. debug log 能解释 accepted/rejected reason。
+
+建议日志：
 
 ```text
-Shell-Derived Resident Partition Model
-```
-
-简称可在代码中使用 `operator_resident`，日志中使用 `[DACPP][MPI][OR]`。
-
-输入：
-
-- `DacExprNode`
-- `Shell*`
-- `ShellParam -> Split[]`
-- `Calc*` 和 effective param modes
-- AST 中 `<->` 的语句顺序和 host 使用信息
-
-输出：
-
-```cpp
-struct ShellPartitionPlan {
-    bool supported = false;
-    std::string rejectReason;
-    std::vector<BindDomain> bindDomains;
-    std::vector<TensorDimMapping> mappings;
-    PartitionSignature signature;
-    std::vector<ParamAccessPlan> params;
-};
-
-struct OperatorResidentChainPlan {
-    bool supported = false;
-    std::string rejectReason;
-    int chainId = -1;
-    std::vector<DacExprNode> exprs;
-    PartitionSignature signature;
-    std::unordered_map<std::string, TensorResidencyState> residency;
-    std::vector<std::string> materializeTensors;
-};
-```
-
-参数访问计划：
-
-```cpp
-enum class ParamAccessKind {
-    DirectMapped,
-    ReplicatedScalar,
-    RowPartitionFullRow,
-    OutputDirect,
-    Unsupported
-};
-
-struct ParamAccessPlan {
-    int paramIndex = -1;
-    std::string shellTensorName;
-    std::string calcParamName;
-    IOTYPE mode = IOTYPE::READ;
-    ParamAccessKind access = ParamAccessKind::Unsupported;
-    LocalLayoutKind layout = LocalLayoutKind::Unsupported;
-};
+[DACPP][MPI][OR] expr=0 shell=... layout=Contiguous1D accepted
+[DACPP][MPI][OR] chain=0 layout=Contiguous1D length=3 accepted
+[DACPP][MPI][OR] expr=... rejected reason=...
 ```
 
 ---
 
-## 4. 分析算法
+## 6. Phase 1/2 已实现范围
 
-### 4.1 单个 shell 的 partition 分析
+提交 `f4bce7dde implement shell-derived MPI lowering phase 1/2` 已完成 Phase 1/2 初版。
 
-入口建议：
+### 6.1 Phase 1：1D Direct / Resident Chain
 
-```cpp
-ShellPartitionPlan analyzeShellPartition(const MpiAnalysisContext& ctx,
-                                         const DacExprNode& node);
-```
+覆盖测试：
 
-步骤：
+- `vectorAddCombo`
+- `mandel1.0`
+- `decay1.0`
 
-1. 调用或复用 `collectSplitBindMeta(shell)`，建立 split id 到 `bindId/offset` 的映射。
-2. 遍历 `shell->getShellParam(paramIdx)->getSplit(dimIdx)`。
-3. 遇到 `RegularSplit`：标记 `hasSplit`，返回 unsupported，reason 为 `contains regular split`。
-4. 遇到 `IndexSplit`：记录 `TensorDimMapping{Index, bindId}`，并从对应 tensor 的 `getShape(dim)` 生成 runtime size 表达式。
-5. 遇到 id 为 `"void"` 的普通 `Split`：记录 `TensorDimMapping{Void}`。
-6. 检查所有非 void 的 bind domain 是否有一致 size。第一版只接受 offset 为 `"0"`。
-7. 根据每个参数的 dim mapping 和 mode 推断 `ParamAccessKind` 和 `LocalLayoutKind`。
-8. 如果至少一个 WRITE/READ_WRITE 输出可以定义 domain，则生成 `PartitionSignature`。
-
-拒绝条件：
-
-- 包含 `RegularSplit`
-- bind offset 非 0
-- index 维度大小不一致且无法证明
-- 同一参数出现复杂 index/void 组合且不在支持表内
-- `READ_WRITE` 参数不是 direct mapped
-- 输出参数没有 index 维度
-
-### 4.2 chain 识别
-
-入口建议：
+支持 pattern：
 
 ```cpp
-std::vector<OperatorResidentChainPlan>
-buildOperatorResidentChains(const MpiAnalysisContext& ctx,
-                            const std::vector<DacExprNode>& exprNodes,
-                            const std::vector<ShellPartitionPlan>& partitions);
+dataList{lhs[i], rhs[i], out[i]}
+dataList{in[i], bias[{}], out[i]}          // bias.getSize() == 1
+dataList{input[i], output[i]}
+dataList{N0s[i], lambdas[i], local_A[i], t[{}]}
 ```
 
-第一版只识别同一 compound statement 内的连续 `<->`。如果当前 `DacExprNode::parentStmt` 暂未填充，应先补齐 parent statement；短期可用 source order 做保守连续判断，但最终应基于 AST parent。
+通信策略：
 
-chain 接受条件：
+- `DirectMapped` READ input：root `tensor2Array()`，按 rank contiguous slice `MPI_Scatterv`。
+- `ReplicatedScalar`：root 取 scalar，`MPI_Bcast`。
+- intermediate WRITE：rank-local buffer，`DistributedDirty`，不 materialize。
+- final WRITE：`MPI_Gatherv` 到 root，root `array2Tensor()`。
 
-1. 表达式顺序连续。
-2. 每个表达式的 `ShellPartitionPlan` supported。
-3. `PartitionSignature` 兼容。兼容定义为 `bindSizes + bindOrder` 完全相等；`layout/linearization` 不参与 chain 兼容，只参与 codegen 策略选择。
-4. 前一个 WRITE tensor 若被后一个 READ 使用，标记为 distributed resident。
-5. 中间没有 host 侧读取、未知函数调用、普通 C++ 下标访问、`tensor2Array()` 或 `.print()`。
-6. 每个 tensor 在 chain 内没有复杂 alias 或多个不兼容 writer。
+Codegen：
 
-chain 边界：
+- 复用 `buildLocalCalcCode()` 生成 `*_mpi_local`。
+- kernel view 使用 `dacpp::mpi::ContiguousView1D<T>`。
+- 不内联重写 calc body。
+- accepted path 不生成 legacy `AccessPattern` / `PackPlan`。
+
+### 6.2 Phase 2：2D Row-Block Direct / Resident Chain
+
+覆盖测试：
+
+- `imageAdjustment1.0`
+
+支持 pattern：
 
 ```cpp
-enum class ChainBoundaryKind {
-    None,
-    HostRead,
-    UnknownCall,
-    PartitionChange,
-    AliasConflict,
-    ControlFlowBoundary,
-    UnsupportedPattern
-};
+dataList{image[idx1][idx2], out[idx1][idx2]}
 ```
 
-### 4.3 materialize 分析
+约束：
 
-第一版采用保守策略：
+- 两个 bind domain，row-major。
+- rank ownership 按 row block，不按任意 linear item range 切碎。
+- local buffer size = `local_rows * cols`。
+- 两个连续 image pass 共用 row ownership。
+- 中间 `image_tensor2` 不 materialize。
 
-- chain 最终 WRITE 输出如果后续有 `.tensor2Array()`、`.print()`、`std::cout`、未知函数传参、host 下标访问，则插入 materialize。
-- 如果无法判断后续使用，默认 materialize 最终输出。
-- 中间 tensor 如果仅被 chain 内后续 `<->` 读取，不 materialize。
-- `--mpi-output-sync=all-ranks` 仍要尊重：如果后续非 root rank 可能读 root materialized tensor，要在 gather 后 broadcast 或回退 legacy。
+通信策略：
+
+- READ image：root `tensor2Array()`，按 row block `MPI_Scatterv`。
+- intermediate image：rank-local buffer，`DistributedDirty`，不 materialize。
+- final image：在 root 需要 `print()` 前 `MPI_Gatherv` 到 root。
+
+Codegen：
+
+- 当前按 local linear item 构造 `ContiguousView1D<Pixel>{local.data(), item_linear}`，保持 `out[0]` / `in[0]` 语义。
+- accepted image chain 不生成 `AccessPattern` / `PackPlan`。
+
+### 6.3 当前验证结果
+
+已通过：
+
+```bash
+cmake --build build --target translator -j8
+
+cd clang/tools/translator
+bash test_mpi.sh vectorAddCombo imageAdjustment1.0 mandel1.0 decay1.0
+bash test_mpi.sh matMul1.0 gradientSum DFT1.0 jacobi1.0 stencil1.0 \
+  waveEquation1.0 FOuLa1.0 MDP1.0 liuliang1.0 oddeven0.1
+```
+
+结构检查：
+
+- `vectorAddCombo`：chain length 3，layout `Contiguous1D`，`tmp_tensor` / `shifted_tensor` 不 materialize。
+- `imageAdjustment1.0`：chain length 2，layout `RowBlock2D`，`image_tensor2` 不 materialize。
+- accepted OR 输出不包含 `AccessPattern` / `PackPlan`。
+- final output 才出现 `MPI_Gatherv`。
+- DFT/Jacobi 等 full payload 模式正确 fallback。
 
 ---
 
-## 5. Codegen 形态
+## 7. 非 `mpi*` 测试覆盖分类
 
-### 5.1 生成函数
+| 测试 | shell 形态 | 目标 lowering |
+|---|---|---|
+| `vectorAddCombo` | `lhs[i], rhs[i], out[i]` / `bias[{}]` | `resident_chain_1d` |
+| `mandel1.0` | `complex_points[i], mandelbrot_flags[i]` | `direct_1d` |
+| `decay1.0` | `N0s[i], lambdas[i], local_A[i], t[{}]` | `direct_1d` + `ReplicatedScalar` |
+| `imageAdjustment1.0` | `image[idx1][idx2], image2[idx1][idx2]` | `row_block_2d` + residency |
+| `gradientSum` | `matGrads[{}][idx1], matNeuronSum[idx1][idx2]` | `full_payload` / `RowPartitionFullRow` |
+| `matMul1.0` | `matA[idx1][{}], matB[{}][idx2], matC[idx1][idx2]` | row partition matmul：A row block + B replicated/full |
+| `DFT1.0` | `input[{}], output[i], vec[i]` | `ReplicatedFullTensor` + 1D output |
+| `jacobi1.0` | `A[{idx1}][{}], b[{idx1}], x[{}], x_new[{idx1}], nums[{idx1}]` | row full payload + replicated vector |
+| `stencil1.0` | `matIn[sp1][sp2], matOut[idx1][idx2]` | `stencil_window` 2D halo |
+| `waveEquation1.0` | `matCur[sp1][sp2], matPrev[idx1][idx2], matNext[idx1][idx2]` | `stencil_window` + resident state |
+| `FOuLa1.0` | `u_kin[s], u_kout[i], r[{}]` | `stencil_window` 1D + scalar |
+| `MDP1.0` | `p[sp], new_p[idx]` | `stencil_window` 1D |
+| `liuliang1.0` | `rho[S1], new_rho[idx1]` | `stencil_window` 1D |
+| `oddeven0.1` | `array[{S1}], array_out[{S1}]` | `fixed_block` / pair partition |
 
-对每条 accepted chain 生成：
-
-```cpp
-struct __dacpp_mpi_or_chain_ctx_0 { ... };
-
-void __dacpp_mpi_or_chain_init_0(__dacpp_mpi_or_chain_ctx_0& ctx,
-                                 /* shell call args used by chain */);
-
-void __dacpp_mpi_or_chain_run_0(__dacpp_mpi_or_chain_ctx_0& ctx,
-                                /* shell call args used by chain */);
-
-void __dacpp_mpi_or_chain_materialize_0(__dacpp_mpi_or_chain_ctx_0& ctx,
-                                        /* output tensors */);
-```
-
-source rewrite：
-
-```cpp
-__dacpp_mpi_or_chain_ctx_0 __dacpp_mpi_or_ctx_0;
-__dacpp_mpi_or_chain_init_0(__dacpp_mpi_or_ctx_0, a_tensor, b_tensor, c_tensor, bias_tensor, out_tensor);
-__dacpp_mpi_or_chain_run_0(__dacpp_mpi_or_ctx_0, a_tensor, b_tensor, c_tensor, bias_tensor, out_tensor);
-__dacpp_mpi_or_chain_materialize_0(__dacpp_mpi_or_ctx_0, out_tensor);
-```
-
-被 chain 接管的原始 `<->` 语句移除或替换为空语句。未接管表达式继续走 legacy wrapper。
-
-### 5.2 runtime helper
-
-第一版尽量少加 runtime，优先生成直接代码。需要沉到 runtime 的公共函数：
-
-```cpp
-namespace dacpp::mpi::oruntime {
-
-inline std::vector<int> build_counts_for_range(int64_t total, int mpi_size);
-inline std::vector<int> build_displs_for_counts(const std::vector<int>& counts);
-
-template <typename T>
-void scatter_contiguous_1d(const std::vector<T>& rootData,
-                           std::vector<T>& localData,
-                           int64_t total,
-                           MPI_Datatype mpiType,
-                           MPI_Comm comm);
-
-template <typename T>
-void gather_contiguous_1d(const std::vector<T>& localData,
-                          std::vector<T>& rootData,
-                          int64_t total,
-                          MPI_Datatype mpiType,
-                          MPI_Comm comm);
-
-}
-```
-
-文件位置：
-
-```text
-dpcppLib/include/mpi/operator_resident/
-  OperatorResidentTypes.h
-  OperatorResidentRuntime.h
-  OperatorResident.h
-```
-
-`MPIPlanner.h` 暂不必直接包含新头；生成 operator-resident 代码时可以通过新的 facade `mpi/operator_resident/OperatorResident.h` 引入。等路径稳定后再决定是否纳入 `MPIPlanner.h`。
-
-### 5.3 local view
-
-现有 `mpi/common/KernelViews.h` 已有 `ContiguousView1D` / `ContiguousView2D`，第一版直接复用，不新增 view 类型。需要 dense slice 时再补：
-
-```cpp
-template <typename T>
-struct DenseSliceView1D {
-    T* data = nullptr;
-    int offset = 0;
-    decltype(auto) operator[](int idx) const { return data[offset + idx]; }
-};
-```
-
-Phase 3 如果实现 `RowPartitionFullRow`，应优先新增名字明确的 row payload view，而不是使用泛化的 `DenseSliceView1D` 名称。例如：
-
-```cpp
-template <typename T>
-struct RowPayloadView1D {
-    T* data = nullptr;
-    int rowOffset = 0;
-    decltype(auto) operator[](int idx) const { return data[rowOffset + idx]; }
-};
-```
+长期验收标准：上述测试在 `--mpi` 下均由 shell-derived planner 接管，生成代码不再出现 legacy `AccessPattern` / `PackPlan`。复杂未知用户程序仍可 fallback legacy。
 
 ---
 
-## 6. 文件落点
+## 8. 后续阶段路线
+
+### Phase 3：Full Payload / Replicated Input
+
+目标测试：
+
+- `gradientSum`
+- `DFT1.0`
+- `jacobi1.0`
+- 初版 `matMul1.0`
+
+新增 layout：
+
+- `RowPartitionFullRow`
+- `ReplicatedFullTensor`
+
+重点：
+
+- `matGrads[{}][idx1]` 应作为 row partition + full row payload 专门模式。
+- `input[{}]`、`x[{}]` 这类大输入不能误当 scalar，应显式走 `ReplicatedFullTensor` 或更优分布策略。
+- `matMul1.0` 初版可按 C rows 划分，A scatter row block，B broadcast full matrix，C gather row block。
+
+### Phase 4：Stencil Window
+
+目标测试：
+
+- `stencil1.0`
+- `waveEquation1.0`
+- `FOuLa1.0`
+- `MDP1.0`
+- `liuliang1.0`
+
+思路：
+
+- `RegularSplit` 不再 fallback legacy，而由 `stencil_window` backend 接管。
+- 复用现有 `stencil_phase_c` 的 halo / exchange / materialize 能力。
+- planner owner 归入 shell-derived lowering，代码可继续放在 `stencil_phase_c`。
+
+### Phase 5：Fixed Block / Odd-even
+
+目标测试：
+
+- `oddeven0.1`
+
+新增 layout：
+
+- `FixedBlock`
+
+思路：
+
+- 支持 `array[{S1}]`、`S1(2,2)` 这种 pair/block window。
+- 按 fixed block 分发，处理 odd-even 的 phase/iteration 语义。
+
+### Phase 6：非 `mpi*` tests 全量新路径
+
+验收：
+
+- 所有非 `mpi*` tests 不再触发 legacy `AccessPattern` / `PackPlan`。
+- 完整 `bash test_mpi.sh` 通过。
+- benchmark 中高通信开销用例应看到 collective 次数、metadata、materialize 次数下降。
+
+---
+
+## 9. 文件结构现状与拆分计划
+
+### 9.1 当前结构
 
 translator 侧：
 
 ```text
-rewriter/include/Rewriter_MPI_OperatorResident.h
+rewriter/include/
+  Rewriter_MPI_Plan.h
+  Rewriter_MPI_OperatorResident.h
+  mpi/shared/MpiPlanBase.h
+  mpi/operator_resident/OperatorResidentPlan.h
 
-rewriter/lib/mpi/operator_resident/
-  ShellPartitionAnalysis.cpp
-  OperatorChainAnalysis.cpp
-  ResidencyAnalysis.cpp
-  OperatorResidentCodegen.cpp
-```
-
-plan 类型扩展：
-
-```text
-rewriter/include/Rewriter_MPI_Plan.h
-```
-
-新增内容：
-
-- `ShellPartitionPlan`
-- `OperatorResidentChainPlan`
-- `OperatorResidentPlan`
-- `MpiLoweringPlan::operatorChains`
-- `MpiLoweringPlan::legacyWrappers`
-- `MpiLoweringPlan::stencilSites`
-
-调度入口：
-
-```text
-rewriter/lib/mpi/shared/MpiPlanBuilder.cpp
-rewriter/lib/Rewriter_MPI.cpp
+rewriter/lib/mpi/
+  shared/
+  legacy_access_pattern/
+  stencil_phase_c/
+  operator_resident/
 ```
 
 runtime 侧：
 
 ```text
 dpcppLib/include/mpi/operator_resident/
-  OperatorResidentTypes.h
   OperatorResidentRuntime.h
-  OperatorResident.h
 ```
 
-CMake：
+### 9.2 已执行的阶段 1/2/3 拆分
+
+阶段 1：拆 `Rewriter_MPI_Plan.h`
+
+- 新增 `mpi/shared/MpiPlanBase.h`：保存 `MpiAnalysisContext` 和 `DacExprNode`。
+- 新增 `mpi/operator_resident/OperatorResidentPlan.h`：保存 OR 专属 IR。
+- `Rewriter_MPI_Plan.h` 收窄为公共 MPI lowering 总线。
+
+阶段 2：拆 `ShellPartitionAnalysis.cpp`
+
+- `ShellPartitionAnalysis.cpp`：只保留 shell/calc 遍历、plan 组装、日志和 reject 编排。
+- `SplitBindAnalysis.cpp`：split kind、bind order、shape helper。
+- `ScalarAccessAnalysis.cpp`：`{}` scalar 判定和 calc 参数 `[0]` 使用检查。
+- `Direct1DPartitionAnalysis.cpp`：`Contiguous1D` layout 判定。
+- `RowBlock2DPartitionAnalysis.cpp`：`RowBlock2D` layout 判定和 phase layout 编排。
+- `ShellPartitionAnalysis_Internal.h`：operator_resident 内部 analysis helper 声明。
+
+阶段 3：拆 `OperatorResidentCodegen.cpp`
+
+- `OperatorResidentCodegen.cpp`：只保留 wrapper 顶层拼装入口。
+- `OperatorResidentWrapperCodegen.cpp`：wrapper signature、参数命名、元素类型、view 类型。
+- `CollectiveCodegenUtils.cpp`：scatter/gather、byte counts/displs、resident-or-scatter。
+- `PartitionCodegen.cpp`：1D contiguous 和 2D row-block ownership codegen。
+- `LocalKernelCodegen.cpp`：SYCL local kernel launch 和 `ContiguousView1D` 构造。
+- `ResidentBufferCodegen.cpp`：scalar broadcast、output local buffer、resident state 写回、final materialize。
+- `OperatorResidentCodegen_Internal.h`：operator_resident 内部 codegen helper 声明。
+
+### 9.3 后续建议
+
+Phase 3 前建议继续保持现有目录名 `operator_resident/`，不要急着整体改名为 `shell_derived/`。等 full payload、stencil window、fixed block 都进入 shell-derived planner 后，再考虑：
 
 ```text
-CMakeLists.txt
+rewriter/lib/mpi/shell_derived/
+  analysis/
+  codegen/
+  runtime_adapters/
 ```
 
-加入 operator-resident `.cpp` 到 `REWRITER_SOURCES`。
+runtime 头文件目前还小，可以暂不拆。等支持更多 residency 后再拆为：
+
+```text
+dpcppLib/include/mpi/operator_resident/
+  OperatorResidentTypes.h
+  OperatorResidentStorage.h
+  OperatorResidentCollectives.h
+  OperatorResidentRuntime.h
+```
 
 ---
 
-## 7. 分阶段实施路径
+## 10. 负向用例和 fallback
 
-### Phase 0：结构探针，不改变生成代码
+Phase 1/2 必须 fallback 的情况：
 
-目标：
+- `RegularSplit`
+- bind offset 非 0
+- `{}` 大 tensor，不是 scalar
+- `READ_WRITE` 复杂 alias
+- 中间 tensor 在 chain 中被 host 读取
+- 2D 非 row-major 或非 `[idx1][idx2]`
+- 不兼容 `bindSizes + bindOrder`
+- 任何无法证明 local layout 的情况
 
-- 新增 operator-resident 分析文件和头文件。
-- 对每个 `<->` 打印 partition 分析结果。
-- 所有表达式仍走 legacy/stencil。
+fallback 必须保持 legacy 输出正确。
 
-验收：
+---
 
-```text
-[DACPP][MPI][OR] expr=0 shell=VADD partition=1d-linear accepted-analysis-only
-[DACPP][MPI][OR] expr=1 shell=VSHIFT partition=1d-linear scalar=bias
-[DACPP][MPI][OR] expr=... rejected reason=contains regular split
-```
+## 11. 实现陷阱
 
-验证：
+- 不要把所有 `{}` 当作 scalar。
+- 不要把 Phase 1/2 写成只能识别测试文件名；应识别 shell/dataList pattern。
+- 不要内联重写 calc body；优先复用 `*_mpi_local` 和 contiguous view。
+- 不要让 accepted Phase 1/2 chain 依赖 legacy `AccessPattern` / `PackPlan`。
+- 不要在 Phase 1/2 处理 matmul/DFT/Jacobi/gradientSum/stencil/oddeven。
+- 不要删除 legacy；Phase 1/2 仍需要 fallback。
+
+---
+
+## 12. 验证计划
+
+基础构建：
 
 ```bash
+cd /Volumes/QUQ/working/dacpp
 cmake --build build --target translator -j8
+```
+
+Phase 1/2 正向验证：
+
+```bash
 cd clang/tools/translator
-bash test_mpi.sh vectorAddCombo imageAdjustment1.0 gradientSum
+bash test_mpi.sh vectorAddCombo imageAdjustment1.0 mandel1.0 decay1.0
 ```
 
-### Phase 1：1D direct mapped chain，接管 vectorAddCombo
+fallback 验证：
 
-支持：
-
-- `dataList{a[i], b[i], out[i]}`
-- `dataList{in[i], bias[{}], out[i]}` 且 `bias.getSize() == 1`
-- 同一 basic block 内连续 chain
-- 最终 output materialize
-- chain 兼容只比较 `bindSizes + bindOrder`
-- codegen 额外要求 layout 为 `Contiguous1D`
-- residency 只实现 `RootOnly`、`DistributedDirty`、`ReplicatedScalar`、`MaterializedRoot`
-
-生成：
-
-- scatter root-only inputs：`a/b/c`
-- broadcast scalar：`bias`
-- local buffers：`tmp/shifted/out`
-- kernel 使用 `ContiguousView1D`
-- gather final `out`
-
-结构验收：
-
-- 生成代码中 `tmp_tensor`、`shifted_tensor` 不出现 `tensor2Array()` / `array2Tensor()` writeback。
-- operator-resident 接管后不生成 `VADD_vadd` / `VSHIFT_vshift` 的 legacy wrapper 调用，或 wrapper 未被调用。
-- `MPI_Gatherv` 只用于 final output，不用于中间 tensor。
-
-### Phase 2：2D row-block direct mapped，接管 imageAdjustment1.0
-
-支持：
-
-- `dataList{image[idx1][idx2], out[idx1][idx2]}`
-- row-major layout，按 row block 划分。
-- 两个连续 image pass 共享 row ownership。
-
-生成：
-
-- scatter input image row blocks。
-- `image_tensor2` local buffer 驻留。
-- final `image_tensor3` materialize 后供 `.print()`。
-
-结构验收：
-
-- 两个 kernel 之间没有 `image_tensor2.tensor2Array()` 或 `image_tensor2.array2Tensor()`。
-- local buffer 大小为 `local_rows * width`。
-
-### Phase 3：row partition full-row payload，接管 gradientSum
-
-支持：
-
-- 输出按 row/neuron 切分。
-- 输入按 owner row block 分发，每个 owned row 携带完整 row payload。
-- calc 读取本 rank 的完整 row slice。
-
-注意：
-
-- 先明确 `matGrads[{}][idx1]` 在现有 parser/calc view 下对应的实际 layout。
-- 从 `gradientSum.dac.cpp` 的 calc 看，`grads[j]` 语义应是“当前 row 的所有列”，但实现前必须用生成代码或 parser dump 确认。
-- 如果该形态不是连续 row payload，优先回退，不要把 `{}` 泛化错。
-
-验收：
-
-- 输入按 row block 一次分发，payload count 为 `local_rows * INPUT_SIZE`。
-- 不为每个 output item 构造 `PackPlan`。
-- final `matNeuronSum` 按需要 gather。
-
-### Phase 4：混合调度
-
-目标：
-
-- 同一文件中 stencil、operator-resident、legacy 可共存。
-- `rewriteMPI()` 不再因为 `hasMPIStencilSites()` 就整文件转入 stencil dispatcher。
-
-调度：
-
-1. stencil site 优先。
-2. pure index/void chain 尝试 operator-resident。
-3. 其余 legacy。
-
-验收：
-
-- 每个 `<->` 只有一个 owner。
-- fallback reason 可打印。
-- 完整 `test_mpi.sh` 通过。
-
-### Phase 5：profiling 和 benchmark
-
-新增 profile tag：
-
-```text
-[DACPP][PROFILE][OR] chain_init_ms(max)
-[DACPP][PROFILE][OR] chain_run_ms(max)
-[DACPP][PROFILE][OR] chain_materialize_ms(max)
+```bash
+bash test_mpi.sh matMul1.0 gradientSum DFT1.0 jacobi1.0 stencil1.0 \
+  waveEquation1.0 FOuLa1.0 MDP1.0 liuliang1.0 oddeven0.1
 ```
 
-benchmark：
+结构验证：
 
-- `vectorAddCombo`
-- `imageAdjustment1.0`
-- `gradientSum`
-
-性能目标：
-
-- 明显减少 collective 次数。
-- `vectorAddCombo`、`imageAdjustment1.0` 接近手写 MPI+SYCL 的通信结构。
-- 如果总时间仍不接近，profile 应能说明瓶颈已经从 root pack/gather 转移到 kernel 或 tensor conversion。
-
----
-
-## 8. 负向用例
-
-需要新增或保留结构测试：
-
-- 含 `dacpp::split` 的 shell：不走 operator-resident。
-- `{}` 大 tensor 且无法证明 scalar：不 broadcast，回退。
-- bind offset 非 0：第一版回退。
-- 中间 tensor 在 chain 中被 host 读取：强制 materialize 或回退。
-- `READ_WRITE` 参数复杂 alias：回退。
-- 不同 partition signature 的连续 `<->`：拆 chain 或回退。
-- stencil Phase-C 用例行为不变。
-
----
-
-## 9. 实现顺序建议
-
-最小可提交序列：
-
-1. `docs: add shell-derived resident partition implementation plan`
-2. `mpi-or: add partition analysis IR and debug logs`
-3. `mpi-or: detect straight-line operator chains`
-4. `mpi-or: add runtime helpers for contiguous 1d scatter/gather`
-5. `mpi-or: generate 1d operator chain for vectorAddCombo`
-6. `mpi-or: add 2d row-block direct mapped chain`
-7. `mpi-or: add row partition full-row chain`
-8. `mpi: allow mixed stencil/operator-resident/legacy lowering`
-9. `bench: add operator-resident profile and benchmark notes`
-
-每一步都应保持 legacy fallback 可用，避免一次性替换现有 wrapper。
-
----
-
-## 10. 当前应避免的实现陷阱
-
-- 不要把 `{}` 全部当作 scalar broadcast。
-- 不要用 `bool isContiguous` 决定所有 codegen。
-- 不要内联重写 calc body；先复用 `*_mpi_local` 和 contiguous view。
-- 不要让 operator-resident 依赖 legacy `AccessPattern` / `PackPlan`，否则会把旧模型的问题带回来。
-- 不要第一版处理 bind offset、复杂 split、非连续 layout；这些应明确 fallback。
-- 不要在 `Rewriter_MPI_Common.h` 继续堆散函数；新声明放独立 operator-resident 头或 plan 头。
+- accepted OR generated code 不出现 `AccessPattern` / `PackPlan`。
+- `vectorAddCombo` 的 `tmp_tensor` / `shifted_tensor` 不出现 `tensor2Array()` / `array2Tensor()`。
+- `imageAdjustment1.0` 的 `image_tensor2` 不出现 `tensor2Array()` / `array2Tensor()`。
+- accepted path 出现 `ContiguousView1D` 或 row-block direct buffer。
+- final output 才 `MPI_Gatherv`。

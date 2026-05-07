@@ -1,0 +1,47 @@
+#include "DacppStructure.h"
+#include "ShellPartitionAnalysis_Internal.h"
+
+namespace dacppTranslator {
+namespace mpi_rewriter {
+namespace operator_resident {
+
+bool assignRowBlock2DLayout(ShellPartitionPlan& plan,
+                            bool sawScalarParam,
+                            std::string& rejectReason) {
+    if (sawScalarParam) {
+        rejectReason = "unsupported bind rank for phase 1/2";
+        return false;
+    }
+
+    for (const auto& param : plan.params) {
+        if (param.bindOrder.size() != 2 ||
+            !sameOrder(param.bindOrder, plan.signature.bindOrder) ||
+            param.tensorDims.size() != 2 ||
+            param.tensorDims[0] != 0 ||
+            param.tensorDims[1] != 1) {
+            rejectReason = "2D parameter is not row-major direct";
+            return false;
+        }
+    }
+    plan.signature.layout = LocalLayoutKind::RowBlock2D;
+    plan.signature.linearization = "2d-row-major";
+    return true;
+}
+
+bool assignPhaseLayout(ShellPartitionPlan& plan,
+                       bool sawScalarParam,
+                       std::string& rejectReason) {
+    const std::size_t bindRank = plan.signature.bindOrder.size();
+    if (bindRank == 1) {
+        return assignContiguous1DLayout(plan, rejectReason);
+    }
+    if (bindRank == 2) {
+        return assignRowBlock2DLayout(plan, sawScalarParam, rejectReason);
+    }
+    rejectReason = "unsupported bind rank for phase 1/2";
+    return false;
+}
+
+} // namespace operator_resident
+} // namespace mpi_rewriter
+} // namespace dacppTranslator
