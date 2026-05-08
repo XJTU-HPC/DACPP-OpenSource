@@ -58,6 +58,10 @@ bool assignPhaseLayout(DacppFile* dacppFile,
         return assignReplicatedFullTensorLayout(plan, sawScalarParam, rejectReason);
     }
 
+    if (assignStencilWindow1DLayout(dacppFile, plan, rejectReason)) {
+        return true;
+    }
+
     if (assignStencilWindow2DLayout(dacppFile, plan, rejectReason)) {
         return true;
     }

@@ -29,6 +29,17 @@ bool isTwoDimDirectWriter(const ParamAccessPlan& param,
            sameOrder(param.bindOrder, signature.bindOrder);
 }
 
+bool isTwoDimDirectReader(const ParamAccessPlan& param,
+                          const PartitionSignature& signature) {
+    return param.access == ParamAccessKind::DirectMapped &&
+           param.reads &&
+           !param.writes &&
+           param.tensorDims.size() == 2 &&
+           param.tensorDims[0] == 0 &&
+           param.tensorDims[1] == 1 &&
+           sameOrder(param.bindOrder, signature.bindOrder);
+}
+
 }  // namespace
 
 bool assignStencilWindow2DLayout(DacppFile* dacppFile,
@@ -41,6 +52,7 @@ bool assignStencilWindow2DLayout(DacppFile* dacppFile,
     }
 
     int windowReaderCount = 0;
+    int directReaderCount = 0;
     int directWriterCount = 0;
     if (plan.signature.bindOrder.size() != 2) {
         rejectReason = "stencil window first cut only supports 2D ownership";
@@ -55,6 +67,10 @@ bool assignStencilWindow2DLayout(DacppFile* dacppFile,
             ++directWriterCount;
             continue;
         }
+        if (isTwoDimDirectReader(param, plan.signature)) {
+            ++directReaderCount;
+            continue;
+        }
         if (param.access == ParamAccessKind::OutputDirect &&
             param.writes &&
             param.reads) {
@@ -63,13 +79,14 @@ bool assignStencilWindow2DLayout(DacppFile* dacppFile,
             return false;
         }
         rejectReason =
-            "stencil window requires one 2D window reader and one 2D WRITE-only direct writer";
+            "stencil window requires one 2D window reader plus row-major 2D direct params";
         return false;
     }
 
-    if (windowReaderCount != 1 || directWriterCount != 1) {
+    if (windowReaderCount != 1 || directWriterCount != 1 ||
+        directReaderCount > 1) {
         rejectReason =
-            "stencil window requires exactly one 2D window reader and one 2D WRITE-only direct writer";
+            "stencil window requires exactly one 2D window reader, at most one 2D direct reader, and one 2D WRITE-only direct writer";
         return false;
     }
 
@@ -84,8 +101,13 @@ bool assignStencilWindow2DLayout(DacppFile* dacppFile,
         rejectReason = "stencil window root-bridge sites not yet supported";
         return false;
     }
-    if (!sitePlan.readCacheTransitions.empty()) {
+    if (directReaderCount == 0 && !sitePlan.readCacheTransitions.empty()) {
         rejectReason = "stencil window read-cache transitions not yet supported";
+        return false;
+    }
+    if (directReaderCount > 0 && sitePlan.readCacheTransitions.size() != 1) {
+        rejectReason =
+            "stencil window direct reader currently requires exactly one read-cache transition";
         return false;
     }
     if (sitePlan.followupMappings.size() != 1) {
@@ -102,6 +124,16 @@ bool assignStencilWindow2DLayout(DacppFile* dacppFile,
     if (sitePlan.boundaryLocalUpdates.empty()) {
         rejectReason = "stencil window requires boundary-local updates";
         return false;
+    }
+    if (directReaderCount > 0) {
+        const auto& transition = sitePlan.readCacheTransitions.front();
+        if (transition.rank != 2 ||
+            transition.targetRowOffset != -1 ||
+            transition.targetColOffset != -1) {
+            rejectReason =
+                "stencil window direct reader only supports -1,-1 2D read-cache transition";
+            return false;
+        }
     }
 
     plan.signature.layout = LocalLayoutKind::StencilWindow2D;

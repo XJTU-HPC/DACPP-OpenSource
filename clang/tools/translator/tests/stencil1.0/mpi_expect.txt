@@ -2,11 +2,12 @@ LOG_CONTAINS:[DACPP][MPI][PhaseC] route detected matOut->matIn offset=(1,1)
 LOG_CONTAINS:[DACPP][MPI][PhaseC] boundary-local update detected stmt
 LOG_CONTAINS:[DACPP][MPI][OR] expr=0 shell=stencilShell layout=StencilWindow2D partition=accepted
 LOG_CONTAINS:[DACPP][MPI][OR] chain=0 layout=StencilWindow2D length=1 chain=accepted codegen=enabled
+LOG_CONTAINS:[DACPP][MPI] output matOut sync=distributed-followup
 SYCL_CONTAINS:void __dacpp_mpi_or_stencilShell_stencil_0
 SYCL_CONTAINS:MPI_Bcast(__or_global_mat.data()
 SYCL_CONTAINS:dacpp::mpi::ContiguousView2D<const double> view_mat
 SYCL_CONTAINS:MPI_Gatherv(__or_local_out.data()
-SYCL_CONTAINS:MPI_Bcast(__or_global_out.data()
+SYCL_CONTAINS:MPI_Bcast(__or_materialized_out.data()
 SYCL_NOT_CONTAINS:AccessPattern
 SYCL_NOT_CONTAINS:PackPlan
 SYCL_NOT_CONTAINS:__dacpp_mpi_stencil_

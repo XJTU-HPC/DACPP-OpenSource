@@ -28,6 +28,10 @@ std::string buildOperatorResidentWrapperCode(
         operatorResidentWrapperName(shell, calc, exprPlan.exprIndex);
 
     if (isShellDerivedStencilLayout(exprPlan.signature.layout)) {
+        if (exprPlan.signature.layout == LocalLayoutKind::StencilWindow1D) {
+            return operator_resident::buildStencilWindow1DWrapperCode(
+                wrapper, exprPlan);
+        }
         return operator_resident::buildStencilWindow2DWrapperCode(
             wrapper, exprPlan);
     }

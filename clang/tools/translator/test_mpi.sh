@@ -35,6 +35,7 @@ MPI_TESTS=(
     "mpiDistributedStencil1D"
     "mpiDistributedStencilNoBridge1D"
     "mpiDistributedStencilSteady1D"
+    "mpiOrStencilRefreshPolicy1D"
     "mpiDistributedStencilAstRoute1D"
     "mpiDistributedStencilAstRouteFallback1D"
     "mpiDistributedStencil2DRowBlock"

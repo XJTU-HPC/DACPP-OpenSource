@@ -45,9 +45,18 @@ void emitKernel(std::string& code, const ShellPartitionPlan& plan);
 void emitGatherMaterialize(std::string& code,
                            const ShellPartitionPlan& plan,
                            const ParamAccessPlan& param);
+void emitGatherMaterializeFromLocalBuffer(
+    std::string& code,
+    const ShellPartitionPlan& plan,
+    const ParamAccessPlan& param,
+    const std::string& localBufferName,
+    const std::string& totalItemCountExpr);
 void emitResidencyAndMaterialization(std::string& code,
                                      const ShellPartitionPlan& plan);
 std::string buildStencilWindow2DWrapperCode(
+    const std::string& wrapperName,
+    const ShellPartitionPlan& plan);
+std::string buildStencilWindow1DWrapperCode(
     const std::string& wrapperName,
     const ShellPartitionPlan& plan);
 

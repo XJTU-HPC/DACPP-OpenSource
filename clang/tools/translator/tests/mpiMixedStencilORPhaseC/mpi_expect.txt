@@ -1,14 +1,13 @@
 LOG_CONTAINS:[DACPP][MPI][OR] expr=0 shell=stencilShell layout=StencilWindow2D partition=accepted
 LOG_CONTAINS:[DACPP][MPI][OR] chain=0 layout=StencilWindow2D length=1 chain=accepted codegen=enabled
-LOG_CONTAINS:[DACPP][MPI][PhaseC] site waveEqShell_waveEq partial-exchange enabled
-LOG_CONTAINS:[DACPP][MPI][PhaseC] read-cache transition detected matCur->matPrev offset=(-1,-1)
-LOG_CONTAINS:[DACPP][MPI][PhaseC] route detected matNext->matCur offset=(1,1)
+LOG_CONTAINS:[DACPP][MPI][PhaseC] param next transport=write after write-before-read analysis
+LOG_CONTAINS:[DACPP][MPI][PhaseC] site clampShell_clamp_step partial-exchange enabled
 LOG_NOT_CONTAINS:partial-exchange disabled
-LOG_NOT_CONTAINS:[DACPP][MPI][PhaseC] site waveEqShell_waveEq partial-exchange enabled (root-bridge)
 SYCL_CONTAINS:void __dacpp_mpi_or_stencilShell_stencil_0
-SYCL_CONTAINS:void __dacpp_mpi_stencil_waveEqShell_waveEq_1
-SYCL_CONTAINS:__dacpp_mpi_stencil_run___dacpp_mpi_stencil_waveEqShell_waveEq_1
-SYCL_CONTAINS:MPI_Gatherv(__or_local_out.data()
+SYCL_CONTAINS:__dacpp_mpi_stencil_init___dacpp_mpi_stencil_clampShell_clamp_step_1
+SYCL_CONTAINS:__dacpp_mpi_stencil_run___dacpp_mpi_stencil_clampShell_clamp_step_1
+SYCL_CONTAINS:__dacpp_mpi_stencil_materialize___dacpp_mpi_stencil_clampShell_clamp_step_1
+SYCL_CONTAINS:ctx.use_partial_exchange = true;
 SYCL_CONTAINS:publish_local_writes_with_halo_or_exchange
+SYCL_NOT_CONTAINS:void __dacpp_mpi_or_clampShell_clamp_step_1
 SYCL_NOT_CONTAINS:void __dacpp_mpi_stencil_stencilShell_stencil_0
-SYCL_NOT_CONTAINS:void __dacpp_mpi_or_waveEqShell_waveEq_1

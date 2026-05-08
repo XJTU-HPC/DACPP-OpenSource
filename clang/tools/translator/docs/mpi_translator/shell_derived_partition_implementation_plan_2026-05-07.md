@@ -334,73 +334,36 @@ struct MpiLoweringPlan {
 
 ---
 
-## 6. Phase 1/2 已实现范围
+## 6. 当前实现进度总览
 
-提交 `f4bce7dde implement shell-derived MPI lowering phase 1/2` 已完成 Phase 1/2 初版。
+截至 2026-05-08，shell-derived MPI lowering 的当前状态如下。以下状态以代码中的已启用 layout、已接入 codegen 路径，以及完整 `bash test_mpi.sh` 结果为准。
 
-### 6.1 Phase 1：1D Direct / Resident Chain
+| Phase | 状态 | 当前已完成能力 | 代表测试 | 当前未完成部分 |
+|---|---|---|---|---|
+| Phase 1 | 已完成 | `Contiguous1D` direct / resident chain，含 `ReplicatedScalar` | `vectorAddCombo` `mandel1.0` `decay1.0` | loop-lifted direct/resident 结构仍未做 |
+| Phase 2 | 已完成 | `RowBlock2D` direct / resident chain | `imageAdjustment1.0` | 仅覆盖当前 row-major 2D row-block 形态 |
+| Phase 3 | 已完成 | `ReplicatedFullTensor`、`RowPartitionFullRow`、受限 `READ_WRITE OutputDirect` | `DFT1.0` `gradientSum` `jacobi1.0` `matMul1.0` | 更广的 full-payload 形态仍未展开 |
+| Phase 4 | 进行中 | `StencilWindow1D` / `StencilWindow2D` 当前切片已接入；mixed-site 按 expr 分派已接入 | `stencil1.0` `waveEquation1.0` `FOuLa1.0` `MDP1.0` `liuliang1.0` `mpiMixedStencilORPhaseC` | root-bridge 和更广 stencil 形态仍未展开 |
+| Phase 4.5 | 未开始 | 仅有设计目标 | 无 | `init/run/materialize` 的 loop-lifted direct/resident family 尚未落地 |
+| Phase 5 | 未开始 | 仅有 IR / 枚举占位（如 `FixedBlock`） | 无 | `oddeven0.1` 所需分析与 codegen 均未实现 |
+| Phase 6 | 未完成 | 完整测试已通过，但尚未做到“全部非 `mpi*` tests 都走新路径” | `bash test_mpi.sh` 32/32 | 仍存在需要继续 fallback 的普通应用测试 |
 
-覆盖测试：
+### 6.1 当前已启用的 OR layout
 
-- `vectorAddCombo`
-- `mandel1.0`
-- `decay1.0`
+当前 `supportedPhaseLayout()` 已启用并生成 OR codegen 的 layout：
 
-支持 pattern：
+- `Contiguous1D`
+- `RowBlock2D`
+- `ReplicatedFullTensor`
+- `RowPartitionFullRow`
+- `StencilWindow1D`
+- `StencilWindow2D`
 
-```cpp
-dataList{lhs[i], rhs[i], out[i]}
-dataList{in[i], bias[{}], out[i]}          // bias.getSize() == 1
-dataList{input[i], output[i]}
-dataList{N0s[i], lambdas[i], local_A[i], t[{}]}
-```
+当前仍未启用 codegen 的 layout / 占位：
 
-通信策略：
+- `FixedBlock`
 
-- `DirectMapped` READ input：root `tensor2Array()`，按 rank contiguous slice `MPI_Scatterv`。
-- `ReplicatedScalar`：root 取 scalar，`MPI_Bcast`。
-- intermediate WRITE：rank-local buffer，`DistributedDirty`，不 materialize。
-- final WRITE：`MPI_Gatherv` 到 root，root `array2Tensor()`。
-
-Codegen：
-
-- 复用 `buildLocalCalcCode()` 生成 `*_mpi_local`。
-- kernel view 使用 `dacpp::mpi::ContiguousView1D<T>`。
-- 不内联重写 calc body。
-- accepted path 不生成 legacy `AccessPattern` / `PackPlan`。
-
-### 6.2 Phase 2：2D Row-Block Direct / Resident Chain
-
-覆盖测试：
-
-- `imageAdjustment1.0`
-
-支持 pattern：
-
-```cpp
-dataList{image[idx1][idx2], out[idx1][idx2]}
-```
-
-约束：
-
-- 两个 bind domain，row-major。
-- rank ownership 按 row block，不按任意 linear item range 切碎。
-- local buffer size = `local_rows * cols`。
-- 两个连续 image pass 共用 row ownership。
-- 中间 `image_tensor2` 不 materialize。
-
-通信策略：
-
-- READ image：root `tensor2Array()`，按 row block `MPI_Scatterv`。
-- intermediate image：rank-local buffer，`DistributedDirty`，不 materialize。
-- final image：在 root 需要 `print()` 前 `MPI_Gatherv` 到 root。
-
-Codegen：
-
-- 当前按 local linear item 构造 `ContiguousView1D<Pixel>{local.data(), item_linear}`，保持 `out[0]` / `in[0]` 语义。
-- accepted image chain 不生成 `AccessPattern` / `PackPlan`。
-
-### 6.3 当前验证结果
+### 6.2 当前验证基线
 
 已通过（2026-05-08）：
 
@@ -411,129 +374,122 @@ cd clang/tools/translator
 bash test_mpi.sh
 ```
 
-结构检查：
+当前基线结果：
 
-- `vectorAddCombo`：chain length 3，layout `Contiguous1D`，`tmp_tensor` / `shifted_tensor` 不 materialize。
-- `imageAdjustment1.0`：chain length 2，layout `RowBlock2D`，`image_tensor2` 不 materialize。
-- `mpiOrReadWriteAccumulate1D` / `mpiOrReadWriteAccumulate2D`：确认 `READ_WRITE OutputDirect` 放宽不会把邻近 direct shell 误接成错误通信形态；两者都应继续走 direct OR path，且输出旧值通过 local scatter 保留。
-- accepted OR 输出不包含 `AccessPattern` / `PackPlan`。
-- final output 才出现 `MPI_Gatherv`。
-- `MpiPlanResult.reason` 不再固定写成 `"shell-derived phase 1/2"`，而是按实际 accepted OR layout 生成诊断文案。
+- `32 tests | 32 passed | 0 failed | 0 skipped`
+- 已接入 OR 的路径不再生成 legacy `AccessPattern` / `PackPlan`
+- mixed-site 已按 expr 独立分派，不再因同文件存在未接入 stencil site 而整文件退回 Phase-C
 
 ---
 
-## 7. 非 `mpi*` 测试覆盖分类
+## 7. 非 `mpi*` tests 当前覆盖状态
 
-| 测试 | shell 形态 | 目标 lowering |
+下表描述的是“当前实际走到哪里”，不是长期目标。
+
+| 测试 | 当前 lowering | 状态说明 |
 |---|---|---|
-| `vectorAddCombo` | `lhs[i], rhs[i], out[i]` / `bias[{}]` | `resident_chain_1d` |
-| `mandel1.0` | `complex_points[i], mandelbrot_flags[i]` | `direct_1d` |
-| `decay1.0` | `N0s[i], lambdas[i], local_A[i], t[{}]` | `direct_1d` + `ReplicatedScalar` |
-| `imageAdjustment1.0` | `image[idx1][idx2], image2[idx1][idx2]` | `row_block_2d` + residency |
-| `gradientSum` | `matGrads[{}][idx1], matNeuronSum[idx1][idx2]` | `full_payload` / `RowPartitionFullRow` |
-| `matMul1.0` | `matA[idx1][{}], matB[{}][idx2], matC[idx1][idx2]` | row partition matmul：A row block + B replicated/full |
-| `DFT1.0` | `input[{}], output[i], vec[i]` | `ReplicatedFullTensor` + 1D output |
-| `jacobi1.0` | `A[{idx1}][{}], b[{idx1}], x[{}], x_new[{idx1}], nums[{idx1}]` | row full payload + replicated vector |
-| `stencil1.0` | `matIn[sp1][sp2], matOut[idx1][idx2]` | `stencil_window` 2D halo |
-| `waveEquation1.0` | `matCur[sp1][sp2], matPrev[idx1][idx2], matNext[idx1][idx2]` | `stencil_window` + resident state |
-| `FOuLa1.0` | `u_kin[s], u_kout[i], r[{}]` | `stencil_window` 1D + scalar |
-| `MDP1.0` | `p[sp], new_p[idx]` | `stencil_window` 1D |
-| `liuliang1.0` | `rho[S1], new_rho[idx1]` | `stencil_window` 1D |
-| `oddeven0.1` | `array[{S1}], array_out[{S1}]` | `fixed_block` / pair partition |
+| `vectorAddCombo` | OR `Contiguous1D` | 已完成 |
+| `mandel1.0` | OR `Contiguous1D` | 已完成 |
+| `decay1.0` | OR `Contiguous1D` + `ReplicatedScalar` | 已完成；但尚未进入 loop-lifted family |
+| `imageAdjustment1.0` | OR `RowBlock2D` | 已完成 |
+| `DFT1.0` | OR `ReplicatedFullTensor` | 已完成 |
+| `gradientSum` | OR `RowPartitionFullRow` | 已完成 |
+| `jacobi1.0` | OR `RowPartitionFullRow` + `ReplicatedFullTensor` | 已完成 |
+| `matMul1.0` | OR full-payload path + `READ_WRITE OutputDirect` | 已完成 |
+| `stencil1.0` | OR `StencilWindow2D` | 已完成 |
+| `waveEquation1.0` | OR `StencilWindow2D` | 已完成；当前支持 “window reader + optional 2D direct reader + WRITE-only direct writer” 的最小增量形态 |
+| `FOuLa1.0` | OR `StencilWindow1D` | 已完成；当前覆盖 scalar root-materialize 形态 |
+| `MDP1.0` | OR `StencilWindow1D` | 已完成；当前覆盖 1D `+1` distributed-followup 形态 |
+| `liuliang1.0` | OR `StencilWindow1D` | 已完成；当前覆盖 1D `+1` distributed-followup 形态 |
+| `oddeven0.1` | fallback | `FixedBlock` 尚未开始 |
 
-长期验收标准：上述测试在 `--mpi` 下均由 shell-derived planner 接管，生成代码不再出现 legacy `AccessPattern` / `PackPlan`。复杂未知用户程序仍可 fallback legacy。
+补充说明：
+
+- `waveEquation1.0` 的执行 wrapper 目前是 OR `StencilWindow2D`；测试里仍出现的 `[DACPP][MPI][PhaseC]` 路由/读缓存日志来自共享的分布式 stencil 站点分析，不表示最终 wrapper 走旧 stencil Phase-C codegen。
+- 当前 OR `StencilWindow1D` / `StencilWindow2D` 仍未像 Phase-C 那样改写 post-shell followup 语句；因此 `distributed-followup` 在 OR 路线上当前仍保持 all-ranks host tensor refresh，而不是只保留 root materialize。
+- 当前 OR stencil 路线下的 `RootCentricFollowup` 仍未进入可达形态；现阶段回归口径因此先固定为“只有 `RootOnly` 才跳过 materialized refresh”。
+
+补充回归：
+
+- `mpiOrReadWriteAccumulate1D`
+- `mpiOrReadWriteAccumulate2D`
+- `mpiMixedStencilORPhaseC`
+- `mpiOrStencilRefreshPolicy1D`
+
+其中 `mpiMixedStencilORPhaseC` 当前用于验证同文件 mixed stencil expr 仍按 expr 独立分派；当前口径要求同一文件里同时存在 OR site 和 Phase-C site。
+其中 `mpiOrStencilRefreshPolicy1D` 当前用于验证 OR `StencilWindow1D` 的输出同步策略：`root-only` 不 broadcast materialized output，`distributed-followup` 仍 broadcast materialized output。
 
 ---
 
-## 8. 后续阶段路线
+## 8. 未完成阶段与当前推进位置
 
-### Phase 3：Full Payload / Replicated Input
+### 8.1 Phase 4：Stencil Window
 
-目标测试：
+Phase 4 目前不是“未开始”，而是已经推进到 1D / 2D 当前切片完成、剩余范围待继续展开的状态。
 
-- `gradientSum`
-- `DFT1.0`
-- `jacobi1.0`
-- 初版 `matMul1.0`
+当前已完成：
 
-新增 layout：
+- `StencilWindow1D` 已进入 OR codegen
+- `StencilWindow2D` 已进入 OR codegen
+- `stencil1.0` 已接入
+- `waveEquation1.0` 已接入
+- `FOuLa1.0`、`MDP1.0`、`liuliang1.0` 已接入
+- mixed-site 顶层分派已支持按 expr 独立选择 OR / Phase-C / legacy
+- `mpiOrStencilRefreshPolicy1D` 已补入，用于钉住当前 OR stencil 输出 refresh 口径
 
-- `RowPartitionFullRow`
-- `ReplicatedFullTensor`
+当前边界：
 
-重点：
+- direct writer 仍必须是 WRITE-only，不接受 `READ_WRITE` direct writer
+- 1D 当前只覆盖 scalar root-materialize 形态和 `+1` distributed-followup 形态
+- 2D 当前只覆盖当前 row-major ownership 切片
+- 目前最多支持一个额外的 2D direct reader
+- direct reader 当前只覆盖 `waveEquation1.0` 所需的 `read-cache transition (-1,-1)` 形态
+- 仍不支持 root-bridge stencil site
 
-- `matGrads[{}][idx1]` 应作为 row partition + full row payload 专门模式。
-- `input[{}]`、`x[{}]` 这类大输入不能误当 scalar，应显式走 `ReplicatedFullTensor` 或更优分布策略。
-- `matMul1.0` 初版可按 C rows 划分，A scatter row block，B broadcast full matrix，C gather row block。
+Phase 4 的下一步应继续集中在：
 
-### Phase 4：Stencil Window
+- 更广的 1D stencil window 形态
+- 更广的 2D direct reader / route 形态
+- root-bridge stencil site
+- OR-side post-shell followup lowering
 
-目标测试：
+也就是继续沿 shell-derived `stencil_window` 路线做 1D / 更广 stencil 形态，而不是横向扩到 `FixedBlock`。
 
-- `stencil1.0`
-- `waveEquation1.0`
-- `FOuLa1.0`
-- `MDP1.0`
-- `liuliang1.0`
+### 8.2 Phase 4.5：Loop-Lowered Direct / Resident
 
-思路：
+这一阶段在文档中有设计目标，但代码中尚未形成独立的 loop-lowered direct/resident family。
 
-- `RegularSplit` 不再 fallback legacy，而由 `stencil_window` backend 接管。
-- `stencil_window` 采用 loop-lowered `ctx/init/run/materialize` 结构，`init()` 固化稳定 layout 和 cache，`run()` 执行 halo/exchange/boundary-local/route，`materialize()` 在 loop 后恢复 root-visible tensor。
-- 现有 `stencil_phase_c` 的 halo、exchange、boundary-local、read-cache transition 和 materialize 能力作为 backend 实现来源，planner ownership 归入 shell-derived lowering。
-- Phase 4 的结构产物同时定义通用 loop-lowered shell-derived contract，供后续 direct/resident/full-payload 循环形态复用。
+当前推进位置：
 
-当前进展（2026-05-08）：
+- `decay1.0` 结果正确，但仍走普通 direct OR wrapper
+- 尚未出现单独的 `init/run/materialize` direct shell 结构
+- 尚未把 loop-invariant scatter-once / per-step broadcast 这类优化从 stencil family 抽到 direct/resident family
 
-- Phase 4 已完成第一阶段接入，`stencil1.0` 纳入 shell-derived `stencil_window` 路径。
-- Phase 4 配套的混合分派能力已纳入本阶段交付，覆盖同文件内 OR stencil site 与 Phase-C stencil site 的组合场景。
-- 本阶段回归样例已补齐 `mpiMixedStencilORPhaseC`，用于持续验证 mixed-site 路线。
-- 本阶段验证已覆盖 `stencil1.0`、`waveEquation1.0` 相关回归以及完整 `bash test_mpi.sh`。
-- 当前范围聚焦 `stencil1.0` 所需的最小 `stencil_window` 形态，`waveEquation1.0`、`FOuLa1.0`、`MDP1.0`、`liuliang1.0` 与 `oddeven0.1` 继续按后续阶段计划推进。
+因此，Phase 4.5 当前应视为“未开始实现，仅有路线定义”。
 
-### Phase 4.5：Loop-Lowered Direct / Resident
+### 8.3 Phase 5：Fixed Block / Odd-even
 
-目标测试：
+这一阶段当前仍是占位状态。
 
-- `decay1.0`
-- 循环内稳定 direct/resident shell 的后续用例
+代码现状：
 
-新增执行形态：
+- `LocalLayoutKind::FixedBlock` 已存在
+- `ParamAccessKind::FixedBlock` 已存在
+- 但没有对应的分析入口、layout 判定或 codegen
 
-- `LoopLiftedDirect1D`
-- `LoopLiftedRowBlock2D`
-- `LoopLiftedFullPayload`
+因此，`oddeven0.1` 当前仍应继续 fallback，Phase 5 尚未进入可验证实现阶段。
 
-思路：
+### 8.4 Phase 6：非 `mpi*` tests 全量新路径
 
-- 对循环不变 READ 输入执行一次性 `init()` scatter/cache，避免每轮重复分发大输入。
-- 对循环变化 scalar、小 replicated 输入、收敛状态或迭代参数在 `run()` 中执行轻量 broadcast/refresh。
-- 对 loop-carried distributed tensor 维持 resident/cache 状态，只在 host assignment、print、unknown call 或最终输出处 materialize。
-- `decay1.0` 的目标结构是 `N0s` / `lambdas` loop-invariant scatter-once，`t` per-step broadcast，`local_A` per-step kernel 后按 `A_tensor[...] = local_A_tensor` 的可观察需求同步。
+这一阶段当前还不能标记为完成。
 
-### Phase 5：Fixed Block / Odd-even
+当前推进位置：
 
-目标测试：
+- 完整 `bash test_mpi.sh` 已通过
+- 但“完整测试通过”不等于“全部普通应用都已纳入 shell-derived planner”
+- 当前仍有 `oddeven0.1` 等测试保持 fallback
 
-- `oddeven0.1`
-
-新增 layout：
-
-- `FixedBlock`
-
-思路：
-
-- 支持 `array[{S1}]`、`S1(2,2)` 这种 pair/block window。
-- 按 fixed block 分发，处理 odd-even 的 phase/iteration 语义。
-
-### Phase 6：非 `mpi*` tests 全量新路径
-
-验收：
-
-- 所有非 `mpi*` tests 不再触发 legacy `AccessPattern` / `PackPlan`。
-- 完整 `bash test_mpi.sh` 通过。
-- benchmark 中高通信开销用例应看到 collective 次数、metadata、materialize 次数下降。
+因此，Phase 6 当前应理解为“验证基线已经稳定，但迁移覆盖率尚未收口”。
 
 ---
 
@@ -616,9 +572,9 @@ dpcppLib/include/mpi/operator_resident/
 
 ## 10. 负向用例和 fallback
 
-Phase 1/2 必须 fallback 的情况：
+当前仍应 fallback 的情况：
 
-- `RegularSplit`
+- 当前未接入的 `RegularSplit` 形态
 - bind offset 非 0
 - `{}` 大 tensor，不是 scalar
 - `READ_WRITE` 复杂 alias
@@ -627,18 +583,17 @@ Phase 1/2 必须 fallback 的情况：
 - 不兼容 `bindSizes + bindOrder`
 - 任何无法证明 local layout 的情况
 
-fallback 必须保持 legacy 输出正确。
+上述情况当前都应继续保持 legacy 或 Phase-C 输出正确。
 
 ---
 
 ## 11. 实现陷阱
 
 - 不要把所有 `{}` 当作 scalar。
-- 不要把 Phase 1/2 写成只能识别测试文件名；应识别 shell/dataList pattern。
+- 不要把 shell-derived lowering 写成只能识别测试文件名；应识别 shell/dataList pattern。
 - 不要内联重写 calc body；优先复用 `*_mpi_local` 和 contiguous view。
-- 不要让 accepted Phase 1/2 chain 依赖 legacy `AccessPattern` / `PackPlan`。
-- 不要在 Phase 1/2 处理 matmul/DFT/Jacobi/gradientSum/stencil/oddeven。
-- 不要删除 legacy；Phase 1/2 仍需要 fallback。
+- 不要让 accepted OR chain 依赖 legacy `AccessPattern` / `PackPlan`。
+- 不要删除 legacy；当前仍需要 fallback 覆盖未接入形态。
 
 ---
 
@@ -658,11 +613,11 @@ cd clang/tools/translator
 bash test_mpi.sh vectorAddCombo imageAdjustment1.0 mandel1.0 decay1.0
 ```
 
-fallback 验证：
+剩余 fallback 验证：
 
 ```bash
 bash test_mpi.sh matMul1.0 gradientSum DFT1.0 jacobi1.0 stencil1.0 \
-  waveEquation1.0 FOuLa1.0 MDP1.0 liuliang1.0 oddeven0.1
+  waveEquation1.0 oddeven0.1
 ```
 
 结构验证：
@@ -674,49 +629,3 @@ bash test_mpi.sh matMul1.0 gradientSum DFT1.0 jacobi1.0 stencil1.0 \
 - final output 才 `MPI_Gatherv`。
 
 ---
-
-## 13. Phase 3 Analysis 状态 (2026-05-07)
-
-### 已完成
-
-Analysis 层实现已完成，支持识别以下 layout：
-
-- `RowPartitionFullRow`：混合 void + index split 的参数（如 `matGrads[{}][idx1]`）
-- `ReplicatedFullTensor`：纯 void split 的非 scalar 参数（如 `input[{}]`）
-
-新增文件：
-- `FullPayloadPartitionAnalysis.cpp` - 实现 `assignRowPartitionFullRowLayout` 和 `assignReplicatedFullTensorLayout`
-
-修改文件：
-- `ShellPartitionAnalysis.cpp` - 更新参数访问类型识别逻辑
-- `RowBlock2DPartitionAnalysis.cpp` - `assignPhaseLayout` 添加 Phase 3 分发
-- `ShellPartitionAnalysis_Internal.h` - 添加新函数声明
-- `CMakeLists.txt` - 添加新源文件
-
-验证结果：
-```
-[DACPP][MPI][OR] expr=0 shell=gradSumShell layout=RowPartitionFullRow accepted
-[DACPP][MPI][OR]   param=matGrads access=RowPartitionFullRow reads=1 writes=0
-[DACPP][MPI][OR]   param=matNeuronSum access=OutputDirect reads=0 writes=1
-```
-
-### Phase 3 Codegen 当前状态
-
-Phase 3 已启用两个经过验证的 codegen path：
-- `ReplicatedFullTensor`：`DFT1.0` 走 OR codegen，root `tensor2Array()` 后 `MPI_Bcast` 全量 tensor，direct 1D 输入继续 `MPI_Scatterv`，最终输出 `MPI_Gatherv` + `array2Tensor()`。
-- `RowPartitionFullRow`：`gradientSum` 走 OR codegen，root 按 output ownership pack 每个 local output item 对应的 full payload，local calc 通过 full payload view 访问，最终输出 `MPI_Gatherv` + `array2Tensor()`。
-- `READ_WRITE OutputDirect`（受限放宽）：仅对 accepted direct OR output 参数保留旧值分片语义，当前用于 `matMul1.0`，并由 `mpiOrReadWriteAccumulate1D` / `mpiOrReadWriteAccumulate2D` 作为 guard regression 覆盖。
-
-当前 `supportedPhaseLayout()` 已启用：
-- `Contiguous1D`
-- `RowBlock2D`
-- `ReplicatedFullTensor`
-- `RowPartitionFullRow`
-
-已接受的 DFT / gradientSum / jacobi / matMul OR path 不再生成 legacy `AccessPattern` / `PackPlan`。
-
-### 仍未完成
-
-- `jacobi1.0` 已走 OR path：`A[{idx1}][{}]` 按 1D output ownership scatter full row payload，`x[{}]` 走 full tensor broadcast，`x_new` 在 `MPI_Gatherv` 后再 broadcast 回所有 rank 以支持 loop 内 `tensor2Array()` / convergence check。
-- `matMul1.0` 已走 OR path：按 `matC[idx1][idx2]` 的 2D output ownership 划分，`matA[idx1][{}]` / `matB[{}][idx2]` 都按 output ownership pack full payload，`matC` 保留 output-direct `READ_WRITE` 本地分片语义，最终 `MPI_Gatherv` + `array2Tensor()`。
-- `RowPartitionFullRow` 当前覆盖 `gradientSum` 的 2D output ownership、`jacobi1.0` 的 1D output ownership + `ReplicatedFullTensor` 混合输入，以及 `matMul1.0` 的双 full-payload 输入。

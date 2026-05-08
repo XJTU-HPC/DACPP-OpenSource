@@ -36,6 +36,9 @@ bool assignRowPartitionFullRowLayout(ShellPartitionPlan& plan,
 bool assignReplicatedFullTensorLayout(ShellPartitionPlan& plan,
                                      bool sawScalarParam,
                                      std::string& rejectReason);
+bool assignStencilWindow1DLayout(DacppFile* dacppFile,
+                                 ShellPartitionPlan& plan,
+                                 std::string& rejectReason);
 bool assignStencilWindow2DLayout(DacppFile* dacppFile,
                                  ShellPartitionPlan& plan,
                                  std::string& rejectReason);

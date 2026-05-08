@@ -25,11 +25,6 @@ const double STENCIL_DT_STABILITY =
     (DX * DX * DY * DY) / (2.0 * ALPHA * (DX * DX + DY * DY));
 const double STENCIL_DT = 0.4 * STENCIL_DT_STABILITY;
 
-const double WAVE_C = 1.0;
-const double c = WAVE_C;
-const int WAVE_STEPS = 6;
-const double WAVE_DT = 0.5 * std::fmin(DX, DY) / WAVE_C;
-
 shell dacpp::list stencilShell(dacpp::Matrix<double>& matIn READ_WRITE,
                                dacpp::Matrix<double>& matOut READ_WRITE) {
     dacpp::split sp1(3, 1), sp2(3, 1);
@@ -47,24 +42,21 @@ calc void stencil(dacpp::Matrix<double>& mat, double* out) {
                   ((mat[1][2] - 2.0 * mat[1][1] + mat[1][0]) / (DY * DY)));
 }
 
-shell dacpp::list waveEqShell(dacpp::Matrix<double>& matCur WRITE,
-                              dacpp::Matrix<double>& matPrev READ_WRITE,
-                              dacpp::Matrix<double>& matNext WRITE) {
-    dacpp::split sp1(3, 1), sp2(3, 1);
-    dacpp::index idx1, idx2;
-    binding(sp1, idx1);
-    binding(sp2, idx2);
-    dacpp::list dataList{matCur[sp1][sp2], matPrev[idx1][idx2],
-                         matNext[idx1][idx2]};
+const int WIDTH = 64;
+const int PHASE_C_STEPS = 8;
+
+shell dacpp::list clampShell(dacpp::Vector<double>& state READ,
+                             dacpp::Vector<double>& next READ_WRITE) {
+    dacpp::split S1(2, 1);
+    dacpp::index idx1;
+    binding(S1, idx1);
+    dacpp::list dataList{state[S1], next[idx1]};
     return dataList;
 }
 
-calc void waveEq(dacpp::Matrix<double>& cur, double* prev, double* next) {
-    double u_xx = (cur[2][1] - 2.0 * cur[1][1] + cur[0][1]) / (DX * DX);
-    double u_yy = (cur[1][2] - 2.0 * cur[1][1] + cur[1][0]) / (DY * DY);
-    next[0] =
-        2.0 * cur[1][1] - prev[0] + (WAVE_C * WAVE_C) * WAVE_DT * WAVE_DT *
-                                          (u_xx + u_yy);
+calc void clamp_step(dacpp::Vector<double>& state, double* next) {
+    next[0] = 0.5 * state[0] + 0.5 * state[1] - 3.0;
+    next[0] = std::max(0.0, next[0]);
 }
 
 void runStencilPhase() {
@@ -108,58 +100,32 @@ void runStencilPhase() {
     matIn[0].print();
 }
 
-void runWavePhase() {
-    vector<double> wavePrevVec(NX * NY, 0.0);
-    vector<double> waveCurVec(NX * NY, 0.0);
-    vector<double> waveNextVec(NX * NY, 0.0);
+void runPhaseCPhase() {
+    vector<double> state_data(WIDTH, 0.0);
+    vector<double> next_data(WIDTH, 0.0);
 
-    for (int i = 0; i < NX; ++i) {
-        for (int j = 0; j < NY; ++j) {
-            double x = i * DX;
-            double y = j * DY;
-            wavePrevVec[i * NY + j] =
-                std::exp(-((x - LX / 2.0) * (x - LX / 2.0) +
-                           (y - LY / 2.0) * (y - LY / 2.0)) /
-                         0.5);
+    for (int i = 0; i < WIDTH; ++i) {
+        state_data[i] = static_cast<double>((i % 9) + 1);
+    }
+
+    dacpp::Vector<double> state_tensor(state_data);
+    dacpp::Vector<double> next_tensor(next_data);
+    dacpp::Vector<double> state = state_tensor[{0, WIDTH - 1}];
+    dacpp::Vector<double> next = next_tensor[{1, WIDTH - 1}];
+
+    for (int step = 0; step < PHASE_C_STEPS; ++step) {
+        clampShell(state, next) <-> clamp_step;
+
+        for (int i = 1; i <= WIDTH - 2; ++i) {
+            state[i] = next[i - 1];
         }
     }
 
-    dacpp::Matrix<double> matCur({NX, NY}, waveCurVec);
-    dacpp::Matrix<double> prevTensor({NX, NY}, wavePrevVec);
-    dacpp::Matrix<double> nextTensor({NX, NY}, waveNextVec);
-    dacpp::Matrix<double> matPrev = prevTensor[{1, NX - 1}][{1, NY - 1}];
-    dacpp::Matrix<double> matNext = nextTensor[{1, NX - 1}][{1, NY - 1}];
-
-    for (int step = 0; step < WAVE_STEPS; ++step) {
-        waveEqShell(matCur, matPrev, matNext) <-> waveEq;
-
-        for (int row = 1; row <= NX - 2; ++row) {
-            for (int col = 1; col <= NY - 2; ++col) {
-                matPrev[row - 1][col - 1] = matCur[row][col];
-            }
-        }
-
-        for (int row = 1; row <= NX - 2; ++row) {
-            for (int col = 1; col <= NY - 2; ++col) {
-                matCur[row][col] = matNext[row - 1][col - 1];
-            }
-        }
-
-        for (int row = 0; row <= NX - 1; ++row) {
-            matCur[row][0] = 0;
-            matCur[row][NY - 1] = 0;
-        }
-        for (int col = 0; col <= NY - 1; ++col) {
-            matCur[0][col] = 0;
-            matCur[NX - 1][col] = 0;
-        }
-    }
-
-    matCur.print();
+    std::cout << state[5] << std::endl;
 }
 
 int main() {
     runStencilPhase();
-    runWavePhase();
+    runPhaseCPhase();
     return 0;
 }

@@ -1,14 +1,9 @@
-LOG_CONTAINS:[DACPP][MPI][PhaseC] param new_rho transport=write after write-before-read analysis
-LOG_CONTAINS:[DACPP][MPI][PhaseC] route detected new_rho->rho offset=1
-LOG_CONTAINS:[DACPP][MPI][PhaseC] boundary-local update detected stmt
-LOG_CONTAINS:[DACPP][MPI][PhaseC] site LWR_shell_lwr partial-exchange enabled
-LOG_CONTAINS:[DACPP][MPI][PhaseC] halo-exchange enabled route=new_rho->rho
-LOG_NOT_CONTAINS:[DACPP][MPI][PhaseC] site LWR_shell_lwr partial-exchange enabled (root-bridge)
-LOG_NOT_CONTAINS:phase-c does not support READ_WRITE kernel params
-SYCL_CONTAINS:ctx.use_partial_exchange = true;
-SYCL_CONTAINS:publish_local_writes_with_halo_or_exchange_cache_only
-SYCL_CONTAINS:// DACPP distributed boundary-local update: rho
-SYCL_NOT_CONTAINS:__dacpp_mpi_region_LWR_shell_lwr_stmt_0
-SYCL_NOT_CONTAINS:__dacpp_mpi_region_LWR_shell_lwr_stmt_1
-SYCL_NOT_CONTAINS:root_bridge_plan = dacpp::mpi::build_exchange_plan_from_layouts
-SYCL_NOT_CONTAINS:exchange_values_by_slots
+LOG_CONTAINS:[DACPP][MPI][OR] expr=0 shell=LWR_shell layout=StencilWindow1D partition=accepted
+LOG_CONTAINS:[DACPP][MPI][OR] chain=0 layout=StencilWindow1D length=1 chain=accepted codegen=enabled
+LOG_CONTAINS:[DACPP][MPI] output new_rho sync=distributed-followup
+SYCL_CONTAINS:void __dacpp_mpi_or_LWR_shell_lwr_0
+SYCL_CONTAINS:MPI_Bcast(__or_global_rho.data()
+SYCL_CONTAINS:ContiguousView1D<const double> view_rho{__or_reader_data, output_idx}
+SYCL_CONTAINS:MPI_Gatherv(__or_local_new_rho.data()
+SYCL_CONTAINS:MPI_Bcast(__or_materialized_new_rho.data()
+SYCL_NOT_CONTAINS:ctx.use_partial_exchange = true;

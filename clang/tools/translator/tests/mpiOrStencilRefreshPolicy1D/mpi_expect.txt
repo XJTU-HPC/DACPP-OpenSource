@@ -1,0 +1,12 @@
+LOG_CONTAINS:[DACPP][MPI][OR] expr=0 shell=rootShell layout=StencilWindow1D partition=accepted
+LOG_CONTAINS:[DACPP][MPI][OR] expr=1 shell=distShell layout=StencilWindow1D partition=accepted
+LOG_CONTAINS:[DACPP][MPI] output root_next sync=root-only
+LOG_CONTAINS:[DACPP][MPI] output dist_next sync=distributed-followup
+SYCL_CONTAINS:void __dacpp_mpi_or_rootShell_root_step_0
+SYCL_CONTAINS:void __dacpp_mpi_or_distShell_dist_step_1
+SYCL_CONTAINS:MPI_Gatherv(__or_local_root_next.data()
+SYCL_CONTAINS:MPI_Gatherv(__or_local_dist_next.data()
+SYCL_CONTAINS:MPI_Bcast(__or_materialized_dist_next.data()
+SYCL_NOT_CONTAINS:MPI_Bcast(__or_materialized_root_next.data()
+SYCL_NOT_CONTAINS:void __dacpp_mpi_stencil_rootShell_root_step_0
+SYCL_NOT_CONTAINS:void __dacpp_mpi_stencil_distShell_dist_step_1
