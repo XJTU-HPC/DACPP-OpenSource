@@ -115,13 +115,12 @@ void annotateOutputSync(ShellPartitionPlan& plan, DacppFile* dacppFile) {
         const OutputSyncRequirement syncRequirement =
             classifyOutputSyncRequirement(dacppFile, param.actualTensorName,
                                           plan.exprNode.dacExpr);
-        // OR wrappers do not yet lower post-shell followup regions the way
-        // Phase-C does. Until OR-side followup lowering exists, any
-        // non-RootOnly output must refresh all-ranks host-visible tensor state
-        // after materialization so subsequent host followup code observes the
-        // same tensor values on every rank.
+        const bool orStencilDistributedFollowupLowered =
+            syncRequirement == OutputSyncRequirement::DistributedFollowup &&
+            isShellDerivedStencilLayout(plan.signature.layout);
         param.broadcastMaterializedOutput =
-            syncRequirement != OutputSyncRequirement::RootOnly;
+            syncRequirement != OutputSyncRequirement::RootOnly &&
+            !orStencilDistributedFollowupLowered;
         llvm::outs() << "[DACPP][MPI] output " << param.actualTensorName
                      << " sync="
                      << outputSyncRequirementName(syncRequirement) << "\n";

@@ -352,6 +352,9 @@ bool tryCollectBoundaryLocalUpdate2D(DistributedStencilSitePlan& plan,
         update.targetColUsesLoop = targetColUsesLoop;
         update.sourceRowUsesLoop = sourceRowUsesLoop;
         update.sourceColUsesLoop = sourceColUsesLoop;
+        update.loopLowerExpr = loopInfo.lowerExpr;
+        update.loopUpperExpr = loopInfo.upperExpr;
+        update.loopUpperInclusive = loopInfo.upperInclusive;
         update.constantRhs = constantRhs;
         update.constantValue = constantValue;
         update.stmt = assignment.stmt;
@@ -454,6 +457,9 @@ bool tryCollectBoundaryLocalUpdate1D(DistributedStencilSitePlan& plan,
         update.sourceRowExpr = sourceExpr;
         update.targetRowUsesLoop = targetUsesLoop;
         update.sourceRowUsesLoop = sourceUsesLoop;
+        update.loopLowerExpr = loopInfo.lowerExpr;
+        update.loopUpperExpr = loopInfo.upperExpr;
+        update.loopUpperInclusive = loopInfo.upperInclusive;
         update.constantRhs = constantRhs;
         update.constantValue = constantValue;
         update.stmt = assignment.stmt;

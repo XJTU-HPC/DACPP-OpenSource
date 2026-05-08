@@ -19,7 +19,7 @@ std::string operatorResidentWrapperName(Shell* shell,
 }
 
 std::string buildOperatorResidentWrapperCode(
-    DacppFile*,
+    DacppFile* dacppFile,
     const OperatorResidentChainPlan&,
     const ShellPartitionPlan& exprPlan) {
     Shell* shell = exprPlan.exprNode.shell;
@@ -30,10 +30,10 @@ std::string buildOperatorResidentWrapperCode(
     if (isShellDerivedStencilLayout(exprPlan.signature.layout)) {
         if (exprPlan.signature.layout == LocalLayoutKind::StencilWindow1D) {
             return operator_resident::buildStencilWindow1DWrapperCode(
-                wrapper, exprPlan);
+                wrapper, dacppFile, exprPlan);
         }
         return operator_resident::buildStencilWindow2DWrapperCode(
-            wrapper, exprPlan);
+            wrapper, dacppFile, exprPlan);
     }
 
     std::string code;

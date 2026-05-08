@@ -6,7 +6,13 @@ SYCL_CONTAINS:void __dacpp_mpi_or_rootShell_root_step_0
 SYCL_CONTAINS:void __dacpp_mpi_or_distShell_dist_step_1
 SYCL_CONTAINS:MPI_Gatherv(__or_local_root_next.data()
 SYCL_CONTAINS:MPI_Gatherv(__or_local_dist_next.data()
-SYCL_CONTAINS:MPI_Bcast(__or_materialized_dist_next.data()
+SYCL_CONTAINS:__or_followup_global_dist_state
+SYCL_CONTAINS:__or_arg0.array2Tensor(__or_followup_global_dist_state)
+SYCL_CONTAINS:MPI_Bcast(__or_followup_global_dist_state.data()
+SYCL_CONTAINS:__or_boundary_target = 0
+SYCL_CONTAINS:__or_followup_global_dist_state[static_cast<std::size_t>(__or_boundary_target)] = static_cast<double>(__or_materialized_dist_next[static_cast<std::size_t>(__or_boundary_source)])
+SYCL_NOT_CONTAINS:dist_state[0] = dist_next[0]
+SYCL_NOT_CONTAINS:MPI_Bcast(__or_materialized_dist_next.data()
 SYCL_NOT_CONTAINS:MPI_Bcast(__or_materialized_root_next.data()
 SYCL_NOT_CONTAINS:void __dacpp_mpi_stencil_rootShell_root_step_0
 SYCL_NOT_CONTAINS:void __dacpp_mpi_stencil_distShell_dist_step_1

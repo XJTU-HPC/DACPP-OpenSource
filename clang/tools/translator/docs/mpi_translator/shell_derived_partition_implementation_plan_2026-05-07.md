@@ -346,7 +346,7 @@ struct MpiLoweringPlan {
 | Phase 4 | 进行中 | `StencilWindow1D` / `StencilWindow2D` 当前切片已接入；mixed-site 按 expr 分派已接入 | `stencil1.0` `waveEquation1.0` `FOuLa1.0` `MDP1.0` `liuliang1.0` `mpiMixedStencilORPhaseC` | root-bridge 和更广 stencil 形态仍未展开 |
 | Phase 4.5 | 未开始 | 仅有设计目标 | 无 | `init/run/materialize` 的 loop-lifted direct/resident family 尚未落地 |
 | Phase 5 | 未开始 | 仅有 IR / 枚举占位（如 `FixedBlock`） | 无 | `oddeven0.1` 所需分析与 codegen 均未实现 |
-| Phase 6 | 未完成 | 完整测试已通过，但尚未做到“全部非 `mpi*` tests 都走新路径” | `bash test_mpi.sh` 32/32 | 仍存在需要继续 fallback 的普通应用测试 |
+| Phase 6 | 未完成 | 完整测试已通过，但尚未做到“全部非 `mpi*` tests 都走新路径” | `bash test_mpi.sh` 33/33 | 仍存在需要继续 fallback 的普通应用测试 |
 
 ### 6.1 当前已启用的 OR layout
 
@@ -376,7 +376,7 @@ bash test_mpi.sh
 
 当前基线结果：
 
-- `32 tests | 32 passed | 0 failed | 0 skipped`
+- `33 tests | 33 passed | 0 failed | 0 skipped`
 - 已接入 OR 的路径不再生成 legacy `AccessPattern` / `PackPlan`
 - mixed-site 已按 expr 独立分派，不再因同文件存在未接入 stencil site 而整文件退回 Phase-C
 
@@ -406,8 +406,9 @@ bash test_mpi.sh
 补充说明：
 
 - `waveEquation1.0` 的执行 wrapper 目前是 OR `StencilWindow2D`；测试里仍出现的 `[DACPP][MPI][PhaseC]` 路由/读缓存日志来自共享的分布式 stencil 站点分析，不表示最终 wrapper 走旧 stencil Phase-C codegen。
-- 当前 OR `StencilWindow1D` / `StencilWindow2D` 仍未像 Phase-C 那样改写 post-shell followup 语句；因此 `distributed-followup` 在 OR 路线上当前仍保持 all-ranks host tensor refresh，而不是只保留 root materialize。
-- 当前 OR stencil 路线下的 `RootCentricFollowup` 仍未进入可达形态；现阶段回归口径因此先固定为“只有 `RootOnly` 才跳过 materialized refresh”。
+- 当前 OR `StencilWindow1D` / `StencilWindow2D` 已 lower 当前 accepted stencil followup 切片：1D `+1` distributed-followup、2D `+1,+1` distributed-followup，以及 `waveEquation1.0` 所需的 2D `-1,-1` read-cache transition。OR rewrite 会移除这些 post-shell followup / boundary-local 语句，并在 wrapper 内把 materialized writer 值按 route 和边界更新写回 reader tensor，再同步 followup/read-cache 目标 tensor，避免非 root host-visible reader 状态陈旧或被旧 writer 边界语句覆盖。
+- 当前 OR stencil 路线下的 `RootCentricFollowup` 仍未进入可达形态；`hasRootBridge` 仍保持 reject。
+- `distributed-followup` 的 all-ranks materialized writer refresh 已从 accepted OR stencil path 去掉；非 OR-stencil 或尚未 lower followup 的非 `RootOnly` 输出仍保留保守 refresh。
 
 补充回归：
 
@@ -417,7 +418,7 @@ bash test_mpi.sh
 - `mpiOrStencilRefreshPolicy1D`
 
 其中 `mpiMixedStencilORPhaseC` 当前用于验证同文件 mixed stencil expr 仍按 expr 独立分派；当前口径要求同一文件里同时存在 OR site 和 Phase-C site。
-其中 `mpiOrStencilRefreshPolicy1D` 当前用于验证 OR `StencilWindow1D` 的输出同步策略：`root-only` 不 broadcast materialized output，`distributed-followup` 仍 broadcast materialized output。
+其中 `mpiOrStencilRefreshPolicy1D` 当前用于验证 OR `StencilWindow1D` 的输出同步策略：`root-only` 不 broadcast materialized output；accepted `distributed-followup` 不再 broadcast materialized writer output，而是生成 OR-side followup 写回并同步 reader tensor，覆盖 followup 后继续 host 读取 reader 的场景。
 
 ---
 
@@ -435,7 +436,8 @@ Phase 4 目前不是“未开始”，而是已经推进到 1D / 2D 当前切片
 - `waveEquation1.0` 已接入
 - `FOuLa1.0`、`MDP1.0`、`liuliang1.0` 已接入
 - mixed-site 顶层分派已支持按 expr 独立选择 OR / Phase-C / legacy
-- `mpiOrStencilRefreshPolicy1D` 已补入，用于钉住当前 OR stencil 输出 refresh 口径
+- OR-side post-shell distributed followup lowering 已接入当前 accepted 1D/2D stencil 切片
+- `mpiOrStencilRefreshPolicy1D` 已更新，用于钉住 OR stencil distributed-followup 不再依赖 materialized writer broadcast、且同步 followup reader 的口径
 
 当前边界：
 
@@ -451,7 +453,6 @@ Phase 4 的下一步应继续集中在：
 - 更广的 1D stencil window 形态
 - 更广的 2D direct reader / route 形态
 - root-bridge stencil site
-- OR-side post-shell followup lowering
 
 也就是继续沿 shell-derived `stencil_window` 路线做 1D / 更广 stencil 形态，而不是横向扩到 `FixedBlock`。
 

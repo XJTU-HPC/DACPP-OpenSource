@@ -103,6 +103,9 @@ struct BoundaryLocalUpdate {
     bool targetColUsesLoop = false;
     bool sourceRowUsesLoop = false;
     bool sourceColUsesLoop = false;
+    std::string loopLowerExpr;
+    std::string loopUpperExpr;
+    bool loopUpperInclusive = false;
     bool constantRhs = false;
     std::string constantValue;
     const clang::Stmt* stmt = nullptr;

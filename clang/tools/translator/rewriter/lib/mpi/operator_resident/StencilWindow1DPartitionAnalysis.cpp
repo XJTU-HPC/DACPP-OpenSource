@@ -172,6 +172,15 @@ bool assignStencilWindow1DLayout(DacppFile* dacppFile,
             "stencil window 1d only supports +1 distributed followup route";
         return false;
     }
+    for (const auto& update : sitePlan.boundaryLocalUpdates) {
+        if (update.rank != 1 ||
+            update.targetRowUsesLoop ||
+            update.sourceRowUsesLoop) {
+            rejectReason =
+                "stencil window 1d only supports constant-index boundary-local updates";
+            return false;
+        }
+    }
 
     plan.signature.layout = LocalLayoutKind::StencilWindow1D;
     plan.signature.linearization = "1d-window";

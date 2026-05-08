@@ -39,6 +39,7 @@ MPI_TESTS=(
     "mpiDistributedStencilAstRoute1D"
     "mpiDistributedStencilAstRouteFallback1D"
     "mpiDistributedStencil2DRowBlock"
+    "mpiOrStencilBoundaryStride2D"
     "mpiPhaseCWriteThenRead1D"
     "mpiPhaseCHalo1D"
     "mpiPhaseCHaloWide1D"

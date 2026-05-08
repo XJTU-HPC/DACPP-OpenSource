@@ -17,6 +17,9 @@ namespace detail {
 
 struct RouteLoopInfo {
     std::string loopVar;
+    std::string lowerExpr;
+    std::string upperExpr;
+    bool upperInclusive = false;
     const clang::VarDecl* loopVarDecl = nullptr;
 };
 

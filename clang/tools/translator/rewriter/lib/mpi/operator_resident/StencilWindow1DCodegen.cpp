@@ -1,4 +1,5 @@
 #include <string>
+#include <vector>
 
 #include "DacppStructure.h"
 #include "Rewriter_MPI_Common.h"
@@ -37,10 +38,167 @@ const ParamAccessPlan* findScalarReader(const ShellPartitionPlan& plan) {
     return nullptr;
 }
 
+const ParamAccessPlan* findParamByIndex(const ShellPartitionPlan& plan,
+                                        int paramIndex) {
+    for (const auto& param : plan.params) {
+        if (param.paramIndex == paramIndex) {
+            return &param;
+        }
+    }
+    return nullptr;
+}
+
+std::vector<DistributedFollowupMapping> followupsForWriter(
+    DacppFile* dacppFile,
+    const ShellPartitionPlan& plan,
+    const ParamAccessPlan& writer) {
+    std::vector<DistributedFollowupMapping> result;
+    if (!dacppFile || !plan.exprNode.shell || !plan.exprNode.calc ||
+        !plan.exprNode.dacExpr) {
+        return result;
+    }
+    const DistributedStencilSitePlan sitePlan = analyzeDistributedStencilSite(
+        dacppFile, plan.exprNode.shell, plan.exprNode.calc,
+        plan.exprNode.dacExpr);
+    if (!sitePlan.supported || sitePlan.hasRootBridge) {
+        return result;
+    }
+    for (const auto& mapping : sitePlan.followupMappings) {
+        if (mapping.writerParamIndex == writer.paramIndex ||
+            mapping.writerTensor == writer.actualTensorName ||
+            mapping.writerTensor == writer.shellParamName) {
+            result.push_back(mapping);
+        }
+    }
+    return result;
+}
+
+DistributedStencilSitePlan stencilSitePlanFor(DacppFile* dacppFile,
+                                              const ShellPartitionPlan& plan) {
+    if (!dacppFile || !plan.exprNode.shell || !plan.exprNode.calc ||
+        !plan.exprNode.dacExpr) {
+        return {};
+    }
+    return analyzeDistributedStencilSite(dacppFile, plan.exprNode.shell,
+                                        plan.exprNode.calc,
+                                        plan.exprNode.dacExpr);
+}
+
+void emitBoundaryLocalMaterialize1D(
+    std::string& code,
+    const ShellPartitionPlan& plan,
+    const std::vector<BoundaryLocalUpdate>& updates,
+    const ParamAccessPlan& reader,
+    const ParamAccessPlan& writer,
+    const std::string& materializedWriterName,
+    const std::string& readerGlobalName) {
+    for (const auto& update : updates) {
+        if (update.rank != 1 ||
+            update.paramIndex != reader.paramIndex ||
+            update.targetRowUsesLoop ||
+            update.sourceRowUsesLoop) {
+            continue;
+        }
+        code += "            {\n";
+        code += "                const int64_t __or_boundary_target = " +
+                update.targetRowExpr + ";\n";
+        code += "                if (__or_boundary_target >= 0 && static_cast<std::size_t>(__or_boundary_target) < " +
+                readerGlobalName + ".size()) {\n";
+        if (update.constantRhs) {
+            code += "                    " + readerGlobalName +
+                    "[static_cast<std::size_t>(__or_boundary_target)] = static_cast<" +
+                    elemType(plan, reader) + ">(" +
+                    (update.constantValue.empty() ? "0"
+                                                  : update.constantValue) +
+                    ");\n";
+        } else {
+            code += "                    const int64_t __or_boundary_source = " +
+                    update.sourceRowExpr + ";\n";
+            if (update.sourceParamIndex == writer.paramIndex) {
+                code += "                    if (__or_boundary_source >= 0 && static_cast<std::size_t>(__or_boundary_source) < " +
+                        materializedWriterName + ".size()) {\n";
+                code += "                        " + readerGlobalName +
+                        "[static_cast<std::size_t>(__or_boundary_target)] = static_cast<" +
+                        elemType(plan, reader) + ">(" + materializedWriterName +
+                        "[static_cast<std::size_t>(__or_boundary_source)]);\n";
+                code += "                    }\n";
+            } else {
+                code += "                    if (__or_boundary_source >= 0 && static_cast<std::size_t>(__or_boundary_source) < " +
+                        readerGlobalName + ".size()) {\n";
+                code += "                        " + readerGlobalName +
+                        "[static_cast<std::size_t>(__or_boundary_target)] = " +
+                        readerGlobalName +
+                        "[static_cast<std::size_t>(__or_boundary_source)];\n";
+                code += "                    }\n";
+            }
+        }
+        code += "                }\n";
+        code += "            }\n";
+    }
+}
+
+void emitFollowupMaterialize1D(
+    std::string& code,
+    const ShellPartitionPlan& plan,
+    const ParamAccessPlan& writer,
+    const std::vector<DistributedFollowupMapping>& followups,
+    const std::vector<BoundaryLocalUpdate>& boundaryUpdates) {
+    if (followups.empty()) {
+        return;
+    }
+    const std::string materialized =
+        "__or_materialized_" + writer.calcParamName;
+    for (const auto& mapping : followups) {
+        const ParamAccessPlan* reader = findParamByIndex(
+            plan, mapping.readerParamIndex);
+        if (!reader || mapping.rank != 1) {
+            continue;
+        }
+        const std::string readerType = elemType(plan, *reader);
+        const std::string readerMpiType = mpiDatatypeFor(readerType);
+        const std::string followupGlobal =
+            "__or_followup_global_" + reader->calcParamName;
+        code += "    {\n";
+        code += "        std::vector<" + readerType + "> " + followupGlobal +
+                ";\n";
+        code += "        if (mpi_rank == 0) {\n";
+        code += "            " + paramVarName(*reader) +
+                ".tensor2Array(" + followupGlobal + ");\n";
+        code += "            for (std::size_t __or_idx = 0; __or_idx < " +
+                materialized + ".size(); ++__or_idx) {\n";
+        code += "                const int64_t __or_target = static_cast<int64_t>(__or_idx) + static_cast<int64_t>(" +
+                std::to_string(mapping.targetOffset) + ");\n";
+        code += "                if (__or_target >= 0 && static_cast<std::size_t>(__or_target) < " +
+                followupGlobal + ".size()) {\n";
+        code += "                    " + followupGlobal +
+                "[static_cast<std::size_t>(__or_target)] = static_cast<" +
+                readerType + ">(" + materialized + "[__or_idx]);\n";
+        code += "                }\n";
+        code += "            }\n";
+        emitBoundaryLocalMaterialize1D(code, plan, boundaryUpdates, *reader,
+                                       writer, materialized, followupGlobal);
+        code += "        } else {\n";
+        code += "            " + followupGlobal +
+                ".resize(static_cast<std::size_t>(" + paramVarName(*reader) +
+                ".getSize()));\n";
+        code += "        }\n";
+        code += "        if (!" + followupGlobal + ".empty()) {\n";
+        code += "            MPI_Bcast(" + followupGlobal + ".data(), " +
+                mpiPayloadCountExpr(paramVarName(*reader) + ".getSize()",
+                                    readerType) +
+                ", " + readerMpiType + ", 0, MPI_COMM_WORLD);\n";
+        code += "        }\n";
+        code += "        " + paramVarName(*reader) + ".array2Tensor(" +
+                followupGlobal + ");\n";
+        code += "    }\n";
+    }
+}
+
 }  // namespace
 
 std::string buildStencilWindow1DWrapperCode(
     const std::string& wrapperName,
+    DacppFile* dacppFile,
     const ShellPartitionPlan& plan) {
     const ParamAccessPlan* reader = findStencilReader(plan);
     const ParamAccessPlan* writer = findStencilWriter(plan);
@@ -56,6 +214,8 @@ std::string buildStencilWindow1DWrapperCode(
     const std::string readerArg = paramVarName(*reader);
     const std::string writerArg = paramVarName(*writer);
     const std::string calcName = plan.exprNode.calc->getName();
+    const auto sitePlan = stencilSitePlanFor(dacppFile, plan);
+    const auto followups = followupsForWriter(dacppFile, plan, *writer);
 
     std::string code;
     code += "void " + wrapperName + "(" + wrapperSignature(plan) + ") {\n";
@@ -149,6 +309,8 @@ std::string buildStencilWindow1DWrapperCode(
     emitGatherMaterializeFromLocalBuffer(code, plan, *writer,
                                          "__or_local_" + writer->calcParamName,
                                          "__or_output_size");
+    emitFollowupMaterialize1D(code, plan, *writer, followups,
+                              sitePlan.boundaryLocalUpdates);
     code += "}\n";
     return code;
 }

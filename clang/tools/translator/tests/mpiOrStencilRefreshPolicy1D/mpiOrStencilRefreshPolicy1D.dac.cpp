@@ -44,6 +44,10 @@ calc void dist_step(dacpp::Vector<double>& dist_state, double* dist_next) {
         0.2 * dist_state[0] + 0.6 * dist_state[1] + 0.2 * dist_state[2];
 }
 
+double hostReadReader(dacpp::Vector<double>& state, int idx) {
+    return state[idx];
+}
+
 void runRootOnlyPhase() {
     std::vector<double> history_data(ROOT_WIDTH * (ROOT_TIME_STEPS + 1), 0.0);
     for (int x = 0; x < ROOT_WIDTH; ++x) {
@@ -89,6 +93,10 @@ void runDistributedPhase() {
         for (int i = 0; i < 1; ++i) {
             dist_state[0] = dist_next[0];
         }
+    }
+
+    if (hostReadReader(dist_state, 0) < -1000.0) {
+        std::cout << "unreachable" << std::endl;
     }
 
     std::cout << dist_state[6] << std::endl;

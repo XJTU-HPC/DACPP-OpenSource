@@ -42,10 +42,279 @@ std::vector<const ParamAccessPlan*> findStencilDirectReaders(
     return readers;
 }
 
+const ParamAccessPlan* findParamByIndex(const ShellPartitionPlan& plan,
+                                        int paramIndex) {
+    for (const auto& param : plan.params) {
+        if (param.paramIndex == paramIndex) {
+            return &param;
+        }
+    }
+    return nullptr;
+}
+
+DistributedStencilSitePlan stencilSitePlanFor(
+    DacppFile* dacppFile,
+    const ShellPartitionPlan& plan) {
+    if (!dacppFile || !plan.exprNode.shell || !plan.exprNode.calc ||
+        !plan.exprNode.dacExpr) {
+        return {};
+    }
+    return analyzeDistributedStencilSite(dacppFile, plan.exprNode.shell,
+                                        plan.exprNode.calc,
+                                        plan.exprNode.dacExpr);
+}
+
+std::vector<DistributedFollowupMapping> followupsForWriter(
+    const DistributedStencilSitePlan& sitePlan,
+    const ParamAccessPlan& writer) {
+    std::vector<DistributedFollowupMapping> result;
+    if (!sitePlan.supported || sitePlan.hasRootBridge) {
+        return result;
+    }
+    for (const auto& mapping : sitePlan.followupMappings) {
+        if (mapping.writerParamIndex == writer.paramIndex ||
+            mapping.writerTensor == writer.actualTensorName ||
+            mapping.writerTensor == writer.shellParamName) {
+            result.push_back(mapping);
+        }
+    }
+    return result;
+}
+
+void emitReadCacheTransitions2D(
+    std::string& code,
+    const ShellPartitionPlan& plan,
+    const std::vector<ReadCacheStateTransition>& transitions) {
+    for (const auto& transition : transitions) {
+        if (transition.rank != 2) {
+            continue;
+        }
+        const ParamAccessPlan* source =
+            findParamByIndex(plan, transition.writerParamIndex);
+        const ParamAccessPlan* target =
+            findParamByIndex(plan, transition.readerParamIndex);
+        if (!source || !target) {
+            continue;
+        }
+        const std::string targetType = elemType(plan, *target);
+        const std::string targetMpiType = mpiDatatypeFor(targetType);
+        const std::string transitionGlobal =
+            "__or_transition_global_" + target->calcParamName;
+        code += "    {\n";
+        code += "        std::vector<" + targetType + "> " +
+                transitionGlobal + ";\n";
+        code += "        if (mpi_rank == 0) {\n";
+        code += "            " + paramVarName(*target) +
+                ".tensor2Array(" + transitionGlobal + ");\n";
+        code += "            const int64_t __or_transition_source_cols_" +
+                source->calcParamName + " = static_cast<int64_t>(" +
+                paramVarName(*source) + ".getShape(1));\n";
+        code += "            const int64_t __or_transition_target_cols_" +
+                target->calcParamName + " = static_cast<int64_t>(" +
+                paramVarName(*target) + ".getShape(1));\n";
+        code += "            for (std::size_t __or_idx = 0; __or_idx < __or_global_" +
+                source->calcParamName + ".size(); ++__or_idx) {\n";
+        code += "                const int64_t __or_target = dacpp::mpi::map_2d_global_with_offset(static_cast<int64_t>(__or_idx), __or_transition_source_cols_" +
+                source->calcParamName + ", __or_transition_target_cols_" +
+                target->calcParamName + ", " +
+                std::to_string(transition.targetRowOffset) + ", " +
+                std::to_string(transition.targetColOffset) + ");\n";
+        code += "                if (__or_target >= 0 && static_cast<std::size_t>(__or_target) < " +
+                transitionGlobal + ".size()) {\n";
+        code += "                    " + transitionGlobal +
+                "[static_cast<std::size_t>(__or_target)] = static_cast<" +
+                targetType + ">(__or_global_" + source->calcParamName +
+                "[__or_idx]);\n";
+        code += "                }\n";
+        code += "            }\n";
+        code += "        } else {\n";
+        code += "            " + transitionGlobal +
+                ".resize(static_cast<std::size_t>(" + paramVarName(*target) +
+                ".getSize()));\n";
+        code += "        }\n";
+        code += "        if (!" + transitionGlobal + ".empty()) {\n";
+        code += "            MPI_Bcast(" + transitionGlobal + ".data(), " +
+                mpiPayloadCountExpr(paramVarName(*target) + ".getSize()",
+                                    targetType) +
+                ", " + targetMpiType + ", 0, MPI_COMM_WORLD);\n";
+        code += "        }\n";
+        code += "        " + paramVarName(*target) + ".array2Tensor(" +
+                transitionGlobal + ");\n";
+        code += "    }\n";
+    }
+}
+
+void emitBoundaryLocalMaterialize2D(
+    std::string& code,
+    const ShellPartitionPlan& plan,
+    const std::vector<BoundaryLocalUpdate>& updates,
+    const ParamAccessPlan& reader,
+    const ParamAccessPlan& writer,
+    const std::string& materializedWriterName,
+    const std::string& readerGlobalName,
+    const std::string& readerRowsExpr,
+    const std::string& readerColsExpr,
+    const std::string& outputRowsExpr,
+    const std::string& outputColsExpr) {
+    for (const auto& update : updates) {
+        if (update.rank != 2 || update.paramIndex != reader.paramIndex) {
+            continue;
+        }
+        const std::string loopLower =
+            update.loopLowerExpr.empty() ? "0" : update.loopLowerExpr;
+        const std::string loopUpper =
+            update.loopUpperExpr.empty()
+                ? ((update.targetRowUsesLoop || update.sourceRowUsesLoop)
+                       ? readerRowsExpr
+                       : readerColsExpr)
+                : update.loopUpperExpr;
+        const std::string loopCmp = update.loopUpperInclusive ? "<=" : "<";
+        code += "            {\n";
+        code += "                const int64_t __or_boundary_begin = static_cast<int64_t>(" +
+                loopLower + ");\n";
+        code += "                const int64_t __or_boundary_end = static_cast<int64_t>(" +
+                loopUpper + ");\n";
+        code += "                for (int64_t __or_boundary_idx = __or_boundary_begin; __or_boundary_idx " +
+                loopCmp +
+                " __or_boundary_end; ++__or_boundary_idx) {\n";
+        code += "                    const int64_t __or_boundary_target_row = " +
+                (update.targetRowUsesLoop ? "__or_boundary_idx"
+                                          : update.targetRowExpr) +
+                ";\n";
+        code += "                    const int64_t __or_boundary_target_col = " +
+                (update.targetColUsesLoop ? "__or_boundary_idx"
+                                          : update.targetColExpr) +
+                ";\n";
+        code += "                    if (__or_boundary_target_row < 0 || __or_boundary_target_col < 0 || __or_boundary_target_row >= " +
+                readerRowsExpr + " || __or_boundary_target_col >= " +
+                readerColsExpr + ") continue;\n";
+        code += "                    const int64_t __or_boundary_target = __or_boundary_target_row * " +
+                readerColsExpr + " + __or_boundary_target_col;\n";
+        code += "                    if (__or_boundary_target < 0 || static_cast<std::size_t>(__or_boundary_target) >= " +
+                readerGlobalName + ".size()) continue;\n";
+        if (update.constantRhs) {
+            code += "                    " + readerGlobalName +
+                    "[static_cast<std::size_t>(__or_boundary_target)] = static_cast<" +
+                    elemType(plan, reader) + ">(" +
+                    (update.constantValue.empty() ? "0"
+                                                  : update.constantValue) +
+                    ");\n";
+        } else {
+            code += "                    const int64_t __or_boundary_source_row = " +
+                    (update.sourceRowUsesLoop ? "__or_boundary_idx"
+                                              : update.sourceRowExpr) +
+                    ";\n";
+            code += "                    const int64_t __or_boundary_source_col = " +
+                    (update.sourceColUsesLoop ? "__or_boundary_idx"
+                                              : update.sourceColExpr) +
+                    ";\n";
+            if (update.sourceParamIndex == writer.paramIndex) {
+                code += "                    if (__or_boundary_source_row < 0 || __or_boundary_source_col < 0 || __or_boundary_source_row >= " +
+                        outputRowsExpr + " || __or_boundary_source_col >= " +
+                        outputColsExpr + ") continue;\n";
+                code += "                    const int64_t __or_boundary_source = __or_boundary_source_row * " +
+                        outputColsExpr + " + __or_boundary_source_col;\n";
+                code += "                    if (__or_boundary_source >= 0 && static_cast<std::size_t>(__or_boundary_source) < " +
+                        materializedWriterName + ".size()) {\n";
+                code += "                        " + readerGlobalName +
+                        "[static_cast<std::size_t>(__or_boundary_target)] = static_cast<" +
+                        elemType(plan, reader) + ">(" +
+                        materializedWriterName +
+                        "[static_cast<std::size_t>(__or_boundary_source)]);\n";
+                code += "                    }\n";
+            } else {
+                code += "                    if (__or_boundary_source_row < 0 || __or_boundary_source_col < 0 || __or_boundary_source_row >= " +
+                        readerRowsExpr + " || __or_boundary_source_col >= " +
+                        readerColsExpr + ") continue;\n";
+                code += "                    const int64_t __or_boundary_source = __or_boundary_source_row * " +
+                        readerColsExpr + " + __or_boundary_source_col;\n";
+                code += "                    if (__or_boundary_source >= 0 && static_cast<std::size_t>(__or_boundary_source) < " +
+                        readerGlobalName + ".size()) {\n";
+                code += "                        " + readerGlobalName +
+                        "[static_cast<std::size_t>(__or_boundary_target)] = " +
+                        readerGlobalName +
+                        "[static_cast<std::size_t>(__or_boundary_source)];\n";
+                code += "                    }\n";
+            }
+        }
+        code += "                }\n";
+        code += "            }\n";
+    }
+}
+
+void emitFollowupMaterialize2D(
+    std::string& code,
+    const ShellPartitionPlan& plan,
+    const ParamAccessPlan& writer,
+    const std::vector<DistributedFollowupMapping>& followups,
+    const std::vector<BoundaryLocalUpdate>& boundaryUpdates) {
+    if (followups.empty()) {
+        return;
+    }
+    const std::string materialized =
+        "__or_materialized_" + writer.calcParamName;
+    for (const auto& mapping : followups) {
+        if (mapping.rank != 2) {
+            continue;
+        }
+        const ParamAccessPlan* reader =
+            findParamByIndex(plan, mapping.readerParamIndex);
+        if (!reader) {
+            continue;
+        }
+        const std::string readerType = elemType(plan, *reader);
+        const std::string readerMpiType = mpiDatatypeFor(readerType);
+        const std::string followupGlobal =
+            "__or_followup_global_" + reader->calcParamName;
+        code += "    {\n";
+        code += "        std::vector<" + readerType + "> " + followupGlobal +
+                ";\n";
+        code += "        if (mpi_rank == 0) {\n";
+        code += "            " + paramVarName(*reader) +
+                ".tensor2Array(" + followupGlobal + ");\n";
+        code += "            const int64_t __or_followup_reader_cols_" +
+                reader->calcParamName + " = static_cast<int64_t>(" +
+                paramVarName(*reader) + ".getShape(1));\n";
+        code += "            for (std::size_t __or_idx = 0; __or_idx < " +
+                materialized + ".size(); ++__or_idx) {\n";
+        code += "                const int64_t __or_target = dacpp::mpi::map_2d_global_with_offset(static_cast<int64_t>(__or_idx), __or_output_cols, __or_followup_reader_cols_" +
+                reader->calcParamName + ", " +
+                std::to_string(mapping.targetRowOffset) + ", " +
+                std::to_string(mapping.targetColOffset) + ");\n";
+        code += "                if (__or_target >= 0 && static_cast<std::size_t>(__or_target) < " +
+                followupGlobal + ".size()) {\n";
+        code += "                    " + followupGlobal +
+                "[static_cast<std::size_t>(__or_target)] = static_cast<" +
+                readerType + ">(" + materialized + "[__or_idx]);\n";
+        code += "                }\n";
+        code += "            }\n";
+        emitBoundaryLocalMaterialize2D(
+            code, plan, boundaryUpdates, *reader, writer, materialized,
+            followupGlobal, paramVarName(*reader) + ".getShape(0)",
+            "__or_followup_reader_cols_" + reader->calcParamName,
+            "__or_output_rows", "__or_output_cols");
+        code += "        } else {\n";
+        code += "            " + followupGlobal +
+                ".resize(static_cast<std::size_t>(" + paramVarName(*reader) +
+                ".getSize()));\n";
+        code += "        }\n";
+        code += "        if (!" + followupGlobal + ".empty()) {\n";
+        code += "            MPI_Bcast(" + followupGlobal + ".data(), " +
+                mpiPayloadCountExpr(paramVarName(*reader) + ".getSize()",
+                                    readerType) +
+                ", " + readerMpiType + ", 0, MPI_COMM_WORLD);\n";
+        code += "        }\n";
+        code += "        " + paramVarName(*reader) + ".array2Tensor(" +
+                followupGlobal + ");\n";
+        code += "    }\n";
+    }
+}
+
 }  // namespace
 
 std::string buildStencilWindow2DWrapperCode(
     const std::string& wrapperName,
+    DacppFile* dacppFile,
     const ShellPartitionPlan& plan) {
     const ParamAccessPlan* reader = findStencilReader(plan);
     const ParamAccessPlan* writer = findStencilWriter(plan);
@@ -61,6 +330,9 @@ std::string buildStencilWindow2DWrapperCode(
     const std::string readerArg = paramVarName(*reader);
     const std::string writerArg = paramVarName(*writer);
     const std::string calcName = plan.exprNode.calc->getName();
+    const DistributedStencilSitePlan sitePlan =
+        stencilSitePlanFor(dacppFile, plan);
+    const auto followups = followupsForWriter(sitePlan, *writer);
 
     std::string code;
     code += "void " + wrapperName + "(" + wrapperSignature(plan) + ") {\n";
@@ -208,6 +480,9 @@ std::string buildStencilWindow2DWrapperCode(
     emitGatherMaterializeFromLocalBuffer(
         code, plan, *writer, "__or_local_" + writer->calcParamName,
         "__or_output_rows * __or_output_cols");
+    emitReadCacheTransitions2D(code, plan, sitePlan.readCacheTransitions);
+    emitFollowupMaterialize2D(code, plan, *writer, followups,
+                              sitePlan.boundaryLocalUpdates);
     code += "}\n";
     return code;
 }

@@ -46,23 +46,82 @@ bool containsWord(const std::string& text, const std::string& word) {
     return false;
 }
 
-bool isSupportedIncrement(const clang::ForStmt* forStmt) {
+const clang::Expr* ignoreIncrementExpr(const clang::Expr* expr) {
+    while (expr) {
+        expr = expr->IgnoreParenImpCasts();
+        if (const auto* cleanup =
+                llvm::dyn_cast_or_null<clang::ExprWithCleanups>(expr)) {
+            expr = cleanup->getSubExpr();
+            continue;
+        }
+        if (const auto* materialized =
+                llvm::dyn_cast_or_null<clang::MaterializeTemporaryExpr>(expr)) {
+            expr = materialized->getSubExpr();
+            continue;
+        }
+        if (const auto* temporary =
+                llvm::dyn_cast_or_null<clang::CXXBindTemporaryExpr>(expr)) {
+            expr = temporary->getSubExpr();
+            continue;
+        }
+        break;
+    }
+    return expr;
+}
+
+bool isLoopVarRef(const clang::Expr* expr,
+                  const clang::VarDecl* loopVarDecl) {
+    expr = ignoreIncrementExpr(expr);
+    const auto* ref = llvm::dyn_cast_or_null<clang::DeclRefExpr>(expr);
+    return ref && ref->getDecl() == loopVarDecl;
+}
+
+bool isIntegerLiteralValue(const clang::Expr* expr, int expected) {
+    expr = ignoreIncrementExpr(expr);
+    const auto* literal = llvm::dyn_cast_or_null<clang::IntegerLiteral>(expr);
+    return literal &&
+           literal->getValue().getSExtValue() == static_cast<int64_t>(expected);
+}
+
+bool isLoopPlusOneExpr(const clang::Expr* expr,
+                       const clang::VarDecl* loopVarDecl) {
+    expr = ignoreIncrementExpr(expr);
+    const auto* binary = llvm::dyn_cast_or_null<clang::BinaryOperator>(expr);
+    if (!binary || binary->getOpcode() != clang::BO_Add) {
+        return false;
+    }
+    return (isLoopVarRef(binary->getLHS(), loopVarDecl) &&
+            isIntegerLiteralValue(binary->getRHS(), 1)) ||
+           (isIntegerLiteralValue(binary->getLHS(), 1) &&
+            isLoopVarRef(binary->getRHS(), loopVarDecl));
+}
+
+bool isSupportedIncrement(const clang::ForStmt* forStmt,
+                          const clang::VarDecl* loopVarDecl) {
     const auto* inc = forStmt ? forStmt->getInc() : nullptr;
-    if (!inc) {
+    if (!inc || !loopVarDecl) {
         return false;
     }
     if (const auto* unary = llvm::dyn_cast<clang::UnaryOperator>(inc)) {
-        return unary->isIncrementOp();
+        return unary->isIncrementOp() &&
+               isLoopVarRef(unary->getSubExpr(), loopVarDecl);
     }
     if (const auto* opCall = llvm::dyn_cast<clang::CXXOperatorCallExpr>(inc)) {
-        return opCall->getOperator() == clang::OO_PlusPlus;
+        return opCall->getOperator() == clang::OO_PlusPlus &&
+               opCall->getNumArgs() > 0 &&
+               isLoopVarRef(opCall->getArg(0), loopVarDecl);
     }
     if (const auto* binary = llvm::dyn_cast<clang::BinaryOperator>(inc)) {
-        if (!binary->isAssignmentOp()) {
+        if (!isLoopVarRef(binary->getLHS(), loopVarDecl)) {
             return false;
         }
-        const std::string text = binary->getOpcodeStr().str();
-        return text == "+=" || text == "=";
+        if (binary->getOpcode() == clang::BO_AddAssign) {
+            return isIntegerLiteralValue(binary->getRHS(), 1);
+        }
+        if (binary->getOpcode() == clang::BO_Assign) {
+            return isLoopPlusOneExpr(binary->getRHS(), loopVarDecl);
+        }
+        return false;
     }
     return false;
 }
@@ -89,6 +148,16 @@ bool extractRouteLoopHeaderInfo(const clang::ForStmt* forStmt,
     }
     info.loopVar = loopVarDecl->getNameAsString();
     info.loopVarDecl = loopVarDecl;
+    info.lowerExpr =
+        trim(clang::Lexer::getSourceText(
+                 clang::CharSourceRange::getTokenRange(
+                     loopVarDecl->getInit()->getSourceRange()),
+                 sourceManager,
+                 langOpts)
+                 .str());
+    if (info.lowerExpr.empty()) {
+        return false;
+    }
 
     const auto* cond =
         llvm::dyn_cast_or_null<clang::BinaryOperator>(forStmt->getCond());
@@ -106,7 +175,18 @@ bool extractRouteLoopHeaderInfo(const clang::ForStmt* forStmt,
          cond->getOpcode() != clang::BO_LT)) {
         return false;
     }
-    if (!isSupportedIncrement(forStmt)) {
+    info.upperExpr =
+        trim(clang::Lexer::getSourceText(
+                 clang::CharSourceRange::getTokenRange(
+                     cond->getRHS()->getSourceRange()),
+                 sourceManager,
+                 langOpts)
+                 .str());
+    if (info.upperExpr.empty()) {
+        return false;
+    }
+    info.upperInclusive = cond->getOpcode() == clang::BO_LE;
+    if (!isSupportedIncrement(forStmt, loopVarDecl)) {
         return false;
     }
 

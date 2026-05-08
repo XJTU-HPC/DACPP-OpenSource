@@ -7,7 +7,17 @@ SYCL_CONTAINS:void __dacpp_mpi_or_stencilShell_stencil_0
 SYCL_CONTAINS:MPI_Bcast(__or_global_mat.data()
 SYCL_CONTAINS:dacpp::mpi::ContiguousView2D<const double> view_mat
 SYCL_CONTAINS:MPI_Gatherv(__or_local_out.data()
-SYCL_CONTAINS:MPI_Bcast(__or_materialized_out.data()
+SYCL_CONTAINS:__or_followup_global_mat
+SYCL_CONTAINS:dacpp::mpi::map_2d_global_with_offset(static_cast<int64_t>(__or_idx), __or_output_cols, __or_followup_reader_cols_mat, 1, 1)
+SYCL_CONTAINS:__or_arg0.array2Tensor(__or_followup_global_mat)
+SYCL_CONTAINS:MPI_Bcast(__or_followup_global_mat.data()
+SYCL_CONTAINS:const int64_t __or_boundary_begin = static_cast<int64_t>(0);
+SYCL_CONTAINS:const int64_t __or_boundary_end = static_cast<int64_t>(NX-1);
+SYCL_CONTAINS:for (int64_t __or_boundary_idx = __or_boundary_begin; __or_boundary_idx < __or_boundary_end; ++__or_boundary_idx)
+SYCL_CONTAINS:__or_boundary_target_row
+SYCL_CONTAINS:__or_followup_global_mat[static_cast<std::size_t>(__or_boundary_target)] = __or_followup_global_mat[static_cast<std::size_t>(__or_boundary_source)]
+SYCL_NOT_CONTAINS:matIn[0][j]=matIn[1][j]
+SYCL_NOT_CONTAINS:MPI_Bcast(__or_materialized_out.data()
 SYCL_NOT_CONTAINS:AccessPattern
 SYCL_NOT_CONTAINS:PackPlan
 SYCL_NOT_CONTAINS:__dacpp_mpi_stencil_

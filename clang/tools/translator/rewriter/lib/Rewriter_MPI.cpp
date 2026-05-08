@@ -51,6 +51,58 @@ std::string wrapperNameForDacExpr(const clang::BinaryOperator* dacExpr) {
     return shellCall->getDirectCallee()->getNameAsString() + "_" + calcName;
 }
 
+const mpi_rewriter::ShellPartitionPlan* findOperatorResidentExprPlan(
+    const mpi_rewriter::MpiLoweringPlan& plan,
+    int exprIdx) {
+    if (exprIdx < 0 ||
+        exprIdx >= static_cast<int>(plan.exprResults.size())) {
+        return nullptr;
+    }
+    const int chainId = plan.exprResults[exprIdx].operatorResidentChainId;
+    if (chainId < 0 || chainId >= static_cast<int>(plan.residentChains.size())) {
+        return nullptr;
+    }
+    for (const auto& candidate : plan.residentChains[chainId].exprPlans) {
+        if (candidate.exprIndex == exprIdx) {
+            return &candidate;
+        }
+    }
+    return nullptr;
+}
+
+void removeOperatorResidentLoweredPostStmts(
+    DacppFile* dacppFile,
+    clang::Rewriter* rewriter,
+    Shell* shell,
+    Calc* calc,
+    const clang::BinaryOperator* dacExpr) {
+    if (!dacppFile || !rewriter || !shell || !calc || !dacExpr) {
+        return;
+    }
+    std::set<const clang::Stmt*> stmtsToRemove;
+    const auto distributedRegions =
+        mpi_rewriter::collectDistributedFollowupRegions(dacppFile, shell, calc,
+                                                        dacExpr);
+    for (const auto& region : distributedRegions) {
+        stmtsToRemove.insert(region.stmt);
+    }
+
+    const auto sitePlan =
+        mpi_rewriter::analyzeDistributedStencilSite(dacppFile, shell, calc,
+                                                    dacExpr);
+    if (sitePlan.supported && !sitePlan.hasRootBridge) {
+        for (const clang::Stmt* stmt : sitePlan.boundaryLocalStmts) {
+            stmtsToRemove.insert(stmt);
+        }
+    }
+
+    for (const clang::Stmt* stmt : stmtsToRemove) {
+        if (stmt) {
+            rewriter->RemoveText(stmt->getSourceRange());
+        }
+    }
+}
+
 }  // namespace
 
 void Rewriter::rewriteMPI() {
@@ -163,6 +215,15 @@ void Rewriter::rewriteMPI() {
             dacExpr->getSourceRange(),
             mpi_rewriter::buildWrapperCallForDacExpr(wrapperName, dacExpr,
                                                      dacppFile));
+        if (planKind == mpi_rewriter::MpiPlanKind::OperatorResident) {
+            const auto* exprPlan = findOperatorResidentExprPlan(plan, exprIdx);
+            if (exprPlan &&
+                mpi_rewriter::isShellDerivedStencilLayout(
+                    exprPlan->signature.layout)) {
+                removeOperatorResidentLoweredPostStmts(
+                    dacppFile, rewriter, shell, calc, dacExpr);
+            }
+        }
         rewrittenDacExprs.insert(dacExpr);
     }
 

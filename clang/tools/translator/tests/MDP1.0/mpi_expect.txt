@@ -5,5 +5,8 @@ SYCL_CONTAINS:void __dacpp_mpi_or_mdp_shell_mdp_0
 SYCL_CONTAINS:MPI_Bcast(__or_global_p.data()
 SYCL_CONTAINS:ContiguousView1D<const double> view_p{__or_reader_data, output_idx}
 SYCL_CONTAINS:MPI_Gatherv(__or_local_new_p.data()
-SYCL_CONTAINS:MPI_Bcast(__or_materialized_new_p.data()
+SYCL_CONTAINS:__or_followup_global_p
+SYCL_CONTAINS:__or_arg0.array2Tensor(__or_followup_global_p)
+SYCL_CONTAINS:MPI_Bcast(__or_followup_global_p.data()
+SYCL_NOT_CONTAINS:MPI_Bcast(__or_materialized_new_p.data()
 SYCL_NOT_CONTAINS:ctx.use_partial_exchange = true;
