@@ -1,0 +1,10 @@
+LOG_CONTAINS:[DACPP][MPI][OR] expr=0 shell=DECAY layout=Contiguous1D partition=accepted
+LOG_CONTAINS:[DACPP][MPI][OR][P4.5] expr=0 shell=DECAY layout=Contiguous1D loop-lower=candidate loop=while structure=init/run/materialize materialize=per-run
+SYCL_CONTAINS:__dacpp_mpi_or_DECAY_decay_0
+SYCL_CONTAINS:struct __dacpp_mpi_or_DECAY_decay_0_ctx
+SYCL_CONTAINS:void __dacpp_mpi_or_DECAY_decay_0_init
+SYCL_CONTAINS:void __dacpp_mpi_or_DECAY_decay_0_run
+SYCL_CONTAINS:void __dacpp_mpi_or_DECAY_decay_0_materialize
+SYCL_CONTAINS:__dacpp_mpi_or_DECAY_decay_0_init(__dacpp_mpi_or_ctx_0
+SYCL_CONTAINS:__dacpp_mpi_or_DECAY_decay_0_run(__dacpp_mpi_or_ctx_0
+SYCL_CONTAINS:__dacpp_mpi_or_DECAY_decay_0_materialize(__dacpp_mpi_or_ctx_0

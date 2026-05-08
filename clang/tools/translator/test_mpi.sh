@@ -27,6 +27,8 @@ MPI_TESTS=(
     "mpiOrReadWriteAccumulate2D"
     "oddeven0.1"
     "vectorAddCombo"
+    "mpiLoopReadWriteReject1D"
+    "mpiLoopAliasReject1D"
     "gradientSum"
     "mpiBroadcastRootOnlyCout"
     "mpiBroadcastTensor2Array"

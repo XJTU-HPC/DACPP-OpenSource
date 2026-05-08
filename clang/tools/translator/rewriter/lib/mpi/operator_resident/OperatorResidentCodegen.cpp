@@ -18,6 +18,31 @@ std::string operatorResidentWrapperName(Shell* shell,
            "_" + std::to_string(exprIndex);
 }
 
+std::string operatorResidentContextTypeName(Shell* shell,
+                                            Calc* calc,
+                                            int exprIndex) {
+    return operatorResidentWrapperName(shell, calc, exprIndex) + "_ctx";
+}
+
+std::string operatorResidentInitFunctionName(Shell* shell,
+                                             Calc* calc,
+                                             int exprIndex) {
+    return operatorResidentWrapperName(shell, calc, exprIndex) + "_init";
+}
+
+std::string operatorResidentRunFunctionName(Shell* shell,
+                                            Calc* calc,
+                                            int exprIndex) {
+    return operatorResidentWrapperName(shell, calc, exprIndex) + "_run";
+}
+
+std::string operatorResidentMaterializeFunctionName(Shell* shell,
+                                                    Calc* calc,
+                                                    int exprIndex) {
+    return operatorResidentWrapperName(shell, calc, exprIndex) +
+           "_materialize";
+}
+
 std::string buildOperatorResidentWrapperCode(
     DacppFile* dacppFile,
     const OperatorResidentChainPlan&,
@@ -33,6 +58,11 @@ std::string buildOperatorResidentWrapperCode(
                 wrapper, dacppFile, exprPlan);
         }
         return operator_resident::buildStencilWindow2DWrapperCode(
+            wrapper, dacppFile, exprPlan);
+    }
+    if (exprPlan.loopLowerCandidate &&
+        exprPlan.signature.layout == LocalLayoutKind::Contiguous1D) {
+        return operator_resident::buildLoopLoweredDirect1DFamilyCode(
             wrapper, dacppFile, exprPlan);
     }
 

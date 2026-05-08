@@ -42,6 +42,18 @@ const char* paramAccessKindName(ParamAccessKind kind);
 std::string operatorResidentWrapperName(Shell* shell,
                                         Calc* calc,
                                         int exprIndex);
+std::string operatorResidentContextTypeName(Shell* shell,
+                                            Calc* calc,
+                                            int exprIndex);
+std::string operatorResidentInitFunctionName(Shell* shell,
+                                             Calc* calc,
+                                             int exprIndex);
+std::string operatorResidentRunFunctionName(Shell* shell,
+                                            Calc* calc,
+                                            int exprIndex);
+std::string operatorResidentMaterializeFunctionName(Shell* shell,
+                                                    Calc* calc,
+                                                    int exprIndex);
 
 std::string buildOperatorResidentWrapperCode(
     DacppFile* dacppFile,

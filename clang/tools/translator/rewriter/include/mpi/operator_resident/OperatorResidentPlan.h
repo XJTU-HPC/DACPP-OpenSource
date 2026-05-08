@@ -8,6 +8,10 @@
 
 #include "mpi/shared/MpiPlanBase.h"
 
+namespace clang {
+class Stmt;
+} // namespace clang
+
 namespace dacppTranslator {
 namespace mpi_rewriter {
 
@@ -120,6 +124,10 @@ struct ShellPartitionPlan {
     std::vector<TensorDimMapping> mappings;
     PartitionSignature signature;
     std::vector<ParamAccessPlan> params;
+    bool loopLowerCandidate = false;
+    std::string loopLowerRejectReason;
+    const clang::Stmt* loopLowerOuterLoop = nullptr;
+    bool loopLowerMaterializeEveryRun = false;
 };
 
 struct TensorResidencyState {

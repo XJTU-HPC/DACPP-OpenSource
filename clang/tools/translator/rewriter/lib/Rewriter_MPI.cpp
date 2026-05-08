@@ -103,6 +103,76 @@ void removeOperatorResidentLoweredPostStmts(
     }
 }
 
+bool isLoopLoweredOperatorResidentExpr(
+    const mpi_rewriter::MpiLoweringPlan& plan,
+    int exprIdx,
+    const mpi_rewriter::ShellPartitionPlan** exprPlanOut) {
+    const auto* exprPlan = findOperatorResidentExprPlan(plan, exprIdx);
+    if (!exprPlan || !exprPlan->loopLowerCandidate) {
+        return false;
+    }
+    if (exprPlanOut) {
+        *exprPlanOut = exprPlan;
+    }
+    return true;
+}
+
+void rewriteLoopLoweredOperatorResidentSite(
+    DacppFile* dacppFile,
+    clang::Rewriter* rewriter,
+    const mpi_rewriter::ShellPartitionPlan& exprPlan) {
+    if (!dacppFile || !rewriter || !exprPlan.exprNode.dacExpr ||
+        !exprPlan.loopLowerOuterLoop || !exprPlan.exprNode.shell ||
+        !exprPlan.exprNode.calc) {
+        return;
+    }
+
+    Shell* shell = exprPlan.exprNode.shell;
+    Calc* calc = exprPlan.exprNode.calc;
+    const int exprIdx = exprPlan.exprIndex;
+    const clang::BinaryOperator* dacExpr = exprPlan.exprNode.dacExpr;
+    const std::string argText =
+        mpi_rewriter::joinShellCallArgs(dacExpr, dacppFile);
+    const std::string ctxVar =
+        "__dacpp_mpi_or_ctx_" + std::to_string(exprIdx);
+
+    std::string initCode =
+        "    " + mpi_rewriter::operatorResidentContextTypeName(shell, calc,
+                                                               exprIdx) +
+        " " + ctxVar + ";\n";
+    initCode += "    " +
+                mpi_rewriter::operatorResidentInitFunctionName(shell, calc,
+                                                               exprIdx) +
+                "(" + ctxVar;
+    if (!argText.empty()) {
+        initCode += ", " + argText;
+    }
+    initCode += ");\n";
+    rewriter->InsertTextBefore(exprPlan.loopLowerOuterLoop->getBeginLoc(),
+                               initCode);
+
+    std::string runCall =
+        mpi_rewriter::operatorResidentRunFunctionName(shell, calc, exprIdx) +
+        "(" + ctxVar;
+    if (!argText.empty()) {
+        runCall += ", " + argText;
+    }
+    runCall += ")";
+    rewriter->ReplaceText(dacExpr->getSourceRange(), runCall);
+
+    std::string materializeCall =
+        "\n    " +
+        mpi_rewriter::operatorResidentMaterializeFunctionName(shell, calc,
+                                                              exprIdx) +
+        "(" + ctxVar;
+    if (!argText.empty()) {
+        materializeCall += ", " + argText;
+    }
+    materializeCall += ");\n";
+    rewriter->InsertTextAfterToken(exprPlan.loopLowerOuterLoop->getEndLoc(),
+                                   materializeCall);
+}
+
 }  // namespace
 
 void Rewriter::rewriteMPI() {
@@ -205,6 +275,14 @@ void Rewriter::rewriteMPI() {
                 rewrittenDacExprs.insert(dacExpr);
                 continue;
             }
+        }
+        const mpi_rewriter::ShellPartitionPlan* loopLowerPlan = nullptr;
+        if (planKind == mpi_rewriter::MpiPlanKind::OperatorResident &&
+            isLoopLoweredOperatorResidentExpr(plan, exprIdx, &loopLowerPlan)) {
+            rewriteLoopLoweredOperatorResidentSite(dacppFile, rewriter,
+                                                   *loopLowerPlan);
+            rewrittenDacExprs.insert(dacExpr);
+            continue;
         }
 
         const std::string wrapperName =

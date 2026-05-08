@@ -56,6 +56,7 @@ set(REWRITER_SOURCES
   rewriter/lib/mpi/operator_resident/PartitionCodegen.cpp
   rewriter/lib/mpi/operator_resident/LocalKernelCodegen.cpp
   rewriter/lib/mpi/operator_resident/ResidentBufferCodegen.cpp
+  rewriter/lib/mpi/operator_resident/LoopLoweredDirectCodegen.cpp
   rewriter/lib/mpi/operator_resident/StencilWindow1DCodegen.cpp
   rewriter/lib/mpi/operator_resident/StencilWindowCodegen.cpp
   rewriter/lib/mpi/operator_resident/OperatorResidentCodegen.cpp

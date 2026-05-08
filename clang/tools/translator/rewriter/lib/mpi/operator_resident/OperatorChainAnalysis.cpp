@@ -5,8 +5,10 @@
 #include <vector>
 
 #include "clang/AST/ASTContext.h"
+#include "clang/AST/Stmt.h"
 #include "clang/AST/Expr.h"
 #include "clang/AST/ExprCXX.h"
+#include "clang/Basic/SourceManager.h"
 #include "clang/Lex/Lexer.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -71,6 +73,20 @@ std::string baseNameFromExpr(const clang::Expr* expr) {
         }
     }
     return "";
+}
+
+bool sourceRangeContains(const clang::SourceManager& sourceManager,
+                         clang::SourceRange outer,
+                         clang::SourceRange inner) {
+    if (outer.isInvalid() || inner.isInvalid()) {
+        return false;
+    }
+    auto beforeOrEqual = [&](clang::SourceLocation lhs,
+                             clang::SourceLocation rhs) {
+        return lhs == rhs || sourceManager.isBeforeInTranslationUnit(lhs, rhs);
+    };
+    return beforeOrEqual(outer.getBegin(), inner.getBegin()) &&
+           beforeOrEqual(inner.getEnd(), outer.getEnd());
 }
 
 std::string actualTensorNameForArg(const clang::Expr* expr,
@@ -187,6 +203,243 @@ bool supportedPhaseLayout(LocalLayoutKind layout) {
            layout == LocalLayoutKind::StencilWindow2D;
 }
 
+bool directResidentLoopLayout(LocalLayoutKind layout) {
+    return layout == LocalLayoutKind::Contiguous1D;
+}
+
+const char* loopKindName(const clang::Stmt* stmt) {
+    if (llvm::isa_and_nonnull<clang::ForStmt>(stmt)) {
+        return "for";
+    }
+    if (llvm::isa_and_nonnull<clang::WhileStmt>(stmt)) {
+        return "while";
+    }
+    return "unknown";
+}
+
+const clang::Stmt* stableOuterLoopForExpr(DacppFile* dacppFile,
+                                          const ShellPartitionPlan& plan) {
+    if (!dacppFile || !plan.exprNode.dacExpr) {
+        return nullptr;
+    }
+    for (const auto& site : dacppFile->getMPIStencilSites()) {
+        if (site.dacExpr == plan.exprNode.dacExpr) {
+            return site.outerLoop;
+        }
+    }
+    return nullptr;
+}
+
+bool hasOutputDirectParam(const ShellPartitionPlan& plan) {
+    for (const auto& param : plan.params) {
+        if (param.writes && param.access == ParamAccessKind::OutputDirect) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool hasReadWriteOutputDirectParam(const ShellPartitionPlan& plan) {
+    for (const auto& param : plan.params) {
+        if (param.reads && param.writes &&
+            param.access == ParamAccessKind::OutputDirect) {
+            return true;
+        }
+    }
+    return false;
+}
+
+std::vector<std::string> directReadInputTensorNames(
+    const ShellPartitionPlan& plan) {
+    std::vector<std::string> names;
+    for (const auto& param : plan.params) {
+        if (param.reads && !param.writes &&
+            param.access == ParamAccessKind::DirectMapped) {
+            names.push_back(param.actualTensorName);
+        }
+    }
+    return names;
+}
+
+bool directReadAliasesOutputDirectWrite(const ShellPartitionPlan& plan) {
+    std::set<std::string> directReads;
+    for (const auto& name : directReadInputTensorNames(plan)) {
+        if (!name.empty()) {
+            directReads.insert(name);
+        }
+    }
+    if (directReads.empty()) {
+        return false;
+    }
+    for (const auto& param : plan.params) {
+        if (param.writes && param.access == ParamAccessKind::OutputDirect &&
+            directReads.count(param.actualTensorName) != 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool hasReplicatedScalarParam(const ShellPartitionPlan& plan) {
+    for (const auto& param : plan.params) {
+        if (param.access == ParamAccessKind::ReplicatedScalar) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool loopContainsMultipleDacExprs(DacppFile* dacppFile,
+                                  const clang::Stmt* loop,
+                                  const ShellPartitionPlan& plan) {
+    if (!dacppFile || !dacppFile->getContext() || !loop) {
+        return true;
+    }
+    const auto& sourceManager = dacppFile->getContext()->getSourceManager();
+    int count = 0;
+    for (const auto* candidate : dacppFile->dacExprs) {
+        if (candidate &&
+            sourceRangeContains(sourceManager, loop->getSourceRange(),
+                                candidate->getSourceRange())) {
+            ++count;
+        }
+    }
+    return count != 1 || !sourceRangeContains(
+                             sourceManager, loop->getSourceRange(),
+                             plan.exprNode.dacExpr->getSourceRange());
+}
+
+bool exprWritesTensor(const clang::Expr* expr,
+                      const std::set<std::string>& tensorNames) {
+    const std::string name = baseNameFromExpr(expr);
+    return !name.empty() && tensorNames.count(name) != 0;
+}
+
+bool stmtWritesAnyTensor(const clang::Stmt* stmt,
+                         const std::set<std::string>& tensorNames) {
+    if (!stmt || tensorNames.empty()) {
+        return false;
+    }
+    if (const auto* binary = llvm::dyn_cast<clang::BinaryOperator>(stmt)) {
+        if (binary->isAssignmentOp() &&
+            exprWritesTensor(binary->getLHS(), tensorNames)) {
+            return true;
+        }
+    }
+    if (const auto* opCall = llvm::dyn_cast<clang::CXXOperatorCallExpr>(stmt)) {
+        if (opCall->isAssignmentOp() && opCall->getNumArgs() > 0 &&
+            exprWritesTensor(opCall->getArg(0), tensorNames)) {
+            return true;
+        }
+        if ((opCall->getOperator() == clang::OO_PlusPlus ||
+             opCall->getOperator() == clang::OO_MinusMinus) &&
+            opCall->getNumArgs() > 0 &&
+            exprWritesTensor(opCall->getArg(0), tensorNames)) {
+            return true;
+        }
+    }
+    if (const auto* unary = llvm::dyn_cast<clang::UnaryOperator>(stmt)) {
+        if (unary->isIncrementDecrementOp() &&
+            exprWritesTensor(unary->getSubExpr(), tensorNames)) {
+            return true;
+        }
+    }
+    for (const clang::Stmt* child : stmt->children()) {
+        if (stmtWritesAnyTensor(child, tensorNames)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool loopWritesAnyDirectReadInput(const clang::Stmt* loop,
+                                  const ShellPartitionPlan& plan) {
+    std::set<std::string> directReadInputs;
+    for (const auto& name : directReadInputTensorNames(plan)) {
+        if (!name.empty()) {
+            directReadInputs.insert(name);
+        }
+    }
+    return stmtWritesAnyTensor(loop, directReadInputs);
+}
+
+std::string loopLowerRejectReason(DacppFile* dacppFile,
+                                  const ShellPartitionPlan& plan,
+                                  const clang::Stmt** outerLoop) {
+    if (outerLoop) {
+        *outerLoop = stableOuterLoopForExpr(dacppFile, plan);
+    }
+    if (!directResidentLoopLayout(plan.signature.layout)) {
+        return std::string("layout ") +
+               localLayoutKindName(plan.signature.layout) +
+               " is outside Phase 4.5 direct/resident scope";
+    }
+    const clang::Stmt* loop = outerLoop ? *outerLoop
+                                        : stableOuterLoopForExpr(dacppFile, plan);
+    if (!loop) {
+        return "not inside a stable loop site";
+    }
+    if (!llvm::isa<clang::ForStmt>(loop) && !llvm::isa<clang::WhileStmt>(loop)) {
+        return "stable site is not for/while";
+    }
+    if (loopContainsMultipleDacExprs(dacppFile, loop, plan)) {
+        return "outer loop must contain exactly one DAC expression";
+    }
+    if (!hasOutputDirectParam(plan)) {
+        return "missing direct output";
+    }
+    if (hasReadWriteOutputDirectParam(plan)) {
+        return "read_write output direct unsupported for loop lowering";
+    }
+    if (directReadInputTensorNames(plan).empty()) {
+        return "no loop-invariant direct read input to hoist";
+    }
+    if (directReadAliasesOutputDirectWrite(plan)) {
+        return "direct read input aliases output direct write";
+    }
+    if (loopWritesAnyDirectReadInput(loop, plan)) {
+        return "direct read input is modified inside loop";
+    }
+    return "";
+}
+
+void annotateLoopLowerCandidates(DacppFile* dacppFile,
+                                 std::vector<ShellPartitionPlan>& plans) {
+    for (auto& plan : plans) {
+        if (!plan.supported) {
+            continue;
+        }
+        const clang::Stmt* outerLoop = nullptr;
+        const std::string reason =
+            loopLowerRejectReason(dacppFile, plan, &outerLoop);
+        plan.loopLowerOuterLoop = outerLoop;
+        plan.loopLowerRejectReason = reason;
+        plan.loopLowerCandidate = reason.empty();
+        plan.loopLowerMaterializeEveryRun =
+            plan.loopLowerCandidate && hasReplicatedScalarParam(plan);
+
+        const std::string shellName =
+            plan.exprNode.shell ? plan.exprNode.shell->getName() : "<null>";
+        llvm::outs() << "[DACPP][MPI][OR][P4.5] expr=" << plan.exprIndex
+                     << " shell=" << shellName
+                     << " layout=" << localLayoutKindName(plan.signature.layout)
+                     << " loop-lower="
+                     << (plan.loopLowerCandidate ? "candidate" : "rejected");
+        if (outerLoop) {
+            llvm::outs() << " loop=" << loopKindName(outerLoop);
+        }
+        if (plan.loopLowerCandidate) {
+            llvm::outs() << " structure=init/run/materialize";
+            if (plan.loopLowerMaterializeEveryRun) {
+                llvm::outs() << " materialize=per-run";
+            }
+        } else if (!reason.empty()) {
+            llvm::outs() << " reason=" << reason;
+        }
+        llvm::outs() << "\n";
+    }
+}
+
 void finalizeChain(OperatorResidentChainPlan& chain) {
     if (!chain.supported) {
         return;
@@ -230,6 +483,7 @@ std::vector<OperatorResidentChainPlan> buildOperatorResidentChains(
         fillActualTensorNames(plan, dacppFile);
         annotateOutputSync(plan, dacppFile);
     }
+    annotateLoopLowerCandidates(dacppFile, plans);
 
     std::vector<OperatorResidentChainPlan> chains;
     OperatorResidentChainPlan current;

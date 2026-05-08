@@ -1,0 +1,5 @@
+LOG_CONTAINS:[DACPP][MPI][OR][P4.5] expr=0 shell=copyScaleShell layout=Contiguous1D loop-lower=rejected loop=for reason=direct read input is modified inside loop
+SYCL_CONTAINS:void __dacpp_mpi_or_copyScaleShell_copyScale_0
+SYCL_NOT_CONTAINS:__dacpp_mpi_or_copyScaleShell_copyScale_0_init
+SYCL_NOT_CONTAINS:__dacpp_mpi_or_copyScaleShell_copyScale_0_run
+SYCL_NOT_CONTAINS:__dacpp_mpi_or_copyScaleShell_copyScale_0_materialize

@@ -1,0 +1,5 @@
+LOG_CONTAINS:[DACPP][MPI][OR][P4.5] expr=0 shell=aliasLoopShell layout=Contiguous1D loop-lower=rejected loop=for reason=direct read input aliases output direct write
+SYCL_CONTAINS:void __dacpp_mpi_or_aliasLoopShell_aliasLoop_0
+SYCL_NOT_CONTAINS:__dacpp_mpi_or_aliasLoopShell_aliasLoop_0_init
+SYCL_NOT_CONTAINS:__dacpp_mpi_or_aliasLoopShell_aliasLoop_0_run
+SYCL_NOT_CONTAINS:__dacpp_mpi_or_aliasLoopShell_aliasLoop_0_materialize
