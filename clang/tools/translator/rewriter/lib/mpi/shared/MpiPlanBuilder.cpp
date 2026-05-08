@@ -64,7 +64,7 @@ MpiLoweringPlan buildMpiLoweringPlan(DacppFile *dacppFile) {
     plan.operatorResidentChainByExpr.assign(plan.exprNodes.size(), -1);
 
     for (const auto &node : plan.exprNodes) {
-        plan.shellPartitionPlans.push_back(analyzeShellPartition(node));
+        plan.shellPartitionPlans.push_back(analyzeShellPartition(dacppFile, node));
     }
 
     plan.residentChains = buildOperatorResidentChains(

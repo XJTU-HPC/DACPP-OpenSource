@@ -14,6 +14,11 @@ bool assignRowBlock2DLayout(ShellPartitionPlan& plan,
     }
 
     for (const auto& param : plan.params) {
+        if (param.access != ParamAccessKind::DirectMapped &&
+            param.access != ParamAccessKind::OutputDirect) {
+            rejectReason = "2D row-block layout requires direct-only params";
+            return false;
+        }
         if (param.bindOrder.size() != 2 ||
             !sameOrder(param.bindOrder, plan.signature.bindOrder) ||
             param.tensorDims.size() != 2 ||
@@ -28,7 +33,8 @@ bool assignRowBlock2DLayout(ShellPartitionPlan& plan,
     return true;
 }
 
-bool assignPhaseLayout(ShellPartitionPlan& plan,
+bool assignPhaseLayout(DacppFile* dacppFile,
+                       ShellPartitionPlan& plan,
                        bool sawScalarParam,
                        std::string& rejectReason) {
     // Check if any parameter uses Phase 3 access kinds
@@ -50,6 +56,10 @@ bool assignPhaseLayout(ShellPartitionPlan& plan,
             return assignRowPartitionFullRowLayout(plan, sawScalarParam, rejectReason);
         }
         return assignReplicatedFullTensorLayout(plan, sawScalarParam, rejectReason);
+    }
+
+    if (assignStencilWindow2DLayout(dacppFile, plan, rejectReason)) {
+        return true;
     }
 
     // Phase 1/2: Legacy layouts

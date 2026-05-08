@@ -47,6 +47,9 @@ void emitGatherMaterialize(std::string& code,
                            const ParamAccessPlan& param);
 void emitResidencyAndMaterialization(std::string& code,
                                      const ShellPartitionPlan& plan);
+std::string buildStencilWindow2DWrapperCode(
+    const std::string& wrapperName,
+    const ShellPartitionPlan& plan);
 
 } // namespace operator_resident
 } // namespace mpi_rewriter

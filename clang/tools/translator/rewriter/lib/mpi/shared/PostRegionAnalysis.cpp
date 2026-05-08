@@ -253,6 +253,7 @@ bool extractLoopRegionInfo(const clang::ForStmt* forStmt,
 
 bool isRootCentricRegionSupported(DacppFile* dacppFile,
                                   Shell* shell,
+                                  const BufferRegionPlan& plan,
                                   const clang::Stmt* stmt) {
     if (!dacppFile || !shell || !stmt) {
         return false;
@@ -263,16 +264,19 @@ bool isRootCentricRegionSupported(DacppFile* dacppFile,
     }
     LoopRegionInfo info;
     return extractLoopRegionInfo(
-        forStmt, dacppFile->getContext(), shell,
-        dacppFile->getBufferRegionPlan(), info);
+        forStmt, dacppFile->getContext(), shell, plan, info);
 }
 
-std::string helperBaseName(Shell* shell, Calc* calc) {
-    return shell->getName() + "_" + calc->getName();
+std::string helperBaseName(Shell* shell, Calc* calc, int exprIdx) {
+    return shell->getName() + "_" + calc->getName() + "_" +
+           std::to_string(exprIdx);
 }
 
-std::string helperNameFor(Shell* shell, Calc* calc, std::size_t stmtIdx) {
-    return "__dacpp_mpi_region_" + helperBaseName(shell, calc) +
+std::string helperNameFor(Shell* shell,
+                          Calc* calc,
+                          int exprIdx,
+                          std::size_t stmtIdx) {
+    return "__dacpp_mpi_region_" + helperBaseName(shell, calc, exprIdx) +
            "_stmt_" + std::to_string(stmtIdx);
 }
 
@@ -282,14 +286,16 @@ std::vector<RootCentricPostRegion> collectRootCentricPostRegions(
     DacppFile* dacppFile,
     Shell* shell,
     Calc* calc,
+    int exprIdx,
     const clang::BinaryOperator* dacExpr) {
     std::vector<RootCentricPostRegion> result;
     if (!dacppFile || !shell || !calc || !dacExpr) {
         return result;
     }
 
-    const auto& plan = dacppFile->getBufferRegionPlan();
-    if (!plan.enabled || plan.dacExpr != dacExpr) {
+    BufferRegionPlan plan;
+    if (!buildBufferRegionPlanForDacExpr(dacppFile, shell, dacExpr, plan) ||
+        !plan.enabled || plan.dacExpr != dacExpr) {
         return result;
     }
     const DistributedStencilSitePlan sitePlan =
@@ -315,12 +321,13 @@ std::vector<RootCentricPostRegion> collectRootCentricPostRegions(
         if (distributedFollowupStmts.count(stmt) != 0) {
             continue;
         }
-        if (!detail::isRootCentricRegionSupported(dacppFile, shell, stmt)) {
+        if (!detail::isRootCentricRegionSupported(dacppFile, shell, plan, stmt)) {
             if (!sitePlan.hasRootBridge) {
                 continue;
             }
         }
-        result.push_back({stmt, detail::helperNameFor(shell, calc, stmtIdx)});
+        result.push_back(
+            {stmt, detail::helperNameFor(shell, calc, exprIdx, stmtIdx)});
     }
     return result;
 }
@@ -333,11 +340,6 @@ std::vector<const clang::Stmt*> collectRootCentricPostRegionStmts(
         return result;
     }
 
-    const auto& plan = dacppFile->getBufferRegionPlan();
-    if (!plan.enabled || plan.dacExpr != dacExpr) {
-        return result;
-    }
-
     for (int exprIdx = 0; exprIdx < dacppFile->getNumExpression(); ++exprIdx) {
         Expression* expr = dacppFile->getExpression(exprIdx);
         if (!expr || expr->getDacExpr() != dacExpr) {
@@ -345,13 +347,18 @@ std::vector<const clang::Stmt*> collectRootCentricPostRegionStmts(
         }
         Shell* shell = expr->getShell();
         Calc* calc = expr->getCalc();
+        BufferRegionPlan plan;
+        if (!buildBufferRegionPlanForDacExpr(dacppFile, shell, dacExpr, plan) ||
+            !plan.enabled || plan.dacExpr != dacExpr) {
+            break;
+        }
         const DistributedStencilSitePlan sitePlan =
             analyzeDistributedStencilSite(dacppFile, shell, calc, dacExpr);
         if (!sitePlan.supported || !sitePlan.hasRootBridge) {
             break;
         }
         for (const clang::Stmt* stmt : plan.siblingStmts) {
-            if (detail::isRootCentricRegionSupported(dacppFile, shell, stmt) ||
+            if (detail::isRootCentricRegionSupported(dacppFile, shell, plan, stmt) ||
                 sitePlan.hasRootBridge) {
                 result.push_back(stmt);
             }

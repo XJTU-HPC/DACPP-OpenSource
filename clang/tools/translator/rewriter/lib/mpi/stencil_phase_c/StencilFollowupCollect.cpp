@@ -12,6 +12,7 @@ namespace detail {
 bool tryCollectDistributedFollowup(DistributedStencilSitePlan& plan,
                                    DacppFile* dacppFile,
                                    Shell* shell,
+                                   const BufferRegionPlan& regionPlan,
                                    const std::vector<IOTYPE>& effectiveModes,
                                    const std::vector<IOTYPE>& transportModes,
                                    const clang::Stmt* stmt) {
@@ -22,8 +23,7 @@ bool tryCollectDistributedFollowup(DistributedStencilSitePlan& plan,
 
     RouteLoopInfo info;
     if (!extractRouteLoopInfo(
-            forStmt, dacppFile->getContext(),
-            dacppFile->getBufferRegionPlan(), info)) {
+            forStmt, dacppFile->getContext(), regionPlan, info)) {
         return false;
     }
 
@@ -87,6 +87,7 @@ bool tryCollectDistributedFollowup(DistributedStencilSitePlan& plan,
 bool tryCollectDistributedFollowup2D(DistributedStencilSitePlan& plan,
                                      DacppFile* dacppFile,
                                      Shell* shell,
+                                     const BufferRegionPlan& regionPlan,
                                      const std::vector<IOTYPE>& effectiveModes,
                                      const std::vector<IOTYPE>& transportModes,
                                      const clang::Stmt* stmt) {
@@ -97,8 +98,7 @@ bool tryCollectDistributedFollowup2D(DistributedStencilSitePlan& plan,
 
     RouteLoopInfo2D info;
     if (!extractRouteLoopInfo2D(
-            forStmt, dacppFile->getContext(),
-            dacppFile->getBufferRegionPlan(), info)) {
+            forStmt, dacppFile->getContext(), regionPlan, info)) {
         return false;
     }
 
@@ -163,6 +163,7 @@ bool tryCollectDistributedFollowup2D(DistributedStencilSitePlan& plan,
 bool tryCollectReadCacheTransition2D(DistributedStencilSitePlan& plan,
                                      DacppFile* dacppFile,
                                      Shell* shell,
+                                     const BufferRegionPlan& regionPlan,
                                      const std::vector<IOTYPE>& transportModes,
                                      const clang::Stmt* stmt) {
     const auto* forStmt = llvm::dyn_cast_or_null<clang::ForStmt>(stmt);
@@ -172,8 +173,7 @@ bool tryCollectReadCacheTransition2D(DistributedStencilSitePlan& plan,
 
     RouteLoopInfo2D info;
     if (!extractRouteLoopInfo2D(
-            forStmt, dacppFile->getContext(),
-            dacppFile->getBufferRegionPlan(), info)) {
+            forStmt, dacppFile->getContext(), regionPlan, info)) {
         return false;
     }
 
@@ -233,6 +233,7 @@ bool tryCollectReadCacheTransition2D(DistributedStencilSitePlan& plan,
 bool tryCollectBoundaryLocalUpdate2D(DistributedStencilSitePlan& plan,
                                      DacppFile* dacppFile,
                                      Shell* shell,
+                                     const BufferRegionPlan& regionPlan,
                                      const std::vector<IOTYPE>& transportModes,
                                      const clang::Stmt* stmt) {
     const auto* forStmt = llvm::dyn_cast_or_null<clang::ForStmt>(stmt);
@@ -242,7 +243,7 @@ bool tryCollectBoundaryLocalUpdate2D(DistributedStencilSitePlan& plan,
 
     RouteLoopInfo loopInfo;
     if (!extractRouteLoopInfo(forStmt, dacppFile->getContext(),
-                              dacppFile->getBufferRegionPlan(), loopInfo)) {
+                              regionPlan, loopInfo)) {
         return false;
     }
 
@@ -367,6 +368,7 @@ bool tryCollectBoundaryLocalUpdate2D(DistributedStencilSitePlan& plan,
 bool tryCollectBoundaryLocalUpdate1D(DistributedStencilSitePlan& plan,
                                      DacppFile* dacppFile,
                                      Shell* shell,
+                                     const BufferRegionPlan& regionPlan,
                                      const std::vector<IOTYPE>& transportModes,
                                      const clang::Stmt* stmt) {
     const auto* forStmt = llvm::dyn_cast_or_null<clang::ForStmt>(stmt);
@@ -376,7 +378,7 @@ bool tryCollectBoundaryLocalUpdate1D(DistributedStencilSitePlan& plan,
 
     RouteLoopInfo loopInfo;
     if (!extractRouteLoopInfo(forStmt, dacppFile->getContext(),
-                              dacppFile->getBufferRegionPlan(), loopInfo)) {
+                              regionPlan, loopInfo)) {
         return false;
     }
 

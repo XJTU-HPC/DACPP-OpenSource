@@ -29,10 +29,14 @@ bool extractLoopRegionInfo(const clang::ForStmt* forStmt,
 
 bool isRootCentricRegionSupported(DacppFile* dacppFile,
                                   Shell* shell,
+                                  const BufferRegionPlan& plan,
                                   const clang::Stmt* stmt);
 
-std::string helperBaseName(Shell* shell, Calc* calc);
-std::string helperNameFor(Shell* shell, Calc* calc, std::size_t stmtIdx);
+std::string helperBaseName(Shell* shell, Calc* calc, int exprIdx);
+std::string helperNameFor(Shell* shell,
+                          Calc* calc,
+                          int exprIdx,
+                          std::size_t stmtIdx);
 
 }  // namespace detail
 }  // namespace mpi_rewriter

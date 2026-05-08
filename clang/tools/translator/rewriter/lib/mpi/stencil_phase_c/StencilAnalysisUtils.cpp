@@ -145,11 +145,11 @@ bool isMatrixParam(Shell* shell, Calc* calc, int paramIdx) {
 
 void collectRootBridgeTensors(DistributedStencilSitePlan& plan,
                               DacppFile* dacppFile,
-                              Shell* shell) {
+                              Shell* shell,
+                              const BufferRegionPlan& regionPlan) {
     if (!dacppFile || !shell || !dacppFile->getContext()) {
         return;
     }
-    const auto& regionPlan = dacppFile->getBufferRegionPlan();
     for (const clang::Stmt* stmt : regionPlan.siblingStmts) {
         const std::string stmtText = getStmtSourceText(stmt, dacppFile->getContext());
         for (int paramIdx = 0; paramIdx < shell->getNumParams(); ++paramIdx) {

@@ -1,13 +1,12 @@
-LOG_CONTAINS:[DACPP][MPI][PhaseC] site stencilShell_stencil partial-exchange enabled
 LOG_CONTAINS:[DACPP][MPI][PhaseC] route detected matOut->matIn offset=(1,1)
-LOG_CONTAINS:[DACPP][MPI][PhaseC] halo-exchange enabled route=matOut->matIn
 LOG_CONTAINS:[DACPP][MPI][PhaseC] boundary-local update detected stmt
-LOG_NOT_CONTAINS:partial-exchange disabled
-SYCL_CONTAINS:ctx.use_partial_exchange = true;
-SYCL_CONTAINS:build_exchange_plan_from_layouts_2d_offset
-SYCL_CONTAINS:publish_local_writes_with_halo_or_exchange_cache_only
-SYCL_CONTAINS:// DACPP boundary-local slot plan: matIn
-SYCL_CONTAINS:// DACPP distributed boundary-local update: matIn
-SYCL_CONTAINS:__dacpp_mpi_stencil_materialize_stencilShell_stencil
-SYCL_NOT_CONTAINS:root_bridge_plan = dacpp::mpi::build_exchange_plan_from_layouts
-SYCL_NOT_CONTAINS:__dacpp_mpi_region_stencilShell_stencil_stmt_0
+LOG_CONTAINS:[DACPP][MPI][OR] expr=0 shell=stencilShell layout=StencilWindow2D partition=accepted
+LOG_CONTAINS:[DACPP][MPI][OR] chain=0 layout=StencilWindow2D length=1 chain=accepted codegen=enabled
+SYCL_CONTAINS:void __dacpp_mpi_or_stencilShell_stencil_0
+SYCL_CONTAINS:MPI_Bcast(__or_global_mat.data()
+SYCL_CONTAINS:dacpp::mpi::ContiguousView2D<const double> view_mat
+SYCL_CONTAINS:MPI_Gatherv(__or_local_out.data()
+SYCL_CONTAINS:MPI_Bcast(__or_global_out.data()
+SYCL_NOT_CONTAINS:AccessPattern
+SYCL_NOT_CONTAINS:PackPlan
+SYCL_NOT_CONTAINS:__dacpp_mpi_stencil_

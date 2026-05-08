@@ -1,5 +1,6 @@
 #include <set>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "clang/AST/Decl.h"
@@ -9,33 +10,88 @@
 #include "Rewriter_MPI_Common.h"
 #include "Rewriter_MPI_OperatorResident.h"
 #include "Rewriter_MPI_Plan.h"
+#include "Rewriter_MPI_Stencil_Common.h"
 
 namespace dacppTranslator {
 
+namespace {
+
+const clang::CallExpr* getShellCallExpr(const clang::BinaryOperator* dacExpr) {
+    if (!dacExpr) {
+        return nullptr;
+    }
+    clang::Expr* shellExpr =
+        Expression::shellLHS_p(dacExpr) ? dacExpr->getLHS() : dacExpr->getRHS();
+    return dacppTranslator::getNode<clang::CallExpr>(shellExpr);
+}
+
+std::string getDeclRefName(const clang::Expr* expr) {
+    if (!expr) {
+        return "";
+    }
+    const auto* declRef = dacppTranslator::getNode<clang::DeclRefExpr>(
+        const_cast<clang::Expr*>(expr));
+    if (!declRef || !declRef->getDecl()) {
+        return "";
+    }
+    return declRef->getDecl()->getNameAsString();
+}
+
+std::string wrapperNameForDacExpr(const clang::BinaryOperator* dacExpr) {
+    const clang::CallExpr* shellCall = getShellCallExpr(dacExpr);
+    if (!shellCall || !shellCall->getDirectCallee()) {
+        return "";
+    }
+    const clang::Expr* calcExpr =
+        Expression::shellLHS_p(dacExpr) ? dacExpr->getRHS() : dacExpr->getLHS();
+    const std::string calcName = getDeclRefName(calcExpr);
+    if (calcName.empty()) {
+        return "";
+    }
+    return shellCall->getDirectCallee()->getNameAsString() + "_" + calcName;
+}
+
+}  // namespace
+
 void Rewriter::rewriteMPI() {
     auto plan = mpi_rewriter::buildMpiLoweringPlan(dacppFile);
-    if (plan.overallKind == mpi_rewriter::MpiPlanKind::StencilPhaseC) {
-        rewriteMPIStencil();
-        return;
-    }
 
     std::string generated = mpi_rewriter::buildPrelude(dacppFile);
     std::set<std::string> generatedWrappers;
     std::set<std::string> generatedLocalCalcs;
     std::set<const clang::FunctionDecl*> removedDecls;
+    std::unordered_map<const clang::BinaryOperator*, MpiStencilSite> siteByExpr;
+
+    for (const auto& site : dacppFile->getMPIStencilSites()) {
+        if (!site.dacExpr || !site.outerLoop) {
+            continue;
+        }
+        siteByExpr.emplace(site.dacExpr, site);
+    }
 
     for (int exprIdx = 0; exprIdx < dacppFile->getNumExpression(); ++exprIdx) {
         Expression* expr = dacppFile->getExpression(exprIdx);
         Shell* shell = expr->getShell();
         Calc* calc = expr->getCalc();
+        const bool hasPlanResult =
+            exprIdx < static_cast<int>(plan.exprResults.size());
+        const mpi_rewriter::MpiPlanKind planKind =
+            hasPlanResult ? plan.exprResults[exprIdx].kind
+                          : mpi_rewriter::MpiPlanKind::Unsupported;
         const bool isOperatorResident =
-            exprIdx < static_cast<int>(plan.exprResults.size()) &&
-            plan.exprResults[exprIdx].kind ==
-                mpi_rewriter::MpiPlanKind::OperatorResident;
-        std::string wrapperName =
-            isOperatorResident
-                ? mpi_rewriter::operatorResidentWrapperName(shell, calc, exprIdx)
-                : shell->getName() + "_" + calc->getName();
+            planKind == mpi_rewriter::MpiPlanKind::OperatorResident;
+        const bool isStencilPhaseC =
+            planKind == mpi_rewriter::MpiPlanKind::StencilPhaseC;
+        std::string wrapperName;
+        if (isOperatorResident) {
+            wrapperName =
+                mpi_rewriter::operatorResidentWrapperName(shell, calc, exprIdx);
+        } else if (isStencilPhaseC) {
+            wrapperName =
+                mpi_stencil_rewriter::wrapperName(shell, calc, exprIdx);
+        } else {
+            wrapperName = shell->getName() + "_" + calc->getName();
+        }
         if (generatedWrappers.insert(wrapperName).second) {
             const std::string localCalcKey = calc->getName();
             if (generatedLocalCalcs.insert(localCalcKey).second) {
@@ -58,6 +114,9 @@ void Rewriter::rewriteMPI() {
                 }
                 generated += mpi_rewriter::buildOperatorResidentWrapperCode(
                     dacppFile, chain, *exprPlan);
+            } else if (isStencilPhaseC) {
+                generated += mpi_stencil_rewriter::buildStencilWrapperCode(
+                    dacppFile, shell, calc, exprIdx, expr->getDacExpr());
             } else {
                 generated += mpi_rewriter::buildWrapperCode(
                     dacppFile, shell, calc, expr->getDacExpr());
@@ -81,12 +140,23 @@ void Rewriter::rewriteMPI() {
         Shell* shell = expr->getShell();
         Calc* calc = expr->getCalc();
         const clang::BinaryOperator* dacExpr = expr->getDacExpr();
-        const bool isOperatorResident =
-            exprIdx < static_cast<int>(plan.exprResults.size()) &&
-            plan.exprResults[exprIdx].kind ==
-                mpi_rewriter::MpiPlanKind::OperatorResident;
+        const bool hasPlanResult =
+            exprIdx < static_cast<int>(plan.exprResults.size());
+        const mpi_rewriter::MpiPlanKind planKind =
+            hasPlanResult ? plan.exprResults[exprIdx].kind
+                          : mpi_rewriter::MpiPlanKind::Unsupported;
+        if (planKind == mpi_rewriter::MpiPlanKind::StencilPhaseC) {
+            auto siteIt = siteByExpr.find(dacExpr);
+            if (siteIt != siteByExpr.end()) {
+                mpi_stencil_rewriter::rewriteStencilPhaseCSite(
+                    dacppFile, rewriter, siteIt->second, exprIdx, shell, calc);
+                rewrittenDacExprs.insert(dacExpr);
+                continue;
+            }
+        }
+
         const std::string wrapperName =
-            isOperatorResident
+            planKind == mpi_rewriter::MpiPlanKind::OperatorResident
                 ? mpi_rewriter::operatorResidentWrapperName(shell, calc, exprIdx)
                 : shell->getName() + "_" + calc->getName();
         rewriter->ReplaceText(
@@ -96,57 +166,26 @@ void Rewriter::rewriteMPI() {
         rewrittenDacExprs.insert(dacExpr);
     }
 
+    for (const clang::BinaryOperator* dacExpr : dacppFile->dacExprs) {
+        if (!dacExpr || rewrittenDacExprs.count(dacExpr) != 0) {
+            continue;
+        }
+        const std::string wrapperName = wrapperNameForDacExpr(dacExpr);
+        if (wrapperName.empty()) {
+            continue;
+        }
+        rewriter->ReplaceText(
+            dacExpr->getSourceRange(),
+            mpi_rewriter::buildWrapperCallForDacExpr(wrapperName, dacExpr,
+                                                     dacppFile));
+    }
+
     const FunctionDecl* mainFunc = dacppFile->getMainFunction();
     if (!mainFunc) {
         return;
     }
 
-    const auto* body = llvm::dyn_cast<CompoundStmt>(mainFunc->getBody());
-    if (!body) {
-        return;
-    }
-
-    mpi_rewriter::rewritePrintCallsRootOnly(
-        rewriter, dacppFile->getTranslationUnitDecl());
-
-    const std::string mpiInit = R"(
-    int dacpp_mpi_finalize_needed = 0;
-    int dacpp_mpi_initialized = 0;
-    MPI_Initialized(&dacpp_mpi_initialized);
-    if (!dacpp_mpi_initialized) {
-        int dacpp_mpi_argc = 0;
-        char** dacpp_mpi_argv = nullptr;
-        MPI_Init(&dacpp_mpi_argc, &dacpp_mpi_argv);
-        dacpp_mpi_finalize_needed = 1;
-    }
-    int mpi_rank = 0;
-    int mpi_size = 1;
-    MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);
-    MPI_Comm_size(MPI_COMM_WORLD, &mpi_size);
-)";
-
-    const std::string mpiFinish = R"(
-    if (dacpp_mpi_finalize_needed) {
-        MPI_Finalize();
-        dacpp_mpi_finalize_needed = 0;
-    }
-)";
-
-    rewriter->InsertTextAfterToken(body->getLBracLoc(), mpiInit);
-    std::vector<const clang::ReturnStmt*> returnStmts;
-    mpi_rewriter::collectReturnStmts(body, returnStmts);
-    for (const clang::ReturnStmt* returnStmt : returnStmts) {
-        rewriter->InsertTextBefore(returnStmt->getBeginLoc(), mpiFinish);
-    }
-
-    if (!body->body_empty()) {
-        const Stmt* lastStmt = body->body_back();
-        if (!llvm::isa<clang::ReturnStmt>(lastStmt)) {
-            rewriter->InsertTextBefore(body->getRBracLoc(), mpiFinish);
-        }
-    } else {
-        rewriter->InsertTextBefore(body->getRBracLoc(), mpiFinish);
-    }
+    mpi_stencil_rewriter::insertMainMPISetup(dacppFile, rewriter, mainFunc);
 
     dacppFile->setMainAlreadyRewritten(true);
 }

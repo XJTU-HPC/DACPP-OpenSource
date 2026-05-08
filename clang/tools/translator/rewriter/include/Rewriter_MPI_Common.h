@@ -170,6 +170,11 @@ std::string buildWrapperCode(DacppFile* dacppFile,
                              Calc* calc,
                              const clang::BinaryOperator* dacExpr = nullptr);
 std::string buildPrelude(DacppFile* dacppFile);
+bool buildBufferRegionPlanForDacExpr(DacppFile* dacppFile,
+                                     Shell* shell,
+                                     const clang::BinaryOperator* dacExpr,
+                                     BufferRegionPlan& plan,
+                                     std::string* disableReason = nullptr);
 
 DistributedStencilSitePlan analyzeDistributedStencilSite(
     DacppFile* dacppFile,
@@ -187,6 +192,7 @@ std::vector<RootCentricPostRegion> collectRootCentricPostRegions(
     DacppFile* dacppFile,
     Shell* shell,
     Calc* calc,
+    int exprIdx,
     const clang::BinaryOperator* dacExpr);
 std::vector<DistributedFollowupRegion> collectDistributedFollowupRegions(
     DacppFile* dacppFile,
@@ -200,6 +206,7 @@ std::string buildRootCentricPostRegionHelpers(
     DacppFile* dacppFile,
     Shell* shell,
     Calc* calc,
+    int exprIdx,
     const clang::BinaryOperator* dacExpr,
     const std::string& ctxTypeName,
     const std::string& shellSignature);

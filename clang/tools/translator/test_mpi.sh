@@ -41,6 +41,7 @@ MPI_TESTS=(
     "mpiPhaseCWriteThenRead1D"
     "mpiPhaseCHalo1D"
     "mpiPhaseCHaloWide1D"
+    "mpiMixedStencilORPhaseC"
     "stencil1.0"
     "waveEquation1.0"
 )

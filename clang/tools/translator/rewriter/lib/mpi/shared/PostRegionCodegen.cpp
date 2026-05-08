@@ -164,6 +164,7 @@ std::string buildRootBridgeRefreshCode(Shell* shell,
 std::string buildRootSerialStmtHelper(DacppFile* dacppFile,
                                       Shell* shell,
                                       Calc* calc,
+                                      int exprIdx,
                                       const clang::Stmt* stmt,
                                       std::size_t stmtIdx,
                                       const std::string& ctxTypeName,
@@ -175,7 +176,7 @@ std::string buildRootSerialStmtHelper(DacppFile* dacppFile,
     const std::set<std::string> writtenTensors =
         collectWrittenShellTensorsByText(dacppFile, shell, stmt);
     std::string code;
-    code += "void " + detail::helperNameFor(shell, calc, stmtIdx) + "(" +
+    code += "void " + detail::helperNameFor(shell, calc, exprIdx, stmtIdx) + "(" +
             ctxTypeName + "& ctx";
     if (!shellSignature.empty()) {
         code += ", " + shellSignature;
@@ -194,19 +195,19 @@ std::string buildRootSerialStmtHelper(DacppFile* dacppFile,
 std::string buildLoopRegionHelper(DacppFile* dacppFile,
                                   Shell* shell,
                                   Calc* calc,
+                                  int exprIdx,
+                                  const BufferRegionPlan& regionPlan,
                                   const clang::ForStmt* forStmt,
                                   std::size_t stmtIdx,
                                   const std::string& ctxTypeName,
                                   const std::string& shellSignature) {
     detail::LoopRegionInfo info;
     if (!detail::extractLoopRegionInfo(
-            forStmt, dacppFile->getContext(), shell,
-            dacppFile->getBufferRegionPlan(), info)) {
+            forStmt, dacppFile->getContext(), shell, regionPlan, info)) {
         return "";
     }
     const auto distributedSitePlan =
-        analyzeDistributedStencilSite(dacppFile, shell, calc,
-                                      dacppFile->getBufferRegionPlan().dacExpr);
+        analyzeDistributedStencilSite(dacppFile, shell, calc, regionPlan.dacExpr);
 
     std::set<std::string> usedTensors = info.readTensors;
     usedTensors.insert(info.writtenTensors.begin(), info.writtenTensors.end());
@@ -217,7 +218,7 @@ std::string buildLoopRegionHelper(DacppFile* dacppFile,
     }
 
     std::string code;
-    code += "void " + detail::helperNameFor(shell, calc, stmtIdx) + "(" +
+    code += "void " + detail::helperNameFor(shell, calc, exprIdx, stmtIdx) + "(" +
             ctxTypeName + "& ctx";
     if (!shellSignature.empty()) {
         code += ", " + shellSignature;
@@ -296,6 +297,7 @@ std::string buildRootCentricPostRegionHelpers(
     DacppFile* dacppFile,
     Shell* shell,
     Calc* calc,
+    int exprIdx,
     const clang::BinaryOperator* dacExpr,
     const std::string& ctxTypeName,
     const std::string& shellSignature) {
@@ -303,8 +305,9 @@ std::string buildRootCentricPostRegionHelpers(
         return "";
     }
 
-    const auto& plan = dacppFile->getBufferRegionPlan();
-    if (!plan.enabled || plan.dacExpr != dacExpr) {
+    BufferRegionPlan plan;
+    if (!buildBufferRegionPlanForDacExpr(dacppFile, shell, dacExpr, plan) ||
+        !plan.enabled || plan.dacExpr != dacExpr) {
         return "";
     }
     const auto sitePlan = analyzeDistributedStencilSite(
@@ -333,16 +336,16 @@ std::string buildRootCentricPostRegionHelpers(
             continue;
         }
         std::string helper = buildLoopRegionHelper(
-            dacppFile, shell, calc, forStmt, stmtIdx, ctxTypeName,
+            dacppFile, shell, calc, exprIdx, plan, forStmt, stmtIdx, ctxTypeName,
             shellSignature);
         if (helper.empty() && distributedFollowupStmts.count(plan.siblingStmts[stmtIdx]) == 0) {
             helper = buildRootSerialStmtHelper(
-                dacppFile, shell, calc, plan.siblingStmts[stmtIdx], stmtIdx,
+                dacppFile, shell, calc, exprIdx, plan.siblingStmts[stmtIdx], stmtIdx,
                 ctxTypeName, shellSignature);
         } else if (helper.empty() && distributedFollowupStmts.count(plan.siblingStmts[stmtIdx]) != 0) {
             if (sitePlan.hasRootBridge) {
                 helper = buildRootSerialStmtHelper(
-                    dacppFile, shell, calc, plan.siblingStmts[stmtIdx], stmtIdx,
+                    dacppFile, shell, calc, exprIdx, plan.siblingStmts[stmtIdx], stmtIdx,
                     ctxTypeName, shellSignature);
             }
         }

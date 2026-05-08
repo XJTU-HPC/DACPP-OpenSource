@@ -487,6 +487,17 @@ bash test_mpi.sh matMul1.0 gradientSum DFT1.0 jacobi1.0 stencil1.0 \
 - 现有 `stencil_phase_c` 的 halo、exchange、boundary-local、read-cache transition 和 materialize 能力作为 backend 实现来源，planner ownership 归入 shell-derived lowering。
 - Phase 4 的结构产物同时定义通用 loop-lowered shell-derived contract，供后续 direct/resident/full-payload 循环形态复用。
 
+当前进展（2026-05-07）：
+
+- `stencil1.0` 已由 shell-derived planner 识别为 `StencilWindow2D`，不再走 legacy `AccessPattern` / `PackPlan` wrapper。
+- 当前 `stencil1.0` codegen 是最小 2D window backend：READ window full-input broadcast、按 output interior row-block 并行执行、WRITE output `MPI_Gatherv` 回 root 后再广播给各 rank，以承接源程序后续 `matOut -> matIn` host followup。
+- `StencilWindow2D` gate 已进一步收紧：当前只接受 WRITE-only direct writer；`READ_WRITE` direct writer 在真正实现旧值输入语义前必须继续拒绝，避免静默误编译。
+- 顶层 `rewriteMPI()` 已改为按 expr 混合分派：Operator-Resident / Stencil Phase-C / legacy wrapper 可在同一文件共存，不再因某个 stencil site 未被 OR 接住就整文件提前跳到 `rewriteMPIStencil()`。
+- `stencil_phase_c` / post-region 分析所依赖的 loop/post-followup region plan 已从全文件单例 `bufferRegionPlan` 去耦，改为按 stencil site 临时构建。这样后续 mixed stencil-site 文件不会再共享同一份 halo/followup/root-bridge 分析状态。
+- 已补 `mpiMixedStencilORPhaseC` 自动化回归样例：在同一源文件中同时放入一个 `stencil1.0` 型 `StencilWindow2D` / OR site 和一个 `waveEquation1.0` 型 Phase-C site，用来钉住“按 expr 混合分派 + 按 site 构建 region plan + per-expr 命名”这条新路径。
+- 这一步只覆盖 `stencil1.0` 所需的最小形态；`waveEquation1.0` 因 `read-cache transition`/多状态 reader-writer 关系，暂时仍保留 Phase-C 路径。
+- 因此，Phase 4 当前只完成了 shell-derived ownership 的第一步，尚未把通用 halo/exchange resident contract 推广到其它 `RegularSplit` 家族。
+
 ### Phase 4.5：Loop-Lowered Direct / Resident
 
 目标测试：

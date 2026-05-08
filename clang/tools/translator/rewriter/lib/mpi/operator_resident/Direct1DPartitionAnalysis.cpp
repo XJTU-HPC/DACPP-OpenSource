@@ -11,6 +11,11 @@ bool assignContiguous1DLayout(ShellPartitionPlan& plan,
         if (param.access == ParamAccessKind::ReplicatedScalar) {
             continue;
         }
+        if (param.access != ParamAccessKind::DirectMapped &&
+            param.access != ParamAccessKind::OutputDirect) {
+            rejectReason = "1D direct layout requires direct-only params";
+            return false;
+        }
         if (param.bindOrder.size() != 1 ||
             !sameOrder(param.bindOrder, plan.signature.bindOrder)) {
             rejectReason = "1D direct parameter bind mismatch";

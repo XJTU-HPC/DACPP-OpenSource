@@ -178,7 +178,8 @@ bool supportedPhaseLayout(LocalLayoutKind layout) {
     return layout == LocalLayoutKind::Contiguous1D ||
            layout == LocalLayoutKind::RowBlock2D ||
            layout == LocalLayoutKind::ReplicatedFullTensor ||
-           layout == LocalLayoutKind::RowPartitionFullRow;
+           layout == LocalLayoutKind::RowPartitionFullRow ||
+           layout == LocalLayoutKind::StencilWindow2D;
 }
 
 void finalizeChain(OperatorResidentChainPlan& chain) {

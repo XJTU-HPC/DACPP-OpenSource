@@ -22,6 +22,8 @@ class Calc;
 namespace mpi_rewriter {
 
 ShellPartitionPlan analyzeShellPartition(const DacExprNode& node);
+ShellPartitionPlan analyzeShellPartition(DacppFile* dacppFile,
+                                         const DacExprNode& node);
 
 std::vector<OperatorResidentChainPlan> buildOperatorResidentChains(
     DacppFile* dacppFile,
@@ -45,6 +47,8 @@ std::string buildOperatorResidentWrapperCode(
     DacppFile* dacppFile,
     const OperatorResidentChainPlan& chain,
     const ShellPartitionPlan& exprPlan);
+
+bool isShellDerivedStencilLayout(LocalLayoutKind layout);
 
 std::string joinShellCallArgs(const clang::BinaryOperator* dacExpr,
                               DacppFile* dacppFile);

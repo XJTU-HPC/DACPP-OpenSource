@@ -1,5 +1,6 @@
 #include <map>
 #include <string>
+#include <unordered_set>
 
 #include "llvm/Support/raw_ostream.h"
 
@@ -87,6 +88,11 @@ const char* payloadDirectionName(PayloadDirection dir) {
 }
 
 ShellPartitionPlan analyzeShellPartition(const DacExprNode& node) {
+    return analyzeShellPartition(nullptr, node);
+}
+
+ShellPartitionPlan analyzeShellPartition(DacppFile* dacppFile,
+                                         const DacExprNode& node) {
     ShellPartitionPlan plan;
     plan.exprIndex = node.exprIndex;
     plan.exprNode = node;
@@ -111,6 +117,8 @@ ShellPartitionPlan analyzeShellPartition(const DacExprNode& node) {
     bool sawDirectParam = false;
     bool sawWriteParam = false;
     bool sawScalarParam = false;
+    bool sawRegularSplit = false;
+    std::unordered_set<int> regularBindIds;
 
     for (int paramIdx = 0; paramIdx < shell->getNumShellParams(); ++paramIdx) {
         ShellParam* shellParam = shell->getShellParam(paramIdx);
@@ -134,6 +142,7 @@ ShellPartitionPlan analyzeShellPartition(const DacExprNode& node) {
 
         bool onlyVoid = shellParam->getNumSplit() > 0;
         bool hasIndex = false;
+        bool hasRegularWindow = false;
         std::vector<int> localVoidDims;  // Collect void dims for this param
         std::vector<int64_t> localVoidDimSizes;
         int localIndexDim = -1;
@@ -142,8 +151,45 @@ ShellPartitionPlan analyzeShellPartition(const DacExprNode& node) {
         for (int splitIdx = 0; splitIdx < shellParam->getNumSplit(); ++splitIdx) {
             Split* split = shellParam->getSplit(splitIdx);
             if (operator_resident::splitIsRegular(split)) {
-                reject(plan, "contains regular split");
-                return plan;
+                sawRegularSplit = true;
+                hasRegularWindow = true;
+                onlyVoid = false;
+                auto metaIt = splitMeta.find(split->getId());
+                if (metaIt == splitMeta.end()) {
+                    reject(plan, "missing bind metadata");
+                    return plan;
+                }
+                if (metaIt->second.offset != "0" && !metaIt->second.offset.empty()) {
+                    reject(plan, "nonzero bind offset");
+                    return plan;
+                }
+                const int bindId = metaIt->second.bindId;
+                regularBindIds.insert(bindId);
+                paramPlan.bindOrder.push_back(bindId);
+                paramPlan.tensorDims.push_back(split->getDimIdx());
+                if (!paramPlan.reads || paramPlan.writes) {
+                    reject(plan, "regular split only supported for read-only window");
+                    return plan;
+                }
+                paramPlan.access = ParamAccessKind::StencilWindow;
+                TensorDimMapping mapping;
+                mapping.tensorName = shellWrapperParam->getName();
+                mapping.shellParamIndex = paramIdx;
+                mapping.tensorDim = split->getDimIdx();
+                mapping.kind = ShellDimKind::Split;
+                mapping.bindId = bindId;
+                mapping.splitName = split->getId();
+                plan.mappings.push_back(mapping);
+
+                auto& domain = bindDomainsById[bindId];
+                if (domain.bindId == -1) {
+                    domain.bindId = bindId;
+                    domain.representative = split->getId();
+                    domain.offsetExpr = "0";
+                    domain.runtimeSizeParam = paramIdx;
+                    domain.dimId = split->getDimIdx();
+                }
+                continue;
             }
             if (operator_resident::splitIsVoid(split)) {
                 const int voidDimId = split ? split->getDimIdx() : splitIdx;
@@ -202,7 +248,9 @@ ShellPartitionPlan analyzeShellPartition(const DacExprNode& node) {
             }
         }
 
-        if (onlyVoid && !hasIndex) {
+        if (hasRegularWindow) {
+            // Stencil window params are already classified while walking splits.
+        } else if (onlyVoid && !hasIndex) {
             if (!paramPlan.reads || paramPlan.writes) {
                 reject(plan, "void output unsupported");
                 return plan;
@@ -329,7 +377,7 @@ ShellPartitionPlan analyzeShellPartition(const DacExprNode& node) {
     }
 
     std::string layoutRejectReason;
-    if (!operator_resident::assignPhaseLayout(plan, sawScalarParam,
+    if (!operator_resident::assignPhaseLayout(dacppFile, plan, sawScalarParam,
                                               layoutRejectReason)) {
         reject(plan, layoutRejectReason);
         return plan;

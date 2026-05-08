@@ -20,9 +20,13 @@ DistributedStencilSitePlan analyzeDistributedStencilSite(
         return plan;
     }
 
-    const auto& regionPlan = dacppFile->getBufferRegionPlan();
-    if (!regionPlan.enabled || regionPlan.dacExpr != dacExpr) {
-        plan.disableReason = "phase-c requires rewriteMPIStencil loop lowering";
+    BufferRegionPlan regionPlan;
+    if (!buildBufferRegionPlanForDacExpr(dacppFile, shell, dacExpr, regionPlan,
+                                         &plan.disableReason) ||
+        !regionPlan.enabled || regionPlan.dacExpr != dacExpr) {
+        if (plan.disableReason.empty()) {
+            plan.disableReason = "phase-c requires rewriteMPIStencil loop lowering";
+        }
         return plan;
     }
 
@@ -69,32 +73,35 @@ DistributedStencilSitePlan analyzeDistributedStencilSite(
     for (const clang::Stmt* stmt : regionPlan.siblingStmts) {
         if (hasVectorParam &&
             detail::tryCollectDistributedFollowup(
-                plan, dacppFile, shell, effectiveModes, transportModes, stmt)) {
+                plan, dacppFile, shell, regionPlan, effectiveModes,
+                transportModes, stmt)) {
             continue;
         }
         if (hasVectorParam && rootRegions.empty() &&
             !plan.followupMappings.empty() &&
             detail::tryCollectBoundaryLocalUpdate1D(
-                plan, dacppFile, shell, transportModes, stmt)) {
+                plan, dacppFile, shell, regionPlan, transportModes, stmt)) {
             continue;
         }
         if (hasMatrixParam &&
             detail::tryCollectDistributedFollowup2D(
-                plan, dacppFile, shell, effectiveModes, transportModes, stmt)) {
+                plan, dacppFile, shell, regionPlan, effectiveModes,
+                transportModes, stmt)) {
             continue;
         }
         if (hasMatrixParam &&
             detail::tryCollectReadCacheTransition2D(
-                plan, dacppFile, shell, transportModes, stmt)) {
+                plan, dacppFile, shell, regionPlan, transportModes, stmt)) {
             continue;
         }
         if (hasMatrixParam && rootRegions.empty() &&
             plan.followupMappings.size() == 1 &&
             detail::tryCollectBoundaryLocalUpdate2D(
-                plan, dacppFile, shell, transportModes, stmt)) {
+                plan, dacppFile, shell, regionPlan, transportModes, stmt)) {
             continue;
         }
-        if (detail::isRootCentricRegionSupported(dacppFile, shell, stmt)) {
+        if (detail::isRootCentricRegionSupported(dacppFile, shell, regionPlan,
+                                                 stmt)) {
             rootRegions.push_back({stmt, ""});
             continue;
         }
@@ -109,7 +116,7 @@ DistributedStencilSitePlan analyzeDistributedStencilSite(
 
     if (!rootRegions.empty()) {
         plan.hasRootBridge = true;
-        detail::collectRootBridgeTensors(plan, dacppFile, shell);
+        detail::collectRootBridgeTensors(plan, dacppFile, shell, regionPlan);
     }
 
     plan.supported = true;

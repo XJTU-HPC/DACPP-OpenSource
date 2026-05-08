@@ -10,24 +10,53 @@ namespace mpi_stencil_rewriter {
 
 using namespace detail;
 
-std::string wrapperName(Shell* shell, Calc* calc) {
+std::string legacyCompatBaseName(Shell* shell, Calc* calc) {
     return shell->getName() + "_" + calc->getName();
 }
 
-std::string contextTypeName(Shell* shell, Calc* calc) {
-    return "__dacpp_mpi_stencil_ctx_" + wrapperName(shell, calc);
+bool shouldEmitLegacyCompatNames(DacppFile* dacppFile,
+                                 Shell* shell,
+                                 Calc* calc) {
+    if (!dacppFile || !shell || !calc) {
+        return false;
+    }
+    int sameStencilSiteCount = 0;
+    for (const auto& site : dacppFile->getMPIStencilSites()) {
+        if (site.exprIndex < 0 ||
+            site.exprIndex >= dacppFile->getNumExpression()) {
+            continue;
+        }
+        auto* expr = dacppFile->getExpression(site.exprIndex);
+        if (!expr || !expr->getShell() || !expr->getCalc()) {
+            continue;
+        }
+        if (expr->getShell()->getName() == shell->getName() &&
+            expr->getCalc()->getName() == calc->getName()) {
+            ++sameStencilSiteCount;
+        }
+    }
+    return sameStencilSiteCount == 1;
 }
 
-std::string initFunctionName(Shell* shell, Calc* calc) {
-    return "__dacpp_mpi_stencil_init_" + wrapperName(shell, calc);
+std::string wrapperName(Shell* shell, Calc* calc, int exprIdx) {
+    return "__dacpp_mpi_stencil_" + shell->getName() + "_" + calc->getName() +
+           "_" + std::to_string(exprIdx);
 }
 
-std::string runFunctionName(Shell* shell, Calc* calc) {
-    return "__dacpp_mpi_stencil_run_" + wrapperName(shell, calc);
+std::string contextTypeName(Shell* shell, Calc* calc, int exprIdx) {
+    return "__dacpp_mpi_stencil_ctx_" + wrapperName(shell, calc, exprIdx);
 }
 
-std::string materializeFunctionName(Shell* shell, Calc* calc) {
-    return "__dacpp_mpi_stencil_materialize_" + wrapperName(shell, calc);
+std::string initFunctionName(Shell* shell, Calc* calc, int exprIdx) {
+    return "__dacpp_mpi_stencil_init_" + wrapperName(shell, calc, exprIdx);
+}
+
+std::string runFunctionName(Shell* shell, Calc* calc, int exprIdx) {
+    return "__dacpp_mpi_stencil_run_" + wrapperName(shell, calc, exprIdx);
+}
+
+std::string materializeFunctionName(Shell* shell, Calc* calc, int exprIdx) {
+    return "__dacpp_mpi_stencil_materialize_" + wrapperName(shell, calc, exprIdx);
 }
 
 std::string buildShellSignature(Shell* shell) {
@@ -49,17 +78,24 @@ std::string buildShellSignature(Shell* shell) {
 std::string buildStencilWrapperCode(DacppFile* dacppFile,
                                     Shell* shell,
                                     Calc* calc,
+                                    int exprIdx,
                                     const clang::BinaryOperator* dacExpr) {
-    const std::string wrapper = wrapperName(shell, calc);
-    const std::string ctxType = contextTypeName(shell, calc);
-    const std::string initName = initFunctionName(shell, calc);
-    const std::string runName = runFunctionName(shell, calc);
-    const std::string materializeName = materializeFunctionName(shell, calc);
+    const std::string wrapper = wrapperName(shell, calc, exprIdx);
+    const std::string compatBase = legacyCompatBaseName(shell, calc);
+    const std::string siteDisplayName = compatBase;
+    const std::string ctxType = contextTypeName(shell, calc, exprIdx);
+    const std::string initName = initFunctionName(shell, calc, exprIdx);
+    const std::string runName = runFunctionName(shell, calc, exprIdx);
+    const std::string materializeName =
+        materializeFunctionName(shell, calc, exprIdx);
     const std::string shellSignature = buildShellSignature(shell);
     const std::string shellArgNames = buildParamNameList(shell);
     const auto effectiveModes = mpi_rewriter::inferEffectiveParamModes(shell, calc);
     const auto transportModes = mpi_rewriter::inferPhaseCTransportParamModes(shell, calc);
     const auto splitMeta = mpi_rewriter::collectSplitBindMeta(shell);
+    BufferRegionPlan regionPlan;
+    mpi_rewriter::buildBufferRegionPlanForDacExpr(dacppFile, shell, dacExpr,
+                                                  regionPlan);
     const auto distributedSitePlan =
         mpi_rewriter::analyzeDistributedStencilSite(dacppFile, shell, calc, dacExpr);
     const WaveSpecializationCodegenConfig waveCodegenConfig =
@@ -111,7 +147,8 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
             !aliasesMutableParam &&
             !distributedSitePlan.supported &&
             isFallbackInputCacheCandidate(
-                dacppFile, dacExpr, actualTensorName, transportModes[paramIdx]);
+                dacppFile, dacExpr, regionPlan, actualTensorName,
+                transportModes[paramIdx]);
     }
     if (!distributedSitePlan.supported) {
         for (int paramIdx = 0; paramIdx < shell->getNumShellParams(); ++paramIdx) {
@@ -119,7 +156,8 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
                 continue;
             }
             const int sourceIdx = findLoopCarriedInputSourceParam(
-                dacppFile, shell, calc, dacExpr, paramIdx, actualTensorNames,
+                dacppFile, shell, calc, dacExpr, regionPlan, paramIdx,
+                actualTensorNames,
                 transportModes, aliasesAnyOtherParam);
             if (sourceIdx >= 0) {
                 fallbackInputCacheable[static_cast<std::size_t>(paramIdx)] = true;
@@ -130,7 +168,7 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
     }
 
     if (distributedSitePlan.supported) {
-        llvm::outs() << "[DACPP][MPI][PhaseC] site " << wrapper
+        llvm::outs() << "[DACPP][MPI][PhaseC] site " << siteDisplayName
                      << " partial-exchange enabled";
         if (distributedSitePlan.hasRootBridge && !useDistributedReaderMaterialize) {
             llvm::outs() << " (root-bridge)";
@@ -139,7 +177,7 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
         }
         llvm::outs() << "\n";
     } else {
-        llvm::outs() << "[DACPP][MPI][PhaseC] site " << wrapper
+        llvm::outs() << "[DACPP][MPI][PhaseC] site " << siteDisplayName
                      << " partial-exchange disabled: "
                      << distributedSitePlan.disableReason << "\n";
     }
@@ -1373,9 +1411,59 @@ std::string buildStencilWrapperCode(DacppFile* dacppFile,
     code += ");\n";
     code += "}\n";
 
+    if (shouldEmitLegacyCompatNames(dacppFile, shell, calc)) {
+        const std::string compatCtxType =
+            "__dacpp_mpi_stencil_ctx_" + compatBase;
+        const std::string compatInit =
+            "__dacpp_mpi_stencil_init_" + compatBase;
+        const std::string compatRun =
+            "__dacpp_mpi_stencil_run_" + compatBase;
+        const std::string compatMaterialize =
+            "__dacpp_mpi_stencil_materialize_" + compatBase;
+
+        code += "\n";
+        code += "using " + compatCtxType + " = " + ctxType + ";\n";
+        code += "void " + compatInit + "(" + compatCtxType + "& ctx";
+        if (!shellSignature.empty()) {
+            code += ", " + shellSignature;
+        }
+        code += ") {\n";
+        code += "    " + initName + "(ctx";
+        if (!shellArgNames.empty()) {
+            code += ", " + shellArgNames;
+        }
+        code += ");\n";
+        code += "}\n";
+
+        code += "void " + compatRun + "(" + compatCtxType + "& ctx";
+        if (!shellSignature.empty()) {
+            code += ", " + shellSignature;
+        }
+        code += ") {\n";
+        code += "    " + runName + "(ctx";
+        if (!shellArgNames.empty()) {
+            code += ", " + shellArgNames;
+        }
+        code += ");\n";
+        code += "}\n";
+
+        code += "void " + compatMaterialize + "(" + compatCtxType + "& ctx";
+        if (!shellSignature.empty()) {
+            code += ", " + shellSignature;
+        }
+        code += ") {\n";
+        code += "    " + materializeName + "(ctx";
+        if (!shellArgNames.empty()) {
+            code += ", " + shellArgNames;
+        }
+        code += ");\n";
+        code += "}\n";
+
+    }
+
     code += "\n";
     code += mpi_rewriter::buildRootCentricPostRegionHelpers(
-        dacppFile, shell, calc, dacExpr, ctxType, shellSignature);
+        dacppFile, shell, calc, exprIdx, dacExpr, ctxType, shellSignature);
 
     return code;
 }

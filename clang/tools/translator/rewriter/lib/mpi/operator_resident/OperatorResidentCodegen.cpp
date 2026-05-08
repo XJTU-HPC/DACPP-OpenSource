@@ -6,6 +6,11 @@
 namespace dacppTranslator {
 namespace mpi_rewriter {
 
+bool isShellDerivedStencilLayout(LocalLayoutKind layout) {
+    return layout == LocalLayoutKind::StencilWindow1D ||
+           layout == LocalLayoutKind::StencilWindow2D;
+}
+
 std::string operatorResidentWrapperName(Shell* shell,
                                         Calc* calc,
                                         int exprIndex) {
@@ -21,6 +26,11 @@ std::string buildOperatorResidentWrapperCode(
     Calc* calc = exprPlan.exprNode.calc;
     const std::string wrapper =
         operatorResidentWrapperName(shell, calc, exprPlan.exprIndex);
+
+    if (isShellDerivedStencilLayout(exprPlan.signature.layout)) {
+        return operator_resident::buildStencilWindow2DWrapperCode(
+            wrapper, exprPlan);
+    }
 
     std::string code;
     code += "void " + wrapper + "(" +

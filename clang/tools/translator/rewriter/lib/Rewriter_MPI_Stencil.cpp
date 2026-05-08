@@ -89,6 +89,20 @@ std::string wrapperNameForDacExpr(const clang::BinaryOperator* dacExpr) {
     return shellCall->getDirectCallee()->getNameAsString() + "_" + calcName;
 }
 
+int exprIndexForDacExpr(dacppTranslator::DacppFile* dacppFile,
+                        const clang::BinaryOperator* dacExpr) {
+    if (!dacppFile || !dacExpr) {
+        return -1;
+    }
+    for (int exprIdx = 0; exprIdx < dacppFile->getNumExpression(); ++exprIdx) {
+        auto* expr = dacppFile->getExpression(exprIdx);
+        if (expr && expr->getDacExpr() == dacExpr) {
+            return exprIdx;
+        }
+    }
+    return -1;
+}
+
 void insertMainMPISetup(dacppTranslator::DacppFile* dacppFile,
                         clang::Rewriter* rewriter,
                         const clang::FunctionDecl* mainFunc) {
@@ -147,6 +161,113 @@ void insertMainMPISetup(dacppTranslator::DacppFile* dacppFile,
 }  // namespace
 
 namespace dacppTranslator {
+namespace mpi_stencil_rewriter {
+
+void insertMainMPISetup(DacppFile* dacppFile,
+                        clang::Rewriter* rewriter,
+                        const clang::FunctionDecl* mainFunc) {
+    ::insertMainMPISetup(dacppFile, rewriter, mainFunc);
+}
+
+void rewriteStencilPhaseCSite(DacppFile* dacppFile,
+                              clang::Rewriter* rewriter,
+                              const MpiStencilSite& site,
+                              int exprIdx,
+                              Shell* shell,
+                              Calc* calc) {
+    if (!dacppFile || !rewriter || !site.dacExpr || !site.outerLoop || !shell ||
+        !calc) {
+        return;
+    }
+
+    const clang::BinaryOperator* dacExpr = site.dacExpr;
+    const std::string argText = joinShellCallArgs(dacExpr, dacppFile->getContext());
+    const std::string ctxVar =
+        "__dacpp_mpi_stencil_ctx_" + std::to_string(exprIdx);
+    std::string initCode =
+        "    " + contextTypeName(shell, calc, exprIdx) + " " + ctxVar + ";\n";
+    initCode += "    " + initFunctionName(shell, calc, exprIdx) + "(" + ctxVar;
+    if (!argText.empty()) {
+        initCode += ", " + argText;
+    }
+    initCode += ");\n";
+    rewriter->InsertTextBefore(site.outerLoop->getBeginLoc(), initCode);
+
+    std::string runCall = runFunctionName(shell, calc, exprIdx) + "(" + ctxVar;
+    if (!argText.empty()) {
+        runCall += ", " + argText;
+    }
+    runCall += ")";
+    rewriter->ReplaceText(dacExpr->getSourceRange(), runCall);
+
+    std::string materializeCall =
+        "\n    " + materializeFunctionName(shell, calc, exprIdx) + "(" + ctxVar;
+    if (!argText.empty()) {
+        materializeCall += ", " + argText;
+    }
+    materializeCall += ");\n";
+    rewriter->InsertTextAfterToken(site.outerLoop->getEndLoc(), materializeCall);
+
+    const auto rootRegions =
+        mpi_rewriter::collectRootCentricPostRegions(dacppFile, shell, calc,
+                                                    exprIdx, dacExpr);
+    for (const auto& region : rootRegions) {
+        std::string regionCall = region.helperName + "(" + ctxVar;
+        if (!argText.empty()) {
+            regionCall += ", " + argText;
+        }
+        regionCall += ");";
+        rewriter->ReplaceText(region.stmt->getSourceRange(), regionCall);
+    }
+
+    const auto distributedRegions =
+        mpi_rewriter::collectDistributedFollowupRegions(dacppFile, shell, calc,
+                                                        dacExpr);
+    BufferRegionPlan regionPlan;
+    const bool hasRegionPlan = mpi_rewriter::buildBufferRegionPlanForDacExpr(
+        dacppFile, shell, dacExpr, regionPlan);
+    const auto sitePlan =
+        mpi_rewriter::analyzeDistributedStencilSite(dacppFile, shell, calc, dacExpr);
+    const bool useDistributedReaderMaterialize =
+        sitePlan.supported && !sitePlan.hasRootBridge &&
+        !sitePlan.boundaryLocalStmts.empty() &&
+        sitePlan.followupMappings.size() == 1;
+    for (const auto& region : distributedRegions) {
+        if (!sitePlan.hasRootBridge || useDistributedReaderMaterialize) {
+            rewriter->RemoveText(region.stmt->getSourceRange());
+            continue;
+        }
+        std::size_t stmtIdx = 0;
+        bool foundStmtIdx = false;
+        if (!hasRegionPlan || !regionPlan.enabled || regionPlan.dacExpr != dacExpr) {
+            continue;
+        }
+        for (; stmtIdx < regionPlan.siblingStmts.size(); ++stmtIdx) {
+            if (regionPlan.siblingStmts[stmtIdx] == region.stmt) {
+                foundStmtIdx = true;
+                break;
+            }
+        }
+        if (foundStmtIdx) {
+            std::string regionCall =
+                mpi_rewriter::detail::helperNameFor(shell, calc, exprIdx,
+                                                    stmtIdx) +
+                "(" + ctxVar;
+            if (!argText.empty()) {
+                regionCall += ", " + argText;
+            }
+            regionCall += ");";
+            rewriter->ReplaceText(region.stmt->getSourceRange(), regionCall);
+        }
+    }
+    if (useDistributedReaderMaterialize) {
+        for (const clang::Stmt* stmt : sitePlan.boundaryLocalStmts) {
+            rewriter->RemoveText(stmt->getSourceRange());
+        }
+    }
+}
+
+}  // namespace mpi_stencil_rewriter
 
 void Rewriter::rewriteMPIStencil() {
     std::string generated = mpi_rewriter::buildPrelude(dacppFile);
@@ -165,12 +286,13 @@ void Rewriter::rewriteMPIStencil() {
         Shell* shell = expr->getShell();
         Calc* calc = expr->getCalc();
 
-        const std::string wrapper = mpi_stencil_rewriter::wrapperName(shell, calc);
+        const std::string wrapper =
+            mpi_stencil_rewriter::wrapperName(shell, calc, exprIdx);
         if (generatedWrappers.insert(wrapper).second) {
             generated += mpi_rewriter::buildLocalCalcCode(shell, calc);
             generated += "\n";
             generated += mpi_stencil_rewriter::buildStencilWrapperCode(
-                dacppFile, shell, calc, expr->getDacExpr());
+                dacppFile, shell, calc, exprIdx, expr->getDacExpr());
             generated += "\n";
 
             rewriter->RemoveText(shell->getShellLoc()->getSourceRange());
@@ -179,7 +301,8 @@ void Rewriter::rewriteMPIStencil() {
     }
 
     rewriter->InsertText(dacppFile->node->getBeginLoc(), generated);
-    insertMainMPISetup(dacppFile, rewriter, dacppFile->getMainFunction());
+    mpi_stencil_rewriter::insertMainMPISetup(dacppFile, rewriter,
+                                             dacppFile->getMainFunction());
 
     std::set<const clang::BinaryOperator*> rewrittenDacExprs;
     for (int exprIdx = 0; exprIdx < dacppFile->getNumExpression(); ++exprIdx) {
@@ -191,91 +314,15 @@ void Rewriter::rewriteMPIStencil() {
 
         auto siteIt = siteByExpr.find(dacExpr);
         if (siteIt != siteByExpr.end()) {
-            const std::string ctxVar = "__dacpp_mpi_stencil_ctx_" + std::to_string(exprIdx);
-            std::string initCode = "    " +
-                mpi_stencil_rewriter::contextTypeName(shell, calc) + " " + ctxVar + ";\n";
-            initCode += "    " + mpi_stencil_rewriter::initFunctionName(shell, calc) +
-                        "(" + ctxVar;
-            if (!argText.empty()) {
-                initCode += ", " + argText;
-            }
-            initCode += ");\n";
-            rewriter->InsertTextBefore(siteIt->second.outerLoop->getBeginLoc(), initCode);
-
-            std::string runCall = mpi_stencil_rewriter::runFunctionName(shell, calc) +
-                                  "(" + ctxVar;
-            if (!argText.empty()) {
-                runCall += ", " + argText;
-            }
-            runCall += ")";
-            rewriter->ReplaceText(dacExpr->getSourceRange(), runCall);
+            mpi_stencil_rewriter::rewriteStencilPhaseCSite(
+                dacppFile, rewriter, siteIt->second, exprIdx, shell, calc);
             rewrittenDacExprs.insert(dacExpr);
-
-            std::string materializeCall = "\n    " +
-                mpi_stencil_rewriter::materializeFunctionName(shell, calc) +
-                "(" + ctxVar;
-            if (!argText.empty()) {
-                materializeCall += ", " + argText;
-            }
-            materializeCall += ");\n";
-            rewriter->InsertTextAfterToken(siteIt->second.outerLoop->getEndLoc(),
-                                           materializeCall);
-
-            const auto rootRegions = mpi_rewriter::collectRootCentricPostRegions(
-                dacppFile, shell, calc, dacExpr);
-            for (const auto& region : rootRegions) {
-                std::string regionCall = region.helperName + "(" + ctxVar;
-                if (!argText.empty()) {
-                    regionCall += ", " + argText;
-                }
-                regionCall += ");";
-                rewriter->ReplaceText(region.stmt->getSourceRange(), regionCall);
-            }
-
-            const auto distributedRegions =
-                mpi_rewriter::collectDistributedFollowupRegions(
-                    dacppFile, shell, calc, dacExpr);
-            const auto sitePlan = mpi_rewriter::analyzeDistributedStencilSite(
-                dacppFile, shell, calc, dacExpr);
-            const bool useDistributedReaderMaterialize =
-                sitePlan.supported &&
-                !sitePlan.hasRootBridge &&
-                !sitePlan.boundaryLocalStmts.empty() &&
-                sitePlan.followupMappings.size() == 1;
-            for (const auto& region : distributedRegions) {
-                if (!sitePlan.hasRootBridge || useDistributedReaderMaterialize) {
-                    rewriter->RemoveText(region.stmt->getSourceRange());
-                    continue;
-                }
-                std::size_t stmtIdx = 0;
-                bool foundStmtIdx = false;
-                const auto& regionPlan = dacppFile->getBufferRegionPlan();
-                for (; stmtIdx < regionPlan.siblingStmts.size(); ++stmtIdx) {
-                    if (regionPlan.siblingStmts[stmtIdx] == region.stmt) {
-                        foundStmtIdx = true;
-                        break;
-                    }
-                }
-                if (foundStmtIdx) {
-                    std::string regionCall =
-                        mpi_rewriter::detail::helperNameFor(shell, calc, stmtIdx) +
-                        "(" + ctxVar;
-                    if (!argText.empty()) {
-                        regionCall += ", " + argText;
-                    }
-                    regionCall += ");";
-                    rewriter->ReplaceText(region.stmt->getSourceRange(), regionCall);
-                }
-            }
-            if (useDistributedReaderMaterialize) {
-                for (const clang::Stmt* stmt : sitePlan.boundaryLocalStmts) {
-                    rewriter->RemoveText(stmt->getSourceRange());
-                }
-            }
             continue;
         }
 
-        std::string wrapperCall = mpi_stencil_rewriter::wrapperName(shell, calc) + "(" + argText + ")";
+        std::string wrapperCall =
+            mpi_stencil_rewriter::wrapperName(shell, calc, exprIdx) + "(" +
+            argText + ")";
         rewriter->ReplaceText(dacExpr->getSourceRange(), wrapperCall);
         rewrittenDacExprs.insert(dacExpr);
     }
@@ -288,7 +335,13 @@ void Rewriter::rewriteMPIStencil() {
         if (!dacExpr || rewrittenDacExprs.count(dacExpr) != 0) {
             continue;
         }
-        const std::string wrapper = wrapperNameForDacExpr(dacExpr);
+        const int exprIdx = exprIndexForDacExpr(dacppFile, dacExpr);
+        const std::string wrapper =
+            exprIdx >= 0 ? mpi_stencil_rewriter::wrapperName(
+                               dacppFile->getExpression(exprIdx)->getShell(),
+                               dacppFile->getExpression(exprIdx)->getCalc(),
+                               exprIdx)
+                         : wrapperNameForDacExpr(dacExpr);
         if (wrapper.empty()) {
             continue;
         }

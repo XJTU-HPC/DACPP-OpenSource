@@ -46,6 +46,7 @@ set(REWRITER_SOURCES
   rewriter/lib/mpi/operator_resident/Direct1DPartitionAnalysis.cpp
   rewriter/lib/mpi/operator_resident/RowBlock2DPartitionAnalysis.cpp
   rewriter/lib/mpi/operator_resident/FullPayloadPartitionAnalysis.cpp
+  rewriter/lib/mpi/operator_resident/StencilWindowPartitionAnalysis.cpp
   rewriter/lib/mpi/operator_resident/ShellPartitionAnalysis.cpp
   rewriter/lib/mpi/operator_resident/OperatorChainAnalysis.cpp
   rewriter/lib/mpi/operator_resident/ResidencyAnalysis.cpp
@@ -54,6 +55,7 @@ set(REWRITER_SOURCES
   rewriter/lib/mpi/operator_resident/PartitionCodegen.cpp
   rewriter/lib/mpi/operator_resident/LocalKernelCodegen.cpp
   rewriter/lib/mpi/operator_resident/ResidentBufferCodegen.cpp
+  rewriter/lib/mpi/operator_resident/StencilWindowCodegen.cpp
   rewriter/lib/mpi/operator_resident/OperatorResidentCodegen.cpp
   # --- MPI stencil phase C ---
   rewriter/lib/mpi/stencil_phase_c/StencilAnalysis.cpp

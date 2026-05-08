@@ -25,6 +25,7 @@ int findLoopCarriedInputSourceParam(
     Shell* shell,
     Calc* calc,
     const clang::BinaryOperator* dacExpr,
+    const BufferRegionPlan& regionPlan,
     int targetParamIndex,
     const std::vector<std::string>& actualTensorNames,
     const std::vector<IOTYPE>& transportModes,
@@ -32,6 +33,7 @@ int findLoopCarriedInputSourceParam(
 
 bool isFallbackInputCacheCandidate(DacppFile* dacppFile,
                                    const clang::BinaryOperator* dacExpr,
+                                   const BufferRegionPlan& regionPlan,
                                    const std::string& actualTensorName,
                                    IOTYPE transportMode);
 

@@ -40,7 +40,8 @@ bool isVectorParam(Shell* shell, Calc* calc, int paramIdx);
 bool isMatrixParam(Shell* shell, Calc* calc, int paramIdx);
 void collectRootBridgeTensors(DistributedStencilSitePlan& plan,
                               DacppFile* dacppFile,
-                              Shell* shell);
+                              Shell* shell,
+                              const BufferRegionPlan& regionPlan);
 
 bool isEffectiveWriter(const std::string& tensorName,
                        Shell* shell,
@@ -112,28 +113,33 @@ bool collectNestedLoopAssignments2D(const clang::ForStmt* outerFor,
 bool tryCollectDistributedFollowup(DistributedStencilSitePlan& plan,
                                    DacppFile* dacppFile,
                                    Shell* shell,
+                                   const BufferRegionPlan& regionPlan,
                                    const std::vector<IOTYPE>& effectiveModes,
                                    const std::vector<IOTYPE>& transportModes,
                                    const clang::Stmt* stmt);
 bool tryCollectDistributedFollowup2D(DistributedStencilSitePlan& plan,
                                      DacppFile* dacppFile,
                                      Shell* shell,
+                                     const BufferRegionPlan& regionPlan,
                                      const std::vector<IOTYPE>& effectiveModes,
                                      const std::vector<IOTYPE>& transportModes,
                                      const clang::Stmt* stmt);
 bool tryCollectReadCacheTransition2D(DistributedStencilSitePlan& plan,
                                      DacppFile* dacppFile,
                                      Shell* shell,
+                                     const BufferRegionPlan& regionPlan,
                                      const std::vector<IOTYPE>& transportModes,
                                      const clang::Stmt* stmt);
 bool tryCollectBoundaryLocalUpdate2D(DistributedStencilSitePlan& plan,
                                      DacppFile* dacppFile,
                                      Shell* shell,
+                                     const BufferRegionPlan& regionPlan,
                                      const std::vector<IOTYPE>& transportModes,
                                      const clang::Stmt* stmt);
 bool tryCollectBoundaryLocalUpdate1D(DistributedStencilSitePlan& plan,
                                      DacppFile* dacppFile,
                                      Shell* shell,
+                                     const BufferRegionPlan& regionPlan,
                                      const std::vector<IOTYPE>& transportModes,
                                      const clang::Stmt* stmt);
 

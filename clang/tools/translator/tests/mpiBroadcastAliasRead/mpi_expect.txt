@@ -1,2 +1,2 @@
-LOG_CONTAINS:[DACPP][MPI] output output sync=all-ranks-needed
+LOG_CONTAINS:[DACPP][MPI] output output_tensor sync=all-ranks-needed
 SYCL_CONTAINS:MPI_Bcast

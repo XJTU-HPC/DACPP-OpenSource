@@ -1,5 +1,5 @@
 LOG_CONTAINS:[DAC-Translator] Found outermost loop for <->
-LOG_CONTAINS:[DACPP] buffer region optimization skipped: only loops with <-> as the first top-level statement are supported
+LOG_CONTAINS:[DACPP] buffer region optimization skipped: only loops with DAC expression as the first top-level statement are supported
 LOG_CONTAINS:[DACPP][MPI] output u_kout sync=root-only
 LOG_NOT_CONTAINS:partial-exchange enabled
 LOG_NOT_CONTAINS:partial-exchange disabled
