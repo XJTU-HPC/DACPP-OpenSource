@@ -300,6 +300,40 @@ void apply_followup_2d(std::vector<T>& readerLocal,
 }
 
 template <typename T>
+void apply_read_cache_transition_2d(std::vector<T>& directReaderLocal,
+                                    const std::vector<T>& readerLocal,
+                                    int64_t localOutputRows,
+                                    int64_t outputCols,
+                                    int64_t inputCols,
+                                    int targetRowOffset,
+                                    int targetColOffset) {
+    if (localOutputRows <= 0 || outputCols <= 0 ||
+        targetRowOffset != -1 || targetColOffset != -1) {
+        return;
+    }
+    for (int64_t row = 0; row < localOutputRows; ++row) {
+        const int64_t sourceRow = row - targetRowOffset;
+        if (sourceRow < 0) {
+            continue;
+        }
+        for (int64_t col = 0; col < outputCols; ++col) {
+            const int64_t sourceCol = col - targetColOffset;
+            if (sourceCol < 0 || sourceCol >= inputCols) {
+                continue;
+            }
+            const std::size_t directIdx = static_cast<std::size_t>(
+                row * outputCols + col);
+            const std::size_t sourceIdx = static_cast<std::size_t>(
+                sourceRow * inputCols + sourceCol);
+            if (directIdx < directReaderLocal.size() &&
+                sourceIdx < readerLocal.size()) {
+                directReaderLocal[directIdx] = readerLocal[sourceIdx];
+            }
+        }
+    }
+}
+
+template <typename T>
 void exchange_halo_1d(std::vector<T>& local,
                       const std::vector<T>& writerLocal,
                       const ResidentHalo1DLayout& layout,

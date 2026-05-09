@@ -1,0 +1,19 @@
+MPI_STRUCTURE_ONLY:1
+LOG_CONTAINS:[DACPP][MPI][OR] expr=0 shell=orderRejectShell layout=StencilWindow2D partition=accepted
+LOG_CONTAINS:[DACPP][MPI][OR] chain=0 layout=StencilWindow2D length=1 chain=accepted codegen=enabled
+LOG_CONTAINS:[DACPP][MPI][OR][P4.6][Loop] expr=0 shell=orderRejectShell
+LOG_CONTAINS:kind=StencilFullSync structure=ctx/init/run/materialize hoist-reader-sync=false materialize=per-run resident-halo-reject=resident halo B3 requires the current DAC -> read-cache -> followup -> boundary statement order
+SYCL_CONTAINS:struct __dacpp_mpi_or_orderRejectShell_orderRejectStep_0_ctx
+SYCL_CONTAINS:void __dacpp_mpi_or_orderRejectShell_orderRejectStep_0_run(__dacpp_mpi_or_orderRejectShell_orderRejectStep_0_ctx& ctx
+SYCL_CONTAINS:MPI_Bcast(__or_global_cur.data()
+SYCL_CONTAINS:MPI_Bcast(__or_global_prev.data()
+SYCL_CONTAINS:__or_transition_global_prev
+SYCL_CONTAINS:__or_followup_global_cur
+SYCL_NOT_CONTAINS:ResidentHalo2DRowLayout __or_halo_layout
+SYCL_NOT_CONTAINS:apply_read_cache_transition_2d(__or_local_prev, __or_local_cur
+SYCL_NOT_CONTAINS:exchange_halo_2d_rows(__or_local_cur, __or_local_next
+SYCL_NOT_CONTAINS:AccessPattern
+SYCL_NOT_CONTAINS:PackPlan
+SYCL_NOT_CONTAINS:FixedBlock
+SYCL_NOT_CONTAINS:root_bridge
+SYCL_NOT_CONTAINS:ctx.use_partial_exchange = true;

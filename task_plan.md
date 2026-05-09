@@ -1,7 +1,7 @@
 # P4.6 Route B Work Plan
 
 ## Goal
-Advance Phase 4.6 Route B resident halo optimization, starting with a minimal, explicitly gated 1D stencil resident-halo path while preserving Route A full-sync fallback.
+Complete Phase 4.6 Route B resident halo optimization with conservative gates, preserving Route A full-sync fallback whenever B3 proof is incomplete.
 
 ## Constraints
 - Preserve all existing uncommitted user changes.
@@ -41,6 +41,9 @@ Advance Phase 4.6 Route B resident halo optimization, starting with a minimal, e
 | 19. B2 scalar/count guard fixes | complete | Rejected 2D scalar readers before OR/B2 loop lowering, added guarded MPI count/displ narrowing for B2/full-sync 2D paths and shared gather/scatter helpers, added `mpiLoopStencilScalarReject2D` and `mpiLoopStencilCountGuard2D`, and reran the requested validation groups plus `git diff --check`. |
 | 20. Count guard follow-up tightening | complete | Guarded shared materialized-output broadcasts in `CollectiveCodegenUtils.cpp`, moved oversized 2D guard points ahead of full reader/direct/local buffer allocations in full-sync/plain/B2 codegen, refreshed `jacobi1.0` and `mpiLoopStencilCountGuard2D` structure assertions, and reran focused shared+B2 validation. |
 | 21. B2 resident-halo completion and handoff | complete | Closed the remaining 2D checked-mul gaps at materialize/layout time, reran focused B2 validation, and marked Route B B2 complete with B3 handoff notes for `waveEquation1.0`. |
+| 22. B3 resident direct-reader/read-cache completion | complete | Added a conservative `StencilWindow2D` B3 gate for one direct reader plus `(-1,-1)` read-cache, implemented resident direct-reader scatter/update/materialize in the 2D halo family, moved `waveEquation1.0` to Route B B3, and reran the requested serial validation commands plus `git diff --check`. |
+| 23. B3 source-order guard | complete | Tightened the accepted `StencilWindow2D` B3 slice to require the current top-level `DAC -> read-cache -> followup -> boundary` source order, added `mpiLoopStencilOrderReject2D`, and reran the requested serial validation groups plus the new negative test. |
+| 24. Full docs benchmark rerun and next-step prioritization | complete | Reran the full 14-case `docs/benchmarks` scale suite, inspected generated paths for `stencil1.0` / `waveEquation1.0` / `FOuLa1.0` / `oddeven0.1`, and updated P4.6 docs to prioritize 2D resident-state role rotation before broader gate work or Phase 5. |
 
 ## Errors Encountered
 | Error | Attempt | Resolution |

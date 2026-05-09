@@ -659,6 +659,36 @@ bool stencilLoopWritesReaderOutsideOrPath(const clang::Stmt* loop,
     return stmtWritesAnyTensorExcept(loop, readerTensors, ignoredStmts);
 }
 
+bool stencilLoopWritesDirectReaderOutsideOrPath(const clang::Stmt* loop,
+                                                DacppFile* dacppFile,
+                                                const ShellPartitionPlan& plan) {
+    std::set<std::string> directReaderTensors;
+    for (const auto& param : plan.params) {
+        if (isSupportedStencilDirectReader(param) &&
+            !param.actualTensorName.empty()) {
+            directReaderTensors.insert(param.actualTensorName);
+        }
+    }
+    if (directReaderTensors.empty()) {
+        return false;
+    }
+    std::set<const clang::Stmt*> ignoredStmts;
+    const DistributedStencilSitePlan sitePlan = analyzeDistributedStencilSite(
+        dacppFile, plan.exprNode.shell, plan.exprNode.calc,
+        plan.exprNode.dacExpr);
+    if (sitePlan.supported && !sitePlan.hasRootBridge) {
+        for (const auto& region : collectDistributedFollowupRegions(
+                 dacppFile, plan.exprNode.shell, plan.exprNode.calc,
+                 plan.exprNode.dacExpr)) {
+            ignoredStmts.insert(region.stmt);
+        }
+        for (const clang::Stmt* stmt : sitePlan.boundaryLocalStmts) {
+            ignoredStmts.insert(stmt);
+        }
+    }
+    return stmtWritesAnyTensorExcept(loop, directReaderTensors, ignoredStmts);
+}
+
 const ParamAccessPlan* stencilWindowReaderParam(
     const ShellPartitionPlan& plan) {
     for (const auto& param : plan.params) {
@@ -717,28 +747,49 @@ const ParamAccessPlan* stencilOutputDirectWriterParam(
     return nullptr;
 }
 
+const ParamAccessPlan* singleStencilDirectReaderParam(
+    const ShellPartitionPlan& plan) {
+    const ParamAccessPlan* directReader = nullptr;
+    for (const auto& param : plan.params) {
+        if (!isSupportedStencilDirectReader(param)) {
+            continue;
+        }
+        if (directReader) {
+            return nullptr;
+        }
+        directReader = &param;
+    }
+    return directReader;
+}
+
+bool paramsAlias(const ParamAccessPlan& lhs, const ParamAccessPlan& rhs) {
+    if (!lhs.actualTensorAliasKey.empty() &&
+        lhs.actualTensorAliasKey == rhs.actualTensorAliasKey) {
+        return true;
+    }
+    return !lhs.actualTensorName.empty() &&
+           lhs.actualTensorName == rhs.actualTensorName;
+}
+
+bool paramsProvenDistinct(const ParamAccessPlan& lhs,
+                          const ParamAccessPlan& rhs) {
+    return lhs.actualTensorAliasKeyPrecise &&
+           rhs.actualTensorAliasKeyPrecise &&
+           !lhs.actualTensorAliasKey.empty() &&
+           !rhs.actualTensorAliasKey.empty() &&
+           lhs.actualTensorAliasKey != rhs.actualTensorAliasKey;
+}
+
 bool stencilReaderAliasesOutputWriter(const ShellPartitionPlan& plan,
                                       const ParamAccessPlan& reader) {
     const ParamAccessPlan* writer = stencilOutputDirectWriterParam(plan);
-    if (!writer) {
-        return false;
-    }
-    if (!reader.actualTensorAliasKey.empty() &&
-        reader.actualTensorAliasKey == writer->actualTensorAliasKey) {
-        return true;
-    }
-    return !reader.actualTensorName.empty() &&
-           reader.actualTensorName == writer->actualTensorName;
+    return writer && paramsAlias(reader, *writer);
 }
 
 bool stencilReaderWriterProvenDistinct(const ShellPartitionPlan& plan,
                                        const ParamAccessPlan& reader) {
     const ParamAccessPlan* writer = stencilOutputDirectWriterParam(plan);
-    return writer && reader.actualTensorAliasKeyPrecise &&
-           writer->actualTensorAliasKeyPrecise &&
-           !reader.actualTensorAliasKey.empty() &&
-           !writer->actualTensorAliasKey.empty() &&
-           reader.actualTensorAliasKey != writer->actualTensorAliasKey;
+    return writer && paramsProvenDistinct(reader, *writer);
 }
 
 bool siteUpdatesWindowReader(const DistributedStencilSitePlan& sitePlan,
@@ -784,6 +835,71 @@ bool canHoistStencilReaderSync(DacppFile* dacppFile,
         return false;
     }
     return !stencilLoopWritesReaderOutsideOrPath(loop, dacppFile, plan);
+}
+
+int stmtOrderInLoopBody(const clang::Stmt* loop,
+                       const clang::Stmt* stmt,
+                       const clang::SourceManager& sourceManager) {
+    if (!loop || !stmt) {
+        return -1;
+    }
+    const auto* compound = llvm::dyn_cast<clang::CompoundStmt>(loop);
+    if (const auto* forStmt = llvm::dyn_cast<clang::ForStmt>(loop)) {
+        compound =
+            llvm::dyn_cast_or_null<clang::CompoundStmt>(forStmt->getBody());
+    } else if (const auto* whileStmt =
+                   llvm::dyn_cast<clang::WhileStmt>(loop)) {
+        compound =
+            llvm::dyn_cast_or_null<clang::CompoundStmt>(whileStmt->getBody());
+    }
+    if (!compound) {
+        return -1;
+    }
+    int index = 0;
+    for (const clang::Stmt* child : compound->body()) {
+        if (child &&
+            sourceRangeContains(sourceManager, child->getSourceRange(),
+                                stmt->getSourceRange())) {
+            return index;
+        }
+        ++index;
+    }
+    return -1;
+}
+
+bool hasCurrentResidentHaloB3StmtOrder(const clang::Stmt* loop,
+                                       DacppFile* dacppFile,
+                                       const ShellPartitionPlan& plan,
+                                       const DistributedStencilSitePlan& sitePlan) {
+    if (!loop || !dacppFile || !dacppFile->getContext() || !plan.exprNode.dacExpr ||
+        sitePlan.readCacheTransitions.size() != 1 ||
+        sitePlan.followupMappings.size() != 1 ||
+        sitePlan.boundaryLocalStmts.empty()) {
+        return false;
+    }
+    const auto& sourceManager = dacppFile->getContext()->getSourceManager();
+    const int dacIndex =
+        stmtOrderInLoopBody(loop, plan.exprNode.dacExpr, sourceManager);
+    const int readCacheIndex =
+        stmtOrderInLoopBody(loop, sitePlan.readCacheTransitions.front().stmt,
+                            sourceManager);
+    const int followupIndex =
+        stmtOrderInLoopBody(loop, sitePlan.followupMappings.front().stmt,
+                            sourceManager);
+    if (dacIndex < 0 || readCacheIndex < 0 || followupIndex < 0) {
+        return false;
+    }
+    if (!(dacIndex < readCacheIndex && readCacheIndex < followupIndex)) {
+        return false;
+    }
+    for (const clang::Stmt* boundaryStmt : sitePlan.boundaryLocalStmts) {
+        const int boundaryIndex =
+            stmtOrderInLoopBody(loop, boundaryStmt, sourceManager);
+        if (boundaryIndex < 0 || boundaryIndex <= followupIndex) {
+            return false;
+        }
+    }
+    return true;
 }
 
 bool exprWritesTensor(const clang::Expr* expr,
@@ -1001,12 +1117,10 @@ std::string stencilResidentHaloRejectReason(
                    ? "root-bridge stencil sites are outside resident halo B2"
                    : "root-bridge stencil sites are outside resident halo B1";
     }
-    if (!sitePlan.readCacheTransitions.empty()) {
-        return plan.signature.layout == LocalLayoutKind::StencilWindow2D
-                   ? "read-cache transitions are outside resident halo B2"
-                   : "read-cache transitions are outside resident halo B1";
-    }
     if (plan.signature.layout == LocalLayoutKind::StencilWindow1D) {
+        if (!sitePlan.readCacheTransitions.empty()) {
+            return "read-cache transitions are outside resident halo B1";
+        }
         Split* split = splitForShellParam(plan.exprNode.shell,
                                           reader->paramIndex);
         auto* regular =
@@ -1077,12 +1191,10 @@ std::string stencilResidentHaloRejectReason(
     if (plan.signature.layout != LocalLayoutKind::StencilWindow2D) {
         return "resident halo is limited to StencilWindow1D/B2 row-block StencilWindow2D";
     }
+    const ParamAccessPlan* directReader = singleStencilDirectReaderParam(plan);
     for (const auto& param : plan.params) {
         if (isSupportedStencilScalarReader(param)) {
             return "resident halo B2 excludes scalar readers";
-        }
-        if (isSupportedStencilDirectReader(param)) {
-            return "resident halo B2 excludes direct readers";
         }
     }
     const auto regularSplits =
@@ -1111,6 +1223,13 @@ std::string stencilResidentHaloRejectReason(
         (readerCols > 0 && writerCols > 0 &&
          readerCols != writerCols + 2)) {
         return "resident halo B2 requires reader/writer shapes with a 1-cell border";
+    }
+    if (stencilLoopWritesReaderOutsideOrPath(loop, dacppFile, plan)) {
+        return "resident halo B2/B3 reader modified outside current OR path";
+    }
+    if (directReader &&
+        stencilLoopWritesDirectReaderOutsideOrPath(loop, dacppFile, plan)) {
+        return "resident halo B3 direct reader modified outside current OR path";
     }
     if (sitePlan.followupMappings.size() != 1) {
         return "resident halo B2 requires exactly one followup mapping";
@@ -1150,6 +1269,104 @@ std::string stencilResidentHaloRejectReason(
         return (size > 1 && compact == std::to_string(size - 2)) ||
                endsWith(compact, "-2");
     };
+    auto isZeroConstantExpr = [](const std::string& exprText) {
+        const std::string compact = compactExprText(exprText);
+        return compact == "0" || compact == "0.0" || compact == "0.0f" ||
+               compact == "0.0F";
+    };
+    if (directReader) {
+        const std::string directReaderType =
+            plan.exprNode.calc->getParam(directReader->paramIndex)
+                ->getBasicType();
+        if (directReaderType != readerType || directReaderType != writerType) {
+            return "resident halo B3 requires direct reader element type to match reader/writer";
+        }
+        if (usesByteTransport(directReaderType)) {
+            return "resident halo B3 requires native MPI element datatypes";
+        }
+        if (!paramsProvenDistinct(*reader, *directReader) ||
+            !paramsProvenDistinct(*writer, *directReader) ||
+            paramsAlias(*reader, *directReader) ||
+            paramsAlias(*writer, *directReader)) {
+            return "resident halo B3 requires distinct precise tensor keys for window/direct-reader/writer";
+        }
+        const int64_t directReaderRows = operator_resident::shapeValueFor(
+            plan.exprNode.shell, directReader->paramIndex, 0);
+        const int64_t directReaderCols = operator_resident::shapeValueFor(
+            plan.exprNode.shell, directReader->paramIndex, 1);
+        if ((directReaderRows > 0 && writerRows > 0 &&
+             directReaderRows != writerRows) ||
+            (directReaderCols > 0 && writerCols > 0 &&
+             directReaderCols != writerCols)) {
+            return "resident halo B3 requires direct reader shape to match writer";
+        }
+        if (sitePlan.readCacheTransitions.size() != 1) {
+            return "resident halo B3 requires exactly one read-cache transition";
+        }
+        const auto& transition = sitePlan.readCacheTransitions.front();
+        if (transition.rank != 2 ||
+            transition.writerParamIndex != reader->paramIndex ||
+            transition.readerParamIndex != directReader->paramIndex ||
+            transition.targetRowOffset != -1 ||
+            transition.targetColOffset != -1) {
+            return "resident halo B3 requires window->direct-reader read-cache offset (-1,-1)";
+        }
+        if (!hasCurrentResidentHaloB3StmtOrder(loop, dacppFile, plan,
+                                               sitePlan)) {
+            return "resident halo B3 requires the current DAC -> read-cache -> followup -> boundary statement order";
+        }
+
+        for (const auto& update : sitePlan.boundaryLocalUpdates) {
+            if (update.rank != 2 ||
+                update.paramIndex != reader->paramIndex ||
+                !update.constantRhs ||
+                !isZeroConstantExpr(update.constantValue)) {
+                return "resident halo B3 boundary updates must be zero-valued reader-local writes";
+            }
+            const std::string loopLower = compactExprText(update.loopLowerExpr);
+            const std::string loopUpper = compactExprText(update.loopUpperExpr);
+            if (loopLower != "0" || !update.loopUpperInclusive) {
+                return "resident halo B3 boundary updates require inclusive full-span loops";
+            }
+            if (!update.targetRowUsesLoop && update.targetColUsesLoop &&
+                isLastIndexExpr(loopUpper, readerCols) &&
+                isZeroExpr(update.targetRowExpr)) {
+                sawTop = true;
+                continue;
+            }
+            if (!update.targetRowUsesLoop && update.targetColUsesLoop &&
+                isLastIndexExpr(loopUpper, readerCols) &&
+                isLastIndexExpr(update.targetRowExpr, readerRows)) {
+                sawBottom = true;
+                continue;
+            }
+            if (update.targetRowUsesLoop && !update.targetColUsesLoop &&
+                isLastIndexExpr(loopUpper, readerRows) &&
+                isZeroExpr(update.targetColExpr)) {
+                sawLeft = true;
+                continue;
+            }
+            if (update.targetRowUsesLoop && !update.targetColUsesLoop &&
+                isLastIndexExpr(loopUpper, readerRows) &&
+                isLastIndexExpr(update.targetColExpr, readerCols)) {
+                sawRight = true;
+                continue;
+            }
+            return "resident halo B3 only supports the current zero-valued top/bottom/left/right boundary updates";
+        }
+        if (!sawTop || !sawBottom || !sawLeft || !sawRight) {
+            return "resident halo B3 requires canonical zero-valued top/bottom/left/right boundary updates";
+        }
+
+        metadata.enabled = true;
+        metadata.hasDirectReader = true;
+        metadata.readCacheTargetRowOffset = transition.targetRowOffset;
+        metadata.readCacheTargetColOffset = transition.targetColOffset;
+        return "";
+    }
+    if (!sitePlan.readCacheTransitions.empty()) {
+        return "read-cache transitions are outside resident halo B2";
+    }
     for (const auto& update : sitePlan.boundaryLocalUpdates) {
         if (update.rank != 2 ||
             update.paramIndex != reader->paramIndex ||
@@ -1299,6 +1516,16 @@ void annotateLoopLowerCandidates(DacppFile* dacppFile,
                         << plan.orLoopLower.stencilResidentHalo
                                .followupTargetColOffset
                         << ")";
+                    if (plan.orLoopLower.stencilResidentHalo.hasDirectReader) {
+                        llvm::outs()
+                            << " direct-reader=true read-cache-offset=("
+                            << plan.orLoopLower.stencilResidentHalo
+                                   .readCacheTargetRowOffset
+                            << ","
+                            << plan.orLoopLower.stencilResidentHalo
+                                   .readCacheTargetColOffset
+                            << ")";
+                    }
                 } else {
                     llvm::outs()
                         << " window-size="

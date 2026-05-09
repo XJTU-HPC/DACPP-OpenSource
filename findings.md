@@ -1,5 +1,34 @@
 # Findings
 
+## 2026-05-09 Route B B3 Completion
+- `waveEquation1.0` now enters Route B `StencilResidentHalo` instead of Route A `StencilFullSync`. The accepted P4.6 loop log is `kind=StencilResidentHalo ... direct-reader=true read-cache-offset=(-1,-1) materialize=final`.
+- The B3 gate is intentionally narrow: exactly one 2D window reader, exactly one WRITE-only direct writer, at most one 2D direct reader, one `writer -> reader` followup at `(+1,+1)`, one `window reader -> direct reader` read-cache transition at `(-1,-1)`, current 3x3 stride-1 row-block halo, and the current four zero-valued boundary-local loops. Missing distinct actual tensor keys, shape proof, or boundary proof keeps the Route A fallback.
+- B3 now also requires the current top-level statement order: the DAC expression must be followed by the `(-1,-1)` read-cache loop, then the `(+1,+1)` followup loop, then the boundary loops. Same-shape 2D stencil sites with a different post-loop order fall back to Route A `StencilFullSync` instead of being silently accepted into B3.
+- B3 runtime/codegen keeps the communication model resident instead of rebuilding a full tensor on root each step:
+  - `matCur` still uses row-block resident halo storage and neighbor halo exchange;
+  - `matPrev` is now scattered once as a row-block direct-reader resident slice, refreshed each step from the resident `matCur` window state via `apply_read_cache_transition_2d(...)`, and gathered only in final `materialize()`;
+  - `matNext` remains the resident local writer slice, gathered only in final `materialize()`.
+- The accepted B3 generated code for `waveEquation1.0` contains `scatter_window_2d_rows(__or_initial_global_cur, ...)`, one direct-reader `MPI_Scatterv(... __or_initial_global_prev ...)`, `ResidentHaloView2D<const double> view_cur`, `ContiguousView1D<const double> view_prev{__or_direct_reader_data, item_linear}`, `apply_read_cache_transition_2d(__or_local_prev, __or_local_cur, ...)`, `apply_followup_2d(...)`, `exchange_halo_2d_rows(...)`, and final `MPI_Gatherv` calls for both `__or_local_next` and `__or_local_prev`.
+- The accepted B3 path does not reintroduce `AccessPattern`, `PackPlan`, `FixedBlock`, `root_bridge`, Phase-C partial exchange, per-step full reader/direct-reader `MPI_Bcast`, per-step read-cache broadcast, or per-step followup full-tensor broadcast.
+- Requested validation after the B3 patch passed serially:
+  - `cmake --build build --target translator -j8`
+  - `bash clang/tools/translator/test_mpi.sh MDP1.0 liuliang1.0 stencil1.0 waveEquation1.0`
+  - `bash clang/tools/translator/test_mpi.sh mpiLoopStencilResidentHalo1D mpiLoopStencilResidentHaloEmptyRank1D mpiLoopStencilRightBoundaryFullSync1D`
+  - `bash clang/tools/translator/test_mpi.sh mpiLoopStencilScalarReject2D mpiLoopStencilCountGuard2D`
+  - `bash clang/tools/translator/test_mpi.sh mpiLoopStencilOrderReject2D`
+  - `git diff --check`
+- The full docs/benchmarks-scale rerun at `/Volumes/QUQ/working/mpi_tmp/docs_bench_20260509_210303/results.tsv` sharpens the next-step priority:
+  - `stencil1.0` B2 is still `1.52x` slower than hand-written MPI+SYCL even after entering resident halo;
+  - `waveEquation1.0` B3 is still `2.10x` slower;
+  - both generated paths already avoid full-sync but still pay for per-step local slab copies before halo exchange;
+  - `FOuLa1.0` is `2.08x` slower, but its log says `not inside a stable loop site`, so it has not yet entered the P4.6 loop-lowered family at all;
+  - `oddeven0.1` remains a Phase-5 problem: legacy `AccessPattern` / `PackPlan` plus `ctx.use_partial_exchange = false`.
+- Recommended optimization order from the current benchmark plus generated-code shape:
+  1. add 2D resident-state role rotation / buffer swap for `stencil1.0` and `waveEquation1.0`;
+  2. rerun a focused benchmark on `MDP1.0`, `liuliang1.0`, `stencil1.0`, `waveEquation1.0`;
+  3. improve stable loop-site recognition so `FOuLa1.0` can enter the existing P4.6 family;
+  4. keep `oddeven0.1` for Phase 5 `FixedBlock`.
+
 ## 2026-05-09 Route B Handoff
 - User goal is Phase 4.6 Route B resident halo, beginning with B1 1D stencil halo; do not modify matmul unless regression fails.
 - Fresh `git status --short --branch` in this session showed `## tqc-2...origin/tqc-2` plus only untracked `findings.md`, `progress.md`, and `task_plan.md`; it did not show the previously noted staged Route A files. Continue preserving all uncommitted files and avoid reset/checkout.

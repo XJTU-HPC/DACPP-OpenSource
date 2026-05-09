@@ -78,6 +78,7 @@ struct OrLoopLowerPlan {
     bool finalMaterializeRequired = false;
     struct StencilResidentHaloMetadata {
         bool enabled = false;
+        bool hasDirectReader = false;
         int windowSize = 0;
         int windowRows = 0;
         int windowCols = 0;
@@ -87,6 +88,8 @@ struct OrLoopLowerPlan {
         int followupTargetOffset = 0;
         int followupTargetRowOffset = 0;
         int followupTargetColOffset = 0;
+        int readCacheTargetRowOffset = 0;
+        int readCacheTargetColOffset = 0;
         bool hasBoundaryLocalUpdate = false;
         bool boundaryCopiesWriter = false;
         int boundaryTargetIndex = 0;

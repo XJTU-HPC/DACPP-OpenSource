@@ -39,6 +39,7 @@ MPI_TESTS=(
     "mpiLoopStencilRightBoundaryFullSync1D"
     "mpiLoopStencilScalarReject2D"
     "mpiLoopStencilCountGuard2D"
+    "mpiLoopStencilOrderReject2D"
     "gradientSum"
     "mpiBroadcastRootOnlyCout"
     "mpiBroadcastTensor2Array"
