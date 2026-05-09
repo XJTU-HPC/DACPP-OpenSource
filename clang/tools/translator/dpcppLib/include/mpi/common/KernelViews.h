@@ -61,6 +61,21 @@ struct ResidentHaloView1D {
 };
 
 template <typename T>
+struct ResidentHaloInteriorView1D {
+    T* data = nullptr;
+    int fullCols = 0;
+    int interiorCols = 0;
+    int rowOffset = 0;
+    int colOffset = 0;
+
+    decltype(auto) operator[](int idx) const {
+        const int row = idx / interiorCols;
+        const int col = idx % interiorCols;
+        return data[(row + rowOffset) * fullCols + (col + colOffset)];
+    }
+};
+
+template <typename T>
 struct ResidentHaloView2DRow {
     T* data = nullptr;
     int offset = 0;

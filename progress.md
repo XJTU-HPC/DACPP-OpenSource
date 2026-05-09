@@ -1,215 +1,43 @@
 # Progress Log
 
-## 2026-05-09
-- Started Phase 4.6 Route B handoff.
-- Ran `git status --short --branch`; output showed branch `tqc-2...origin/tqc-2` and only planning files untracked.
-- Re-read the requested canonical shell-derived plan, P4.6 optimization plan, A0 baseline, and existing planning files.
-- Began inspecting `StencilWindow1DCodegen.cpp`, `StencilWindowCodegen.cpp`, `OperatorChainAnalysis.cpp`, `OperatorResidentPlan.h`, and `LoopLoweredStencil1DCodegen.cpp` for B1 insertion points.
-- Added explicit `StencilResidentHaloMetadata` under `OrLoopLowerPlan`.
-- Added `ResidentHaloView1D` plus 1D resident halo runtime helpers for layout, initial window scatter, followup apply, neighbor exchange, and owned-slice extraction.
-- Added B1 analysis gate for 1D resident halo and kept Route A `StencilFullSync` as fallback.
-- Added loop-lowered 1D resident halo family codegen and dispatch for `OrLoopLowerKind::StencilResidentHalo`.
-- Updated MDP/liuliang structure expectations to require resident halo and absence of per-run full-sync collectives.
-- Added structure-only `mpiLoopStencilResidentHalo1D` and included it in default `test_mpi.sh`.
-- `cmake --build build --target translator -j8` passed after the Route B changes.
-- `bash test_mpi.sh MDP1.0 liuliang1.0` passed with MPI output matching baseline.
-- `bash test_mpi.sh mpiLoopStencilInvariantReader1D mpiLoopStencilAliasRefresh1D mpiLoopStencilReferenceAliasRefresh1D` passed 3/3 after sequential rerun.
-- `bash test_mpi.sh MDP1.0 liuliang1.0 stencil1.0 waveEquation1.0` passed 4/4.
-- `bash test_mpi.sh mpiLoopStencilResidentHalo1D` passed.
-- Started on branch `tqc-2` in `/Volumes/QUQ/working/dacpp`.
-- Ran `git status --short` before touching files and recorded existing user changes.
-- Read canonical shell-derived and P4.6 optimization plans.
-- Created planning files for this A-1/A0 session.
-- Confirmed branch is `tqc-2`.
-- Located duplicated loop-lowered rewrite insertion logic in `rewriteStencilPhaseCSite()` and `rewriteLoopLoweredOperatorResidentSite()`.
-- Decided the shared helper should only own the common `ctx/init/run/materialize` insertion and replacement mechanics; Phase-C post-region handling and OR gate logic stay where they are.
-- Added `mpi/shared/LoopLoweredRewrite.{h,cpp}` and switched Phase-C/P4.5 OR call sites to use it.
-- First build attempt failed because the helper implementation needed `clang/AST/Expr.h` for `BinaryOperator`; patched the include.
-- `cmake --build build --target translator -j8` passed after the include fix.
-- `bash test_mpi.sh decay1.0 mpiLoopReadWriteReject1D mpiLoopAliasReject1D` passed 3/3.
-- `bash test_mpi.sh mpiLoopVariantInputReject1D mpiLoopChainReject1D` passed 2/2.
-- `bash test_mpi.sh mpiMixedStencilORPhaseC mpiOrStencilRefreshPolicy1D mpiOrStencilBoundaryStride2D` passed 3/3.
-- `bash test_mpi.sh` passed 37/37.
-- Completed A0 measurement-only baseline using generated files and binaries in `/Volumes/QUQ/working/mpi_tmp`.
-- Added `clang/tools/translator/docs/mpi_translator/phase_4_6_a0_measurement_baseline_2026-05-09.md` with static communication counts and 3-run wall-clock samples.
-- Started A1 after user handoff.
-- Ran `git status --short`; confirmed existing A-1/A0 edits and planning files are present.
-- Re-read canonical shell-derived plan, P4.6 optimization plan, and A0 baseline.
-- Confirmed branch is `tqc-2`.
-- Began inspecting OR loop metadata, rewrite dispatch, direct loop-lowered codegen, and StencilWindow1D full-sync wrapper.
-- Added `OrLoopLowerKind`/`OrLoopLowerPlan` metadata to `OperatorResidentPlan.h`.
-- Added P4.6 StencilWindow1D full-sync loop candidate analysis with conservative checks: stable for/while, exactly one DAC expr, args declared before loop, one window reader, one WRITE-only direct writer, no direct readers, no root-bridge/read-cache transitions, and no reader writes outside current OR post path.
-- Added `LoopLoweredStencil1DCodegen.cpp` and wired it into CMake and OR codegen dispatch.
-- Updated OR loop rewrite dispatch to use explicit loop-lowered plan metadata and remove stencil post statements for loop-lowered StencilFullSync.
-- Built translator successfully with `cmake --build build --target translator -j8`.
-- Ran `bash test_mpi.sh MDP1.0 liuliang1.0`; both passed and generated the P4.6 stencil full-sync family.
-- Added structure expectations to `MDP1.0` and `liuliang1.0` for P4.6 ctx/init/run/materialize and no PackPlan/FixedBlock/halo path.
-- `bash test_mpi.sh MDP1.0 liuliang1.0 mpiOrStencilRefreshPolicy1D` passed 3/3.
-- `bash test_mpi.sh mpiMixedStencilORPhaseC mpiOrStencilBoundaryStride2D` passed 2/2.
-- `bash test_mpi.sh decay1.0 mpiLoopReadWriteReject1D mpiLoopAliasReject1D mpiLoopVariantInputReject1D mpiLoopChainReject1D` passed 5/5.
-- `bash test_mpi.sh` passed 37/37.
-- After a small metadata cleanup, rebuilt translator again and reran `bash test_mpi.sh`; final full suite passed 37/37.
-- Started A2/A3 after user request.
-- Ran `git status --short`; existing A-1/A0/A1 edits are still present and will be preserved.
-- Read current planning files plus `StencilWindowCodegen.cpp`, `StencilWindowPartitionAnalysis.cpp`, `stencil1.0`, and `waveEquation1.0` test expectations.
-- Resumed after context handoff at 2026-05-09 11:10 CST; ran `git status --short --branch`, planning session catch-up, and `git diff --stat`.
-- Confirmed A2 implementation gap: `buildLoopLoweredStencil2DFullSyncFamilyCode()` is declared and dispatched but still needs a definition.
-- Re-read P4.6 route A docs around full-sync skeleton and invariant-reader hoist before editing.
-- Added `buildLoopLoweredStencil2DFullSyncFamilyCode()` in `StencilWindowCodegen.cpp`, reusing the existing 2D read-cache, followup, and boundary-local helpers.
-- Built translator successfully after the 2D family implementation.
-- `bash test_mpi.sh stencil1.0 waveEquation1.0` passed 2/2 and confirmed the generated 2D P4.6 family preserves full-sync semantics.
-- Added structure expectations for `stencil1.0` and `waveEquation1.0` to require P4.6 ctx/init/run/materialize and no PackPlan/FixedBlock/halo path in OR accepted code.
-- Added structure-only `mpiLoopStencilInvariantReader1D` and added it to the default `test_mpi.sh` list.
-- First A3 test attempt exposed a no-route supported stencil site being classified as distributed-followup; narrowed `tensorUsesDistributedFollowup()` to real followup mappings and allowed no-route scalar root-materialize 1D stencil to stay OR.
-- `bash test_mpi.sh mpiLoopStencilInvariantReader1D` passed after the analysis adjustment.
-- `bash test_mpi.sh MDP1.0 liuliang1.0 mpiOrStencilRefreshPolicy1D mpiLoopStencilInvariantReader1D` passed 4/4.
-- `bash test_mpi.sh mpiMixedStencilORPhaseC mpiOrStencilBoundaryStride2D stencil1.0 waveEquation1.0` passed 4/4.
-- `bash test_mpi.sh decay1.0 mpiLoopReadWriteReject1D mpiLoopAliasReject1D mpiLoopVariantInputReject1D mpiLoopChainReject1D` passed 5/5.
-- `bash test_mpi.sh` passed 38/38.
-- Review follow-up: fixed A3 reader hoist alias risk by preventing `hoistReaderSync` when the stencil window reader and output writer share the same actual tensor.
-- Added structure-only `mpiLoopStencilAliasRefresh1D`, passing the same `state` object as reader and writer and asserting P4.6 full-sync lowering remains accepted with `hoist-reader-sync=false` and reader refresh in `run()`.
-- Added `mpiLoopStencilAliasRefresh1D` to the default `test_mpi.sh` suite.
-- Staged the product files that must be part of the submitted change, including previously untracked helper/codegen/doc/test files; kept `task_plan.md`, `findings.md`, and `progress.md` untracked.
-- `cmake --build build --target translator -j8` passed.
-- `bash test_mpi.sh mpiLoopStencilInvariantReader1D mpiLoopStencilAliasRefresh1D` passed 2/2 after correcting the expected writer local buffer name to `__or_local_next`.
-- `bash test_mpi.sh MDP1.0 liuliang1.0 mpiOrStencilRefreshPolicy1D` passed 3/3.
-- `bash test_mpi.sh mpiMixedStencilORPhaseC mpiOrStencilBoundaryStride2D` passed 2/2.
-- `bash test_mpi.sh decay1.0 mpiLoopReadWriteReject1D mpiLoopAliasReject1D mpiLoopVariantInputReject1D mpiLoopChainReject1D` passed 5/5.
-- `bash test_mpi.sh stencil1.0 waveEquation1.0` passed 2/2.
-- `bash test_mpi.sh` passed 39/39.
-- Review P1 follow-up: fixed the remaining C++ reference alias gap for A3 reader hoist.
-- Added `ParamAccessPlan::actualTensorNamePrecise` and reference initializer resolution so `dacpp::Vector<double>& alias = state` normalizes back to `state` for shell actual tensor keys.
-- Tightened A3 hoist to require reader/writer actual tensor keys be precise and proven distinct; otherwise full reader sync stays in `run()`.
-- Added structure-only `mpiLoopStencilReferenceAliasRefresh1D`, using `aliasShell(state, alias, gain)` with `alias` as a C++ reference to `state`, and added it to the default MPI suite.
-- Removed a staged trailing blank line from the A0 baseline doc so `git diff --cached --check` passes.
-- `cmake --build build --target translator -j8` passed.
-- `bash test_mpi.sh mpiLoopStencilInvariantReader1D mpiLoopStencilAliasRefresh1D mpiLoopStencilReferenceAliasRefresh1D` passed 3/3.
-- `bash test_mpi.sh MDP1.0 liuliang1.0 mpiOrStencilRefreshPolicy1D` passed 3/3.
-- `bash test_mpi.sh mpiMixedStencilORPhaseC mpiOrStencilBoundaryStride2D` passed 2/2.
-- `bash test_mpi.sh decay1.0 mpiLoopReadWriteReject1D mpiLoopAliasReject1D mpiLoopVariantInputReject1D mpiLoopChainReject1D` passed 5/5.
-- `bash test_mpi.sh stencil1.0 waveEquation1.0` passed 2/2.
-- `bash test_mpi.sh` passed 40/40.
-- Ran lightweight P4.6 Route A benchmark samples with `/usr/bin/time -p` and `mpirun -np 4` on current generated MPI binaries.
-- Current samples: `MDP1.0` 0.45/0.37/0.43 s, `liuliang1.0` 0.14/0.16/0.12 s, `stencil1.0` 0.06/0.06/0.06 s, `waveEquation1.0` 0.06/0.06/0.06 s.
-- Regenerated and verified `matMul1.0` with `bash test_mpi.sh matMul1.0`, then sampled `matMul1.0` at 0.06/0.06/0.06 s.
-- Started benchmark issue investigation handoff.
-- Ran `git status --short --branch`; confirmed branch `tqc-2`, many staged P4.6 Route A changes, and only `task_plan.md` / `findings.md` / `progress.md` untracked.
-- Re-read canonical shell-derived, P4.6 optimization, and A0 baseline docs plus current planning files.
-- Confirmed no lingering `mpirun`/`prterun`/benchmark processes.
-- `cmake --build build --target translator -j8` reported no work to do and succeeded.
-- Reproduced `matmul2048` failure with `DYLD_LIBRARY_PATH=/Volumes/QUQ/working/sycl-install/lib mpirun -np 4 .../matmul2048/mpi_bin`; `MPI_Scatterv` reports invalid count.
-- Inspected generated `matmul2048.mpi.dac_sycl_buffer.cpp`; overflow comes from `__or_counts[r] * __or_payload_len_vecA/vecB`, not from `matC` OutputDirect.
-- Inspected generated `waveEquation1_0.mpi.dac_sycl_buffer.cpp`; P4.6 loop-lowered `run()` preserves full-sync skeleton with 2 input full bcasts, writer gatherv, read-cache full replay+bcast, followup full replay+bcast, and boundary O(N) loops per step.
-- Ran `timeout 300` wave large command; it exited 124 with `/tmp/wave_large.out` still 0B and no leftover MPI processes.
-- Modified `RowPartitionFullRow` codegen to distribute unique indexed payloads instead of duplicating full payload per output item; column-index payloads are broadcast to all row-partition ranks.
-- `cmake --build build --target translator -j8` passed after the RowPartitionFullRow changes.
-- `bash test_mpi.sh matMul1.0` passed.
-- Regenerated `matmul2048` into `/Volumes/QUQ/working/p46_doc_bench_20260509_fix_matmul2048/`; generated code now has `__or_payload_unique_count_vecA = __or_row_range.count` and `__or_payload_unique_count_vecB = __or_cols`.
-- Ran fixed `matmul2048` binary successfully; output `147385 147273 147961`, no `MPI_ERR_COUNT`.
-- Ran 5 efficiency samples for fixed `matmul2048`: real 0.32, 0.32, 0.34, 0.31, 0.34 seconds.
-- Stopped/confirmed no wave large MPI residue after user asked to stop wave runs and focus on code analysis.
-- Continued wave generated-code analysis; identified slow full-sync structure and generic partial-update host replay as the reason 300s large run does not reach final print.
-- User narrowed scope to only fix matmul now and record wave performance findings in canonical docs for future P4.6-B work.
-- Updated `shell_derived_partition_implementation_plan_2026-05-07.md` with RowPartitionFullRow unique-payload/count-safety notes and large benchmark observations.
-- Updated `phase_4_6_optimization_plan_2026-05-09.md` with Route A large benchmark notes and P4.6-B wave motivation/fallback constraints.
-- `cmake --build build --target translator -j8` passed with no work to do.
-- `bash test_mpi.sh matMul1.0` passed.
-- `bash test_mpi.sh mpiLoopStencilInvariantReader1D mpiLoopStencilAliasRefresh1D mpiLoopStencilReferenceAliasRefresh1D` passed 3/3.
-- Review fix follow-up: updated B1 resident halo runtime to route halo exchange through nearest non-empty ranks instead of adjacent MPI ranks, preventing empty tail ranks from skipping a matching `MPI_Sendrecv`.
-- Tightened B1 boundary-local gate so resident halo only accepts literal left boundary target `0`; right boundary or symbolic boundary expressions keep the P4.6 `StencilFullSync` fallback.
-- Added `mpiLoopStencilResidentHaloEmptyRank1D` runtime coverage for `outputTotal < mpi_size` and `mpiLoopStencilRightBoundaryFullSync1D` structure coverage for right-boundary fallback.
-- `cmake --build build --target translator -j8` passed after review fixes.
-- `bash test_mpi.sh mpiLoopStencilResidentHaloEmptyRank1D mpiLoopStencilRightBoundaryFullSync1D` passed 2/2.
-- `bash test_mpi.sh mpiLoopStencilInvariantReader1D mpiLoopStencilAliasRefresh1D mpiLoopStencilReferenceAliasRefresh1D mpiLoopStencilResidentHalo1D` passed 4/4.
-- `bash test_mpi.sh MDP1.0 liuliang1.0 stencil1.0 waveEquation1.0` passed 4/4.
-- `git diff --check` passed.
-- Ran an initial filtered default-parameter app benchmark with `bash clang/tools/translator/bench_mpi_apps.sh DFT1.0 MDP1.0 decay1.0 gradientSum imageAdjustment1.0 jacobi1.0 liuliang1.0 mandel1.0 matMul1.0 oddeven0.1 vectorAddCombo`; those small/default numbers were superseded by the large-size run below and should not be used for the docs table.
-- Updated `phase_4_6_optimization_plan_2026-05-09.md` with current Route A+B1 status, benchmark table, B1 review fixes, and B2 boundary.
-- Updated `shell_derived_partition_implementation_plan_2026-05-07.md` so Phase 4.6 is no longer marked as not started and points next to B2 row-block resident halo.
-- Reran the selected app benchmark with the large-size `bench_mpi_only_requested.py` driver to match `docs/benchmarks` scale, excluding `FOuLa1.0`, `stencil1.0`, and `waveEquation1.0`.
-- Large benchmark command: `MPI_ONLY_BENCH_TMP_DIR=/Volumes/QUQ/working/mpi_tmp/p46_b1_selected_large_20260509 MPI_ONLY_BENCH_RANKS=4 MPI_ONLY_BENCH_TIMEOUT_SECONDS=1800 python3 clang/tools/translator/bench_mpi_only_requested.py DFT1.0 MDP1.0 decay1.0 gradientSum imageAdjustment1.0 jacobi1.0 liuliang1.0 mandel1.0 matMul1.0 oddeven0.1 vectorAddCombo`.
-- Large benchmark results are at `/Volumes/QUQ/working/mpi_tmp/p46_b1_selected_large_20260509/results.tsv`; all selected cases completed with status `ok`.
-- Replaced the earlier small/default benchmark tables in the P4.6 and shell-derived docs with the large-size hand-written MPI vs DAC translated MPI table.
-- Large benchmark table values: `DFT1.0` 0.877217/0.888717, `MDP1.0` 0.827930/0.828125, `decay1.0` 1.108226/0.891583, `gradientSum` 0.662446/1.074782, `imageAdjustment1.0` 0.717041/0.892109, `jacobi1.0` 0.737592/0.877352, `liuliang1.0` 0.937474/0.840554, `mandel1.0` 2.535479/3.029412, `matMul1.0` 5.921520/0.902443, `oddeven0.1` 1.895137/5.617574, `vectorAddCombo` 0.824343/0.749346 for hand-written MPI / DAC translated MPI seconds.
-- Diagnosed `mandel1.0` and `oddeven0.1` efficiency by comparing generated DAC MPI and hand-written MPI code. `mandel1.0` is slower mainly from generic input scatter plus full output broadcast/materialization; `oddeven0.1` is slower because it still uses full-sync/legacy PackPlan per phase instead of the Phase-5 fixed-block neighbor-exchange layout.
-- Diagnosed `matMul1.0` efficiency. The current DAC code is fast because the RowPartitionFullRow unique-payload fix distributes owned A rows once and packs B columns contiguously; the hand-written MPI reference keeps row-major B and performs stride-2048 inner-loop reads.
-- User reported two new B2 blockers: 2D scalar readers could still be accepted into P4.6/B2 despite missing codegen support, and new 2D resident-halo count/displ narrowing used unchecked `static_cast<int>`.
-- Re-read `OperatorChainAnalysis.cpp`, `StencilWindowCodegen.cpp`, `StencilWindowPartitionAnalysis.cpp`, and `OperatorResidentRuntime.h`; confirmed the 2D emitters only handle window reader + direct reader + direct writer, and several B2/full-sync 2D MPI counts were still shape-derived raw `int` narrowings.
-- Added explicit 2D scalar-reader rejection in `StencilWindowPartitionAnalysis.cpp`, plus defensive P4.6 full-sync/B2 scalar rejection in `OperatorChainAnalysis.cpp`.
-- Added runtime helper guards `checked_mul_int64_or_abort()` / `narrow_mpi_count_or_abort()` in `OperatorResidentRuntime.h`; switched `counts_displs_1d()`, `byte_counts_displs()`, `scatter_window_{1d,2d_rows}()`, and `exchange_halo_2d_rows()` to use them.
-- Updated `StencilWindowCodegen.cpp` so 2D single-call/full-sync/resident-halo codegen validates the supported param set up front, removes the mid-string early-return hazard, and guards 2D count/displ, gather sendcount, and broadcast narrowing with the new runtime helpers.
-- Updated shared OR gather/scatter sendcount emission in `CollectiveCodegenUtils.cpp` to use the new runtime helper guards as well.
-- Added structure-only tests `mpiLoopStencilScalarReject2D` and `mpiLoopStencilCountGuard2D`; added them to `clang/tools/translator/test_mpi.sh`.
-- First rebuild passed object compilation but generated MPI code failed because `OperatorResidentRuntime.h` used `inline [[noreturn]]`; changed that to `[[noreturn]] inline` and rebuilt successfully.
-- First validation rerun also exposed two harness issues: I invoked `test_mpi.sh` from the wrong directory once, and then accidentally ran multiple `test_mpi.sh` processes in parallel even though they share `/Volumes/QUQ/working/mpi_tmp`. After correcting the script path and rerunning the groups serially, validation passed cleanly.
-- Final verification passed:
-  - `cmake --build build --target translator -j8`
-  - `bash clang/tools/translator/test_mpi.sh mpiLoopStencilScalarReject2D mpiLoopStencilCountGuard2D`
-  - `bash clang/tools/translator/test_mpi.sh MDP1.0 liuliang1.0 stencil1.0 waveEquation1.0`
-  - `bash clang/tools/translator/test_mpi.sh mpiLoopStencilResidentHalo1D mpiLoopStencilResidentHaloEmptyRank1D mpiLoopStencilRightBoundaryFullSync1D`
-  - `git diff --check`
-- Follow-up review found two remaining gaps: shared OR materialized-output broadcasts in `CollectiveCodegenUtils.cpp` still used unguarded `mpiPayloadCountExpr(...)`, and several 2D oversized-shape guards still happened only after root/local vector allocation sites.
-- Tightened `CollectiveCodegenUtils.cpp` so `emitGatherMaterializeFromLocalBuffer()` now guards materialized output size before root `resize()`, and guards both root/non-root `broadcastMaterializedOutput` `MPI_Bcast` counts with `checked_mul_int64_or_abort()` / `narrow_mpi_count_or_abort()`.
-- Tightened `StencilWindowCodegen.cpp` so 2D full-sync/plain/B2 codegen guards dense reader/direct-reader buffer counts and local reader/writer counts before `tensor2Array()`, `resize()`, and `assign()` at the review-called allocation sites; 2D read-cache/followup broadcast helpers now also guard non-root `resize()` before broadcast.
-- Refreshed structure expectations:
-  - `jacobi1.0` now asserts the guarded shared materialized-output broadcast path instead of the old raw `MPI_Bcast(... getSize(), ...)`.
-  - `mpiLoopStencilCountGuard2D` now asserts early resident-halo local reader / initial reader size guard strings.
-- Focused follow-up verification passed:
-  - `cmake --build build --target translator -j8`
-  - `bash clang/tools/translator/test_mpi.sh jacobi1.0 mpiLoopStencilScalarReject2D mpiLoopStencilCountGuard2D MDP1.0 liuliang1.0 stencil1.0 waveEquation1.0 mpiLoopStencilResidentHalo1D mpiLoopStencilResidentHaloEmptyRank1D mpiLoopStencilRightBoundaryFullSync1D`
-  - `git diff --check`
-- User reported two final B2 gaps: 2D shared materialize still passed raw `__or_output_rows * __or_output_cols` into the total-count guard, and `resident_halo_2d_row_layout()` still computed `local_size` via raw multiply before later guards.
-- Updated `StencilWindowCodegen.cpp` so both 2D materialize call sites first compute `__or_materialized_output_items` with `checked_mul_int64_or_abort()` and then pass that checked value into `emitGatherMaterializeFromLocalBuffer()`.
-- Updated `OperatorResidentRuntime.h` so `resident_halo_2d_row_layout()` computes `local_size` via `checked_mul_int64_or_abort()` before any downstream allocation or MPI guard consumes it.
-- `cmake --build build --target translator -j8` passed after the final B2 overflow fixes.
-- Serial validation passed:
-  - `bash clang/tools/translator/test_mpi.sh jacobi1.0 mpiLoopStencilCountGuard2D mpiLoopStencilScalarReject2D MDP1.0 liuliang1.0 stencil1.0 waveEquation1.0 mpiLoopStencilResidentHalo1D mpiLoopStencilResidentHaloEmptyRank1D mpiLoopStencilRightBoundaryFullSync1D`
-  - 10/10 passed
-- `git diff --check` passed after the final B2 fixes.
-- Updated planning/docs state to mark Route B B2 complete and record B3 handoff scope for `waveEquation1.0`.
-- Started B3 completion work for `waveEquation1.0`; re-read the canonical docs, planning files, `OperatorChainAnalysis.cpp`, `StencilWindowPartitionAnalysis.cpp`, `StencilWindowCodegen.cpp`, `OperatorResidentPlan.h`, `KernelViews.h`, `OperatorResidentRuntime.h`, and the current `waveEquation1.0` / `stencil1.0` structure expectations.
-- Reconfirmed the requested serial baseline before editing:
-  - `cmake --build build --target translator -j8`
-  - `bash clang/tools/translator/test_mpi.sh MDP1.0 liuliang1.0 stencil1.0 waveEquation1.0`
-  - `bash clang/tools/translator/test_mpi.sh mpiLoopStencilResidentHalo1D mpiLoopStencilResidentHaloEmptyRank1D mpiLoopStencilRightBoundaryFullSync1D`
-  - `bash clang/tools/translator/test_mpi.sh mpiLoopStencilScalarReject2D mpiLoopStencilCountGuard2D`
-  - `git diff --check`
-- Regenerated `waveEquation1.0` in a private temp dir and confirmed the pre-B3 shape: P4.6 `StencilFullSync` with per-step full reader/direct-reader `MPI_Bcast`, writer `MPI_Gatherv`, read-cache full replay+bcast, and followup/boundary full replay+bcast.
-- Added conservative B3 metadata under `OrLoopLowerPlan` and tightened `OperatorChainAnalysis.cpp` so `StencilResidentHalo` now accepts a 2D direct reader only for the current `waveEquation1.0` slice: one direct reader, `(-1,-1)` read-cache transition, four zero-valued boundary loops, and provably distinct actual tensor keys; otherwise it keeps the Route A fallback.
-- Added `apply_read_cache_transition_2d(...)` to `OperatorResidentRuntime.h`.
-- Extended the 2D resident-halo family in `StencilWindowCodegen.cpp` to:
-  - keep `matCur` in resident halo row-block storage,
-  - scatter `matPrev` once into a resident row-block direct-reader local slice,
-  - feed the kernel from `ResidentHaloView2D` + local direct-reader `ContiguousView1D`,
-  - refresh `matPrev` resident state from resident `matCur` before followup/boundary updates,
-  - materialize both `matNext` and `matPrev` with final `MPI_Gatherv`.
-- Updated `waveEquation1.0/mpi_expect.txt` to assert the accepted B3 `StencilResidentHalo` path and absence of per-step full-sync collectives / legacy accepted-path artifacts.
-- Rebuilt and regenerated `waveEquation1.0`; verified the accepted log now says `kind=StencilResidentHalo ... direct-reader=true read-cache-offset=(-1,-1) materialize=final`, and the generated code contains resident direct-reader scatter/update/materialize plus `apply_followup_2d` / `exchange_halo_2d_rows`.
-- Final requested validation passed serially after the B3 patch:
-  - `cmake --build build --target translator -j8`
-  - `bash clang/tools/translator/test_mpi.sh MDP1.0 liuliang1.0 stencil1.0 waveEquation1.0`
-  - `bash clang/tools/translator/test_mpi.sh mpiLoopStencilResidentHalo1D mpiLoopStencilResidentHaloEmptyRank1D mpiLoopStencilRightBoundaryFullSync1D`
-  - `bash clang/tools/translator/test_mpi.sh mpiLoopStencilScalarReject2D mpiLoopStencilCountGuard2D`
-  - `git diff --check`
-- Updated `shell_derived_partition_implementation_plan_2026-05-07.md`, `phase_4_6_optimization_plan_2026-05-09.md`, `task_plan.md`, `findings.md`, and `progress.md` to mark P4.6/B3 complete while keeping Phase 5 / `FixedBlock` untouched.
-- User review caught a B3 soundness gap: the gate matched counts/forms but did not require the current top-level post-loop statement order, while codegen hard-coded `read-cache -> followup -> halo -> boundary`.
-- Tightened `OperatorChainAnalysis.cpp` so accepted `StencilWindow2D` B3 sites must preserve the current `DAC -> read-cache -> followup -> boundary` top-level order; otherwise they fall back to Route A `StencilFullSync`.
-- Added structure-only negative coverage in `mpiLoopStencilOrderReject2D` and added it to the default `clang/tools/translator/test_mpi.sh` list.
-- Reran the required serial validation after the order guard fix:
-  - `cmake --build build --target translator -j8`
-  - `bash clang/tools/translator/test_mpi.sh MDP1.0 liuliang1.0 stencil1.0 waveEquation1.0`
-  - `bash clang/tools/translator/test_mpi.sh mpiLoopStencilResidentHalo1D mpiLoopStencilResidentHaloEmptyRank1D mpiLoopStencilRightBoundaryFullSync1D`
-  - `bash clang/tools/translator/test_mpi.sh mpiLoopStencilScalarReject2D mpiLoopStencilCountGuard2D`
-  - `bash clang/tools/translator/test_mpi.sh mpiLoopStencilOrderReject2D`
-- Reran the full `docs/benchmarks`-scale 14-case benchmark with `MPI_ONLY_BENCH_TMP_DIR=/Volumes/QUQ/working/mpi_tmp/docs_bench_20260509_210303 MPI_ONLY_BENCH_RANKS=4 MPI_ONLY_BENCH_TIMEOUT_SECONDS=1800 python3 clang/tools/translator/bench_mpi_only_requested.py`; all cases completed with status `ok`.
-- Full benchmark results are in `/Volumes/QUQ/working/mpi_tmp/docs_bench_20260509_210303/results.tsv`.
-- Key full-benchmark numbers from the current worktree:
-  - `stencil1.0`: 1.460170 s hand-written vs 2.217828 s DAC translated
-  - `waveEquation1.0`: 1.527755 s hand-written vs 3.212622 s DAC translated
-  - `FOuLa1.0`: 0.772162 s hand-written vs 1.608849 s DAC translated
-  - `oddeven0.1`: 1.684896 s hand-written vs 4.965771 s DAC translated
-- Inspected generated benchmark outputs and logs:
-  - `stencil1.0` and `waveEquation1.0` both enter `StencilResidentHalo`, but still do per-step local `apply_followup_2d(...)` / `apply_read_cache_transition_2d(...)` copying before halo exchange.
-  - `FOuLa1.0` still logs `not inside a stable loop site`, so it has not entered the P4.6 loop-lowered family yet.
-  - `oddeven0.1` still generates legacy `AccessPattern` / `PackPlan` code and keeps `ctx.use_partial_exchange = false`, so it remains a Phase-5 `FixedBlock` issue.
-- Updated the P4.6 and shell-derived docs to record this full benchmark rerun and to reprioritize the next optimization slice toward 2D resident-state role rotation first, `FOuLa1.0` loop-site acceptance second, and `oddeven0.1` only under Phase 5.
+## 2026-05-10
+
+- Revalidated the benchmark source split:
+  - old wrapper baseline:
+    `clang/tools/translator/docs/benchmarks/mpi_sycl_efficiency_benchmark_2026-05-06.md`
+  - current closeout benchmark:
+    `/Volumes/QUQ/working/mpi_tmp/p46_final_close/results.tsv`
+- Confirmed the current worktree is still on branch `tqc-2` and preserved all unrelated
+  user changes.
+- Rewrote the two canonical P4.6 documents into current-state closeout form instead of the
+  earlier step-by-step narrative.
+- Removed stale and repetitive phase-history prose from the canonical docs and replaced it
+  with:
+  - current accepted boundary
+  - landed implementation shape
+  - benchmark comparison
+  - `FOuLa1.0` blocker ownership
+  - next-step handoff
+- Reduced `task_plan.md`, `findings.md`, and `progress.md` to the active closeout state so
+  future handoff reads like one coherent snapshot.
+
+## Verification Already Completed For This Code State
+
+```bash
+cmake --build build --target translator -j8
+bash clang/tools/translator/test_mpi.sh MDP1.0 liuliang1.0
+bash clang/tools/translator/test_mpi.sh mpiLoopStencilResidentHalo1D mpiLoopStencilResidentHaloEmptyRank1D mpiLoopStencilRightBoundaryFullSync1D
+bash clang/tools/translator/test_mpi.sh MDP1.0 liuliang1.0 stencil1.0 waveEquation1.0
+bash clang/tools/translator/test_mpi.sh mpiLoopStencilScalarReject2D mpiLoopStencilCountGuard2D mpiLoopStencilOrderReject2D
+git diff --check
+```
+
+Focused benchmark already captured:
+
+```bash
+MPI_ONLY_BENCH_TMP_DIR=/Volumes/QUQ/working/mpi_tmp/p46_final_close \
+MPI_ONLY_BENCH_RANKS=4 \
+MPI_ONLY_BENCH_TIMEOUT_SECONDS=1800 \
+python3 clang/tools/translator/bench_mpi_only_requested.py \
+  MDP1.0 liuliang1.0 stencil1.0 waveEquation1.0 FOuLa1.0
+```

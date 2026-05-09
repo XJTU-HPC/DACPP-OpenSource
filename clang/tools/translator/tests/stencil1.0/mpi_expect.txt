@@ -12,14 +12,17 @@ SYCL_CONTAINS:void __dacpp_mpi_or_stencilShell_stencil_0_materialize(__dacpp_mpi
 SYCL_CONTAINS:dacpp::mpi::operator_resident::ResidentHalo2DRowLayout __or_halo_layout
 SYCL_CONTAINS:dacpp::mpi::operator_resident::scatter_window_2d_rows(__or_initial_global_mat
 SYCL_CONTAINS:ResidentHaloView2D<const double> view_mat{__or_reader_data, local_row * static_cast<int>(__or_input_cols) + local_col
-SYCL_CONTAINS:dacpp::mpi::operator_resident::apply_followup_2d(__or_local_mat, __or_local_out
-SYCL_CONTAINS:dacpp::mpi::operator_resident::exchange_halo_2d_rows(__or_local_mat, __or_local_out
-SYCL_CONTAINS:MPI_Gatherv(ctx.__or_local_out.data()
+SYCL_CONTAINS:ContiguousView1D<double> view_out{__or_writer_data, static_cast<int>((local_row + __or_writer_row_offset) * static_cast<int>(__or_input_cols) + local_col + __or_writer_col_offset)}
+SYCL_CONTAINS:dacpp::mpi::operator_resident::exchange_halo_2d_rows_inplace(__or_local_out
+SYCL_CONTAINS:ctx.__or_local_mat.swap(ctx.__or_local_out);
+SYCL_CONTAINS:dacpp::mpi::operator_resident::owned_slice_2d_rows(ctx.__or_local_mat
+SYCL_CONTAINS:MPI_Gatherv(__or_owned_out.data()
 SYCL_CONTAINS:dacpp::mpi::map_2d_global_with_offset(static_cast<int64_t>(__or_idx), ctx.__or_output_cols, __or_followup_reader_cols_mat, 1, 1)
 SYCL_CONTAINS:__or_materialized_mat[static_cast<std::size_t>(__or_boundary_target)] = __or_materialized_mat[static_cast<std::size_t>(__or_boundary_source)]
 SYCL_NOT_CONTAINS:matIn[0][j]=matIn[1][j]
 SYCL_NOT_CONTAINS:MPI_Bcast(__or_global_mat.data()
-SYCL_NOT_CONTAINS:MPI_Gatherv(__or_local_out.data()
+SYCL_NOT_CONTAINS:apply_followup_2d(__or_local_mat, __or_local_out
+SYCL_NOT_CONTAINS:exchange_halo_2d_rows(__or_local_mat, __or_local_out
 SYCL_NOT_CONTAINS:__or_followup_global_mat
 SYCL_NOT_CONTAINS:dacpp::mpi::ContiguousView2D<const double> view_mat
 SYCL_NOT_CONTAINS:MPI_Bcast(__or_materialized_out.data()

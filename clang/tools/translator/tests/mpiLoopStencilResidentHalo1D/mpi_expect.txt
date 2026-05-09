@@ -10,13 +10,16 @@ SYCL_CONTAINS:void __dacpp_mpi_or_haloShell_haloStep_0_materialize(__dacpp_mpi_o
 SYCL_CONTAINS:dacpp::mpi::operator_resident::ResidentHalo1DLayout __or_halo_layout
 SYCL_CONTAINS:dacpp::mpi::operator_resident::scatter_window_1d(__or_initial_global_state
 SYCL_CONTAINS:ResidentHaloView1D<const double> view_state{__or_reader_data, item_linear}
-SYCL_CONTAINS:dacpp::mpi::operator_resident::apply_followup_1d(__or_local_state, __or_local_next, ctx.__or_followup_offset)
-SYCL_CONTAINS:dacpp::mpi::operator_resident::exchange_halo_1d(__or_local_state, __or_local_next
-SYCL_CONTAINS:MPI_Gatherv(ctx.__or_local_next.data()
-SYCL_CONTAINS:MPI_Gatherv(__or_owned_state.data()
+SYCL_CONTAINS:ContiguousView1D<double> view_next{__or_writer_data, item_linear + __or_writer_offset}
+SYCL_CONTAINS:dacpp::mpi::operator_resident::exchange_halo_1d_inplace(__or_local_next, ctx.__or_halo_layout, ctx.__or_output_size
+SYCL_CONTAINS:ctx.__or_local_state.swap(ctx.__or_local_next);
+SYCL_CONTAINS:dacpp::mpi::operator_resident::owned_slice_1d(ctx.__or_local_state, ctx.__or_halo_layout, ctx.__or_followup_offset)
+SYCL_CONTAINS:MPI_Gatherv(__or_owned_next.data()
 SYCL_NOT_CONTAINS:MPI_Bcast(__or_global_state.data()
 SYCL_NOT_CONTAINS:ContiguousView1D<const double> view_state{__or_reader_data, output_idx}
-SYCL_NOT_CONTAINS:MPI_Gatherv(__or_local_next.data()
+SYCL_NOT_CONTAINS:apply_followup_1d(__or_local_state, __or_local_next
+SYCL_NOT_CONTAINS:exchange_halo_1d(__or_local_state, __or_local_next
+SYCL_NOT_CONTAINS:MPI_Gatherv(ctx.__or_local_next.data()
 SYCL_NOT_CONTAINS:__or_followup_global_state
 SYCL_NOT_CONTAINS:AccessPattern
 SYCL_NOT_CONTAINS:PackPlan

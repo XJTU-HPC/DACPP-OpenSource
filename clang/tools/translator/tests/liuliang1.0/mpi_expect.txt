@@ -10,16 +10,19 @@ SYCL_CONTAINS:void __dacpp_mpi_or_LWR_shell_lwr_0
 SYCL_CONTAINS:dacpp::mpi::operator_resident::ResidentHalo1DLayout __or_halo_layout
 SYCL_CONTAINS:dacpp::mpi::operator_resident::scatter_window_1d(__or_initial_global_rho
 SYCL_CONTAINS:ResidentHaloView1D<const double> view_rho{__or_reader_data, item_linear}
-SYCL_CONTAINS:dacpp::mpi::operator_resident::apply_followup_1d(__or_local_rho, __or_local_new_rho, ctx.__or_followup_offset)
-SYCL_CONTAINS:dacpp::mpi::operator_resident::exchange_halo_1d(__or_local_rho, __or_local_new_rho
+SYCL_CONTAINS:ContiguousView1D<double> view_new_rho{__or_writer_data, item_linear + __or_writer_offset}
+SYCL_CONTAINS:dacpp::mpi::operator_resident::exchange_halo_1d_inplace(__or_local_new_rho, ctx.__or_halo_layout, ctx.__or_output_size
+SYCL_CONTAINS:ctx.__or_local_rho.swap(ctx.__or_local_new_rho);
 SYCL_CONTAINS:__or_boundary_target = 0
-SYCL_CONTAINS:__or_local_rho[static_cast<std::size_t>(__or_boundary_target)] = __or_local_new_rho[static_cast<std::size_t>(__or_boundary_source)]
-SYCL_CONTAINS:MPI_Gatherv(ctx.__or_local_new_rho.data()
-SYCL_CONTAINS:MPI_Gatherv(__or_owned_rho.data()
+SYCL_CONTAINS:__or_local_new_rho[static_cast<std::size_t>(__or_boundary_target)] = __or_local_new_rho[static_cast<std::size_t>(__or_boundary_source)]
+SYCL_CONTAINS:dacpp::mpi::operator_resident::owned_slice_1d(ctx.__or_local_rho, ctx.__or_halo_layout, ctx.__or_followup_offset)
+SYCL_CONTAINS:MPI_Gatherv(__or_owned_new_rho.data()
 SYCL_CONTAINS:__or_arg0.array2Tensor(__or_materialized_rho)
 SYCL_NOT_CONTAINS:MPI_Bcast(__or_global_rho.data()
 SYCL_NOT_CONTAINS:ContiguousView1D<const double> view_rho{__or_reader_data, output_idx}
-SYCL_NOT_CONTAINS:MPI_Gatherv(__or_local_new_rho.data()
+SYCL_NOT_CONTAINS:apply_followup_1d(__or_local_rho, __or_local_new_rho
+SYCL_NOT_CONTAINS:exchange_halo_1d(__or_local_rho, __or_local_new_rho
+SYCL_NOT_CONTAINS:MPI_Gatherv(ctx.__or_local_new_rho.data()
 SYCL_NOT_CONTAINS:__or_followup_global_rho
 SYCL_NOT_CONTAINS:rho[0] = new_rho[0]
 SYCL_NOT_CONTAINS:PackPlan

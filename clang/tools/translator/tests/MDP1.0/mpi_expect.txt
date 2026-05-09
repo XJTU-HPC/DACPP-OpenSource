@@ -10,14 +10,17 @@ SYCL_CONTAINS:void __dacpp_mpi_or_mdp_shell_mdp_0
 SYCL_CONTAINS:dacpp::mpi::operator_resident::ResidentHalo1DLayout __or_halo_layout
 SYCL_CONTAINS:dacpp::mpi::operator_resident::scatter_window_1d(__or_initial_global_p
 SYCL_CONTAINS:ResidentHaloView1D<const double> view_p{__or_reader_data, item_linear}
-SYCL_CONTAINS:dacpp::mpi::operator_resident::apply_followup_1d(__or_local_p, __or_local_new_p, ctx.__or_followup_offset)
-SYCL_CONTAINS:dacpp::mpi::operator_resident::exchange_halo_1d(__or_local_p, __or_local_new_p
-SYCL_CONTAINS:MPI_Gatherv(ctx.__or_local_new_p.data()
-SYCL_CONTAINS:MPI_Gatherv(__or_owned_p.data()
+SYCL_CONTAINS:ContiguousView1D<double> view_new_p{__or_writer_data, item_linear + __or_writer_offset}
+SYCL_CONTAINS:dacpp::mpi::operator_resident::exchange_halo_1d_inplace(__or_local_new_p, ctx.__or_halo_layout, ctx.__or_output_size
+SYCL_CONTAINS:ctx.__or_local_p.swap(ctx.__or_local_new_p);
+SYCL_CONTAINS:dacpp::mpi::operator_resident::owned_slice_1d(ctx.__or_local_p, ctx.__or_halo_layout, ctx.__or_followup_offset)
+SYCL_CONTAINS:MPI_Gatherv(__or_owned_new_p.data()
 SYCL_CONTAINS:__or_arg0.array2Tensor(__or_materialized_p)
 SYCL_NOT_CONTAINS:MPI_Bcast(__or_global_p.data()
 SYCL_NOT_CONTAINS:ContiguousView1D<const double> view_p{__or_reader_data, output_idx}
-SYCL_NOT_CONTAINS:MPI_Gatherv(__or_local_new_p.data()
+SYCL_NOT_CONTAINS:apply_followup_1d(__or_local_p, __or_local_new_p
+SYCL_NOT_CONTAINS:exchange_halo_1d(__or_local_p, __or_local_new_p
+SYCL_NOT_CONTAINS:MPI_Gatherv(ctx.__or_local_new_p.data()
 SYCL_NOT_CONTAINS:__or_followup_global_p
 SYCL_NOT_CONTAINS:PackPlan
 SYCL_NOT_CONTAINS:FixedBlock

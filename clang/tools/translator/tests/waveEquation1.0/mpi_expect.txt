@@ -13,15 +13,19 @@ SYCL_CONTAINS:void __dacpp_mpi_or_waveEqShell_waveEq_0
 SYCL_CONTAINS:dacpp::mpi::operator_resident::ResidentHalo2DRowLayout __or_halo_layout
 SYCL_CONTAINS:dacpp::mpi::operator_resident::scatter_window_2d_rows(__or_initial_global_cur
 SYCL_CONTAINS:MPI_Scatterv(ctx.mpi_rank == 0 ? __or_initial_global_prev.data()
+SYCL_CONTAINS:dacpp::mpi::operator_resident::write_owned_slice_2d_rows(ctx.__or_local_prev, __or_initial_owned_prev
 SYCL_CONTAINS:dacpp::mpi::ResidentHaloView2D<const double> view_cur{__or_reader_data, local_row * static_cast<int>(__or_input_cols) + local_col
-SYCL_CONTAINS:dacpp::mpi::ContiguousView1D<const double> view_prev{__or_direct_reader_data, item_linear}
-SYCL_CONTAINS:dacpp::mpi::operator_resident::apply_read_cache_transition_2d(__or_local_prev, __or_local_cur
-SYCL_CONTAINS:dacpp::mpi::operator_resident::apply_followup_2d(__or_local_cur, __or_local_next
-SYCL_CONTAINS:dacpp::mpi::operator_resident::exchange_halo_2d_rows(__or_local_cur, __or_local_next
-SYCL_CONTAINS:MPI_Gatherv(ctx.__or_local_next.data()
-SYCL_CONTAINS:MPI_Gatherv(ctx.__or_local_prev.data()
+SYCL_CONTAINS:dacpp::mpi::ContiguousView1D<const double> view_prev{__or_direct_reader_data, static_cast<int>((local_row + __or_writer_row_offset) * static_cast<int>(__or_input_cols) + local_col + __or_writer_col_offset)}
+SYCL_CONTAINS:dacpp::mpi::ContiguousView1D<double> view_next{__or_writer_data, static_cast<int>((local_row + __or_writer_row_offset) * static_cast<int>(__or_input_cols) + local_col + __or_writer_col_offset)}
+SYCL_CONTAINS:dacpp::mpi::operator_resident::exchange_halo_2d_rows_inplace(__or_local_next
+SYCL_CONTAINS:ctx.__or_local_prev.swap(ctx.__or_local_cur);
+SYCL_CONTAINS:ctx.__or_local_cur.swap(ctx.__or_local_next);
+SYCL_CONTAINS:dacpp::mpi::operator_resident::owned_slice_2d_rows(ctx.__or_local_cur
+SYCL_CONTAINS:dacpp::mpi::operator_resident::owned_slice_2d_rows(ctx.__or_local_prev
+SYCL_CONTAINS:MPI_Gatherv(__or_owned_next.data()
+SYCL_CONTAINS:MPI_Gatherv(__or_owned_prev.data()
 SYCL_CONTAINS:dacpp::mpi::map_2d_global_with_offset(static_cast<int64_t>(__or_idx), ctx.__or_output_cols, __or_followup_reader_cols_cur, 1, 1)
-SYCL_CONTAINS:__or_local_cur[static_cast<std::size_t>(__or_boundary_target_local)] = static_cast<double>(0)
+SYCL_CONTAINS:__or_local_next[static_cast<std::size_t>(__or_boundary_target_local)] = static_cast<double>(0)
 SYCL_NOT_CONTAINS:matCur[i][NY-1]=0
 SYCL_NOT_CONTAINS:MPI_Bcast(__or_global_cur.data()
 SYCL_NOT_CONTAINS:MPI_Bcast(__or_global_prev.data()
@@ -29,6 +33,12 @@ SYCL_NOT_CONTAINS:__or_transition_global_prev
 SYCL_NOT_CONTAINS:MPI_Bcast(__or_transition_global_prev.data()
 SYCL_NOT_CONTAINS:__or_followup_global_cur
 SYCL_NOT_CONTAINS:MPI_Bcast(__or_followup_global_cur.data()
+SYCL_NOT_CONTAINS:dacpp::mpi::ContiguousView1D<const double> view_prev{__or_direct_reader_data, item_linear}
+SYCL_NOT_CONTAINS:apply_read_cache_transition_2d(__or_local_prev, __or_local_cur
+SYCL_NOT_CONTAINS:apply_followup_2d(__or_local_cur, __or_local_next
+SYCL_NOT_CONTAINS:exchange_halo_2d_rows(__or_local_cur, __or_local_next
+SYCL_NOT_CONTAINS:MPI_Gatherv(ctx.__or_local_next.data()
+SYCL_NOT_CONTAINS:MPI_Gatherv(ctx.__or_local_prev.data()
 SYCL_NOT_CONTAINS:dacpp::mpi::ContiguousView2D<const double> view_cur
 SYCL_NOT_CONTAINS:MPI_Bcast(__or_materialized_next.data()
 SYCL_NOT_CONTAINS:void __dacpp_mpi_stencil_waveEqShell_waveEq_0

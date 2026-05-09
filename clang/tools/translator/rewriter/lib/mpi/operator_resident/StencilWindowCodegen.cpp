@@ -955,11 +955,11 @@ void emitResidentHaloInitFunction2D(std::string& code,
             readerType + "{});\n";
     if (directReader) {
         code += "    ctx." + localName(*directReader) +
-                ".assign(static_cast<std::size_t>(ctx.__or_local_item_count), " +
+                ".assign(static_cast<std::size_t>(ctx.__or_halo_layout.local_size), " +
                 directReaderType + "{});\n";
     }
     code += "    ctx." + localName(writer) +
-            ".assign(static_cast<std::size_t>(ctx.__or_local_item_count), " +
+            ".assign(static_cast<std::size_t>(ctx.__or_halo_layout.local_size), " +
             elemType(plan, writer) + "{});\n";
     code += "    const int64_t __or_initial_reader_dense_count = " +
             checkedMulExpr(
@@ -1003,21 +1003,24 @@ void emitResidentHaloInitFunction2D(std::string& code,
                 ".tensor2Array(__or_initial_global_" +
                 directReader->calcParamName + ");\n";
         code += "    }\n";
+        code += "    std::vector<" + directReaderType + "> __or_initial_owned_" +
+                directReader->calcParamName +
+                "(static_cast<std::size_t>(ctx.__or_local_item_count), " +
+                directReaderType + "{});\n";
         code += "    MPI_Scatterv(ctx.mpi_rank == 0 ? __or_initial_global_" +
                 directReader->calcParamName +
                 ".data() : nullptr, ctx.mpi_rank == 0 ? ctx.__or_counts.data() : nullptr, ctx.mpi_rank == 0 ? ctx.__or_displs.data() : nullptr, " +
-                directReaderMpiType + ", ctx." + localName(*directReader) +
+                directReaderMpiType + ", __or_initial_owned_" +
+                directReader->calcParamName +
                 ".data(), " + checkedMpiCountExpr(
                     "ctx.__or_local_item_count",
                     "[DACPP][MPI][OR] resident halo direct reader scatter count exceeds MPI int range") +
                 ", " + directReaderMpiType +
                 ", 0, MPI_COMM_WORLD);\n";
-        code += "    auto& __or_resident_in_" + directReader->calcParamName +
-                " = dacpp::mpi::operator_resident::ensure_resident<" +
-                directReaderType + ">(" + paramVarName(*directReader) +
-                ", ctx." + localName(*directReader) + ".size());\n";
-        code += "    __or_resident_in_" + directReader->calcParamName +
-                " = ctx." + localName(*directReader) + ";\n";
+        code += "    dacpp::mpi::operator_resident::write_owned_slice_2d_rows(ctx." +
+                localName(*directReader) + ", __or_initial_owned_" +
+                directReader->calcParamName +
+                ", ctx.__or_halo_layout, ctx.__or_output_cols, ctx.__or_input_cols, ctx.__or_followup_row_offset, ctx.__or_followup_col_offset);\n";
     }
     code += "}\n";
 }
@@ -1050,6 +1053,8 @@ void emitResidentHaloRunFunction2D(std::string& code,
     code += "    const int64_t __or_local_item_count = ctx.__or_local_item_count;\n";
     code += "    const int64_t __or_local_reader_rows = ctx.__or_halo_layout.local_row_count;\n";
     code += "    const int64_t __or_local_reader_row_begin = ctx.__or_halo_layout.global_row_begin;\n";
+    code += "    const int __or_writer_row_offset = ctx.__or_followup_row_offset;\n";
+    code += "    const int __or_writer_col_offset = ctx.__or_followup_col_offset;\n";
     code += "    auto& " + localName(reader) + " = ctx." +
             localName(reader) + ";\n";
     if (directReader) {
@@ -1098,7 +1103,7 @@ void emitResidentHaloRunFunction2D(std::string& code,
             param.paramIndex == directReader->paramIndex) {
             code += "                dacpp::mpi::ContiguousView1D<const " +
                     paramType + "> view_" + param.calcParamName +
-                    "{__or_direct_reader_data, item_linear};\n";
+                    "{__or_direct_reader_data, static_cast<int>((local_row + __or_writer_row_offset) * static_cast<int>(__or_input_cols) + local_col + __or_writer_col_offset)};\n";
             continue;
         }
         if (param.access == ParamAccessKind::OutputDirect &&
@@ -1106,7 +1111,7 @@ void emitResidentHaloRunFunction2D(std::string& code,
             !param.reads) {
             code += "                dacpp::mpi::ContiguousView1D<" +
                     paramType + "> view_" + param.calcParamName +
-                    "{__or_writer_data, item_linear};\n";
+                    "{__or_writer_data, static_cast<int>((local_row + __or_writer_row_offset) * static_cast<int>(__or_input_cols) + local_col + __or_writer_col_offset)};\n";
             continue;
         }
     }
@@ -1123,40 +1128,20 @@ void emitResidentHaloRunFunction2D(std::string& code,
     code += "        });\n";
     code += "        q.wait();\n";
     code += "    }\n";
-    if (directReader) {
-        code += "    dacpp::mpi::operator_resident::apply_read_cache_transition_2d(" +
-                localName(*directReader) + ", " + localName(reader) +
-                ", __or_local_output_rows, __or_output_cols, __or_input_cols, " +
-                std::to_string(
-                    plan.orLoopLower.stencilResidentHalo.readCacheTargetRowOffset) +
-                ", " +
-                std::to_string(
-                    plan.orLoopLower.stencilResidentHalo.readCacheTargetColOffset) +
-                ");\n";
-        code += "    auto& __or_resident_in_" + directReader->calcParamName +
-                " = dacpp::mpi::operator_resident::ensure_resident<" +
-                directReaderType + ">(" + paramVarName(*directReader) +
-                ", " + localName(*directReader) + ".size());\n";
-        code += "    __or_resident_in_" + directReader->calcParamName +
-                " = " + localName(*directReader) + ";\n";
-    }
-    code += "    dacpp::mpi::operator_resident::apply_followup_2d(" +
-            localName(reader) + ", " + localName(writer) +
-            ", __or_local_output_rows, __or_output_cols, __or_input_cols, ctx.__or_followup_row_offset, ctx.__or_followup_col_offset);\n";
-    code += "    dacpp::mpi::operator_resident::exchange_halo_2d_rows(" +
-            localName(reader) + ", " + localName(writer) +
+    code += "    dacpp::mpi::operator_resident::exchange_halo_2d_rows_inplace(" +
+            localName(writer) +
             ", ctx.__or_halo_layout, __or_output_rows, __or_output_cols, __or_input_cols, ctx.__or_followup_row_offset, ctx.__or_followup_col_offset, mpi_rank, ctx.mpi_size, " +
             writerMpiType + ");\n";
     emitResidentHaloBoundaryRefresh2D(
-        code, plan, sitePlan.boundaryLocalUpdates, reader, localName(reader),
+        code, plan, sitePlan.boundaryLocalUpdates, reader, localName(writer),
         "__or_local_reader_row_begin", "__or_local_reader_rows",
         "__or_input_rows", "__or_input_cols");
-    code += "    auto& __or_resident_out_" + writer.calcParamName +
-            " = dacpp::mpi::operator_resident::ensure_resident<" +
-            writerType + ">(" + paramVarName(writer) + ", " +
-            localName(writer) + ".size());\n";
-    code += "    __or_resident_out_" + writer.calcParamName + " = " +
-            localName(writer) + ";\n";
+    if (directReader) {
+        code += "    ctx." + localName(*directReader) + ".swap(ctx." +
+                localName(reader) + ");\n";
+    }
+    code += "    ctx." + localName(reader) + ".swap(ctx." +
+            localName(writer) + ");\n";
     code += "}\n";
 }
 
@@ -1190,6 +1175,12 @@ void emitResidentHaloMaterializeFunction2D(
                 "ctx.__or_output_rows", "ctx.__or_output_cols",
                 "[DACPP][MPI][OR] resident halo 2D materialized output size overflow") +
             ";\n";
+    code += "    const auto __or_owned_" + writer.calcParamName +
+            " = dacpp::mpi::operator_resident::owned_slice_2d_rows(ctx." +
+            localName(reader) +
+            ", ctx.__or_halo_layout, ctx.__or_output_cols, ctx.__or_input_cols, " +
+            std::to_string(halo.followupTargetRowOffset) + ", " +
+            std::to_string(halo.followupTargetColOffset) + ");\n";
     code += "    " + checkedMpiCountExpr(
             "__or_materialized_writer_count",
             "[DACPP][MPI][OR] resident halo 2D materialized output size exceeds MPI int range") +
@@ -1198,7 +1189,7 @@ void emitResidentHaloMaterializeFunction2D(
     code += "        __or_materialized_" + writer.calcParamName +
             ".resize(static_cast<std::size_t>(__or_materialized_writer_count));\n";
     code += "    }\n";
-    code += "    MPI_Gatherv(ctx." + localName(writer) +
+    code += "    MPI_Gatherv(__or_owned_" + writer.calcParamName +
             ".data(), " +
             checkedMpiCountExpr(
                 "ctx.__or_local_item_count",
@@ -1213,13 +1204,19 @@ void emitResidentHaloMaterializeFunction2D(
             writer.calcParamName + ");\n";
     code += "    }\n";
     if (directReader) {
+        code += "    const auto __or_owned_" + directReader->calcParamName +
+                " = dacpp::mpi::operator_resident::owned_slice_2d_rows(ctx." +
+                localName(*directReader) +
+                ", ctx.__or_halo_layout, ctx.__or_output_cols, ctx.__or_input_cols, " +
+                std::to_string(halo.followupTargetRowOffset) + ", " +
+                std::to_string(halo.followupTargetColOffset) + ");\n";
         code += "    std::vector<" + directReaderType + "> __or_materialized_" +
                 directReader->calcParamName + ";\n";
         code += "    if (mpi_rank == 0) {\n";
         code += "        __or_materialized_" + directReader->calcParamName +
                 ".resize(static_cast<std::size_t>(__or_materialized_writer_count));\n";
         code += "    }\n";
-        code += "    MPI_Gatherv(ctx." + localName(*directReader) +
+        code += "    MPI_Gatherv(__or_owned_" + directReader->calcParamName +
                 ".data(), " + checkedMpiCountExpr(
                     "ctx.__or_local_item_count",
                     "[DACPP][MPI][OR] resident halo 2D direct-reader materialize sendcount exceeds MPI int range") +

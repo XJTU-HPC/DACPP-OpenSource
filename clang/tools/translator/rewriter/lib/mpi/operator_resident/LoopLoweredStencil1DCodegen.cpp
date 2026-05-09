@@ -513,7 +513,7 @@ void emitResidentHaloInitFunction(std::string& code,
             ".assign(static_cast<std::size_t>(ctx.__or_halo_layout.local_size), " +
             readerType + "{});\n";
     code += "    ctx." + localName(writer) +
-            ".assign(static_cast<std::size_t>(ctx.__or_local_item_count), " +
+            ".assign(static_cast<std::size_t>(ctx.__or_halo_layout.local_size), " +
             elemType(plan, writer) + "{});\n";
     for (const auto* scalar : scalarReaders(plan)) {
         code += "    ctx." + localName(*scalar) + ".assign(1, " +
@@ -530,6 +530,8 @@ void emitResidentHaloInitFunction(std::string& code,
             reader.calcParamName + ", ctx." + localName(reader) +
             ", ctx.__or_output_size, ctx.__or_window_size, ctx.__or_halo_layout, ctx.mpi_rank, ctx.mpi_size, " +
             readerMpiType + ");\n";
+    code += "    ctx." + localName(writer) + " = ctx." +
+            localName(reader) + ";\n";
     code += "}\n";
 }
 
@@ -554,6 +556,7 @@ void emitResidentHaloRunFunction(std::string& code,
     code += "    int mpi_rank = ctx.mpi_rank;\n";
     code += "    auto& q = ctx.q;\n";
     code += "    const int64_t __or_local_item_count = ctx.__or_local_item_count;\n";
+    code += "    const int __or_writer_offset = ctx.__or_followup_offset;\n";
     code += "    auto& " + localName(reader) + " = ctx." +
             localName(reader) + ";\n";
     code += "    auto& " + localName(writer) + " = ctx." +
@@ -616,7 +619,7 @@ void emitResidentHaloRunFunction(std::string& code,
             !param.reads) {
             code += "                dacpp::mpi::ContiguousView1D<" +
                     paramType + "> view_" + param.calcParamName +
-                    "{__or_writer_data, item_linear};\n";
+                    "{__or_writer_data, item_linear + __or_writer_offset};\n";
             continue;
         }
         return;
@@ -634,21 +637,18 @@ void emitResidentHaloRunFunction(std::string& code,
     code += "        });\n";
     code += "        q.wait();\n";
     code += "    }\n";
-    code += "    dacpp::mpi::operator_resident::apply_followup_1d(" +
-            localName(reader) + ", " + localName(writer) +
-            ", ctx.__or_followup_offset);\n";
     if (halo.hasBoundaryLocalUpdate) {
         if (halo.boundaryCopiesWriter) {
             code += "    if (mpi_rank == 0 && !" + localName(writer) +
                     ".empty()) {\n";
             code += "        const int64_t __or_boundary_target = " +
                     std::to_string(halo.boundaryTargetIndex) + ";\n";
-            code += "        const int64_t __or_boundary_source = " +
+            code += "        const int64_t __or_boundary_source = static_cast<int64_t>(__or_writer_offset) + " +
                     std::to_string(halo.boundarySourceIndex) + ";\n";
             code += "        if (__or_boundary_target >= 0 && __or_boundary_target < static_cast<int64_t>(" +
-                    localName(reader) + ".size()) && __or_boundary_source >= 0 && __or_boundary_source < static_cast<int64_t>(" +
+                    localName(writer) + ".size()) && __or_boundary_source >= 0 && __or_boundary_source < static_cast<int64_t>(" +
                     localName(writer) + ".size())) {\n";
-            code += "            " + localName(reader) +
+            code += "            " + localName(writer) +
                     "[static_cast<std::size_t>(__or_boundary_target)] = " +
                     localName(writer) +
                     "[static_cast<std::size_t>(__or_boundary_source)];\n";
@@ -659,24 +659,20 @@ void emitResidentHaloRunFunction(std::string& code,
             code += "        const int64_t __or_boundary_target = " +
                     std::to_string(halo.boundaryTargetIndex) + ";\n";
             code += "        if (__or_boundary_target >= 0 && __or_boundary_target < static_cast<int64_t>(" +
-                    localName(reader) + ".size())) {\n";
-            code += "            " + localName(reader) +
+                    localName(writer) + ".size())) {\n";
+            code += "            " + localName(writer) +
                     "[static_cast<std::size_t>(__or_boundary_target)] = static_cast<" +
                     readerType + ">(" + halo.boundaryConstantValue + ");\n";
             code += "        }\n";
             code += "    }\n";
         }
     }
-    code += "    dacpp::mpi::operator_resident::exchange_halo_1d(" +
-            localName(reader) + ", " + localName(writer) +
+    code += "    dacpp::mpi::operator_resident::exchange_halo_1d_inplace(" +
+            localName(writer) +
             ", ctx.__or_halo_layout, ctx.__or_output_size, ctx.__or_window_size, ctx.__or_followup_offset, mpi_rank, ctx.mpi_size, " +
             writerMpiType + ");\n";
-    code += "    auto& __or_resident_out_" + writer.calcParamName +
-            " = dacpp::mpi::operator_resident::ensure_resident<" +
-            writerType + ">(" + paramVarName(writer) + ", " +
-            localName(writer) + ".size());\n";
-    code += "    __or_resident_out_" + writer.calcParamName + " = " +
-            localName(writer) + ";\n";
+    code += "    ctx." + localName(reader) + ".swap(ctx." +
+            localName(writer) + ");\n";
     code += "}\n";
 }
 
@@ -700,7 +696,10 @@ void emitResidentHaloMaterializeFunction(std::string& code,
     code += "        __or_materialized_" + writer.calcParamName +
             ".resize(static_cast<std::size_t>(ctx.__or_output_size));\n";
     code += "    }\n";
-    code += "    MPI_Gatherv(ctx." + localName(writer) +
+    code += "    const auto __or_owned_" + writer.calcParamName +
+            " = dacpp::mpi::operator_resident::owned_slice_1d(ctx." +
+            localName(reader) + ", ctx.__or_halo_layout, ctx.__or_followup_offset);\n";
+    code += "    MPI_Gatherv(__or_owned_" + writer.calcParamName +
             ".data(), static_cast<int>(ctx.__or_local_item_count), " +
             writerMpiType + ", mpi_rank == 0 ? __or_materialized_" +
             writer.calcParamName +
@@ -710,21 +709,13 @@ void emitResidentHaloMaterializeFunction(std::string& code,
     code += "        " + paramVarName(writer) + ".array2Tensor(__or_materialized_" +
             writer.calcParamName + ");\n";
     code += "    }\n";
-    code += "    std::vector<" + readerType + "> __or_owned_" +
-            reader.calcParamName + ";\n";
-    code += "    if (ctx.__or_local_item_count > 0) {\n";
-    code += "        const auto __or_target_begin = ctx." + localName(reader) +
-            ".begin() + ctx.__or_followup_offset;\n";
-    code += "        __or_owned_" + reader.calcParamName +
-            ".assign(__or_target_begin, __or_target_begin + ctx.__or_local_item_count);\n";
-    code += "    }\n";
     code += "    std::vector<" + readerType + "> __or_materialized_" +
             reader.calcParamName + ";\n";
     code += "    if (mpi_rank == 0) {\n";
     code += "        " + paramVarName(reader) + ".tensor2Array(__or_materialized_" +
             reader.calcParamName + ");\n";
     code += "    }\n";
-    code += "    MPI_Gatherv(__or_owned_" + reader.calcParamName +
+    code += "    MPI_Gatherv(__or_owned_" + writer.calcParamName +
             ".data(), static_cast<int>(ctx.__or_local_item_count), " +
             readerMpiType + ", mpi_rank == 0 ? __or_materialized_" +
             reader.calcParamName +

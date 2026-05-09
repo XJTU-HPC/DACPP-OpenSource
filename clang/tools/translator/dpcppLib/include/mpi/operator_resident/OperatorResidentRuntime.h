@@ -371,6 +371,62 @@ void exchange_halo_1d(std::vector<T>& local,
 }
 
 template <typename T>
+void exchange_halo_1d_inplace(std::vector<T>& local,
+                              const ResidentHalo1DLayout& layout,
+                              int64_t outputTotal,
+                              int windowSize,
+                              int interiorOffset,
+                              int rank,
+                              int size,
+                              MPI_Datatype mpiType) {
+    if (interiorOffset != 1 || layout.owned.count <= 0 || local.empty()) {
+        return;
+    }
+    const int prev = nearest_nonempty_rank_1d(outputTotal, rank, size, -1);
+    const int next = nearest_nonempty_rank_1d(outputTotal, rank, size, 1);
+    const std::ptrdiff_t firstInterior =
+        static_cast<std::ptrdiff_t>(interiorOffset);
+    const std::ptrdiff_t lastInterior = static_cast<std::ptrdiff_t>(
+        interiorOffset + layout.owned.count - 1);
+    T recvLeft{};
+    MPI_Sendrecv(local.data() + lastInterior,
+                 1,
+                 mpiType,
+                 next,
+                 4101,
+                 &recvLeft,
+                 1,
+                 mpiType,
+                 prev,
+                 4101,
+                 MPI_COMM_WORLD,
+                 MPI_STATUS_IGNORE);
+    if (prev != MPI_PROC_NULL && firstInterior > 0) {
+        local[static_cast<std::size_t>(firstInterior - 1)] = recvLeft;
+    }
+    if (windowSize > 2) {
+        T recvRight{};
+        MPI_Sendrecv(local.data() + firstInterior,
+                     1,
+                     mpiType,
+                     prev,
+                     4102,
+                     &recvRight,
+                     1,
+                     mpiType,
+                     next,
+                     4102,
+                     MPI_COMM_WORLD,
+                     MPI_STATUS_IGNORE);
+        const int64_t rightIdx = interiorOffset + layout.owned.count;
+        if (next != MPI_PROC_NULL && rightIdx >= 0 &&
+            rightIdx < static_cast<int64_t>(local.size())) {
+            local[static_cast<std::size_t>(rightIdx)] = recvRight;
+        }
+    }
+}
+
+template <typename T>
 void exchange_halo_2d_rows(std::vector<T>& local,
                            const std::vector<T>& writerLocal,
                            const ResidentHalo2DRowLayout& layout,
@@ -429,12 +485,171 @@ void exchange_halo_2d_rows(std::vector<T>& local,
 }
 
 template <typename T>
+void exchange_halo_2d_rows_inplace(std::vector<T>& local,
+                                   const ResidentHalo2DRowLayout& layout,
+                                   int64_t outputRows,
+                                   int64_t outputCols,
+                                   int64_t inputCols,
+                                   int interiorRowOffset,
+                                   int interiorColOffset,
+                                   int rank,
+                                   int size,
+                                   MPI_Datatype mpiType) {
+    if (layout.owned_rows.count <= 0 || outputCols <= 0 ||
+        interiorRowOffset != 1 || interiorColOffset != 1 || local.empty()) {
+        return;
+    }
+    const int prev = nearest_nonempty_rank_1d(outputRows, rank, size, -1);
+    const int next = nearest_nonempty_rank_1d(outputRows, rank, size, 1);
+    const int sendCount = narrow_mpi_count_or_abort(
+        outputCols,
+        "[DACPP][MPI][OR] resident halo 2D halo width exceeds MPI int range");
+    const std::ptrdiff_t topSendOffset = static_cast<std::ptrdiff_t>(
+        checked_mul_int64_or_abort(
+            interiorRowOffset,
+            inputCols,
+            "[DACPP][MPI][OR] resident halo 2D top send offset overflow") +
+        interiorColOffset);
+    const std::ptrdiff_t bottomSendOffset = static_cast<std::ptrdiff_t>(
+        checked_mul_int64_or_abort(
+            interiorRowOffset + layout.owned_rows.count - 1,
+            inputCols,
+            "[DACPP][MPI][OR] resident halo 2D bottom send offset overflow") +
+        interiorColOffset);
+    const std::ptrdiff_t topRecvOffset =
+        static_cast<std::ptrdiff_t>(interiorColOffset);
+    const std::ptrdiff_t bottomRecvOffset = static_cast<std::ptrdiff_t>(
+        checked_mul_int64_or_abort(
+            layout.local_row_count - 1,
+            inputCols,
+            "[DACPP][MPI][OR] resident halo 2D halo offset overflow") +
+        interiorColOffset);
+    MPI_Sendrecv(local.data() + bottomSendOffset,
+                 sendCount,
+                 mpiType,
+                 next,
+                 4203,
+                 local.data() + topRecvOffset,
+                 sendCount,
+                 mpiType,
+                 prev,
+                 4203,
+                 MPI_COMM_WORLD,
+                 MPI_STATUS_IGNORE);
+    MPI_Sendrecv(local.data() + topSendOffset,
+                 sendCount,
+                 mpiType,
+                 prev,
+                 4204,
+                 local.data() + bottomRecvOffset,
+                 sendCount,
+                 mpiType,
+                 next,
+                 4204,
+                 MPI_COMM_WORLD,
+                 MPI_STATUS_IGNORE);
+}
+
+template <typename T>
 std::vector<T> owned_slice_1d(const std::vector<T>& local,
-                              const ResidentHalo1DLayout& layout) {
-    const auto begin =
-        local.begin() + static_cast<std::ptrdiff_t>(layout.owned_offset);
+                              const ResidentHalo1DLayout& layout,
+                              int64_t sourceOffset = 0) {
+    const int64_t beginIndex = layout.owned_offset + sourceOffset;
+    const int64_t endIndex = beginIndex + layout.owned.count;
+    if (beginIndex < 0 || endIndex < beginIndex ||
+        endIndex > static_cast<int64_t>(local.size())) {
+        return {};
+    }
+    const auto begin = local.begin() + static_cast<std::ptrdiff_t>(beginIndex);
     return std::vector<T>(
         begin, begin + static_cast<std::ptrdiff_t>(layout.owned.count));
+}
+
+template <typename T>
+void write_owned_slice_2d_rows(std::vector<T>& local,
+                               const std::vector<T>& owned,
+                               const ResidentHalo2DRowLayout& layout,
+                               int64_t outputCols,
+                               int64_t inputCols,
+                               int targetRowOffset,
+                               int targetColOffset) {
+    if (layout.owned_rows.count <= 0 || outputCols <= 0 ||
+        inputCols <= 0 || local.empty() || owned.empty()) {
+        return;
+    }
+    for (int64_t row = 0; row < layout.owned_rows.count; ++row) {
+        const int64_t targetRow = row + targetRowOffset;
+        if (targetRow < 0 || targetRow >= layout.local_row_count) {
+            continue;
+        }
+        const int64_t sourceBase = checked_mul_int64_or_abort(
+            row,
+            outputCols,
+            "[DACPP][MPI][OR] resident halo 2D owned source offset overflow");
+        const int64_t targetBase = checked_mul_int64_or_abort(
+            targetRow,
+            inputCols,
+            "[DACPP][MPI][OR] resident halo 2D owned target offset overflow");
+        for (int64_t col = 0; col < outputCols; ++col) {
+            const int64_t targetCol = col + targetColOffset;
+            if (targetCol < 0 || targetCol >= inputCols) {
+                continue;
+            }
+            const std::size_t sourceIdx =
+                static_cast<std::size_t>(sourceBase + col);
+            const std::size_t targetIdx =
+                static_cast<std::size_t>(targetBase + targetCol);
+            if (sourceIdx < owned.size() && targetIdx < local.size()) {
+                local[targetIdx] = owned[sourceIdx];
+            }
+        }
+    }
+}
+
+template <typename T>
+std::vector<T> owned_slice_2d_rows(const std::vector<T>& local,
+                                   const ResidentHalo2DRowLayout& layout,
+                                   int64_t outputCols,
+                                   int64_t inputCols,
+                                   int sourceRowOffset,
+                                   int sourceColOffset) {
+    const int64_t ownedItemCount = checked_mul_int64_or_abort(
+        layout.owned_rows.count,
+        outputCols,
+        "[DACPP][MPI][OR] resident halo 2D owned slice size overflow");
+    std::vector<T> owned(static_cast<std::size_t>(ownedItemCount), T{});
+    if (layout.owned_rows.count <= 0 || outputCols <= 0 ||
+        inputCols <= 0 || local.empty()) {
+        return owned;
+    }
+    for (int64_t row = 0; row < layout.owned_rows.count; ++row) {
+        const int64_t sourceRow = row + sourceRowOffset;
+        if (sourceRow < 0 || sourceRow >= layout.local_row_count) {
+            continue;
+        }
+        const int64_t ownedBase = checked_mul_int64_or_abort(
+            row,
+            outputCols,
+            "[DACPP][MPI][OR] resident halo 2D owned slice base overflow");
+        const int64_t sourceBase = checked_mul_int64_or_abort(
+            sourceRow,
+            inputCols,
+            "[DACPP][MPI][OR] resident halo 2D source slice base overflow");
+        for (int64_t col = 0; col < outputCols; ++col) {
+            const int64_t sourceCol = col + sourceColOffset;
+            if (sourceCol < 0 || sourceCol >= inputCols) {
+                continue;
+            }
+            const std::size_t ownedIdx =
+                static_cast<std::size_t>(ownedBase + col);
+            const std::size_t sourceIdx =
+                static_cast<std::size_t>(sourceBase + sourceCol);
+            if (ownedIdx < owned.size() && sourceIdx < local.size()) {
+                owned[ownedIdx] = local[sourceIdx];
+            }
+        }
+    }
+    return owned;
 }
 
 inline void byte_counts_displs(const std::vector<int>& elemCounts,
