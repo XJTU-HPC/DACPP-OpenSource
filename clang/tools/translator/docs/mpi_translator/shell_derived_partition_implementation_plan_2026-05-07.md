@@ -356,10 +356,10 @@ struct MpiLoweringPlan {
 | Phase 2 | 已完成 | `RowBlock2D` direct / resident chain | `imageAdjustment1.0` | 仅覆盖当前 row-major 2D row-block 形态 |
 | Phase 3 | 已完成 | `ReplicatedFullTensor`、`RowPartitionFullRow`、受限 `READ_WRITE OutputDirect` | `DFT1.0` `gradientSum` `jacobi1.0` `matMul1.0` | 更广的 full-payload 形态仍未展开 |
 | Phase 4 | 当前验收切片已收口 | `StencilWindow1D` / `StencilWindow2D` 当前切片已接入；OR-side distributed-followup / read-cache / boundary-local lowering 已接入；mixed-site 按 expr 分派已接入 | `stencil1.0` `waveEquation1.0` `FOuLa1.0` `MDP1.0` `liuliang1.0` `mpiMixedStencilORPhaseC` `mpiOrStencilRefreshPolicy1D` `mpiOrStencilBoundaryStride2D` | root-bridge 和更广 stencil 形态属于后续 stencil 语义扩展，不阻塞当前 P4 验收 |
-| Phase 4.5 | 首切片已落地 | 稳定 loop 内 OR `Contiguous1D` direct/resident 可生成 `init/run/materialize`；当前只覆盖 `decay1.0` 形态 | `decay1.0` `mpiLoopReadWriteReject1D` `mpiLoopAliasReject1D` | `RowBlock2D` / full-payload loop-lowered family 未覆盖；loop-variant input / loop chain 负向结构测试还需要 translate-only harness |
+| Phase 4.5 | 首切片已落地 | 稳定 loop 内 OR `Contiguous1D` direct/resident 可生成 `init/run/materialize`；当前只覆盖 `decay1.0` 形态 | `decay1.0` `mpiLoopReadWriteReject1D` `mpiLoopAliasReject1D` `mpiLoopVariantInputReject1D` `mpiLoopChainReject1D` | `RowBlock2D` / full-payload loop-lowered family 未覆盖；普通 buffer translator 对部分 loop body 形态的 baseline 编译仍待后续修复 |
 | Phase 4.6 | 未开始 | 仅有设计目标：效率优化层 | 无 | stencil/direct resident 通信优化、长期 resident halo、减少 full sync 尚未落地 |
 | Phase 5 | 未开始 | 仅有 IR / 枚举占位（如 `FixedBlock`） | 无 | `oddeven0.1` 所需分析与 codegen 均未实现 |
-| Phase 6 | 未完成 | 完整测试已通过，但尚未做到“全部非 `mpi*` tests 都走新路径” | `bash test_mpi.sh` 35/35 | 仍存在需要继续 fallback 的普通应用测试 |
+| Phase 6 | 未完成 | 完整测试已通过，但尚未做到“全部非 `mpi*` tests 都走新路径” | `bash test_mpi.sh` 37/37 | 仍存在需要继续 fallback 的普通应用测试 |
 
 ### 6.1 当前已启用的 OR layout
 
@@ -389,9 +389,9 @@ bash test_mpi.sh
 
 当前基线结果：
 
-- `35 tests | 35 passed | 0 failed | 0 skipped`
+- `37 tests | 37 passed | 0 failed | 0 skipped`
 - 默认 suite 已包含 `mpiLoopReadWriteReject1D`、`mpiLoopAliasReject1D`，用于钉住 P4.5 首切片不能误接管的 `READ_WRITE OutputDirect` 和 direct-read/output-write alias 边界
-- `mpiLoopVariantInputReject1D`、`mpiLoopChainReject1D` 目前只保留为负向结构用例文件，尚未进入默认 suite；原因是普通 buffer baseline translator 对这两类 loop body 形态会先编译失败，需要 P4.5 的 translate-only / structure-only harness 或 buffer translator 前置修复后再自动化
+- 默认 suite 已包含 `mpiLoopVariantInputReject1D`、`mpiLoopChainReject1D`，通过 `mpi_expect.txt` 中的 `MPI_STRUCTURE_ONLY:1` 走 translate-only / structure-only 路径，只执行 `dacpp --mode=buffer --mpi` 并检查 log / generated SYCL 结构，不依赖普通 buffer baseline 编译运行
 - 已接入 OR 的路径不再生成 legacy `AccessPattern` / `PackPlan`
 - mixed-site 已按 expr 独立分派，不再因同文件存在未接入 stencil site 而整文件退回 Phase-C
 
@@ -404,7 +404,7 @@ bash test_mpi.sh
 | Phase 1 | 1D direct / resident chain | 单 bind 1D direct map；输出 ownership 可由 shell domain 唯一确定 | `Contiguous1D` ownership、scalar broadcast、简单 chain residency、中间 tensor 不立即 materialize | 2D row-block；loop-lowered `init/run/materialize`；stencil | `vectorAddCombo`、`mandel1.0`、`decay1.0` 等 1D/direct 路径正确，accepted OR path 不依赖 legacy pack |
 | Phase 2 | 2D row-major direct / resident chain | 2D row-major direct map；row-block ownership 可由第 0 维稳定切分 | `RowBlock2D` input/output 分发、本地 row-block kernel、最终 gather、chain residency | stencil window；full-payload；FixedBlock | `imageAdjustment1.0` 走 OR row-block，结果与 baseline 一致 |
 | Phase 3 | full-payload / row-partition payload | full tensor 或 full row payload 可安全 replicated / row partition；alias 范围受限 | `ReplicatedFullTensor`、`RowPartitionFullRow`、受限 `READ_WRITE OutputDirect` | stencil window；loop-lowered direct family；复杂 alias 扩展 | `DFT1.0`、`gradientSum`、`jacobi1.0`、`matMul1.0` 走 OR full-payload 路径 |
-| Phase 4 | stencil window 当前验收切片 | site 可判定为当前支持的 OR `StencilWindow1D/2D`；followup / boundary-local 可在 wrapper 内等价重放 | `StencilWindow1D/2D` codegen、mixed-site expr 级分派、当前 accepted distributed-followup / read-cache / boundary-local lowering | `RootCentricFollowup` 伪支持；root-bridge；FixedBlock；把性能优化作为收口条件 | `FOuLa1.0`、`MDP1.0`、`liuliang1.0`、`stencil1.0`、`waveEquation1.0` 走 OR stencil 当前切片；P4 stencil 守护用例保持通过；当前完整 `test_mpi.sh` 为 35/35 |
+| Phase 4 | stencil window 当前验收切片 | site 可判定为当前支持的 OR `StencilWindow1D/2D`；followup / boundary-local 可在 wrapper 内等价重放 | `StencilWindow1D/2D` codegen、mixed-site expr 级分派、当前 accepted distributed-followup / read-cache / boundary-local lowering | `RootCentricFollowup` 伪支持；root-bridge；FixedBlock；把性能优化作为收口条件 | `FOuLa1.0`、`MDP1.0`、`liuliang1.0`、`stencil1.0`、`waveEquation1.0` 走 OR stencil 当前切片；P4 stencil 守护用例保持通过；当前完整 `test_mpi.sh` 为 37/37 |
 | Phase 4.x stencil 扩展 | 更广 stencil 语义形态 | 已有 P4 切片保持稳定；新增形态能定义清楚 post-shell 语义 | 更广 1D/2D route、direct reader、boundary-local、可能的 root-bridge 语义支持 | 性能优化替代语义证明；影响 P4.5/P4.6 的 direct/resident 路线 | 每个新增 stencil 形态有正向和负向结构测试，unsupported 形态继续 fallback |
 | Phase 4.5 | loop-lowered direct/resident 骨架 | P1-P3 direct/full-payload 语义稳定；loop 中 shell 参数、shape、domain 可证明稳定 | 对稳定 OR direct/full-payload layout 生成 `init/run/materialize` family，hoist loop-invariant metadata / collective setup | 新增 stencil 形态；root-bridge stencil；FixedBlock；通信优化和新语义混在一个 patch | `decay1.0` 已出现 direct/resident `init/run/materialize` 结构并保持正确；READ_WRITE output / alias / loop-chain 等未证明形态有负向边界 |
 | Phase 4.6 | 已支持路径效率优化 | 相关语义 lowering 已正确；测试能覆盖 host-visible tensor 状态 | 减少 full broadcast/gather/materialize；推进 stencil resident halo / 分片同步；复用 P4.5 骨架降低 direct/resident loop 成本 | 牺牲语义换性能；新增 FixedBlock；把 root-bridge stencil support 伪装成优化 | benchmark 对比手写 MPI+SYCL 的差距收敛；结构上减少不必要 full sync |
@@ -528,16 +528,17 @@ P4.5 后续扩展对象应优先来自已经稳定的 OR direct/full-payload 路
 - 当前首切片对 `decay1.0` 保留 per-run output materialize；减少这类通信属于 Phase 4.6，不作为 P4.5 首切片目标。
 - P4.5 candidate 当前代码只接受稳定 `for` / `while` loop 内的 OR `Contiguous1D` direct/resident，且必须满足：outer loop 内恰好一个 DAC expr、存在 `OutputDirect`、输出不是 `READ_WRITE OutputDirect`、存在可 hoist 的 `DirectMapped` read input、direct read input 不在 loop AST 中被显式写入、direct read input 的 actual tensor 不 alias 任一 output direct write。
 - `mpiLoopReadWriteReject1D` 和 `mpiLoopAliasReject1D` 已纳入默认 `test_mpi.sh`，用于钉住不应 P4.5 接管的负向边界。
-- `mpiLoopVariantInputReject1D` 和 `mpiLoopChainReject1D` 已保留为负向结构用例文件，但尚未进入默认 suite；原因是普通 buffer baseline translator 对这些 loop body 形态会先编译失败。
+- `mpiLoopVariantInputReject1D` 和 `mpiLoopChainReject1D` 已通过 `MPI_STRUCTURE_ONLY:1` 纳入默认 `test_mpi.sh` 的 translate-only / structure-only 路径，分别钉住 loop-variant direct read input 和 loop 内多 DAC expr chain 不被 P4.5 首切片误接管。
 - `RowBlock2D`、`ReplicatedFullTensor`、`RowPartitionFullRow`、受限 `READ_WRITE OutputDirect` 的 loop-lowered family 尚未覆盖；这些形态继续走普通 OR wrapper 或 fallback。
 
 因此，Phase 4.5 当前应视为“首个 Contiguous1D direct/resident loop-lowered 骨架已落地，通用化仍未完成”。
 
-Phase 4.5 TODO：
+Phase 4.5 TODO 状态：
 
-- 增加 `translate-only` / `structure-only` MPI 测试 harness，只执行 `dacpp --mode=buffer --mpi` 并检查 `mpi_expect.txt`，不依赖普通 buffer baseline 编译运行。这样可以把 loop-variant input、loop 内 resident chain 等负向结构测试纳入自动验证。
+- 已完成：增加 `translate-only` / `structure-only` MPI 测试 harness。测试可在 `mpi_expect.txt` 中声明 `MPI_STRUCTURE_ONLY:1`，使 `test_mpi.sh` 跳过普通 buffer baseline 翻译/编译/运行和 MPI 编译/运行，只执行 `dacpp --mode=buffer --mpi` 并检查 `mpi_expect.txt`。
+- 已完成：`mpiLoopVariantInputReject1D`、`mpiLoopChainReject1D` 已纳入自动验证路径，覆盖 loop-variant input、loop 内 resident chain / 多 DAC expr 负向结构。
 - 修复或扩展普通 buffer translator 对 loop body 的覆盖：支持 `<->` 后 sibling statement 正确捕获外部 tensor 变量，支持同一 loop 多个 `<->` 的 helper signature / call args 一致，或保守 fallback 到逐 `<->` 普通替换。该任务是 P4.5 测试基础设施/前置质量 TODO，不应与扩大 P4.5 lowering 语义混在一个 patch。
-- 在上述 harness 或 buffer 修复到位后，将 `mpiLoopVariantInputReject1D`、`mpiLoopChainReject1D` 这类负向用例纳入自动验证。
+- 仍待处理：`RowBlock2D`、`ReplicatedFullTensor`、`RowPartitionFullRow`、受限 `READ_WRITE OutputDirect` 的 loop-lowered family 尚未覆盖；扩大接受范围前必须先补明确结构测试和语义证明。
 
 ### 8.3 Phase 4.6：Efficiency Optimization
 

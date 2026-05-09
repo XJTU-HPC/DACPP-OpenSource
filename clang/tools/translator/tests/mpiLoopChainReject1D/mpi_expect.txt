@@ -1,3 +1,4 @@
+MPI_STRUCTURE_ONLY:1
 LOG_CONTAINS:[DACPP][MPI][OR][P4.5] expr=0 shell=VADD layout=Contiguous1D loop-lower=rejected loop=for reason=outer loop must contain exactly one DAC expression
 LOG_CONTAINS:[DACPP][MPI][OR][P4.5] expr=1 shell=VSHIFT layout=Contiguous1D loop-lower=rejected loop=for reason=outer loop must contain exactly one DAC expression
 LOG_CONTAINS:[DACPP][MPI][OR][P4.5] expr=2 shell=VADD layout=Contiguous1D loop-lower=rejected loop=for reason=outer loop must contain exactly one DAC expression

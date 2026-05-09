@@ -29,6 +29,8 @@ MPI_TESTS=(
     "vectorAddCombo"
     "mpiLoopReadWriteReject1D"
     "mpiLoopAliasReject1D"
+    "mpiLoopVariantInputReject1D"
+    "mpiLoopChainReject1D"
     "gradientSum"
     "mpiBroadcastRootOnlyCout"
     "mpiBroadcastTensor2Array"
@@ -150,6 +152,34 @@ run_in_env() {
     bash -lc "source '$SCRIPT_DIR/env.sh' && $*" > "$log" 2>&1
 }
 
+is_structure_only_test() {
+    local expect_file="$1"
+
+    [[ -f "$expect_file" ]] || return 1
+
+    while IFS= read -r raw_line || [[ -n "$raw_line" ]]; do
+        local line kind value
+        line="${raw_line#"${raw_line%%[![:space:]]*}"}"
+        line="${line%"${line##*[![:space:]]}"}"
+        [[ -z "$line" || "$line" == \#* ]] && continue
+
+        kind="${line%%:*}"
+        value="${line#*:}"
+        value="${value#"${value%%[![:space:]]*}"}"
+        value="${value%"${value##*[![:space:]]}"}"
+
+        if [[ "$kind" == "MPI_STRUCTURE_ONLY" ]]; then
+            case "$value" in
+                1|true|TRUE|yes|YES)
+                    return 0
+                    ;;
+            esac
+        fi
+    done < "$expect_file"
+
+    return 1
+}
+
 check_mpi_expectations() {
     local expect_file="$1"
     local log_file="$2"
@@ -195,6 +225,8 @@ check_mpi_expectations() {
                     failed=1
                 fi
                 ;;
+            MPI_STRUCTURE_ONLY)
+                ;;
             *)
                 echo "[FAIL] Unknown expectation kind in $expect_file: $kind"
                 failed=1
@@ -213,6 +245,12 @@ for test_name in "${MPI_TESTS[@]}"; do
     echo "========================================================"
     TOTAL=$((TOTAL + 1))
 
+    expect_file="$TESTS_DIR/$test_name/mpi_expect.txt"
+    structure_only=0
+    if is_structure_only_test "$expect_file"; then
+        structure_only=1
+    fi
+
     dac_file="$(pick_dac_source "$TESTS_DIR/$test_name")"
     if [[ -z "$dac_file" ]]; then
         echo "[WARN] No .dac.cpp found, skipping."
@@ -229,33 +267,46 @@ for test_name in "${MPI_TESTS[@]}"; do
     base_sycl="$(generated_cpp_path_for "$base_dac")"
     base_bin="$work_dir/base_bin"
 
-    # Step 1: Translate Baseline (Non-MPI, mode=buffer)
-    echo "  [Step 1] Translate --mode=buffer (baseline, no MPI) and compile"
-    if ! run_in_env "$work_dir/step1.log" "dacpp '$base_dac' --mode=buffer && acpp-compile '$base_sycl' '$base_bin'"; then
-        echo "[FAIL] Baseline translate/compile failed."
-        head -n 20 "$work_dir/step1.log"
-        FAILED=$((FAILED + 1))
-        continue
-    fi
+    if [[ "$structure_only" == "1" ]]; then
+        echo "  [Step 1] Structure-only test; skipping baseline translate/compile/run"
+    else
+        # Step 1: Translate Baseline (Non-MPI, mode=buffer)
+        echo "  [Step 1] Translate --mode=buffer (baseline, no MPI) and compile"
+        if ! run_in_env "$work_dir/step1.log" "dacpp '$base_dac' --mode=buffer && acpp-compile '$base_sycl' '$base_bin'"; then
+            echo "[FAIL] Baseline translate/compile failed."
+            head -n 20 "$work_dir/step1.log"
+            FAILED=$((FAILED + 1))
+            continue
+        fi
 
-    # Run Baseline
-    DYLD_LIBRARY_PATH="$ACPP_ROOT/lib" "$base_bin" > "$work_dir/base.out" 2>&1
-    if [[ $? -ne 0 ]]; then
-        echo "[FAIL] Baseline execution failed."
-        head -n 20 "$work_dir/base.out"
-        FAILED=$((FAILED + 1))
-        continue
+        # Run Baseline
+        DYLD_LIBRARY_PATH="$ACPP_ROOT/lib" "$base_bin" > "$work_dir/base.out" 2>&1
+        if [[ $? -ne 0 ]]; then
+            echo "[FAIL] Baseline execution failed."
+            head -n 20 "$work_dir/base.out"
+            FAILED=$((FAILED + 1))
+            continue
+        fi
+        clean_output "$work_dir/base.out"
     fi
-    clean_output "$work_dir/base.out"
 
     # Step 2: Translate MPI
-    echo "  [Step 2] Translate --mode=buffer --mpi and compile"
+    if [[ "$structure_only" == "1" ]]; then
+        echo "  [Step 2] Translate --mode=buffer --mpi (structure-only)"
+    else
+        echo "  [Step 2] Translate --mode=buffer --mpi and compile"
+    fi
     mpi_dac="$(mpi_dac_path_for "$base_dac")"
     cp "$dac_file" "$mpi_dac"
     mpi_sycl="$(generated_cpp_path_for "$mpi_dac")"
     mpi_bin="$work_dir/mpi_bin"
 
-    if ! run_in_env "$work_dir/step2.log" "dacpp '$mpi_dac' --mode=buffer --mpi && acpp-compile '$mpi_sycl' '$mpi_bin'"; then
+    if [[ "$structure_only" == "1" ]]; then
+        step2_cmd="dacpp '$mpi_dac' --mode=buffer --mpi"
+    else
+        step2_cmd="dacpp '$mpi_dac' --mode=buffer --mpi && acpp-compile '$mpi_sycl' '$mpi_bin'"
+    fi
+    if ! run_in_env "$work_dir/step2.log" "$step2_cmd"; then
         echo "[FAIL] MPI translate/compile failed."
         head -n 20 "$work_dir/step2.log"
         FAILED=$((FAILED + 1))
@@ -268,10 +319,15 @@ for test_name in "${MPI_TESTS[@]}"; do
         continue
     fi
 
-    expect_file="$TESTS_DIR/$test_name/mpi_expect.txt"
     if ! check_mpi_expectations "$expect_file" "$work_dir/step2.log" "$mpi_sycl"; then
         echo "[FAIL] MPI generated structure expectations failed."
         FAILED=$((FAILED + 1))
+        continue
+    fi
+
+    if [[ "$structure_only" == "1" ]]; then
+        echo "[PASS] $test_name: MPI structure expectations passed."
+        PASSED=$((PASSED + 1))
         continue
     fi
 
