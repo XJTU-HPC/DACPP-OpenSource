@@ -72,6 +72,58 @@ Phase 4.5 已经为 `Contiguous1D` direct/resident 的窄切片建立
   反复 `tensor2Array` / `array2Tensor`。这说明 Route A 只完成结构铺垫，large
   2D stencil 的主要收益必须来自 Route B resident halo / resident cache。
 
+### 1.2 当前 P4.6 进度与 large benchmark 快照
+
+截至 2026-05-09 当前工作树，Route A loop-lowered full-sync skeleton、A3
+安全 reader hoist、RowPartitionFullRow count 修复，以及 Route B B1
+`StencilWindow1D` resident halo 已落地。B1 当前只接受保守的 1D `+1`
+distributed-followup 形态；boundary-local 只接受当前 codegen 能正确表达的字面
+左边界 target `0`，右边界或符号边界表达式继续走 Route A `StencilFullSync`
+fallback。空 owned-output rank 的 halo exchange review 问题已修复：halo 交换按最近
+非空 rank 匹配，不再要求所有相邻 rank 都有 owned slice。
+
+2026-05-09 按 `docs/benchmarks` 里的大规模口径重跑了筛选后的 app benchmark：
+
+```bash
+MPI_ONLY_BENCH_TMP_DIR=/Volumes/QUQ/working/mpi_tmp/p46_b1_selected_large_20260509 \
+MPI_ONLY_BENCH_RANKS=4 \
+MPI_ONLY_BENCH_TIMEOUT_SECONDS=1800 \
+python3 clang/tools/translator/bench_mpi_only_requested.py \
+  DFT1.0 MDP1.0 decay1.0 gradientSum imageAdjustment1.0 jacobi1.0 \
+  liuliang1.0 mandel1.0 matMul1.0 oddeven0.1 vectorAddCombo
+```
+
+本轮只统计 `mpirun` 运行阶段的外部 wall-clock，不包含翻译/编译，不列串行
+baseline。本轮故意不包含尚未进入 Route B B2/B3 的复杂 stencil：`FOuLa1.0`、
+`stencil1.0`、`waveEquation1.0`。
+
+结果文件：
+`/Volumes/QUQ/working/mpi_tmp/p46_b1_selected_large_20260509/results.tsv`。
+
+| Test | Data size | Hand-written MPI+SYCL s | DAC translated MPI s | Status |
+|---|---:|---:|---:|---|
+| `DFT1.0` | `N=4096` | 0.877217 | 0.888717 | ok |
+| `MDP1.0` | `N=8192, T=600` | 0.827930 | 0.828125 | ok |
+| `decay1.0` | `numIsotopes=8192, steps=600` | 1.108226 | 0.891583 | ok |
+| `gradientSum` | `8192x4096` | 0.662446 | 1.074782 | ok |
+| `imageAdjustment1.0` | `4096x4096` | 0.717041 | 0.892109 | ok |
+| `jacobi1.0` | `N=4096, iter=300` | 0.737592 | 0.877352 | ok |
+| `liuliang1.0` | `WIDTH=8192, steps=1000` | 0.937474 | 0.840554 | ok |
+| `mandel1.0` | `4096x4096, max_iter=1000` | 2.535479 | 3.029412 | ok |
+| `matMul1.0` | `2048x2048` | 5.921520 | 0.902443 | ok |
+| `oddeven0.1` | `N=4096` | 1.895137 | 5.617574 | ok |
+| `vectorAddCombo` | `N=8388608` | 0.824343 | 0.749346 | ok |
+
+解释口径：
+
+- 大规模口径下，本表只比较手写 `MPI_StandardSycl` reference 和 DAC 翻译 MPI。
+- `MDP1.0` / `liuliang1.0` 是当前 B1 resident halo 的重点观测项。
+  本轮二者都与手写 MPI reference 基本齐平。
+- `matMul1.0` 的 DAC 翻译 MPI 为 0.902443s，明显好于旧 benchmark 文档中的
+  7.576529s，符合 RowPartitionFullRow unique-payload/count 修复后的预期。
+- `stencil1.0` / `waveEquation1.0` 不应用这张表判断 P4.6-B 完成度；它们分别是
+  B2 / B3 的后续目标。
+
 ---
 
 ## 2. 非目标
@@ -303,7 +355,8 @@ resident state，`matCur -> matPrev` 的 read-cache transition 和
   - exactly one WRITE-only direct writer
   - no direct reader
   - supported `+1` distributed followup
-  - supported constant-index boundary-local updates
+  - supported literal left-boundary `0` boundary-local update only; right
+    boundary or symbolic boundary expressions continue to full-sync fallback
 
 - B2：`StencilWindow2D` row-block halo，不含 direct-reader / read-cache transition
   - row-block ownership
@@ -759,19 +812,31 @@ Phase-C / OR loop rewrite helper extraction
 
 ### Step 4：路线 B 1D resident halo
 
-改动：
+状态：已完成当前 B1 首切片。
 
-- 新增 `OperatorResidentHalo.h`。
-- 新增 `HaloView1D`。
-- 新增 `ResidentHalo1DCodegen.cpp`。
+实际改动：
+
+- `KernelViews.h` 新增 `ResidentHaloView1D`。
+- `OperatorResidentRuntime.h` 新增 1D resident halo layout、scatter、followup apply、
+  nearest-nonempty-rank halo exchange、owned-slice helper。
+- `OperatorChainAnalysis.cpp` 新增显式 `StencilResidentHalo` gate / metadata。
+- `LoopLoweredStencil1DCodegen.cpp` 新增 1D resident halo `ctx/init/run/materialize`
+  family。
 - 支持 `StencilWindow1D` `+1` distributed followup。
 
 验收：
 
-- `MDP1.0`、`liuliang1.0` 通过。
+- `MDP1.0`、`liuliang1.0` 通过并走 `StencilResidentHalo`。
+- `mpiLoopStencilResidentHalo1D` 结构测试通过。
+- `mpiLoopStencilResidentHaloEmptyRank1D` 覆盖 `outputTotal < mpi_size` 空 rank
+  exchange 边界。
+- `mpiLoopStencilRightBoundaryFullSync1D` 覆盖右边界 fallback。
 - loop body 不再 full reader broadcast / writer gather。
 
 ### Step 5：路线 B 2D row-block resident halo（无 direct reader/cache）
+
+状态：下一步。B2 不应继承 Phase-C `AccessPattern` / `PackPlan` / root-centric
+codegen，也不应提前支持 `waveEquation1.0` 的 direct reader / read-cache transition。
 
 改动：
 

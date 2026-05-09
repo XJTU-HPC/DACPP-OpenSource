@@ -17,6 +17,7 @@
 #include "DacppStructure.h"
 #include "Rewriter_MPI_Common.h"
 #include "Rewriter_MPI_OperatorResident.h"
+#include "Split.h"
 
 namespace dacppTranslator {
 namespace mpi_rewriter {
@@ -301,6 +302,22 @@ bool stencilFullSyncLoopLayout(LocalLayoutKind layout) {
            layout == LocalLayoutKind::StencilWindow2D;
 }
 
+const char* orLoopLowerKindName(OrLoopLowerKind kind) {
+    switch (kind) {
+    case OrLoopLowerKind::None:
+        return "None";
+    case OrLoopLowerKind::Direct1D:
+        return "Direct1D";
+    case OrLoopLowerKind::RowBlock2D:
+        return "RowBlock2D";
+    case OrLoopLowerKind::StencilFullSync:
+        return "StencilFullSync";
+    case OrLoopLowerKind::StencilResidentHalo:
+        return "StencilResidentHalo";
+    }
+    return "None";
+}
+
 const char* loopKindName(const clang::Stmt* stmt) {
     if (llvm::isa_and_nonnull<clang::ForStmt>(stmt)) {
         return "for";
@@ -401,6 +418,56 @@ bool loopContainsMultipleDacExprs(DacppFile* dacppFile,
     return count != 1 || !sourceRangeContains(
                              sourceManager, loop->getSourceRange(),
                              plan.exprNode.dacExpr->getSourceRange());
+}
+
+bool loopContainsOnlyDacAndLoweredStencilPostStmts(
+    DacppFile* dacppFile,
+    const clang::Stmt* loop,
+    const ShellPartitionPlan& plan) {
+    if (!dacppFile || !loop || !plan.exprNode.dacExpr ||
+        !plan.exprNode.shell || !plan.exprNode.calc) {
+        return false;
+    }
+    const auto* compound = llvm::dyn_cast<clang::CompoundStmt>(loop);
+    if (const auto* forStmt = llvm::dyn_cast<clang::ForStmt>(loop)) {
+        compound = llvm::dyn_cast_or_null<clang::CompoundStmt>(
+            forStmt->getBody());
+    } else if (const auto* whileStmt = llvm::dyn_cast<clang::WhileStmt>(loop)) {
+        compound = llvm::dyn_cast_or_null<clang::CompoundStmt>(
+            whileStmt->getBody());
+    }
+    if (!compound || !dacppFile->getContext()) {
+        return false;
+    }
+    const auto& sourceManager = dacppFile->getContext()->getSourceManager();
+    std::set<const clang::Stmt*> allowedPostStmts;
+    for (const auto& region : collectDistributedFollowupRegions(
+             dacppFile, plan.exprNode.shell, plan.exprNode.calc,
+             plan.exprNode.dacExpr)) {
+        allowedPostStmts.insert(region.stmt);
+    }
+    const DistributedStencilSitePlan sitePlan = analyzeDistributedStencilSite(
+        dacppFile, plan.exprNode.shell, plan.exprNode.calc,
+        plan.exprNode.dacExpr);
+    if (sitePlan.supported && !sitePlan.hasRootBridge) {
+        for (const clang::Stmt* stmt : sitePlan.boundaryLocalStmts) {
+            allowedPostStmts.insert(stmt);
+        }
+    }
+    for (const clang::Stmt* child : compound->body()) {
+        if (!child) {
+            continue;
+        }
+        if (allowedPostStmts.count(child) != 0) {
+            continue;
+        }
+        if (sourceRangeContains(sourceManager, child->getSourceRange(),
+                                plan.exprNode.dacExpr->getSourceRange())) {
+            continue;
+        }
+        return false;
+    }
+    return true;
 }
 
 bool shellArgsDeclaredBeforeLoop(DacppFile* dacppFile,
@@ -580,6 +647,24 @@ const ParamAccessPlan* stencilWindowReaderParam(
     for (const auto& param : plan.params) {
         if (isStencilWindowReaderForLayout(param, plan.signature.layout)) {
             return &param;
+        }
+    }
+    return nullptr;
+}
+
+Split* splitForShellParam(Shell* shell, int paramIndex) {
+    if (!shell || paramIndex < 0 ||
+        paramIndex >= shell->getNumShellParams()) {
+        return nullptr;
+    }
+    ShellParam* shellParam = shell->getShellParam(paramIndex);
+    if (!shellParam) {
+        return nullptr;
+    }
+    for (int splitIdx = 0; splitIdx < shellParam->getNumSplit(); ++splitIdx) {
+        Split* split = shellParam->getSplit(splitIdx);
+        if (split && split->type == "RegularSplit") {
+            return split;
         }
     }
     return nullptr;
@@ -832,6 +917,115 @@ std::string stencilFullSyncLoopRejectReason(DacppFile* dacppFile,
     return "";
 }
 
+std::string stencilResidentHaloRejectReason(
+    DacppFile* dacppFile,
+    const ShellPartitionPlan& plan,
+    const clang::Stmt* loop,
+    OrLoopLowerPlan::StencilResidentHaloMetadata& metadata) {
+    metadata = OrLoopLowerPlan::StencilResidentHaloMetadata{};
+    if (plan.signature.layout != LocalLayoutKind::StencilWindow1D) {
+        return "resident halo B1 is limited to StencilWindow1D";
+    }
+    if (!loop) {
+        return "not inside a stable loop site";
+    }
+    const ParamAccessPlan* reader = stencilWindowReaderParam(plan);
+    const ParamAccessPlan* writer = stencilOutputDirectWriterParam(plan);
+    if (!reader || !writer) {
+        return "requires one window reader and one direct writer";
+    }
+    const std::string readerType =
+        plan.exprNode.calc->getParam(reader->paramIndex)->getBasicType();
+    const std::string writerType =
+        plan.exprNode.calc->getParam(writer->paramIndex)->getBasicType();
+    if (readerType != writerType) {
+        return "resident halo B1 requires reader/writer element types to match";
+    }
+    if (usesByteTransport(readerType) || usesByteTransport(writerType)) {
+        return "resident halo B1 requires native MPI element datatypes";
+    }
+    if (!loopContainsOnlyDacAndLoweredStencilPostStmts(dacppFile, loop,
+                                                       plan)) {
+        return "resident halo B1 requires loop body to contain only DAC and lowered post statements";
+    }
+
+    Split* split = splitForShellParam(plan.exprNode.shell, reader->paramIndex);
+    auto* regular =
+        split && split->type == "RegularSplit"
+            ? static_cast<RegularSplit*>(split)
+            : nullptr;
+    if (!regular) {
+        return "resident halo B1 requires a regular split window";
+    }
+    metadata.windowSize = regular->getSplitSize();
+    metadata.windowStride = regular->getSplitStride();
+    if (metadata.windowSize < 2 || metadata.windowSize > 3 ||
+        metadata.windowStride != 1) {
+        return "resident halo B1 requires stride-1 window size 2 or 3";
+    }
+
+    const DistributedStencilSitePlan sitePlan = analyzeDistributedStencilSite(
+        dacppFile, plan.exprNode.shell, plan.exprNode.calc,
+        plan.exprNode.dacExpr);
+    if (!sitePlan.supported) {
+        return "resident halo B1 requires distributed site analysis";
+    }
+    if (sitePlan.hasRootBridge) {
+        return "root-bridge stencil sites are outside resident halo B1";
+    }
+    if (!sitePlan.readCacheTransitions.empty()) {
+        return "read-cache transitions are outside resident halo B1";
+    }
+    if (sitePlan.followupMappings.size() != 1) {
+        return "resident halo B1 requires exactly one followup mapping";
+    }
+    const auto& mapping = sitePlan.followupMappings.front();
+    if (mapping.rank != 1 || mapping.writerParamIndex != writer->paramIndex ||
+        mapping.readerParamIndex != reader->paramIndex ||
+        mapping.targetOffset != 1) {
+        return "resident halo B1 requires writer->reader followup offset +1";
+    }
+    metadata.followupTargetOffset = mapping.targetOffset;
+    metadata.leftHalo = 0;
+    metadata.rightHalo = metadata.windowSize - 1;
+
+    if (sitePlan.boundaryLocalUpdates.size() > 1) {
+        return "resident halo B1 supports at most one boundary-local update";
+    }
+    if (!sitePlan.boundaryLocalUpdates.empty()) {
+        const auto& update = sitePlan.boundaryLocalUpdates.front();
+        if (update.rank != 1 || update.paramIndex != reader->paramIndex ||
+            update.targetRowUsesLoop || update.sourceRowUsesLoop) {
+            return "resident halo B1 only supports constant-index 1D boundary updates";
+        }
+        const auto isExactZeroIndex = [](int index,
+                                         const std::string& exprText) {
+            return index == 0 && trim(exprText) == "0";
+        };
+        if (!isExactZeroIndex(update.targetRow, update.targetRowExpr)) {
+            return "resident halo B1 boundary update target must be left boundary index 0";
+        }
+        if (!update.constantRhs &&
+            update.sourceParamIndex == writer->paramIndex &&
+            !isExactZeroIndex(update.sourceRow, update.sourceRowExpr)) {
+            return "resident halo B1 boundary writer copy must read source index 0";
+        }
+        metadata.hasBoundaryLocalUpdate = true;
+        metadata.boundaryTargetIndex = update.targetRow;
+        metadata.boundarySourceIndex = update.sourceRow;
+        metadata.boundaryConstantValue = update.constantValue;
+        metadata.boundaryCopiesWriter =
+            !update.constantRhs &&
+            update.sourceParamIndex == writer->paramIndex;
+        if (!metadata.boundaryCopiesWriter && !update.constantRhs) {
+            return "resident halo B1 boundary update must copy writer or constant";
+        }
+    }
+
+    metadata.enabled = true;
+    return "";
+}
+
 void annotateLoopLowerCandidates(DacppFile* dacppFile,
                                  std::vector<ShellPartitionPlan>& plans) {
     for (auto& plan : plans) {
@@ -872,16 +1066,29 @@ void annotateLoopLowerCandidates(DacppFile* dacppFile,
             stencilFullSyncLoopRejectReason(dacppFile, plan, &p46OuterLoop);
         const bool p46Candidate = p46Reason.empty();
         plan.orLoopLower = OrLoopLowerPlan{};
+        OrLoopLowerPlan::StencilResidentHaloMetadata haloMetadata;
+        const std::string haloReason =
+            p46Candidate
+                ? stencilResidentHaloRejectReason(dacppFile, plan,
+                                                  p46OuterLoop, haloMetadata)
+                : "";
+        const bool haloCandidate = p46Candidate && haloReason.empty();
         plan.orLoopLower.kind =
-            p46Candidate ? OrLoopLowerKind::StencilFullSync
-                         : OrLoopLowerKind::None;
+            haloCandidate ? OrLoopLowerKind::StencilResidentHalo
+                          : (p46Candidate ? OrLoopLowerKind::StencilFullSync
+                                          : OrLoopLowerKind::None);
         plan.orLoopLower.outerLoop = p46OuterLoop;
         plan.orLoopLower.rejectReason = p46Reason;
         plan.orLoopLower.hoistReaderSync =
-            p46Candidate &&
+            p46Candidate && !haloCandidate &&
             canHoistStencilReaderSync(dacppFile, p46OuterLoop, plan);
-        plan.orLoopLower.runMaterializeEveryStep = p46Candidate;
+        plan.orLoopLower.runMaterializeEveryStep =
+            p46Candidate && !haloCandidate;
         plan.orLoopLower.finalMaterializeRequired = p46Candidate;
+        plan.orLoopLower.stencilResidentHalo = haloMetadata;
+        if (!haloCandidate) {
+            plan.orLoopLower.stencilResidentHalo.rejectReason = haloReason;
+        }
 
         llvm::outs() << "[DACPP][MPI][OR][P4.6][Loop] expr="
                      << plan.exprIndex << " shell=" << shellName
@@ -893,10 +1100,25 @@ void annotateLoopLowerCandidates(DacppFile* dacppFile,
         }
         if (p46Reason.empty()) {
             llvm::outs()
-                << " kind=StencilFullSync structure=ctx/init/run/materialize"
-                << " hoist-reader-sync="
-                << (plan.orLoopLower.hoistReaderSync ? "true" : "false")
-                << " materialize=per-run";
+                << " kind=" << orLoopLowerKindName(plan.orLoopLower.kind)
+                << " structure=ctx/init/run/materialize";
+            if (haloCandidate) {
+                llvm::outs()
+                    << " resident-halo=true"
+                    << " window-size="
+                    << plan.orLoopLower.stencilResidentHalo.windowSize
+                    << " followup-offset="
+                    << plan.orLoopLower.stencilResidentHalo.followupTargetOffset
+                    << " materialize=final";
+            } else {
+                llvm::outs()
+                    << " hoist-reader-sync="
+                    << (plan.orLoopLower.hoistReaderSync ? "true" : "false")
+                    << " materialize=per-run";
+                if (!haloReason.empty()) {
+                    llvm::outs() << " resident-halo-reject=" << haloReason;
+                }
+            }
         } else {
             llvm::outs() << " reason=" << p46Reason;
         }

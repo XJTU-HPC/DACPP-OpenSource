@@ -76,6 +76,20 @@ struct OrLoopLowerPlan {
     bool hoistReaderSync = false;
     bool runMaterializeEveryStep = false;
     bool finalMaterializeRequired = false;
+    struct StencilResidentHaloMetadata {
+        bool enabled = false;
+        int windowSize = 0;
+        int windowStride = 1;
+        int followupTargetOffset = 0;
+        bool hasBoundaryLocalUpdate = false;
+        bool boundaryCopiesWriter = false;
+        int boundaryTargetIndex = 0;
+        int boundarySourceIndex = 0;
+        std::string boundaryConstantValue;
+        int leftHalo = 0;
+        int rightHalo = 0;
+        std::string rejectReason;
+    } stencilResidentHalo;
     std::string rejectReason;
 };
 

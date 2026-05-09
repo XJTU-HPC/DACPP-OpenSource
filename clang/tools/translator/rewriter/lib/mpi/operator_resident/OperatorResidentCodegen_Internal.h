@@ -69,6 +69,10 @@ std::string buildLoopLoweredStencil1DFullSyncFamilyCode(
     const std::string& baseName,
     DacppFile* dacppFile,
     const ShellPartitionPlan& plan);
+std::string buildLoopLoweredStencil1DResidentHaloFamilyCode(
+    const std::string& baseName,
+    DacppFile* dacppFile,
+    const ShellPartitionPlan& plan);
 std::string buildLoopLoweredStencil2DFullSyncFamilyCode(
     const std::string& baseName,
     DacppFile* dacppFile,

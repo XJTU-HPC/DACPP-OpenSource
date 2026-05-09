@@ -161,7 +161,9 @@ void rewriteLoopLoweredOperatorResidentSite(
     mpi_rewriter::rewriteLoopLoweredDacExpr(rewriter, rewriteSpec);
 
     if (exprPlan.orLoopLower.kind ==
-        mpi_rewriter::OrLoopLowerKind::StencilFullSync) {
+            mpi_rewriter::OrLoopLowerKind::StencilFullSync ||
+        exprPlan.orLoopLower.kind ==
+            mpi_rewriter::OrLoopLowerKind::StencilResidentHalo) {
         removeOperatorResidentLoweredPostStmts(dacppFile, rewriter, shell,
                                                calc, dacExpr);
     }
