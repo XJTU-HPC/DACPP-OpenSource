@@ -37,6 +37,8 @@ MPI_TESTS=(
     "mpiLoopStencilResidentHalo1D"
     "mpiLoopStencilResidentHaloEmptyRank1D"
     "mpiLoopStencilRightBoundaryFullSync1D"
+    "mpiLoopStencilScalarReject2D"
+    "mpiLoopStencilCountGuard2D"
     "gradientSum"
     "mpiBroadcastRootOnlyCout"
     "mpiBroadcastTensor2Array"

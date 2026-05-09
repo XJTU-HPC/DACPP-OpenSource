@@ -42,6 +42,80 @@ std::vector<const ParamAccessPlan*> findStencilDirectReaders(
     return readers;
 }
 
+bool isScalarOnlyStencilReader(const ParamAccessPlan& param) {
+    return param.access == ParamAccessKind::ReplicatedScalar &&
+           param.reads &&
+           !param.writes;
+}
+
+bool supportsStencilWindow2DParams(const ShellPartitionPlan& plan,
+                                   bool allowDirectReaders) {
+    for (const auto& param : plan.params) {
+        if (param.access == ParamAccessKind::StencilWindow) {
+            continue;
+        }
+        if (param.access == ParamAccessKind::OutputDirect &&
+            param.writes &&
+            !param.reads) {
+            continue;
+        }
+        if (allowDirectReaders &&
+            param.access == ParamAccessKind::DirectMapped &&
+            param.reads &&
+            !param.writes) {
+            continue;
+        }
+        if (isScalarOnlyStencilReader(param)) {
+            return false;
+        }
+        return false;
+    }
+    return true;
+}
+
+std::string checkedMulExpr(const std::string& lhs,
+                           const std::string& rhs,
+                           const std::string& what) {
+    return "dacpp::mpi::operator_resident::checked_mul_int64_or_abort(static_cast<int64_t>(" +
+           lhs + "), static_cast<int64_t>(" + rhs + "), \"" + what + "\")";
+}
+
+std::string checkedMpiCountExpr(const std::string& expr,
+                                const std::string& what) {
+    return "dacpp::mpi::operator_resident::narrow_mpi_count_or_abort(static_cast<int64_t>(" +
+           expr + "), \"" + what + "\")";
+}
+
+std::string checkedMpiProductCountExpr(const std::string& lhs,
+                                       const std::string& rhs,
+                                       const std::string& what) {
+    return checkedMpiCountExpr(checkedMulExpr(lhs, rhs, what), what);
+}
+
+std::string checkedMpiPayloadCountExpr(const std::string& elemCountExpr,
+                                       const std::string& type,
+                                       const std::string& what) {
+    if (usesByteTransport(type)) {
+        return checkedMpiCountExpr(
+            checkedMulExpr(elemCountExpr, "sizeof(" + type + ")", what),
+            what);
+    }
+    return checkedMpiCountExpr(elemCountExpr, what);
+}
+
+std::string checkedDense2DPayloadCountExpr(const std::string& rowsExpr,
+                                           const std::string& colsExpr,
+                                           const std::string& type,
+                                           const std::string& what) {
+    const std::string elemCount =
+        checkedMulExpr(rowsExpr, colsExpr, what);
+    if (usesByteTransport(type)) {
+        return checkedMpiCountExpr(
+            checkedMulExpr(elemCount, "sizeof(" + type + ")", what), what);
+    }
+    return checkedMpiCountExpr(elemCount, what);
+}
+
 const ParamAccessPlan* findParamByIndex(const ShellPartitionPlan& plan,
                                         int paramIndex) {
     for (const auto& param : plan.params) {
@@ -128,14 +202,19 @@ void emitReadCacheTransitions2D(
         code += "                }\n";
         code += "            }\n";
         code += "        } else {\n";
+        code += "            " + checkedMpiPayloadCountExpr(
+                paramVarName(*target) + ".getSize()", targetType,
+                "[DACPP][MPI][OR] StencilWindow2D read-cache broadcast count exceeds MPI int range") +
+                ";\n";
         code += "            " + transitionGlobal +
                 ".resize(static_cast<std::size_t>(" + paramVarName(*target) +
                 ".getSize()));\n";
         code += "        }\n";
         code += "        if (!" + transitionGlobal + ".empty()) {\n";
         code += "            MPI_Bcast(" + transitionGlobal + ".data(), " +
-                mpiPayloadCountExpr(paramVarName(*target) + ".getSize()",
-                                    targetType) +
+                checkedMpiPayloadCountExpr(
+                    paramVarName(*target) + ".getSize()", targetType,
+                    "[DACPP][MPI][OR] StencilWindow2D read-cache broadcast count") +
                 ", " + targetMpiType + ", 0, MPI_COMM_WORLD);\n";
         code += "        }\n";
         code += "        " + paramVarName(*target) + ".array2Tensor(" +
@@ -294,14 +373,19 @@ void emitFollowupMaterialize2D(
             "__or_followup_reader_cols_" + reader->calcParamName,
             "__or_output_rows", "__or_output_cols");
         code += "        } else {\n";
+        code += "            " + checkedMpiPayloadCountExpr(
+                paramVarName(*reader) + ".getSize()", readerType,
+                "[DACPP][MPI][OR] StencilWindow2D followup broadcast count exceeds MPI int range") +
+                ";\n";
         code += "            " + followupGlobal +
                 ".resize(static_cast<std::size_t>(" + paramVarName(*reader) +
                 ".getSize()));\n";
         code += "        }\n";
         code += "        if (!" + followupGlobal + ".empty()) {\n";
         code += "            MPI_Bcast(" + followupGlobal + ".data(), " +
-                mpiPayloadCountExpr(paramVarName(*reader) + ".getSize()",
-                                    readerType) +
+                checkedMpiPayloadCountExpr(
+                    paramVarName(*reader) + ".getSize()", readerType,
+                    "[DACPP][MPI][OR] StencilWindow2D followup broadcast count") +
                 ", " + readerMpiType + ", 0, MPI_COMM_WORLD);\n";
         code += "        }\n";
         code += "        " + paramVarName(*reader) + ".array2Tensor(" +
@@ -369,16 +453,39 @@ void emitLoopLoweredInitFunction2D(
     code += "    ctx.__or_output_row_range = dacpp::mpi::operator_resident::rank_range_1d(ctx.__or_output_rows, ctx.mpi_rank, ctx.mpi_size);\n";
     code += "    ctx.__or_local_output_rows = ctx.__or_output_row_range.count;\n";
     code += "    ctx.__or_output_row_begin = ctx.__or_output_row_range.begin;\n";
-    code += "    ctx.__or_local_item_count = ctx.__or_local_output_rows * ctx.__or_output_cols;\n";
+    code += "    ctx.__or_local_item_count = " +
+            checkedMulExpr(
+                "ctx.__or_local_output_rows", "ctx.__or_output_cols",
+                "[DACPP][MPI][OR] StencilWindow2D local item count overflow") +
+            ";\n";
     code += "    dacpp::mpi::operator_resident::counts_displs_1d(ctx.__or_output_rows, ctx.mpi_size, ctx.__or_row_counts, ctx.__or_row_displs);\n";
     code += "    ctx.__or_counts.resize(static_cast<std::size_t>(ctx.mpi_size));\n";
     code += "    ctx.__or_displs.resize(static_cast<std::size_t>(ctx.mpi_size));\n";
     code += "    for (int r = 0; r < ctx.mpi_size; ++r) {\n";
-    code += "        ctx.__or_counts[static_cast<std::size_t>(r)] = static_cast<int>(ctx.__or_row_counts[static_cast<std::size_t>(r)] * ctx.__or_output_cols);\n";
-    code += "        ctx.__or_displs[static_cast<std::size_t>(r)] = static_cast<int>(ctx.__or_row_displs[static_cast<std::size_t>(r)] * ctx.__or_output_cols);\n";
+    code += "        ctx.__or_counts[static_cast<std::size_t>(r)] = " +
+            checkedMpiProductCountExpr(
+                "ctx.__or_row_counts[static_cast<std::size_t>(r)]",
+                "ctx.__or_output_cols",
+                "[DACPP][MPI][OR] StencilWindow2D row-block gather count exceeds MPI int range") +
+            ";\n";
+    code += "        ctx.__or_displs[static_cast<std::size_t>(r)] = " +
+            checkedMpiProductCountExpr(
+                "ctx.__or_row_displs[static_cast<std::size_t>(r)]",
+                "ctx.__or_output_cols",
+                "[DACPP][MPI][OR] StencilWindow2D row-block gather displacement exceeds MPI int range") +
+            ";\n";
     code += "    }\n";
+    code += "    const int64_t __or_reader_dense_count = " +
+            checkedMulExpr(
+                "ctx.__or_input_rows", "ctx.__or_input_cols",
+                "[DACPP][MPI][OR] StencilWindow2D reader buffer size overflow") +
+            ";\n";
+    code += "    " + checkedMpiCountExpr(
+            "__or_reader_dense_count",
+            "[DACPP][MPI][OR] StencilWindow2D reader buffer size exceeds MPI int range") +
+            ";\n";
     code += "    ctx." + globalName(reader) +
-            ".resize(static_cast<std::size_t>(ctx.__or_input_rows * ctx.__or_input_cols));\n";
+            ".resize(static_cast<std::size_t>(__or_reader_dense_count));\n";
     for (const auto* directReader : directReaders) {
         code += "    const int64_t __or_direct_rows_" +
                 directReader->calcParamName + " = " +
@@ -394,24 +501,50 @@ void emitLoopLoweredInitFunction2D(
                 " shape mismatch with output\\n\");\n";
         code += "        MPI_Abort(MPI_COMM_WORLD, 4);\n";
         code += "    }\n";
+        code += "    const int64_t __or_direct_dense_count_" +
+                directReader->calcParamName + " = " +
+                checkedMulExpr(
+                    "ctx.__or_output_rows", "ctx.__or_output_cols",
+                    "[DACPP][MPI][OR] StencilWindow2D direct-reader buffer size overflow") +
+                ";\n";
+        code += "    " + checkedMpiCountExpr(
+                "__or_direct_dense_count_" + directReader->calcParamName,
+                "[DACPP][MPI][OR] StencilWindow2D direct-reader buffer size exceeds MPI int range") +
+                ";\n";
         code += "    ctx." + globalName(*directReader) +
-                ".resize(static_cast<std::size_t>(ctx.__or_output_rows * ctx.__or_output_cols));\n";
+                ".resize(static_cast<std::size_t>(__or_direct_dense_count_" +
+                directReader->calcParamName + "));\n";
     }
+    code += "    " + checkedMpiCountExpr(
+            "ctx.__or_local_item_count",
+            "[DACPP][MPI][OR] StencilWindow2D local writer size exceeds MPI int range") +
+            ";\n";
     code += "    ctx." + localName(writer) +
             ".assign(static_cast<std::size_t>(ctx.__or_local_item_count), " +
             elemType(plan, writer) + "{});\n";
     if (plan.orLoopLower.hoistReaderSync) {
+        code += "    " + checkedMpiCountExpr(
+                "__or_reader_dense_count",
+                "[DACPP][MPI][OR] StencilWindow2D reader broadcast count exceeds MPI int range") +
+                ";\n";
         code += "    if (ctx.mpi_rank == 0) {\n";
         code += "        " + paramVarName(reader) + ".tensor2Array(ctx." +
                 globalName(reader) + ");\n";
         code += "    }\n";
         if (usesByte(plan, reader)) {
             code += "    MPI_Bcast(ctx." + globalName(reader) +
-                    ".data(), static_cast<int>(ctx.__or_input_rows * ctx.__or_input_cols * sizeof(" +
-                    readerType + ")), MPI_BYTE, 0, MPI_COMM_WORLD);\n";
+                    ".data(), " + checkedDense2DPayloadCountExpr(
+                        "ctx.__or_input_rows", "ctx.__or_input_cols",
+                        readerType,
+                        "[DACPP][MPI][OR] StencilWindow2D reader broadcast count exceeds MPI int range") +
+                    ", MPI_BYTE, 0, MPI_COMM_WORLD);\n";
         } else {
             code += "    MPI_Bcast(ctx." + globalName(reader) +
-                    ".data(), static_cast<int>(ctx.__or_input_rows * ctx.__or_input_cols), " +
+                    ".data(), " + checkedDense2DPayloadCountExpr(
+                        "ctx.__or_input_rows", "ctx.__or_input_cols",
+                        readerType,
+                        "[DACPP][MPI][OR] StencilWindow2D reader broadcast count exceeds MPI int range") +
+                    ", " +
                     readerMpiType + ", 0, MPI_COMM_WORLD);\n";
         }
     }
@@ -457,40 +590,52 @@ void emitLoopLoweredRunFunction2D(
     code += "    auto& " + localName(writer) + " = ctx." +
             localName(writer) + ";\n";
     if (!plan.orLoopLower.hoistReaderSync) {
+        code += "    const int64_t __or_reader_dense_count = " +
+                checkedMulExpr(
+                    "__or_input_rows", "__or_input_cols",
+                    "[DACPP][MPI][OR] StencilWindow2D reader buffer size overflow") +
+                ";\n";
+        code += "    " + checkedMpiCountExpr(
+                "__or_reader_dense_count",
+                "[DACPP][MPI][OR] StencilWindow2D reader buffer size exceeds MPI int range") +
+                ";\n";
         code += "    if (mpi_rank == 0) {\n";
         code += "        " + paramVarName(reader) + ".tensor2Array(" +
                 globalName(reader) + ");\n";
         code += "    }\n";
         code += "    " + globalName(reader) +
-                ".resize(static_cast<std::size_t>(__or_input_rows * __or_input_cols));\n";
-        if (usesByte(plan, reader)) {
-            code += "    MPI_Bcast(" + globalName(reader) +
-                    ".data(), static_cast<int>(__or_input_rows * __or_input_cols * sizeof(" +
-                    readerType + ")), MPI_BYTE, 0, MPI_COMM_WORLD);\n";
-        } else {
-            code += "    MPI_Bcast(" + globalName(reader) +
-                    ".data(), static_cast<int>(__or_input_rows * __or_input_cols), " +
-                    readerMpiType + ", 0, MPI_COMM_WORLD);\n";
-        }
+                ".resize(static_cast<std::size_t>(__or_reader_dense_count));\n";
+        code += "    MPI_Bcast(" + globalName(reader) + ".data(), " +
+                checkedDense2DPayloadCountExpr(
+                    "__or_input_rows", "__or_input_cols", readerType,
+                    "[DACPP][MPI][OR] StencilWindow2D reader broadcast count exceeds MPI int range") +
+                ", " + readerMpiType + ", 0, MPI_COMM_WORLD);\n";
     }
     for (const auto* directReader : directReaders) {
         const std::string directType = elemType(plan, *directReader);
         const std::string directMpiType = mpiDatatypeFor(directType);
+        code += "    const int64_t __or_direct_dense_count_" +
+                directReader->calcParamName + " = " +
+                checkedMulExpr(
+                    "__or_output_rows", "__or_output_cols",
+                    "[DACPP][MPI][OR] StencilWindow2D direct-reader buffer size overflow") +
+                ";\n";
+        code += "    " + checkedMpiCountExpr(
+                "__or_direct_dense_count_" + directReader->calcParamName,
+                "[DACPP][MPI][OR] StencilWindow2D direct-reader buffer size exceeds MPI int range") +
+                ";\n";
         code += "    if (mpi_rank == 0) {\n";
         code += "        " + paramVarName(*directReader) + ".tensor2Array(" +
                 globalName(*directReader) + ");\n";
         code += "    }\n";
         code += "    " + globalName(*directReader) +
-                ".resize(static_cast<std::size_t>(__or_output_rows * __or_output_cols));\n";
-        if (usesByte(plan, *directReader)) {
-            code += "    MPI_Bcast(" + globalName(*directReader) +
-                    ".data(), static_cast<int>(__or_output_rows * __or_output_cols * sizeof(" +
-                    directType + ")), MPI_BYTE, 0, MPI_COMM_WORLD);\n";
-        } else {
-            code += "    MPI_Bcast(" + globalName(*directReader) +
-                    ".data(), static_cast<int>(__or_output_rows * __or_output_cols), " +
-                    directMpiType + ", 0, MPI_COMM_WORLD);\n";
-        }
+                ".resize(static_cast<std::size_t>(__or_direct_dense_count_" +
+                directReader->calcParamName + "));\n";
+        code += "    MPI_Bcast(" + globalName(*directReader) + ".data(), " +
+                checkedDense2DPayloadCountExpr(
+                    "__or_output_rows", "__or_output_cols", directType,
+                    "[DACPP][MPI][OR] StencilWindow2D direct-reader broadcast count exceeds MPI int range") +
+                ", " + directMpiType + ", 0, MPI_COMM_WORLD);\n";
     }
     code += "    if (__or_local_item_count > 0) {\n";
     code += "        sycl::buffer<" + readerType +
@@ -558,7 +703,6 @@ void emitLoopLoweredRunFunction2D(
                     "{__or_writer_data, item_linear};\n";
             continue;
         }
-        return;
     }
     code += "                " + calcName + "_mpi_local(";
     for (int paramIdx = 0; paramIdx < plan.exprNode.calc->getNumParams();
@@ -579,9 +723,14 @@ void emitLoopLoweredRunFunction2D(
             localName(writer) + ".size());\n";
     code += "    __or_resident_out_" + writer.calcParamName + " = " +
             localName(writer) + ";\n";
+    code += "    const int64_t __or_materialized_output_items = "
+            "dacpp::mpi::operator_resident::checked_mul_int64_or_abort("
+            "static_cast<int64_t>(__or_output_rows), "
+            "static_cast<int64_t>(__or_output_cols), "
+            "\"[DACPP][MPI][OR] materialized output size exceeds MPI int range\");\n";
     emitGatherMaterializeFromLocalBuffer(
         code, plan, writer, localName(writer),
-        "__or_output_rows * __or_output_cols");
+        "__or_materialized_output_items");
     emitReadCacheTransitions2D(code, plan, sitePlan.readCacheTransitions);
     emitFollowupMaterialize2D(code, plan, writer, followups,
                               sitePlan.boundaryLocalUpdates);
@@ -601,6 +750,394 @@ void emitLoopLoweredMaterializeFunction2D(std::string& code,
     code += "}\n";
 }
 
+void emitResidentHaloBoundaryRefresh2D(
+    std::string& code,
+    const std::vector<BoundaryLocalUpdate>& updates,
+    const ParamAccessPlan& reader,
+    const std::string& localReaderName,
+    const std::string& localRowBeginExpr,
+    const std::string& localRowCountExpr,
+    const std::string& readerRowsExpr,
+    const std::string& readerColsExpr) {
+    for (const auto& update : updates) {
+        if (update.rank != 2 ||
+            update.paramIndex != reader.paramIndex ||
+            update.sourceParamIndex != reader.paramIndex ||
+            update.constantRhs) {
+            continue;
+        }
+        const std::string loopLower =
+            update.loopLowerExpr.empty() ? "0" : update.loopLowerExpr;
+        const std::string loopUpper =
+            update.loopUpperExpr.empty()
+                ? (update.targetRowUsesLoop ? readerRowsExpr : readerColsExpr)
+                : update.loopUpperExpr;
+        const std::string loopCmp = update.loopUpperInclusive ? "<=" : "<";
+        code += "    {\n";
+        code += "        const int64_t __or_boundary_begin = static_cast<int64_t>(" +
+                loopLower + ");\n";
+        code += "        const int64_t __or_boundary_end = static_cast<int64_t>(" +
+                loopUpper + ");\n";
+        code += "        for (int64_t __or_boundary_idx = __or_boundary_begin; __or_boundary_idx " +
+                loopCmp +
+                " __or_boundary_end; ++__or_boundary_idx) {\n";
+        code += "            const int64_t __or_boundary_target_row = " +
+                (update.targetRowUsesLoop ? "__or_boundary_idx"
+                                          : update.targetRowExpr) +
+                ";\n";
+        code += "            const int64_t __or_boundary_target_col = " +
+                (update.targetColUsesLoop ? "__or_boundary_idx"
+                                          : update.targetColExpr) +
+                ";\n";
+        code += "            const int64_t __or_boundary_source_row = " +
+                (update.sourceRowUsesLoop ? "__or_boundary_idx"
+                                          : update.sourceRowExpr) +
+                ";\n";
+        code += "            const int64_t __or_boundary_source_col = " +
+                (update.sourceColUsesLoop ? "__or_boundary_idx"
+                                          : update.sourceColExpr) +
+                ";\n";
+        code += "            if (__or_boundary_target_row < 0 || __or_boundary_target_col < 0 || __or_boundary_target_row >= " +
+                readerRowsExpr + " || __or_boundary_target_col >= " +
+                readerColsExpr + ") continue;\n";
+        code += "            if (__or_boundary_source_row < 0 || __or_boundary_source_col < 0 || __or_boundary_source_row >= " +
+                readerRowsExpr + " || __or_boundary_source_col >= " +
+                readerColsExpr + ") continue;\n";
+        code += "            if (__or_boundary_target_row < " +
+                localRowBeginExpr + " || __or_boundary_target_row >= " +
+                localRowBeginExpr + " + " + localRowCountExpr +
+                ") continue;\n";
+        code += "            if (__or_boundary_source_row < " +
+                localRowBeginExpr + " || __or_boundary_source_row >= " +
+                localRowBeginExpr + " + " + localRowCountExpr +
+                ") continue;\n";
+        code += "            const int64_t __or_boundary_target_local = (__or_boundary_target_row - " +
+                localRowBeginExpr + ") * " + readerColsExpr +
+                " + __or_boundary_target_col;\n";
+        code += "            const int64_t __or_boundary_source_local = (__or_boundary_source_row - " +
+                localRowBeginExpr + ") * " + readerColsExpr +
+                " + __or_boundary_source_col;\n";
+        code += "            if (__or_boundary_target_local < 0 || __or_boundary_source_local < 0 || static_cast<std::size_t>(__or_boundary_target_local) >= " +
+                localReaderName + ".size() || static_cast<std::size_t>(__or_boundary_source_local) >= " +
+                localReaderName + ".size()) continue;\n";
+        code += "            " + localReaderName +
+                "[static_cast<std::size_t>(__or_boundary_target_local)] = " +
+                localReaderName +
+                "[static_cast<std::size_t>(__or_boundary_source_local)];\n";
+        code += "        }\n";
+        code += "    }\n";
+    }
+}
+
+void emitResidentHaloContextType2D(std::string& code,
+                                   const std::string& ctxName,
+                                   const ShellPartitionPlan& plan,
+                                   const ParamAccessPlan& reader,
+                                   const ParamAccessPlan& writer) {
+    code += "struct " + ctxName + " {\n";
+    code += "    int mpi_rank = 0;\n";
+    code += "    int mpi_size = 1;\n";
+    code += "    int64_t __or_input_rows = 0;\n";
+    code += "    int64_t __or_input_cols = 0;\n";
+    code += "    int64_t __or_output_rows = 0;\n";
+    code += "    int64_t __or_output_cols = 0;\n";
+    code += "    int64_t __or_local_output_rows = 0;\n";
+    code += "    int64_t __or_output_row_begin = 0;\n";
+    code += "    int64_t __or_local_item_count = 0;\n";
+    code += "    int __or_window_rows = " +
+            std::to_string(plan.orLoopLower.stencilResidentHalo.windowRows) +
+            ";\n";
+    code += "    int __or_window_cols = " +
+            std::to_string(plan.orLoopLower.stencilResidentHalo.windowCols) +
+            ";\n";
+    code += "    int __or_followup_row_offset = " +
+            std::to_string(
+                plan.orLoopLower.stencilResidentHalo.followupTargetRowOffset) +
+            ";\n";
+    code += "    int __or_followup_col_offset = " +
+            std::to_string(
+                plan.orLoopLower.stencilResidentHalo.followupTargetColOffset) +
+            ";\n";
+    code += "    dacpp::mpi::operator_resident::RankRange1D __or_output_row_range{};\n";
+    code += "    dacpp::mpi::operator_resident::ResidentHalo2DRowLayout __or_halo_layout{};\n";
+    code += "    std::vector<int> __or_row_counts;\n";
+    code += "    std::vector<int> __or_row_displs;\n";
+    code += "    std::vector<int> __or_counts;\n";
+    code += "    std::vector<int> __or_displs;\n";
+    code += "    sycl::queue q{sycl::default_selector_v};\n";
+    code += "    std::vector<" + elemType(plan, reader) + "> " +
+            localName(reader) + ";\n";
+    code += "    std::vector<" + elemType(plan, writer) + "> " +
+            localName(writer) + ";\n";
+    code += "};\n";
+}
+
+void emitResidentHaloInitFunction2D(std::string& code,
+                                    const std::string& ctxName,
+                                    const std::string& initName,
+                                    const ShellPartitionPlan& plan,
+                                    const ParamAccessPlan& reader,
+                                    const ParamAccessPlan& writer) {
+    const std::string readerType = elemType(plan, reader);
+    const std::string readerMpiType = mpiDatatypeFor(readerType);
+    code += "void " + initName + "(" + ctxName + "& ctx, " +
+            wrapperSignature(plan) + ") {\n";
+    code += "    MPI_Comm_rank(MPI_COMM_WORLD, &ctx.mpi_rank);\n";
+    code += "    MPI_Comm_size(MPI_COMM_WORLD, &ctx.mpi_size);\n";
+    code += "    ctx.__or_input_rows = " + paramVarName(reader) +
+            ".getShape(0);\n";
+    code += "    ctx.__or_input_cols = " + paramVarName(reader) +
+            ".getShape(1);\n";
+    code += "    ctx.__or_output_rows = " + paramVarName(writer) +
+            ".getShape(0);\n";
+    code += "    ctx.__or_output_cols = " + paramVarName(writer) +
+            ".getShape(1);\n";
+    code += "    ctx.__or_output_row_range = dacpp::mpi::operator_resident::rank_range_1d(ctx.__or_output_rows, ctx.mpi_rank, ctx.mpi_size);\n";
+    code += "    ctx.__or_local_output_rows = ctx.__or_output_row_range.count;\n";
+    code += "    ctx.__or_output_row_begin = ctx.__or_output_row_range.begin;\n";
+    code += "    ctx.__or_local_item_count = " +
+            checkedMulExpr(
+                "ctx.__or_local_output_rows", "ctx.__or_output_cols",
+                "[DACPP][MPI][OR] resident halo 2D local item count overflow") +
+            ";\n";
+    code += "    ctx.__or_halo_layout = dacpp::mpi::operator_resident::resident_halo_2d_row_layout(ctx.__or_output_rows, ctx.__or_input_cols, ctx.mpi_rank, ctx.mpi_size, ctx.__or_window_rows);\n";
+    code += "    dacpp::mpi::operator_resident::counts_displs_1d(ctx.__or_output_rows, ctx.mpi_size, ctx.__or_row_counts, ctx.__or_row_displs);\n";
+    code += "    ctx.__or_counts.resize(static_cast<std::size_t>(ctx.mpi_size));\n";
+    code += "    ctx.__or_displs.resize(static_cast<std::size_t>(ctx.mpi_size));\n";
+    code += "    for (int r = 0; r < ctx.mpi_size; ++r) {\n";
+    code += "        ctx.__or_counts[static_cast<std::size_t>(r)] = " +
+            checkedMpiProductCountExpr(
+                "ctx.__or_row_counts[static_cast<std::size_t>(r)]",
+                "ctx.__or_output_cols",
+                "[DACPP][MPI][OR] resident halo 2D gather count exceeds MPI int range") +
+            ";\n";
+    code += "        ctx.__or_displs[static_cast<std::size_t>(r)] = " +
+            checkedMpiProductCountExpr(
+                "ctx.__or_row_displs[static_cast<std::size_t>(r)]",
+                "ctx.__or_output_cols",
+                "[DACPP][MPI][OR] resident halo 2D gather displacement exceeds MPI int range") +
+            ";\n";
+    code += "    }\n";
+    code += "    " + checkedMpiCountExpr(
+            "ctx.__or_halo_layout.local_size",
+            "[DACPP][MPI][OR] resident halo 2D local reader size exceeds MPI int range") +
+            ";\n";
+    code += "    " + checkedMpiCountExpr(
+            "ctx.__or_local_item_count",
+            "[DACPP][MPI][OR] resident halo 2D local writer size exceeds MPI int range") +
+            ";\n";
+    code += "    ctx." + localName(reader) +
+            ".assign(static_cast<std::size_t>(ctx.__or_halo_layout.local_size), " +
+            readerType + "{});\n";
+    code += "    ctx." + localName(writer) +
+            ".assign(static_cast<std::size_t>(ctx.__or_local_item_count), " +
+            elemType(plan, writer) + "{});\n";
+    code += "    const int64_t __or_initial_reader_dense_count = " +
+            checkedMulExpr(
+                "ctx.__or_input_rows", "ctx.__or_input_cols",
+                "[DACPP][MPI][OR] resident halo 2D initial reader size overflow") +
+            ";\n";
+    code += "    " + checkedMpiCountExpr(
+            "__or_initial_reader_dense_count",
+            "[DACPP][MPI][OR] resident halo 2D initial reader size exceeds MPI int range") +
+            ";\n";
+    code += "    std::vector<" + readerType + "> __or_initial_global_" +
+            reader.calcParamName + ";\n";
+    code += "    if (ctx.mpi_rank == 0) {\n";
+    code += "        " + paramVarName(reader) +
+            ".tensor2Array(__or_initial_global_" + reader.calcParamName +
+            ");\n";
+    code += "    }\n";
+    code += "    dacpp::mpi::operator_resident::scatter_window_2d_rows(__or_initial_global_" +
+            reader.calcParamName + ", ctx." + localName(reader) +
+            ", ctx.__or_output_rows, ctx.__or_input_cols, ctx.__or_window_rows, ctx.__or_halo_layout, ctx.mpi_rank, ctx.mpi_size, " +
+            readerMpiType + ");\n";
+    code += "}\n";
+}
+
+void emitResidentHaloRunFunction2D(std::string& code,
+                                   const std::string& ctxName,
+                                   const std::string& runName,
+                                   DacppFile* dacppFile,
+                                   const ShellPartitionPlan& plan,
+                                   const ParamAccessPlan& reader,
+                                   const ParamAccessPlan& writer) {
+    const std::string readerType = elemType(plan, reader);
+    const std::string writerType = elemType(plan, writer);
+    const std::string writerMpiType = mpiDatatypeFor(writerType);
+    const std::string calcName = plan.exprNode.calc->getName();
+    const DistributedStencilSitePlan sitePlan =
+        stencilSitePlanFor(dacppFile, plan);
+    code += "void " + runName + "(" + ctxName + "& ctx, " +
+            wrapperSignature(plan) + ") {\n";
+    code += "    int mpi_rank = ctx.mpi_rank;\n";
+    code += "    auto& q = ctx.q;\n";
+    code += "    const int64_t __or_input_rows = ctx.__or_input_rows;\n";
+    code += "    const int64_t __or_input_cols = ctx.__or_input_cols;\n";
+    code += "    const int64_t __or_output_rows = ctx.__or_output_rows;\n";
+    code += "    const int64_t __or_output_cols = ctx.__or_output_cols;\n";
+    code += "    const int64_t __or_local_output_rows = ctx.__or_local_output_rows;\n";
+    code += "    const int64_t __or_local_item_count = ctx.__or_local_item_count;\n";
+    code += "    const int64_t __or_local_reader_rows = ctx.__or_halo_layout.local_row_count;\n";
+    code += "    const int64_t __or_local_reader_row_begin = ctx.__or_halo_layout.global_row_begin;\n";
+    code += "    auto& " + localName(reader) + " = ctx." +
+            localName(reader) + ";\n";
+    code += "    auto& " + localName(writer) + " = ctx." +
+            localName(writer) + ";\n";
+    code += "    if (__or_local_item_count > 0) {\n";
+    code += "        sycl::buffer<" + readerType + ", 1> __or_reader_buf(" +
+            localName(reader) + ".data(), sycl::range<1>(" +
+            localName(reader) + ".size()));\n";
+    code += "        sycl::buffer<" + writerType + ", 1> __or_writer_buf(" +
+            localName(writer) + ".data(), sycl::range<1>(" +
+            localName(writer) + ".size()));\n";
+    code += "        q.submit([&](sycl::handler& h) {\n";
+    code += "            auto __or_reader_acc = __or_reader_buf.get_access<sycl::access::mode::read>(h);\n";
+    code += "            auto __or_writer_acc = __or_writer_buf.get_access<sycl::access::mode::read_write>(h);\n";
+    code += "            h.parallel_for(sycl::range<1>(static_cast<std::size_t>(__or_local_item_count)), [=](sycl::id<1> idx) {\n";
+    code += "                const int item_linear = static_cast<int>(idx[0]);\n";
+    code += "                const int local_row = item_linear / static_cast<int>(__or_output_cols);\n";
+    code += "                const int local_col = item_linear % static_cast<int>(__or_output_cols);\n";
+    code += "                auto* __or_reader_data = __or_reader_acc.template get_multi_ptr<sycl::access::decorated::no>().get();\n";
+    code += "                auto* __or_writer_data = __or_writer_acc.template get_multi_ptr<sycl::access::decorated::no>().get();\n";
+    for (const auto& param : plan.params) {
+        const std::string paramType = elemType(plan, param);
+        if (param.access == ParamAccessKind::StencilWindow) {
+            code += "                dacpp::mpi::ResidentHaloView2D<const " +
+                    paramType + "> view_" + param.calcParamName +
+                    "{__or_reader_data, local_row * static_cast<int>(__or_input_cols) + local_col, static_cast<int>(__or_input_cols)};\n";
+            continue;
+        }
+        if (param.access == ParamAccessKind::OutputDirect &&
+            param.writes &&
+            !param.reads) {
+            code += "                dacpp::mpi::ContiguousView1D<" +
+                    paramType + "> view_" + param.calcParamName +
+                    "{__or_writer_data, item_linear};\n";
+            continue;
+        }
+    }
+    code += "                " + calcName + "_mpi_local(";
+    for (int paramIdx = 0; paramIdx < plan.exprNode.calc->getNumParams();
+         ++paramIdx) {
+        if (paramIdx != 0) {
+            code += ", ";
+        }
+        code += "view_" + plan.exprNode.calc->getParam(paramIdx)->getName();
+    }
+    code += ");\n";
+    code += "            });\n";
+    code += "        });\n";
+    code += "        q.wait();\n";
+    code += "    }\n";
+    code += "    dacpp::mpi::operator_resident::apply_followup_2d(" +
+            localName(reader) + ", " + localName(writer) +
+            ", __or_local_output_rows, __or_output_cols, __or_input_cols, ctx.__or_followup_row_offset, ctx.__or_followup_col_offset);\n";
+    code += "    dacpp::mpi::operator_resident::exchange_halo_2d_rows(" +
+            localName(reader) + ", " + localName(writer) +
+            ", ctx.__or_halo_layout, __or_output_rows, __or_output_cols, __or_input_cols, ctx.__or_followup_row_offset, ctx.__or_followup_col_offset, mpi_rank, ctx.mpi_size, " +
+            writerMpiType + ");\n";
+    emitResidentHaloBoundaryRefresh2D(
+        code, sitePlan.boundaryLocalUpdates, reader, localName(reader),
+        "__or_local_reader_row_begin", "__or_local_reader_rows",
+        "__or_input_rows", "__or_input_cols");
+    code += "    auto& __or_resident_out_" + writer.calcParamName +
+            " = dacpp::mpi::operator_resident::ensure_resident<" +
+            writerType + ">(" + paramVarName(writer) + ", " +
+            localName(writer) + ".size());\n";
+    code += "    __or_resident_out_" + writer.calcParamName + " = " +
+            localName(writer) + ";\n";
+    code += "}\n";
+}
+
+void emitResidentHaloMaterializeFunction2D(
+    std::string& code,
+    const std::string& ctxName,
+    const std::string& materializeName,
+    DacppFile* dacppFile,
+    const ShellPartitionPlan& plan,
+    const ParamAccessPlan& reader,
+    const ParamAccessPlan& writer) {
+    const std::string readerType = elemType(plan, reader);
+    const std::string readerMpiType = mpiDatatypeFor(readerType);
+    const std::string writerType = elemType(plan, writer);
+    const std::string writerMpiType = mpiDatatypeFor(writerType);
+    const DistributedStencilSitePlan sitePlan =
+        stencilSitePlanFor(dacppFile, plan);
+    const auto& halo = plan.orLoopLower.stencilResidentHalo;
+    code += "void " + materializeName + "(" + ctxName + "& ctx, " +
+            wrapperSignature(plan) + ") {\n";
+    code += "    int mpi_rank = ctx.mpi_rank;\n";
+    code += "    std::vector<" + writerType + "> __or_materialized_" +
+            writer.calcParamName + ";\n";
+    code += "    const int64_t __or_materialized_writer_count = " +
+            checkedMulExpr(
+                "ctx.__or_output_rows", "ctx.__or_output_cols",
+                "[DACPP][MPI][OR] resident halo 2D materialized output size overflow") +
+            ";\n";
+    code += "    " + checkedMpiCountExpr(
+            "__or_materialized_writer_count",
+            "[DACPP][MPI][OR] resident halo 2D materialized output size exceeds MPI int range") +
+            ";\n";
+    code += "    if (mpi_rank == 0) {\n";
+    code += "        __or_materialized_" + writer.calcParamName +
+            ".resize(static_cast<std::size_t>(__or_materialized_writer_count));\n";
+    code += "    }\n";
+    code += "    MPI_Gatherv(ctx." + localName(writer) +
+            ".data(), " +
+            checkedMpiCountExpr(
+                "ctx.__or_local_item_count",
+                "[DACPP][MPI][OR] resident halo 2D materialize sendcount exceeds MPI int range") +
+            ", " +
+            writerMpiType + ", mpi_rank == 0 ? __or_materialized_" +
+            writer.calcParamName +
+            ".data() : nullptr, mpi_rank == 0 ? ctx.__or_counts.data() : nullptr, mpi_rank == 0 ? ctx.__or_displs.data() : nullptr, " +
+            writerMpiType + ", 0, MPI_COMM_WORLD);\n";
+    code += "    if (mpi_rank == 0) {\n";
+    code += "        " + paramVarName(writer) + ".array2Tensor(__or_materialized_" +
+            writer.calcParamName + ");\n";
+    code += "    }\n";
+    code += "    if (mpi_rank == 0) {\n";
+    code += "        std::vector<" + readerType + "> __or_materialized_" +
+            reader.calcParamName + ";\n";
+    code += "        " + paramVarName(reader) + ".tensor2Array(__or_materialized_" +
+            reader.calcParamName + ");\n";
+    code += "        const int64_t __or_followup_reader_cols_" +
+            reader.calcParamName + " = static_cast<int64_t>(" +
+            paramVarName(reader) + ".getShape(1));\n";
+    code += "        for (std::size_t __or_idx = 0; __or_idx < __or_materialized_" +
+            writer.calcParamName + ".size(); ++__or_idx) {\n";
+    code += "            const int64_t __or_target = dacpp::mpi::map_2d_global_with_offset(static_cast<int64_t>(__or_idx), ctx.__or_output_cols, __or_followup_reader_cols_" +
+            reader.calcParamName + ", " +
+            std::to_string(halo.followupTargetRowOffset) + ", " +
+            std::to_string(halo.followupTargetColOffset) + ");\n";
+    code += "            if (__or_target >= 0 && static_cast<std::size_t>(__or_target) < __or_materialized_" +
+            reader.calcParamName + ".size()) {\n";
+    code += "                __or_materialized_" + reader.calcParamName +
+            "[static_cast<std::size_t>(__or_target)] = static_cast<" +
+            readerType + ">(__or_materialized_" + writer.calcParamName +
+            "[__or_idx]);\n";
+    code += "            }\n";
+    code += "        }\n";
+    emitBoundaryLocalMaterialize2D(
+        code, plan, sitePlan.boundaryLocalUpdates, reader, writer,
+        "__or_materialized_" + writer.calcParamName,
+        "__or_materialized_" + reader.calcParamName,
+        paramVarName(reader) + ".getShape(0)",
+        "__or_followup_reader_cols_" + reader.calcParamName,
+        "ctx.__or_output_rows", "ctx.__or_output_cols");
+    code += "        " + paramVarName(reader) + ".array2Tensor(__or_materialized_" +
+            reader.calcParamName + ");\n";
+    code += "    }\n";
+    for (const auto& param : plan.params) {
+        if (param.paramIndex != reader.paramIndex &&
+            param.paramIndex != writer.paramIndex) {
+            code += "    (void)" + paramVarName(param) + ";\n";
+        }
+    }
+    code += "}\n";
+}
+
 }  // namespace
 
 std::string buildStencilWindow2DWrapperCode(
@@ -610,7 +1147,8 @@ std::string buildStencilWindow2DWrapperCode(
     const ParamAccessPlan* reader = findStencilReader(plan);
     const ParamAccessPlan* writer = findStencilWriter(plan);
     const auto directReaders = findStencilDirectReaders(plan);
-    if (!reader || !writer) {
+    if (!reader || !writer ||
+        !supportsStencilWindow2DParams(plan, true)) {
         return {};
     }
 
@@ -639,26 +1177,47 @@ std::string buildStencilWindow2DWrapperCode(
     code += "    const auto __or_output_row_range = dacpp::mpi::operator_resident::rank_range_1d(__or_output_rows, mpi_rank, mpi_size);\n";
     code += "    const int64_t __or_local_output_rows = __or_output_row_range.count;\n";
     code += "    const int64_t __or_output_row_begin = __or_output_row_range.begin;\n";
-    code += "    const int64_t __or_local_item_count = __or_local_output_rows * __or_output_cols;\n";
+    code += "    const int64_t __or_local_item_count = " +
+            checkedMulExpr(
+                "__or_local_output_rows", "__or_output_cols",
+                "[DACPP][MPI][OR] StencilWindow2D local item count overflow") +
+            ";\n";
     code += "    std::vector<int> __or_row_counts;\n";
     code += "    std::vector<int> __or_row_displs;\n";
     code += "    dacpp::mpi::operator_resident::counts_displs_1d(__or_output_rows, mpi_size, __or_row_counts, __or_row_displs);\n";
     code += "    std::vector<int> __or_counts(mpi_size);\n";
     code += "    std::vector<int> __or_displs(mpi_size);\n";
     code += "    for (int r = 0; r < mpi_size; ++r) {\n";
-    code += "        __or_counts[r] = static_cast<int>(__or_row_counts[r] * __or_output_cols);\n";
-    code += "        __or_displs[r] = static_cast<int>(__or_row_displs[r] * __or_output_cols);\n";
+    code += "        __or_counts[r] = " +
+            checkedMpiProductCountExpr(
+                "__or_row_counts[r]", "__or_output_cols",
+                "[DACPP][MPI][OR] StencilWindow2D row-block gather count exceeds MPI int range") +
+            ";\n";
+    code += "        __or_displs[r] = " +
+            checkedMpiProductCountExpr(
+                "__or_row_displs[r]", "__or_output_cols",
+                "[DACPP][MPI][OR] StencilWindow2D row-block gather displacement exceeds MPI int range") +
+            ";\n";
     code += "    }\n";
+    code += "    const int64_t __or_reader_dense_count = " +
+            checkedMulExpr(
+                "__or_input_rows", "__or_input_cols",
+                "[DACPP][MPI][OR] StencilWindow2D reader buffer size overflow") +
+            ";\n";
+    code += "    " + checkedMpiCountExpr(
+            "__or_reader_dense_count",
+            "[DACPP][MPI][OR] StencilWindow2D reader buffer size exceeds MPI int range") +
+            ";\n";
     code += "    std::vector<" + readerType + "> __or_global_" + reader->calcParamName + ";\n";
     code += "    if (mpi_rank == 0) {\n";
     code += "        " + readerArg + ".tensor2Array(__or_global_" + reader->calcParamName + ");\n";
     code += "    }\n";
-    code += "    __or_global_" + reader->calcParamName + ".resize(static_cast<std::size_t>(__or_input_rows * __or_input_cols));\n";
-    if (usesByte(plan, *reader)) {
-        code += "    MPI_Bcast(__or_global_" + reader->calcParamName + ".data(), static_cast<int>(__or_input_rows * __or_input_cols * sizeof(" + readerType + ")), MPI_BYTE, 0, MPI_COMM_WORLD);\n";
-    } else {
-        code += "    MPI_Bcast(__or_global_" + reader->calcParamName + ".data(), static_cast<int>(__or_input_rows * __or_input_cols), " + readerMpiType + ", 0, MPI_COMM_WORLD);\n";
-    }
+    code += "    __or_global_" + reader->calcParamName + ".resize(static_cast<std::size_t>(__or_reader_dense_count));\n";
+    code += "    MPI_Bcast(__or_global_" + reader->calcParamName + ".data(), " +
+            checkedDense2DPayloadCountExpr(
+                "__or_input_rows", "__or_input_cols", readerType,
+                "[DACPP][MPI][OR] StencilWindow2D reader broadcast count exceeds MPI int range") +
+            ", " + readerMpiType + ", 0, MPI_COMM_WORLD);\n";
     for (const auto* directReader : directReaders) {
         const std::string directType = elemType(plan, *directReader);
         const std::string directMpiType =
@@ -676,6 +1235,16 @@ std::string buildStencilWindow2DWrapperCode(
                 " shape mismatch with output\\n\");\n";
         code += "        MPI_Abort(MPI_COMM_WORLD, 4);\n";
         code += "    }\n";
+        code += "    const int64_t __or_direct_dense_count_" +
+                directReader->calcParamName + " = " +
+                checkedMulExpr(
+                    "__or_output_rows", "__or_output_cols",
+                    "[DACPP][MPI][OR] StencilWindow2D direct-reader buffer size overflow") +
+                ";\n";
+        code += "    " + checkedMpiCountExpr(
+                "__or_direct_dense_count_" + directReader->calcParamName,
+                "[DACPP][MPI][OR] StencilWindow2D direct-reader buffer size exceeds MPI int range") +
+                ";\n";
         code += "    std::vector<" + directType + "> __or_global_" +
                 directReader->calcParamName + ";\n";
         code += "    if (mpi_rank == 0) {\n";
@@ -683,17 +1252,19 @@ std::string buildStencilWindow2DWrapperCode(
                 directReader->calcParamName + ");\n";
         code += "    }\n";
         code += "    __or_global_" + directReader->calcParamName +
-                ".resize(static_cast<std::size_t>(__or_output_rows * __or_output_cols));\n";
-        if (usesByte(plan, *directReader)) {
-            code += "    MPI_Bcast(__or_global_" + directReader->calcParamName +
-                    ".data(), static_cast<int>(__or_output_rows * __or_output_cols * sizeof(" +
-                    directType + ")), MPI_BYTE, 0, MPI_COMM_WORLD);\n";
-        } else {
-            code += "    MPI_Bcast(__or_global_" + directReader->calcParamName +
-                    ".data(), static_cast<int>(__or_output_rows * __or_output_cols), " +
-                    directMpiType + ", 0, MPI_COMM_WORLD);\n";
-        }
+                ".resize(static_cast<std::size_t>(__or_direct_dense_count_" +
+                directReader->calcParamName + "));\n";
+        code += "    MPI_Bcast(__or_global_" + directReader->calcParamName +
+                ".data(), " +
+                checkedDense2DPayloadCountExpr(
+                    "__or_output_rows", "__or_output_cols", directType,
+                    "[DACPP][MPI][OR] StencilWindow2D direct-reader broadcast count exceeds MPI int range") +
+                ", " + directMpiType + ", 0, MPI_COMM_WORLD);\n";
     }
+    code += "    " + checkedMpiCountExpr(
+            "__or_local_item_count",
+            "[DACPP][MPI][OR] StencilWindow2D local writer size exceeds MPI int range") +
+            ";\n";
     code += "    std::vector<" + writerType + "> __or_local_" + writer->calcParamName + "(static_cast<std::size_t>(__or_local_item_count));\n";
     code += "    if (__or_local_item_count > 0) {\n";
     code += "        sycl::buffer<" + readerType + ", 1> __or_reader_buf(__or_global_" + reader->calcParamName + ".data(), sycl::range<1>(__or_global_" + reader->calcParamName + ".size()));\n";
@@ -747,7 +1318,6 @@ std::string buildStencilWindow2DWrapperCode(
             code += "                dacpp::mpi::ContiguousView1D<" + paramType + "> view_" + param.calcParamName + "{__or_writer_data, item_linear};\n";
             continue;
         }
-        return {};
     }
     code += "                " + calcName + "_mpi_local(";
     for (int paramIdx = 0; paramIdx < plan.exprNode.calc->getNumParams();
@@ -768,9 +1338,14 @@ std::string buildStencilWindow2DWrapperCode(
             ".size());\n";
     code += "    __or_resident_out_" + writer->calcParamName + " = __or_local_" +
             writer->calcParamName + ";\n";
+    code += "    const int64_t __or_materialized_output_items = "
+            "dacpp::mpi::operator_resident::checked_mul_int64_or_abort("
+            "static_cast<int64_t>(__or_output_rows), "
+            "static_cast<int64_t>(__or_output_cols), "
+            "\"[DACPP][MPI][OR] materialized output size exceeds MPI int range\");\n";
     emitGatherMaterializeFromLocalBuffer(
         code, plan, *writer, "__or_local_" + writer->calcParamName,
-        "__or_output_rows * __or_output_cols");
+        "__or_materialized_output_items");
     emitReadCacheTransitions2D(code, plan, sitePlan.readCacheTransitions);
     emitFollowupMaterialize2D(code, plan, *writer, followups,
                               sitePlan.boundaryLocalUpdates);
@@ -785,7 +1360,8 @@ std::string buildLoopLoweredStencil2DFullSyncFamilyCode(
     const ParamAccessPlan* reader = findStencilReader(plan);
     const ParamAccessPlan* writer = findStencilWriter(plan);
     const auto directReaders = findStencilDirectReaders(plan);
-    if (!reader || !writer || !plan.exprNode.shell || !plan.exprNode.calc) {
+    if (!reader || !writer || !plan.exprNode.shell || !plan.exprNode.calc ||
+        !supportsStencilWindow2DParams(plan, true)) {
         return {};
     }
 
@@ -809,6 +1385,61 @@ std::string buildLoopLoweredStencil2DFullSyncFamilyCode(
     emitLoopLoweredRunFunction2D(code, ctxName, runName, dacppFile, plan,
                                  *reader, *writer, directReaders);
     emitLoopLoweredMaterializeFunction2D(code, ctxName, materializeName, plan);
+    code += "void " + baseName + "(" + wrapperSignature(plan) + ") {\n";
+    code += "    " + ctxName + " ctx;\n";
+    code += "    " + initName + "(ctx";
+    for (const auto& param : plan.params) {
+        code += ", " + paramVarName(param);
+    }
+    code += ");\n";
+    code += "    " + runName + "(ctx";
+    for (const auto& param : plan.params) {
+        code += ", " + paramVarName(param);
+    }
+    code += ");\n";
+    code += "    " + materializeName + "(ctx";
+    for (const auto& param : plan.params) {
+        code += ", " + paramVarName(param);
+    }
+    code += ");\n";
+    code += "}\n";
+    return code;
+}
+
+std::string buildLoopLoweredStencil2DResidentHaloFamilyCode(
+    const std::string& baseName,
+    DacppFile* dacppFile,
+    const ShellPartitionPlan& plan) {
+    const ParamAccessPlan* reader = findStencilReader(plan);
+    const ParamAccessPlan* writer = findStencilWriter(plan);
+    const auto directReaders = findStencilDirectReaders(plan);
+    if (!reader || !writer || !plan.exprNode.shell || !plan.exprNode.calc ||
+        !plan.orLoopLower.stencilResidentHalo.enabled ||
+        !directReaders.empty() ||
+        !supportsStencilWindow2DParams(plan, false)) {
+        return {};
+    }
+
+    Shell* shell = plan.exprNode.shell;
+    Calc* calc = plan.exprNode.calc;
+    const int exprIndex = plan.exprIndex;
+    const std::string ctxName =
+        operatorResidentContextTypeName(shell, calc, exprIndex);
+    const std::string initName =
+        operatorResidentInitFunctionName(shell, calc, exprIndex);
+    const std::string runName =
+        operatorResidentRunFunctionName(shell, calc, exprIndex);
+    const std::string materializeName =
+        operatorResidentMaterializeFunctionName(shell, calc, exprIndex);
+
+    std::string code;
+    emitResidentHaloContextType2D(code, ctxName, plan, *reader, *writer);
+    emitResidentHaloInitFunction2D(code, ctxName, initName, plan, *reader,
+                                   *writer);
+    emitResidentHaloRunFunction2D(code, ctxName, runName, dacppFile, plan,
+                                  *reader, *writer);
+    emitResidentHaloMaterializeFunction2D(code, ctxName, materializeName,
+                                          dacppFile, plan, *reader, *writer);
     code += "void " + baseName + "(" + wrapperSignature(plan) + ") {\n";
     code += "    " + ctxName + " ctx;\n";
     code += "    " + initName + "(ctx";

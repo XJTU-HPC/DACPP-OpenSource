@@ -75,12 +75,16 @@ Phase 4.5 已经为 `Contiguous1D` direct/resident 的窄切片建立
 ### 1.2 当前 P4.6 进度与 large benchmark 快照
 
 截至 2026-05-09 当前工作树，Route A loop-lowered full-sync skeleton、A3
-安全 reader hoist、RowPartitionFullRow count 修复，以及 Route B B1
-`StencilWindow1D` resident halo 已落地。B1 当前只接受保守的 1D `+1`
-distributed-followup 形态；boundary-local 只接受当前 codegen 能正确表达的字面
-左边界 target `0`，右边界或符号边界表达式继续走 Route A `StencilFullSync`
-fallback。空 owned-output rank 的 halo exchange review 问题已修复：halo 交换按最近
-非空 rank 匹配，不再要求所有相邻 rank 都有 owned slice。
+安全 reader hoist、RowPartitionFullRow count 修复，以及 Route B B1/B2 resident
+halo 已落地。B1 当前接受保守的 1D `+1` distributed-followup 形态；boundary-local
+只接受当前 codegen 能正确表达的字面左边界 target `0`，右边界或符号边界表达式继续走
+Route A `StencilFullSync` fallback。B2 当前接受保守的 2D row-block resident halo：
+exactly one 2D window reader、exactly one WRITE-only direct writer、当前
+`+1,+1` distributed-followup 与当前 boundary-local updates；replicated scalar
+reader、direct reader、read-cache transition 继续 reject/fallback，保留给 B3。
+空 owned-output rank 的 halo exchange review 问题已修复：halo 交换按最近非空 rank
+匹配，不再要求所有相邻 rank 都有 owned slice；B2 还补齐了 2D scalar reject、
+shape-derived count/displ/materialize/layout checked-mul guard 和过晚 guard 的前移。
 
 2026-05-09 按 `docs/benchmarks` 里的大规模口径重跑了筛选后的 app benchmark：
 
@@ -94,8 +98,8 @@ python3 clang/tools/translator/bench_mpi_only_requested.py \
 ```
 
 本轮只统计 `mpirun` 运行阶段的外部 wall-clock，不包含翻译/编译，不列串行
-baseline。本轮故意不包含尚未进入 Route B B2/B3 的复杂 stencil：`FOuLa1.0`、
-`stencil1.0`、`waveEquation1.0`。
+baseline。本轮故意不包含尚未进入 large benchmark 对齐阶段的复杂 stencil：
+`FOuLa1.0` 和仍待 B3 的 `waveEquation1.0`；`stencil1.0` 的 B2 正确性由专项回归覆盖。
 
 结果文件：
 `/Volumes/QUQ/working/mpi_tmp/p46_b1_selected_large_20260509/results.tsv`。
@@ -121,8 +125,9 @@ baseline。本轮故意不包含尚未进入 Route B B2/B3 的复杂 stencil：`
   本轮二者都与手写 MPI reference 基本齐平。
 - `matMul1.0` 的 DAC 翻译 MPI 为 0.902443s，明显好于旧 benchmark 文档中的
   7.576529s，符合 RowPartitionFullRow unique-payload/count 修复后的预期。
-- `stencil1.0` / `waveEquation1.0` 不应用这张表判断 P4.6-B 完成度；它们分别是
-  B2 / B3 的后续目标。
+- `stencil1.0` 已进入 Route B B2；它的正确性以专项结构/运行回归为准，不在这张
+  非复杂 stencil benchmark 表里评估。
+- `waveEquation1.0` 仍不应用这张表判断 P4.6-B 完成度；它是 B3 的后续目标。
 
 ---
 
@@ -835,8 +840,8 @@ Phase-C / OR loop rewrite helper extraction
 
 ### Step 5：路线 B 2D row-block resident halo（无 direct reader/cache）
 
-状态：下一步。B2 不应继承 Phase-C `AccessPattern` / `PackPlan` / root-centric
-codegen，也不应提前支持 `waveEquation1.0` 的 direct reader / read-cache transition。
+状态：已完成。B2 保持独立于 Phase-C `AccessPattern` / `PackPlan` / root-centric
+codegen，也没有提前支持 `waveEquation1.0` 的 direct reader / read-cache transition。
 
 改动：
 
@@ -844,13 +849,17 @@ codegen，也不应提前支持 `waveEquation1.0` 的 direct reader / read-cache
 - 新增 `ResidentHalo2DCodegen.cpp`。
 - 支持 row-block top/bottom halo。
 - 支持 current `+1,+1` followup。
+- 显式 reject scalar reader，并在 2D resident/full-sync materialize、layout、count、
+  displ、payload/buffer size 路径补齐 checked-mul / MPI `int` 上界 guard。
 - 不支持 direct-reader / read-cache transition；相关用例继续走普通 OR 或后续 B3。
 
 验收：
 
 - `stencil1.0` 通过。
 - rows 不整除 rank 数时正确。
-- 结构断言不出现 direct-reader/cache halo state。
+- 结构断言不出现 direct-reader/cache halo state，也不出现 `AccessPattern`、
+  `PackPlan`、`FixedBlock`、`root_bridge` 或 Phase-C partial exchange。
+- `mpiLoopStencilScalarReject2D`、`mpiLoopStencilCountGuard2D` 通过。
 
 ### Step 6：路线 B 2D read-cache transition
 

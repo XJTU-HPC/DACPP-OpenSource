@@ -5,6 +5,29 @@ namespace dacppTranslator {
 namespace mpi_rewriter {
 namespace operator_resident {
 
+namespace {
+
+std::string checkedMpiCountExpr(const std::string& expr,
+                                const std::string& message) {
+    return "dacpp::mpi::operator_resident::narrow_mpi_count_or_abort(static_cast<int64_t>(" +
+           expr + "), \"" + message + "\")";
+}
+
+std::string checkedMpiPayloadCountExpr(const std::string& elemCountExpr,
+                                       const std::string& type,
+                                       const std::string& message) {
+    if (usesByteTransport(type)) {
+        return checkedMpiCountExpr(
+            "dacpp::mpi::operator_resident::checked_mul_int64_or_abort(static_cast<int64_t>(" +
+                elemCountExpr + "), static_cast<int64_t>(sizeof(" + type +
+                ")), \"" + message + "\")",
+            message);
+    }
+    return checkedMpiCountExpr(elemCountExpr, message);
+}
+
+}  // namespace
+
 bool usesByte(const ShellPartitionPlan& plan, const ParamAccessPlan& param) {
     return usesByteTransport(elemType(plan, param));
 }
@@ -42,13 +65,14 @@ void emitScatter(std::string& code,
                 ".data() : nullptr, mpi_rank == 0 ? __or_displs_bytes_" +
                 param.calcParamName +
                 ".data() : nullptr, " + mpiType + ", " + local +
-                ".data(), static_cast<int>(__or_local_item_count * sizeof(" +
-                type + ")), " + mpiType + ", 0, MPI_COMM_WORLD);\n";
+                ".data(), dacpp::mpi::operator_resident::narrow_mpi_count_or_abort(dacpp::mpi::operator_resident::checked_mul_int64_or_abort(static_cast<int64_t>(__or_local_item_count), static_cast<int64_t>(sizeof(" +
+                type + ")), \"[DACPP][MPI][OR] scatter byte count exceeds MPI int range\"), \"[DACPP][MPI][OR] scatter byte count exceeds MPI int range\"), " +
+                mpiType + ", 0, MPI_COMM_WORLD);\n";
     } else {
         code += "    MPI_Scatterv(mpi_rank == 0 ? " + global +
                 ".data() : nullptr, mpi_rank == 0 ? __or_counts.data() : nullptr, mpi_rank == 0 ? __or_displs.data() : nullptr, " +
                 mpiType + ", " + local +
-                ".data(), static_cast<int>(__or_local_item_count), " +
+                ".data(), dacpp::mpi::operator_resident::narrow_mpi_count_or_abort(static_cast<int64_t>(__or_local_item_count), \"[DACPP][MPI][OR] scatter count exceeds MPI int range\"), " +
                 mpiType + ", 0, MPI_COMM_WORLD);\n";
     }
 }
@@ -93,6 +117,10 @@ void emitGatherMaterializeFromLocalBuffer(
     const std::string mpiType = mpiDatatypeFor(type);
     const std::string global = "__or_materialized_" + param.calcParamName;
     code += "    std::vector<" + type + "> " + global + ";\n";
+    code += "    " + checkedMpiCountExpr(
+            totalItemCountExpr,
+            "[DACPP][MPI][OR] materialized output size exceeds MPI int range") +
+            ";\n";
     code += "    if (mpi_rank == 0) {\n";
     code += "        " + global + ".resize(static_cast<std::size_t>(" +
             totalItemCountExpr + "));\n";
@@ -100,8 +128,8 @@ void emitGatherMaterializeFromLocalBuffer(
     if (usesByte(plan, param)) {
         emitByteCounts(code, param.calcParamName + "_gather", type);
         code += "    MPI_Gatherv(" + localBufferName +
-                ".data(), static_cast<int>(__or_local_item_count * sizeof(" +
-                type + ")), " + mpiType + ", mpi_rank == 0 ? " + global +
+                ".data(), dacpp::mpi::operator_resident::narrow_mpi_count_or_abort(dacpp::mpi::operator_resident::checked_mul_int64_or_abort(static_cast<int64_t>(__or_local_item_count), static_cast<int64_t>(sizeof(" +
+                type + ")), \"[DACPP][MPI][OR] gather byte count exceeds MPI int range\"), \"[DACPP][MPI][OR] gather byte count exceeds MPI int range\"), " + mpiType + ", mpi_rank == 0 ? " + global +
                 ".data() : nullptr, mpi_rank == 0 ? __or_counts_bytes_" +
                 param.calcParamName +
                 "_gather.data() : nullptr, mpi_rank == 0 ? __or_displs_bytes_" +
@@ -110,7 +138,7 @@ void emitGatherMaterializeFromLocalBuffer(
                 ", 0, MPI_COMM_WORLD);\n";
     } else {
         code += "    MPI_Gatherv(" + localBufferName +
-                ".data(), static_cast<int>(__or_local_item_count), " +
+                ".data(), dacpp::mpi::operator_resident::narrow_mpi_count_or_abort(static_cast<int64_t>(__or_local_item_count), \"[DACPP][MPI][OR] gather count exceeds MPI int range\"), " +
                 mpiType + ", mpi_rank == 0 ? " + global +
                 ".data() : nullptr, mpi_rank == 0 ? __or_counts.data() : nullptr, mpi_rank == 0 ? __or_displs.data() : nullptr, " +
                 mpiType + ", 0, MPI_COMM_WORLD);\n";
@@ -119,19 +147,31 @@ void emitGatherMaterializeFromLocalBuffer(
     code += "        " + paramVarName(param) + ".array2Tensor(" + global +
             ");\n";
     if (param.broadcastMaterializedOutput) {
+        code += "        " + checkedMpiPayloadCountExpr(
+                paramVarName(param) + ".getSize()", type,
+                "[DACPP][MPI][OR] materialized output broadcast count exceeds MPI int range") +
+                ";\n";
         code += "        if (!" + global + ".empty()) {\n";
         code += "            MPI_Bcast(" + global + ".data(), " +
-                mpiPayloadCountExpr(paramVarName(param) + ".getSize()", type) +
+                checkedMpiPayloadCountExpr(
+                    paramVarName(param) + ".getSize()", type,
+                    "[DACPP][MPI][OR] materialized output broadcast count exceeds MPI int range") +
                 ", " + mpiType + ", 0, MPI_COMM_WORLD);\n";
         code += "        }\n";
     }
     if (param.broadcastMaterializedOutput) {
-        code += "    } else {\n";
+    code += "    } else {\n";
+        code += "        " + checkedMpiPayloadCountExpr(
+                paramVarName(param) + ".getSize()", type,
+                "[DACPP][MPI][OR] materialized output broadcast count exceeds MPI int range") +
+                ";\n";
         code += "        " + global + ".resize(static_cast<std::size_t>(" +
                 paramVarName(param) + ".getSize()));\n";
         code += "        if (!" + global + ".empty()) {\n";
         code += "            MPI_Bcast(" + global + ".data(), " +
-                mpiPayloadCountExpr(paramVarName(param) + ".getSize()", type) +
+                checkedMpiPayloadCountExpr(
+                    paramVarName(param) + ".getSize()", type,
+                    "[DACPP][MPI][OR] materialized output broadcast count exceeds MPI int range") +
                 ", " + mpiType + ", 0, MPI_COMM_WORLD);\n";
         code += "        }\n";
         code += "        " + paramVarName(param) + ".array2Tensor(" + global +

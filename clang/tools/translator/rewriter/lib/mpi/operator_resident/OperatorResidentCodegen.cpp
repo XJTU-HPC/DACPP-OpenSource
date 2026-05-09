@@ -69,6 +69,12 @@ std::string buildOperatorResidentWrapperCode(
             buildLoopLoweredStencil1DResidentHaloFamilyCode(
                 wrapper, dacppFile, exprPlan);
     }
+    if (exprPlan.orLoopLower.kind == OrLoopLowerKind::StencilResidentHalo &&
+        exprPlan.signature.layout == LocalLayoutKind::StencilWindow2D) {
+        return operator_resident::
+            buildLoopLoweredStencil2DResidentHaloFamilyCode(
+                wrapper, dacppFile, exprPlan);
+    }
     if (exprPlan.orLoopLower.kind == OrLoopLowerKind::StencilFullSync &&
         exprPlan.signature.layout == LocalLayoutKind::StencilWindow2D) {
         return operator_resident::buildLoopLoweredStencil2DFullSyncFamilyCode(

@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <cctype>
 #include <set>
 #include <string>
 #include <unordered_map>
@@ -17,6 +18,7 @@
 #include "DacppStructure.h"
 #include "Rewriter_MPI_Common.h"
 #include "Rewriter_MPI_OperatorResident.h"
+#include "ShellPartitionAnalysis_Internal.h"
 #include "Split.h"
 
 namespace dacppTranslator {
@@ -41,6 +43,21 @@ std::string trim(std::string text) {
     }
     const auto end = text.find_last_not_of(" \t\r\n");
     return text.substr(begin, end - begin + 1);
+}
+
+std::string compactExprText(std::string text) {
+    text.erase(std::remove_if(text.begin(), text.end(),
+                              [](unsigned char c) {
+                                  return std::isspace(c) != 0;
+                              }),
+               text.end());
+    return text;
+}
+
+bool endsWith(const std::string& text, const std::string& suffix) {
+    return text.size() >= suffix.size() &&
+           text.compare(text.size() - suffix.size(), suffix.size(), suffix) ==
+               0;
 }
 
 std::string exprSource(const clang::Expr* expr, clang::ASTContext* context) {
@@ -670,6 +687,26 @@ Split* splitForShellParam(Shell* shell, int paramIndex) {
     return nullptr;
 }
 
+std::vector<RegularSplit*> regularSplitsForShellParam(Shell* shell,
+                                                      int paramIndex) {
+    std::vector<RegularSplit*> splits;
+    if (!shell || paramIndex < 0 ||
+        paramIndex >= shell->getNumShellParams()) {
+        return splits;
+    }
+    ShellParam* shellParam = shell->getShellParam(paramIndex);
+    if (!shellParam) {
+        return splits;
+    }
+    for (int splitIdx = 0; splitIdx < shellParam->getNumSplit(); ++splitIdx) {
+        Split* split = shellParam->getSplit(splitIdx);
+        if (split && split->type == "RegularSplit") {
+            splits.push_back(static_cast<RegularSplit*>(split));
+        }
+    }
+    return splits;
+}
+
 const ParamAccessPlan* stencilOutputDirectWriterParam(
     const ShellPartitionPlan& plan) {
     for (const auto& param : plan.params) {
@@ -886,6 +923,9 @@ std::string stencilFullSyncLoopRejectReason(DacppFile* dacppFile,
             continue;
         }
         if (isSupportedStencilScalarReader(param)) {
+            if (plan.signature.layout == LocalLayoutKind::StencilWindow2D) {
+                return "StencilWindow2D loop lowering does not yet support replicated scalar readers";
+            }
             continue;
         }
         return "unsupported stencil parameter shape for loop lowering";
@@ -923,9 +963,6 @@ std::string stencilResidentHaloRejectReason(
     const clang::Stmt* loop,
     OrLoopLowerPlan::StencilResidentHaloMetadata& metadata) {
     metadata = OrLoopLowerPlan::StencilResidentHaloMetadata{};
-    if (plan.signature.layout != LocalLayoutKind::StencilWindow1D) {
-        return "resident halo B1 is limited to StencilWindow1D";
-    }
     if (!loop) {
         return "not inside a stable loop site";
     }
@@ -946,80 +983,225 @@ std::string stencilResidentHaloRejectReason(
     }
     if (!loopContainsOnlyDacAndLoweredStencilPostStmts(dacppFile, loop,
                                                        plan)) {
-        return "resident halo B1 requires loop body to contain only DAC and lowered post statements";
-    }
-
-    Split* split = splitForShellParam(plan.exprNode.shell, reader->paramIndex);
-    auto* regular =
-        split && split->type == "RegularSplit"
-            ? static_cast<RegularSplit*>(split)
-            : nullptr;
-    if (!regular) {
-        return "resident halo B1 requires a regular split window";
-    }
-    metadata.windowSize = regular->getSplitSize();
-    metadata.windowStride = regular->getSplitStride();
-    if (metadata.windowSize < 2 || metadata.windowSize > 3 ||
-        metadata.windowStride != 1) {
-        return "resident halo B1 requires stride-1 window size 2 or 3";
+        return plan.signature.layout == LocalLayoutKind::StencilWindow2D
+                   ? "resident halo B2 requires loop body to contain only DAC and lowered post statements"
+                   : "resident halo B1 requires loop body to contain only DAC and lowered post statements";
     }
 
     const DistributedStencilSitePlan sitePlan = analyzeDistributedStencilSite(
         dacppFile, plan.exprNode.shell, plan.exprNode.calc,
         plan.exprNode.dacExpr);
     if (!sitePlan.supported) {
-        return "resident halo B1 requires distributed site analysis";
+        return plan.signature.layout == LocalLayoutKind::StencilWindow2D
+                   ? "resident halo B2 requires distributed site analysis"
+                   : "resident halo B1 requires distributed site analysis";
     }
     if (sitePlan.hasRootBridge) {
-        return "root-bridge stencil sites are outside resident halo B1";
+        return plan.signature.layout == LocalLayoutKind::StencilWindow2D
+                   ? "root-bridge stencil sites are outside resident halo B2"
+                   : "root-bridge stencil sites are outside resident halo B1";
     }
     if (!sitePlan.readCacheTransitions.empty()) {
-        return "read-cache transitions are outside resident halo B1";
+        return plan.signature.layout == LocalLayoutKind::StencilWindow2D
+                   ? "read-cache transitions are outside resident halo B2"
+                   : "read-cache transitions are outside resident halo B1";
+    }
+    if (plan.signature.layout == LocalLayoutKind::StencilWindow1D) {
+        Split* split = splitForShellParam(plan.exprNode.shell,
+                                          reader->paramIndex);
+        auto* regular =
+            split && split->type == "RegularSplit"
+                ? static_cast<RegularSplit*>(split)
+                : nullptr;
+        if (!regular) {
+            return "resident halo B1 requires a regular split window";
+        }
+        metadata.windowSize = regular->getSplitSize();
+        metadata.windowStride = regular->getSplitStride();
+        if (metadata.windowSize < 2 || metadata.windowSize > 3 ||
+            metadata.windowStride != 1) {
+            return "resident halo B1 requires stride-1 window size 2 or 3";
+        }
+        if (sitePlan.followupMappings.size() != 1) {
+            return "resident halo B1 requires exactly one followup mapping";
+        }
+        const auto& mapping = sitePlan.followupMappings.front();
+        if (mapping.rank != 1 ||
+            mapping.writerParamIndex != writer->paramIndex ||
+            mapping.readerParamIndex != reader->paramIndex ||
+            mapping.targetOffset != 1) {
+            return "resident halo B1 requires writer->reader followup offset +1";
+        }
+        metadata.followupTargetOffset = mapping.targetOffset;
+        metadata.leftHalo = 0;
+        metadata.rightHalo = metadata.windowSize - 1;
+
+        if (sitePlan.boundaryLocalUpdates.size() > 1) {
+            return "resident halo B1 supports at most one boundary-local update";
+        }
+        if (!sitePlan.boundaryLocalUpdates.empty()) {
+            const auto& update = sitePlan.boundaryLocalUpdates.front();
+            if (update.rank != 1 ||
+                update.paramIndex != reader->paramIndex ||
+                update.targetRowUsesLoop || update.sourceRowUsesLoop) {
+                return "resident halo B1 only supports constant-index 1D boundary updates";
+            }
+            const auto isExactZeroIndex = [](int index,
+                                             const std::string& exprText) {
+                return index == 0 && trim(exprText) == "0";
+            };
+            if (!isExactZeroIndex(update.targetRow, update.targetRowExpr)) {
+                return "resident halo B1 boundary update target must be left boundary index 0";
+            }
+            if (!update.constantRhs &&
+                update.sourceParamIndex == writer->paramIndex &&
+                !isExactZeroIndex(update.sourceRow, update.sourceRowExpr)) {
+                return "resident halo B1 boundary writer copy must read source index 0";
+            }
+            metadata.hasBoundaryLocalUpdate = true;
+            metadata.boundaryTargetIndex = update.targetRow;
+            metadata.boundarySourceIndex = update.sourceRow;
+            metadata.boundaryConstantValue = update.constantValue;
+            metadata.boundaryCopiesWriter =
+                !update.constantRhs &&
+                update.sourceParamIndex == writer->paramIndex;
+            if (!metadata.boundaryCopiesWriter && !update.constantRhs) {
+                return "resident halo B1 boundary update must copy writer or constant";
+            }
+        }
+
+        metadata.enabled = true;
+        return "";
+    }
+
+    if (plan.signature.layout != LocalLayoutKind::StencilWindow2D) {
+        return "resident halo is limited to StencilWindow1D/B2 row-block StencilWindow2D";
+    }
+    for (const auto& param : plan.params) {
+        if (isSupportedStencilScalarReader(param)) {
+            return "resident halo B2 excludes scalar readers";
+        }
+        if (isSupportedStencilDirectReader(param)) {
+            return "resident halo B2 excludes direct readers";
+        }
+    }
+    const auto regularSplits =
+        regularSplitsForShellParam(plan.exprNode.shell, reader->paramIndex);
+    if (regularSplits.size() != 2) {
+        return "resident halo B2 requires exactly two regular split dimensions";
+    }
+    metadata.windowRows = regularSplits[0]->getSplitSize();
+    metadata.windowCols = regularSplits[1]->getSplitSize();
+    metadata.windowRowStride = regularSplits[0]->getSplitStride();
+    metadata.windowColStride = regularSplits[1]->getSplitStride();
+    if (metadata.windowRows != 3 || metadata.windowCols != 3 ||
+        metadata.windowRowStride != 1 || metadata.windowColStride != 1) {
+        return "resident halo B2 currently requires a 3x3 stride-1 window";
+    }
+    const int64_t readerRows = operator_resident::shapeValueFor(
+        plan.exprNode.shell, reader->paramIndex, 0);
+    const int64_t readerCols = operator_resident::shapeValueFor(
+        plan.exprNode.shell, reader->paramIndex, 1);
+    const int64_t writerRows = operator_resident::shapeValueFor(
+        plan.exprNode.shell, writer->paramIndex, 0);
+    const int64_t writerCols = operator_resident::shapeValueFor(
+        plan.exprNode.shell, writer->paramIndex, 1);
+    if ((readerRows > 0 && writerRows > 0 &&
+         readerRows != writerRows + 2) ||
+        (readerCols > 0 && writerCols > 0 &&
+         readerCols != writerCols + 2)) {
+        return "resident halo B2 requires reader/writer shapes with a 1-cell border";
     }
     if (sitePlan.followupMappings.size() != 1) {
-        return "resident halo B1 requires exactly one followup mapping";
+        return "resident halo B2 requires exactly one followup mapping";
     }
     const auto& mapping = sitePlan.followupMappings.front();
-    if (mapping.rank != 1 || mapping.writerParamIndex != writer->paramIndex ||
+    if (mapping.rank != 2 ||
+        mapping.writerParamIndex != writer->paramIndex ||
         mapping.readerParamIndex != reader->paramIndex ||
-        mapping.targetOffset != 1) {
-        return "resident halo B1 requires writer->reader followup offset +1";
+        mapping.targetRowOffset != 1 ||
+        mapping.targetColOffset != 1) {
+        return "resident halo B2 requires writer->reader followup offset (+1,+1)";
     }
-    metadata.followupTargetOffset = mapping.targetOffset;
-    metadata.leftHalo = 0;
-    metadata.rightHalo = metadata.windowSize - 1;
+    metadata.followupTargetRowOffset = mapping.targetRowOffset;
+    metadata.followupTargetColOffset = mapping.targetColOffset;
 
-    if (sitePlan.boundaryLocalUpdates.size() > 1) {
-        return "resident halo B1 supports at most one boundary-local update";
+    if (sitePlan.boundaryLocalUpdates.size() != 4) {
+        return "resident halo B2 currently requires the canonical 4-loop boundary-local updates";
     }
-    if (!sitePlan.boundaryLocalUpdates.empty()) {
-        const auto& update = sitePlan.boundaryLocalUpdates.front();
-        if (update.rank != 1 || update.paramIndex != reader->paramIndex ||
-            update.targetRowUsesLoop || update.sourceRowUsesLoop) {
-            return "resident halo B1 only supports constant-index 1D boundary updates";
+    bool sawTop = false;
+    bool sawBottom = false;
+    bool sawLeft = false;
+    bool sawRight = false;
+    auto isZeroExpr = [](const std::string& exprText) {
+        return compactExprText(exprText) == "0";
+    };
+    auto isOneExpr = [](const std::string& exprText) {
+        return compactExprText(exprText) == "1";
+    };
+    auto isLastIndexExpr = [](const std::string& exprText, int64_t size) {
+        const std::string compact = compactExprText(exprText);
+        return (size > 0 && compact == std::to_string(size - 1)) ||
+               endsWith(compact, "-1");
+    };
+    auto isPenultimateIndexExpr = [](const std::string& exprText,
+                                     int64_t size) {
+        const std::string compact = compactExprText(exprText);
+        return (size > 1 && compact == std::to_string(size - 2)) ||
+               endsWith(compact, "-2");
+    };
+    for (const auto& update : sitePlan.boundaryLocalUpdates) {
+        if (update.rank != 2 ||
+            update.paramIndex != reader->paramIndex ||
+            update.sourceParamIndex != reader->paramIndex ||
+            update.constantRhs) {
+            return "resident halo B2 boundary updates must be reader-local self copies";
         }
-        const auto isExactZeroIndex = [](int index,
-                                         const std::string& exprText) {
-            return index == 0 && trim(exprText) == "0";
-        };
-        if (!isExactZeroIndex(update.targetRow, update.targetRowExpr)) {
-            return "resident halo B1 boundary update target must be left boundary index 0";
+        const std::string loopLower = compactExprText(update.loopLowerExpr);
+        const std::string loopUpper = compactExprText(update.loopUpperExpr);
+        const bool sameRowLoopExpr =
+            compactExprText(update.targetRowExpr) ==
+            compactExprText(update.sourceRowExpr);
+        const bool sameColLoopExpr =
+            compactExprText(update.targetColExpr) ==
+            compactExprText(update.sourceColExpr);
+
+        if (!update.targetRowUsesLoop && !update.sourceRowUsesLoop &&
+            update.targetColUsesLoop && update.sourceColUsesLoop &&
+            sameColLoopExpr && loopLower == "0" && update.loopUpperInclusive &&
+            isZeroExpr(update.targetRowExpr) && isOneExpr(update.sourceRowExpr)) {
+            sawTop = true;
+            continue;
         }
-        if (!update.constantRhs &&
-            update.sourceParamIndex == writer->paramIndex &&
-            !isExactZeroIndex(update.sourceRow, update.sourceRowExpr)) {
-            return "resident halo B1 boundary writer copy must read source index 0";
+        if (!update.targetRowUsesLoop && !update.sourceRowUsesLoop &&
+            update.targetColUsesLoop && update.sourceColUsesLoop &&
+            sameColLoopExpr && loopLower == "0" && update.loopUpperInclusive &&
+            isLastIndexExpr(update.targetRowExpr, readerRows) &&
+            isPenultimateIndexExpr(update.sourceRowExpr, readerRows)) {
+            sawBottom = true;
+            continue;
         }
-        metadata.hasBoundaryLocalUpdate = true;
-        metadata.boundaryTargetIndex = update.targetRow;
-        metadata.boundarySourceIndex = update.sourceRow;
-        metadata.boundaryConstantValue = update.constantValue;
-        metadata.boundaryCopiesWriter =
-            !update.constantRhs &&
-            update.sourceParamIndex == writer->paramIndex;
-        if (!metadata.boundaryCopiesWriter && !update.constantRhs) {
-            return "resident halo B1 boundary update must copy writer or constant";
+        if (update.targetRowUsesLoop && update.sourceRowUsesLoop &&
+            !update.targetColUsesLoop && !update.sourceColUsesLoop &&
+            sameRowLoopExpr && loopLower == "0" &&
+            !update.loopUpperInclusive &&
+            isZeroExpr(update.targetColExpr) && isOneExpr(update.sourceColExpr)) {
+            sawLeft = true;
+            continue;
         }
+        if (update.targetRowUsesLoop && update.sourceRowUsesLoop &&
+            !update.targetColUsesLoop && !update.sourceColUsesLoop &&
+            sameRowLoopExpr && loopLower == "0" &&
+            !update.loopUpperInclusive &&
+            isLastIndexExpr(update.targetColExpr, readerCols) &&
+            isPenultimateIndexExpr(update.sourceColExpr, readerCols)) {
+            sawRight = true;
+            continue;
+        }
+        return "resident halo B2 only supports the current top/bottom/left/right boundary-local updates";
+    }
+    if (!sawTop || !sawBottom || !sawLeft || !sawRight) {
+        return "resident halo B2 requires canonical top/bottom/left/right boundary-local updates";
     }
 
     metadata.enabled = true;
@@ -1103,13 +1285,29 @@ void annotateLoopLowerCandidates(DacppFile* dacppFile,
                 << " kind=" << orLoopLowerKindName(plan.orLoopLower.kind)
                 << " structure=ctx/init/run/materialize";
             if (haloCandidate) {
-                llvm::outs()
-                    << " resident-halo=true"
-                    << " window-size="
-                    << plan.orLoopLower.stencilResidentHalo.windowSize
-                    << " followup-offset="
-                    << plan.orLoopLower.stencilResidentHalo.followupTargetOffset
-                    << " materialize=final";
+                llvm::outs() << " resident-halo=true";
+                if (plan.signature.layout == LocalLayoutKind::StencilWindow2D) {
+                    llvm::outs()
+                        << " window-shape="
+                        << plan.orLoopLower.stencilResidentHalo.windowRows
+                        << "x"
+                        << plan.orLoopLower.stencilResidentHalo.windowCols
+                        << " followup-offset=("
+                        << plan.orLoopLower.stencilResidentHalo
+                               .followupTargetRowOffset
+                        << ","
+                        << plan.orLoopLower.stencilResidentHalo
+                               .followupTargetColOffset
+                        << ")";
+                } else {
+                    llvm::outs()
+                        << " window-size="
+                        << plan.orLoopLower.stencilResidentHalo.windowSize
+                        << " followup-offset="
+                        << plan.orLoopLower.stencilResidentHalo
+                               .followupTargetOffset;
+                }
+                llvm::outs() << " materialize=final";
             } else {
                 llvm::outs()
                     << " hoist-reader-sync="

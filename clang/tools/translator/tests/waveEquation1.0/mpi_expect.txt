@@ -3,7 +3,8 @@ LOG_CONTAINS:[DACPP][MPI][OR] chain=0 layout=StencilWindow2D length=1 chain=acce
 LOG_CONTAINS:[DACPP][MPI] output matNext sync=distributed-followup
 LOG_CONTAINS:[DACPP][MPI][PhaseC] read-cache transition detected matCur->matPrev offset=(-1,-1)
 LOG_CONTAINS:[DACPP][MPI][PhaseC] route detected matNext->matCur offset=(1,1)
-LOG_CONTAINS:[DACPP][MPI][OR][P4.6][Loop] expr=0 shell=waveEqShell layout=StencilWindow2D loop-lower=candidate loop=for kind=StencilFullSync structure=ctx/init/run/materialize hoist-reader-sync=false materialize=per-run
+LOG_CONTAINS:[DACPP][MPI][OR][P4.6][Loop] expr=0 shell=waveEqShell
+LOG_CONTAINS:kind=StencilFullSync structure=ctx/init/run/materialize hoist-reader-sync=false materialize=per-run
 LOG_NOT_CONTAINS:partial-exchange disabled
 SYCL_CONTAINS:struct __dacpp_mpi_or_waveEqShell_waveEq_0_ctx
 SYCL_CONTAINS:void __dacpp_mpi_or_waveEqShell_waveEq_0_init(__dacpp_mpi_or_waveEqShell_waveEq_0_ctx& ctx
@@ -26,6 +27,11 @@ SYCL_CONTAINS:__or_followup_global_cur[static_cast<std::size_t>(__or_boundary_ta
 SYCL_NOT_CONTAINS:matCur[i][NY-1]=0
 SYCL_NOT_CONTAINS:MPI_Bcast(__or_materialized_next.data()
 SYCL_NOT_CONTAINS:void __dacpp_mpi_stencil_waveEqShell_waveEq_0
+SYCL_NOT_CONTAINS:ResidentHalo2DRowLayout __or_halo_layout
+SYCL_NOT_CONTAINS:ResidentHaloView2D
+SYCL_NOT_CONTAINS:scatter_window_2d_rows
+SYCL_NOT_CONTAINS:apply_followup_2d(
+SYCL_NOT_CONTAINS:exchange_halo_2d_rows
 SYCL_NOT_CONTAINS:AccessPattern
 SYCL_NOT_CONTAINS:PackPlan
 SYCL_NOT_CONTAINS:FixedBlock

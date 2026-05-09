@@ -1,0 +1,20 @@
+MPI_STRUCTURE_ONLY:1
+LOG_CONTAINS:[DACPP][MPI][OR] expr=0 shell=countGuardShell layout=StencilWindow2D partition=accepted
+LOG_CONTAINS:[DACPP][MPI][OR] chain=0 layout=StencilWindow2D length=1 chain=accepted codegen=enabled
+LOG_CONTAINS:[DACPP][MPI][OR][P4.6][Loop] expr=0 shell=countGuardShell
+LOG_CONTAINS:kind=StencilResidentHalo structure=ctx/init/run/materialize resident-halo=true window-shape=3x3 followup-offset=(1,1) materialize=final
+SYCL_CONTAINS:checked_mul_int64_or_abort(
+SYCL_CONTAINS:narrow_mpi_count_or_abort(
+SYCL_CONTAINS:resident halo 2D gather count exceeds MPI int range
+SYCL_CONTAINS:resident halo 2D materialize sendcount exceeds MPI int range
+SYCL_CONTAINS:resident halo 2D local reader size exceeds MPI int range
+SYCL_CONTAINS:resident halo 2D initial reader size exceeds MPI int range
+SYCL_NOT_CONTAINS:static_cast<int>(ctx.__or_local_item_count)
+SYCL_NOT_CONTAINS:static_cast<int>(ctx.__or_row_counts[static_cast<std::size_t>(r)] * ctx.__or_output_cols)
+SYCL_NOT_CONTAINS:static_cast<int>(ctx.__or_row_displs[static_cast<std::size_t>(r)] * ctx.__or_output_cols)
+SYCL_NOT_CONTAINS:AccessPattern
+SYCL_NOT_CONTAINS:PackPlan
+SYCL_NOT_CONTAINS:FixedBlock
+SYCL_NOT_CONTAINS:root_bridge
+SYCL_NOT_CONTAINS:publish_local_writes_with_halo_or_exchange
+SYCL_NOT_CONTAINS:ctx.use_partial_exchange = true;

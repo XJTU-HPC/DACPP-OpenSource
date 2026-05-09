@@ -61,6 +61,27 @@ struct ResidentHaloView1D {
 };
 
 template <typename T>
+struct ResidentHaloView2DRow {
+    T* data = nullptr;
+    int offset = 0;
+
+    decltype(auto) operator[](int idx) const {
+        return data[offset + idx];
+    }
+};
+
+template <typename T>
+struct ResidentHaloView2D {
+    T* data = nullptr;
+    int offset = 0;
+    int cols = 0;
+
+    ResidentHaloView2DRow<T> operator[](int row) const {
+        return ResidentHaloView2DRow<T>{data, offset + row * cols};
+    }
+};
+
+template <typename T>
 struct ContiguousView2DRow {
     T* data = nullptr;
     int offset = 0;

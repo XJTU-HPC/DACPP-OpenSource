@@ -2,7 +2,11 @@
 #define DACPP_MPI_OPERATOR_RESIDENT_RUNTIME_H
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <limits>
 #include <string>
 #include <typeindex>
 #include <unordered_map>
@@ -18,6 +22,40 @@ struct RankRange1D {
     int64_t begin = 0;
     int64_t count = 0;
 };
+
+[[noreturn]] inline void abort_mpi_count_overflow(const char* what,
+                                                  int64_t value) {
+    int mpi_rank = 0;
+    MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);
+    if (mpi_rank == 0) {
+        std::fprintf(stderr,
+                     "[DACPP][MPI][OR] %s exceeds supported MPI int range: %lld\n",
+                     what ? what : "MPI count/displacement",
+                     static_cast<long long>(value));
+    }
+    MPI_Abort(MPI_COMM_WORLD, 5);
+    std::abort();
+}
+
+inline int64_t checked_mul_int64_or_abort(int64_t lhs,
+                                          int64_t rhs,
+                                          const char* what) {
+    if (lhs < 0 || rhs < 0) {
+        abort_mpi_count_overflow(what, lhs < 0 ? lhs : rhs);
+    }
+    if (lhs != 0 && rhs > std::numeric_limits<int64_t>::max() / lhs) {
+        abort_mpi_count_overflow(what, std::numeric_limits<int64_t>::max());
+    }
+    return lhs * rhs;
+}
+
+inline int narrow_mpi_count_or_abort(int64_t value, const char* what) {
+    if (value < 0 ||
+        value > static_cast<int64_t>(std::numeric_limits<int>::max())) {
+        abort_mpi_count_overflow(what, value);
+    }
+    return static_cast<int>(value);
+}
 
 inline RankRange1D rank_range_1d(int64_t total, int rank, int size) {
     const int64_t safeSize = std::max(1, size);
@@ -37,8 +75,12 @@ inline void counts_displs_1d(int64_t total,
     int64_t offset = 0;
     for (int r = 0; r < size; ++r) {
         const RankRange1D range = rank_range_1d(total, r, size);
-        counts[r] = static_cast<int>(range.count);
-        displs[r] = static_cast<int>(offset);
+        counts[r] = narrow_mpi_count_or_abort(
+            range.count,
+            "[DACPP][MPI][OR] shape-derived count exceeds MPI int range");
+        displs[r] = narrow_mpi_count_or_abort(
+            offset,
+            "[DACPP][MPI][OR] shape-derived displacement exceeds MPI int range");
         offset += range.count;
     }
 }
@@ -83,6 +125,35 @@ inline ResidentHalo1DLayout resident_halo_1d_layout(
     return layout;
 }
 
+struct ResidentHalo2DRowLayout {
+    RankRange1D owned_rows{};
+    int64_t input_cols = 0;
+    int64_t local_row_count = 0;
+    int64_t local_size = 0;
+    int64_t global_row_begin = 0;
+};
+
+inline ResidentHalo2DRowLayout resident_halo_2d_row_layout(
+    int64_t outputRows,
+    int64_t inputCols,
+    int rank,
+    int size,
+    int windowRows) {
+    ResidentHalo2DRowLayout layout;
+    layout.owned_rows = rank_range_1d(outputRows, rank, size);
+    layout.input_cols = inputCols;
+    layout.local_row_count =
+        layout.owned_rows.count > 0
+            ? layout.owned_rows.count + std::max<int64_t>(0, windowRows - 1)
+            : 0;
+    layout.local_size = checked_mul_int64_or_abort(
+        layout.local_row_count,
+        inputCols,
+        "[DACPP][MPI][OR] resident halo 2D local size exceeds MPI int range");
+    layout.global_row_begin = layout.owned_rows.begin;
+    return layout;
+}
+
 template <typename T>
 void scatter_window_1d(const std::vector<T>& global,
                        std::vector<T>& local,
@@ -109,8 +180,11 @@ void scatter_window_1d(const std::vector<T>& global,
                           global.begin() + begin + count,
                           local.begin());
             } else {
+                const int sendCount = narrow_mpi_count_or_abort(
+                    target.local_size,
+                    "[DACPP][MPI][OR] resident halo 1D scatter count exceeds MPI int range");
                 MPI_Send(global.data() + begin,
-                         static_cast<int>(target.local_size),
+                         sendCount,
                          mpiType,
                          r,
                          4201,
@@ -118,11 +192,68 @@ void scatter_window_1d(const std::vector<T>& global,
             }
         }
     } else if (layout.local_size > 0) {
+        const int recvCount = narrow_mpi_count_or_abort(
+            layout.local_size,
+            "[DACPP][MPI][OR] resident halo 1D recv count exceeds MPI int range");
         MPI_Recv(local.data(),
-                 static_cast<int>(layout.local_size),
+                 recvCount,
                  mpiType,
                  0,
                  4201,
+                 MPI_COMM_WORLD,
+                 MPI_STATUS_IGNORE);
+    }
+}
+
+template <typename T>
+void scatter_window_2d_rows(const std::vector<T>& global,
+                            std::vector<T>& local,
+                            int64_t outputRows,
+                            int64_t inputCols,
+                            int windowRows,
+                            const ResidentHalo2DRowLayout& layout,
+                            int rank,
+                            int size,
+                            MPI_Datatype mpiType) {
+    (void)windowRows;
+    local.assign(static_cast<std::size_t>(layout.local_size), T{});
+    if (rank == 0) {
+        for (int r = 0; r < size; ++r) {
+            const ResidentHalo2DRowLayout target =
+                resident_halo_2d_row_layout(outputRows, inputCols, r, size,
+                                            windowRows);
+            if (target.local_size <= 0) {
+                continue;
+            }
+            const std::size_t begin =
+                static_cast<std::size_t>(target.global_row_begin * inputCols);
+            const std::size_t count =
+                static_cast<std::size_t>(target.local_size);
+            if (r == 0) {
+                std::copy(global.begin() + begin,
+                          global.begin() + begin + count,
+                          local.begin());
+            } else {
+                const int sendCount = narrow_mpi_count_or_abort(
+                    target.local_size,
+                    "[DACPP][MPI][OR] resident halo 2D scatter count exceeds MPI int range");
+                MPI_Send(global.data() + begin,
+                         sendCount,
+                         mpiType,
+                         r,
+                         4301,
+                         MPI_COMM_WORLD);
+            }
+        }
+    } else if (layout.local_size > 0) {
+        const int recvCount = narrow_mpi_count_or_abort(
+            layout.local_size,
+            "[DACPP][MPI][OR] resident halo 2D recv count exceeds MPI int range");
+        MPI_Recv(local.data(),
+                 recvCount,
+                 mpiType,
+                 0,
+                 4301,
                  MPI_COMM_WORLD,
                  MPI_STATUS_IGNORE);
     }
@@ -138,6 +269,32 @@ void apply_followup_1d(std::vector<T>& readerLocal,
         if (target >= 0 &&
             target < static_cast<int64_t>(readerLocal.size())) {
             readerLocal[static_cast<std::size_t>(target)] = writerLocal[idx];
+        }
+    }
+}
+
+template <typename T>
+void apply_followup_2d(std::vector<T>& readerLocal,
+                       const std::vector<T>& writerLocal,
+                       int64_t localOutputRows,
+                       int64_t outputCols,
+                       int64_t inputCols,
+                       int followupTargetRowOffset,
+                       int followupTargetColOffset) {
+    for (int64_t row = 0; row < localOutputRows; ++row) {
+        for (int64_t col = 0; col < outputCols; ++col) {
+            const int64_t targetRow = row + followupTargetRowOffset;
+            const int64_t targetCol = col + followupTargetColOffset;
+            if (targetRow < 0 || targetCol < 0 || targetCol >= inputCols) {
+                continue;
+            }
+            const std::size_t writerIdx = static_cast<std::size_t>(
+                row * outputCols + col);
+            const std::size_t targetIdx = static_cast<std::size_t>(
+                targetRow * inputCols + targetCol);
+            if (writerIdx < writerLocal.size() && targetIdx < readerLocal.size()) {
+                readerLocal[targetIdx] = writerLocal[writerIdx];
+            }
         }
     }
 }
@@ -180,6 +337,64 @@ void exchange_halo_1d(std::vector<T>& local,
 }
 
 template <typename T>
+void exchange_halo_2d_rows(std::vector<T>& local,
+                           const std::vector<T>& writerLocal,
+                           const ResidentHalo2DRowLayout& layout,
+                           int64_t outputRows,
+                           int64_t outputCols,
+                           int64_t inputCols,
+                           int followupTargetRowOffset,
+                           int followupTargetColOffset,
+                           int rank,
+                           int size,
+                           MPI_Datatype mpiType) {
+    if (layout.owned_rows.count <= 0 || outputCols <= 0 ||
+        followupTargetRowOffset != 1 || followupTargetColOffset != 1 ||
+        local.empty() || writerLocal.empty()) {
+        return;
+    }
+    const int prev = nearest_nonempty_rank_1d(outputRows, rank, size, -1);
+    const int next = nearest_nonempty_rank_1d(outputRows, rank, size, 1);
+    const int sendCount = narrow_mpi_count_or_abort(
+        outputCols,
+        "[DACPP][MPI][OR] resident halo 2D halo width exceeds MPI int range");
+    const std::ptrdiff_t topRecvOffset = static_cast<std::ptrdiff_t>(
+        followupTargetColOffset);
+    const std::ptrdiff_t bottomRecvOffset =
+        static_cast<std::ptrdiff_t>(checked_mul_int64_or_abort(
+                                        layout.local_row_count - 1,
+                                        inputCols,
+                                        "[DACPP][MPI][OR] resident halo 2D halo offset overflow") +
+                                    followupTargetColOffset);
+    MPI_Sendrecv(writerLocal.data() +
+                     static_cast<std::ptrdiff_t>((layout.owned_rows.count - 1) *
+                                                 outputCols),
+                 sendCount,
+                 mpiType,
+                 next,
+                 4203,
+                 local.data() + topRecvOffset,
+                 sendCount,
+                 mpiType,
+                 prev,
+                 4203,
+                 MPI_COMM_WORLD,
+                 MPI_STATUS_IGNORE);
+    MPI_Sendrecv(writerLocal.data(),
+                 sendCount,
+                 mpiType,
+                 prev,
+                 4204,
+                 local.data() + bottomRecvOffset,
+                 sendCount,
+                 mpiType,
+                 next,
+                 4204,
+                 MPI_COMM_WORLD,
+                 MPI_STATUS_IGNORE);
+}
+
+template <typename T>
 std::vector<T> owned_slice_1d(const std::vector<T>& local,
                               const ResidentHalo1DLayout& layout) {
     const auto begin =
@@ -196,8 +411,18 @@ inline void byte_counts_displs(const std::vector<int>& elemCounts,
     byteCounts.resize(elemCounts.size());
     byteDispls.resize(elemDispls.size());
     for (std::size_t idx = 0; idx < elemCounts.size(); ++idx) {
-        byteCounts[idx] = static_cast<int>(elemCounts[idx] * elemSize);
-        byteDispls[idx] = static_cast<int>(elemDispls[idx] * elemSize);
+        byteCounts[idx] = narrow_mpi_count_or_abort(
+            checked_mul_int64_or_abort(
+                static_cast<int64_t>(elemCounts[idx]),
+                static_cast<int64_t>(elemSize),
+                "[DACPP][MPI][OR] byte count exceeds MPI int range"),
+            "[DACPP][MPI][OR] byte count exceeds MPI int range");
+        byteDispls[idx] = narrow_mpi_count_or_abort(
+            checked_mul_int64_or_abort(
+                static_cast<int64_t>(elemDispls[idx]),
+                static_cast<int64_t>(elemSize),
+                "[DACPP][MPI][OR] byte displacement exceeds MPI int range"),
+            "[DACPP][MPI][OR] byte displacement exceeds MPI int range");
     }
 }
 

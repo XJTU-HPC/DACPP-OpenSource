@@ -71,6 +71,13 @@ bool assignStencilWindow2DLayout(DacppFile* dacppFile,
             ++directReaderCount;
             continue;
         }
+        if (param.access == ParamAccessKind::ReplicatedScalar &&
+            param.reads &&
+            !param.writes) {
+            rejectReason =
+                "stencil window 2d does not yet support replicated scalar readers";
+            return false;
+        }
         if (param.access == ParamAccessKind::OutputDirect &&
             param.writes &&
             param.reads) {

@@ -3,29 +3,30 @@ LOG_CONTAINS:[DACPP][MPI][PhaseC] boundary-local update detected stmt
 LOG_CONTAINS:[DACPP][MPI][OR] expr=0 shell=stencilShell layout=StencilWindow2D partition=accepted
 LOG_CONTAINS:[DACPP][MPI][OR] chain=0 layout=StencilWindow2D length=1 chain=accepted codegen=enabled
 LOG_CONTAINS:[DACPP][MPI] output matOut sync=distributed-followup
-LOG_CONTAINS:[DACPP][MPI][OR][P4.6][Loop] expr=0 shell=stencilShell layout=StencilWindow2D loop-lower=candidate loop=for kind=StencilFullSync structure=ctx/init/run/materialize hoist-reader-sync=false materialize=per-run
+LOG_CONTAINS:[DACPP][MPI][OR][P4.6][Loop] expr=0 shell=stencilShell
+LOG_CONTAINS:kind=StencilResidentHalo structure=ctx/init/run/materialize resident-halo=true window-shape=3x3 followup-offset=(1,1) materialize=final
 SYCL_CONTAINS:struct __dacpp_mpi_or_stencilShell_stencil_0_ctx
 SYCL_CONTAINS:void __dacpp_mpi_or_stencilShell_stencil_0_init(__dacpp_mpi_or_stencilShell_stencil_0_ctx& ctx
 SYCL_CONTAINS:void __dacpp_mpi_or_stencilShell_stencil_0_run(__dacpp_mpi_or_stencilShell_stencil_0_ctx& ctx
 SYCL_CONTAINS:void __dacpp_mpi_or_stencilShell_stencil_0_materialize(__dacpp_mpi_or_stencilShell_stencil_0_ctx& ctx
-SYCL_CONTAINS:void __dacpp_mpi_or_stencilShell_stencil_0
-SYCL_CONTAINS:MPI_Bcast(__or_global_mat.data()
-SYCL_CONTAINS:dacpp::mpi::ContiguousView2D<const double> view_mat
-SYCL_CONTAINS:MPI_Gatherv(__or_local_out.data()
-SYCL_CONTAINS:__or_followup_global_mat
-SYCL_CONTAINS:dacpp::mpi::map_2d_global_with_offset(static_cast<int64_t>(__or_idx), __or_output_cols, __or_followup_reader_cols_mat, 1, 1)
-SYCL_CONTAINS:__or_arg0.array2Tensor(__or_followup_global_mat)
-SYCL_CONTAINS:MPI_Bcast(__or_followup_global_mat.data()
-SYCL_CONTAINS:const int64_t __or_boundary_begin = static_cast<int64_t>(0);
-SYCL_CONTAINS:const int64_t __or_boundary_end = static_cast<int64_t>(NX-1);
-SYCL_CONTAINS:for (int64_t __or_boundary_idx = __or_boundary_begin; __or_boundary_idx < __or_boundary_end; ++__or_boundary_idx)
-SYCL_CONTAINS:__or_boundary_target_row
-SYCL_CONTAINS:__or_followup_global_mat[static_cast<std::size_t>(__or_boundary_target)] = __or_followup_global_mat[static_cast<std::size_t>(__or_boundary_source)]
+SYCL_CONTAINS:dacpp::mpi::operator_resident::ResidentHalo2DRowLayout __or_halo_layout
+SYCL_CONTAINS:dacpp::mpi::operator_resident::scatter_window_2d_rows(__or_initial_global_mat
+SYCL_CONTAINS:ResidentHaloView2D<const double> view_mat{__or_reader_data, local_row * static_cast<int>(__or_input_cols) + local_col
+SYCL_CONTAINS:dacpp::mpi::operator_resident::apply_followup_2d(__or_local_mat, __or_local_out
+SYCL_CONTAINS:dacpp::mpi::operator_resident::exchange_halo_2d_rows(__or_local_mat, __or_local_out
+SYCL_CONTAINS:MPI_Gatherv(ctx.__or_local_out.data()
+SYCL_CONTAINS:dacpp::mpi::map_2d_global_with_offset(static_cast<int64_t>(__or_idx), ctx.__or_output_cols, __or_followup_reader_cols_mat, 1, 1)
+SYCL_CONTAINS:__or_materialized_mat[static_cast<std::size_t>(__or_boundary_target)] = __or_materialized_mat[static_cast<std::size_t>(__or_boundary_source)]
 SYCL_NOT_CONTAINS:matIn[0][j]=matIn[1][j]
+SYCL_NOT_CONTAINS:MPI_Bcast(__or_global_mat.data()
+SYCL_NOT_CONTAINS:MPI_Gatherv(__or_local_out.data()
+SYCL_NOT_CONTAINS:__or_followup_global_mat
+SYCL_NOT_CONTAINS:dacpp::mpi::ContiguousView2D<const double> view_mat
 SYCL_NOT_CONTAINS:MPI_Bcast(__or_materialized_out.data()
 SYCL_NOT_CONTAINS:AccessPattern
 SYCL_NOT_CONTAINS:PackPlan
 SYCL_NOT_CONTAINS:FixedBlock
+SYCL_NOT_CONTAINS:root_bridge
 SYCL_NOT_CONTAINS:__dacpp_mpi_stencil_
 SYCL_NOT_CONTAINS:publish_local_writes_with_halo_or_exchange
 SYCL_NOT_CONTAINS:ctx.use_partial_exchange = true;

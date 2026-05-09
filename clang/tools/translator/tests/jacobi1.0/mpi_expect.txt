@@ -8,10 +8,11 @@ LOG_NOT_CONTAINS:[DACPP][MPI][PhaseC]
 SYCL_CONTAINS:void __dacpp_mpi_or_jacobiShell_jacobi_0
 SYCL_CONTAINS:const int64_t __or_payload_len_a = __or_arg0.getShape(1);
 SYCL_CONTAINS:MPI_Bcast(__or_local_x.data(), static_cast<int>(__or_full_count_x), MPI_FLOAT, 0, MPI_COMM_WORLD);
-SYCL_CONTAINS:MPI_Bcast(__or_materialized_x_new.data(), __or_arg3.getSize(), MPI_FLOAT, 0, MPI_COMM_WORLD);
+SYCL_CONTAINS:materialized output broadcast count exceeds MPI int range
 SYCL_CONTAINS:__or_arg3.array2Tensor(__or_materialized_x_new);
 SYCL_CONTAINS:MPI_Scatterv
 SYCL_CONTAINS:MPI_Gatherv
+SYCL_NOT_CONTAINS:MPI_Bcast(__or_materialized_x_new.data(), __or_arg3.getSize(), MPI_FLOAT, 0, MPI_COMM_WORLD);
 SYCL_NOT_CONTAINS:AccessPattern
 SYCL_NOT_CONTAINS:PackPlan
 SYCL_NOT_CONTAINS:__dacpp_mpi_stencil_
