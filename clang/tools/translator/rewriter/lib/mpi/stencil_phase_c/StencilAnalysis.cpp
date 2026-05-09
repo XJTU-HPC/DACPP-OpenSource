@@ -153,7 +153,13 @@ bool tensorUsesDistributedFollowup(
     }
     const std::string actualName =
         detail::resolveActualTensorName(tensorName, dacExpr);
-    return plan.distributedTensors.count(actualName) != 0;
+    for (const auto& mapping : plan.followupMappings) {
+        if (mapping.writerTensor == actualName ||
+            mapping.readerTensor == actualName) {
+            return true;
+        }
+    }
+    return false;
 }
 
 }  // namespace mpi_rewriter

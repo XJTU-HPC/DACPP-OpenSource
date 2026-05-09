@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "clang/AST/ASTContext.h"
+#include "clang/AST/Decl.h"
 #include "clang/AST/Stmt.h"
 #include "clang/AST/Expr.h"
 #include "clang/AST/ExprCXX.h"
@@ -75,6 +76,77 @@ std::string baseNameFromExpr(const clang::Expr* expr) {
     return "";
 }
 
+struct TensorAliasKey {
+    std::string name;
+    bool precise = false;
+};
+
+TensorAliasKey tensorAliasKeyForExpr(
+    const clang::Expr* expr,
+    clang::ASTContext* context,
+    std::set<const clang::ValueDecl*>& seenDecls) {
+    if (!expr) {
+        return {};
+    }
+    expr = expr->IgnoreParenImpCasts();
+    if (const auto* materialized =
+            llvm::dyn_cast<clang::MaterializeTemporaryExpr>(expr)) {
+        return tensorAliasKeyForExpr(materialized->getSubExpr(), context,
+                                     seenDecls);
+    }
+    if (const auto* temporary =
+            llvm::dyn_cast<clang::CXXBindTemporaryExpr>(expr)) {
+        return tensorAliasKeyForExpr(temporary->getSubExpr(), context,
+                                     seenDecls);
+    }
+    if (const auto* declRef = llvm::dyn_cast<clang::DeclRefExpr>(expr)) {
+        const clang::ValueDecl* decl = declRef->getDecl();
+        if (!decl) {
+            return {exprSource(expr, context), false};
+        }
+        if (const auto* varDecl = llvm::dyn_cast<clang::VarDecl>(decl)) {
+            if (varDecl->getType()->isReferenceType()) {
+                if (seenDecls.count(varDecl) != 0) {
+                    return {varDecl->getNameAsString(), false};
+                }
+                if (const clang::Expr* init = varDecl->getInit()) {
+                    seenDecls.insert(varDecl);
+                    TensorAliasKey key =
+                        tensorAliasKeyForExpr(init, context, seenDecls);
+                    seenDecls.erase(varDecl);
+                    if (!key.name.empty()) {
+                        return key;
+                    }
+                }
+                return {varDecl->getNameAsString(), false};
+            }
+        }
+        return {decl->getNameAsString(), true};
+    }
+    if (const auto* member = llvm::dyn_cast<clang::MemberExpr>(expr)) {
+        TensorAliasKey key =
+            tensorAliasKeyForExpr(member->getBase(), context, seenDecls);
+        if (!key.name.empty()) {
+            return key;
+        }
+    }
+    if (const auto* opCall = llvm::dyn_cast<clang::CXXOperatorCallExpr>(expr)) {
+        if (opCall->getOperator() == clang::OO_Subscript &&
+            opCall->getNumArgs() > 0) {
+            TensorAliasKey key =
+                tensorAliasKeyForExpr(opCall->getArg(0), context, seenDecls);
+            if (!key.name.empty()) {
+                return key;
+            }
+        }
+    }
+    const std::string baseName = baseNameFromExpr(expr);
+    if (!baseName.empty()) {
+        return {baseName, false};
+    }
+    return {exprSource(expr, context), false};
+}
+
 bool sourceRangeContains(const clang::SourceManager& sourceManager,
                          clang::SourceRange outer,
                          clang::SourceRange inner) {
@@ -87,6 +159,16 @@ bool sourceRangeContains(const clang::SourceManager& sourceManager,
     };
     return beforeOrEqual(outer.getBegin(), inner.getBegin()) &&
            beforeOrEqual(inner.getEnd(), outer.getEnd());
+}
+
+TensorAliasKey actualTensorKeyForArg(const clang::Expr* expr,
+                                     clang::ASTContext* context) {
+    std::set<const clang::ValueDecl*> seenDecls;
+    TensorAliasKey key = tensorAliasKeyForExpr(expr, context, seenDecls);
+    if (!key.name.empty()) {
+        return key;
+    }
+    return {exprSource(expr, context), false};
 }
 
 std::string actualTensorNameForArg(const clang::Expr* expr,
@@ -116,6 +198,13 @@ void fillActualTensorNames(ShellPartitionPlan& plan, DacppFile* dacppFile) {
                                    dacppFile->getContext());
         if (!actual.empty()) {
             param.actualTensorName = actual;
+        }
+        const TensorAliasKey aliasKey =
+            actualTensorKeyForArg(shellCall->getArg(idx),
+                                  dacppFile->getContext());
+        if (!aliasKey.name.empty()) {
+            param.actualTensorAliasKey = aliasKey.name;
+            param.actualTensorAliasKeyPrecise = aliasKey.precise;
         }
     }
 }
@@ -205,6 +294,11 @@ bool supportedPhaseLayout(LocalLayoutKind layout) {
 
 bool directResidentLoopLayout(LocalLayoutKind layout) {
     return layout == LocalLayoutKind::Contiguous1D;
+}
+
+bool stencilFullSyncLoopLayout(LocalLayoutKind layout) {
+    return layout == LocalLayoutKind::StencilWindow1D ||
+           layout == LocalLayoutKind::StencilWindow2D;
 }
 
 const char* loopKindName(const clang::Stmt* stmt) {
@@ -309,6 +403,267 @@ bool loopContainsMultipleDacExprs(DacppFile* dacppFile,
                              plan.exprNode.dacExpr->getSourceRange());
 }
 
+bool shellArgsDeclaredBeforeLoop(DacppFile* dacppFile,
+                                 const clang::Stmt* loop,
+                                 const ShellPartitionPlan& plan) {
+    if (!dacppFile || !dacppFile->getContext() || !loop ||
+        !plan.exprNode.dacExpr) {
+        return false;
+    }
+    const clang::CallExpr* shellCall = getShellCallExpr(plan.exprNode.dacExpr);
+    if (!shellCall) {
+        return false;
+    }
+    const auto& sourceManager = dacppFile->getContext()->getSourceManager();
+    for (const clang::Expr* arg : shellCall->arguments()) {
+        if (!arg) {
+            return false;
+        }
+        const auto* declRef =
+            llvm::dyn_cast<clang::DeclRefExpr>(arg->IgnoreParenImpCasts());
+        if (!declRef) {
+            return false;
+        }
+        const auto* varDecl =
+            llvm::dyn_cast_or_null<clang::VarDecl>(declRef->getDecl());
+        if (!varDecl) {
+            return false;
+        }
+        if (!varDecl->isFileVarDecl() &&
+            !sourceManager.isBeforeInTranslationUnit(
+                varDecl->getBeginLoc(), loop->getBeginLoc())) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool isStencilWindow1DReader(const ParamAccessPlan& param) {
+    return param.access == ParamAccessKind::StencilWindow &&
+           param.reads &&
+           !param.writes &&
+           param.tensorDims.size() == 1 &&
+           param.tensorDims[0] == 0;
+}
+
+bool isStencilWindow2DReader(const ParamAccessPlan& param) {
+    return param.access == ParamAccessKind::StencilWindow &&
+           param.reads &&
+           !param.writes &&
+           param.tensorDims.size() == 2 &&
+           param.tensorDims[0] == 0 &&
+           param.tensorDims[1] == 1;
+}
+
+bool isStencilWindowReaderForLayout(const ParamAccessPlan& param,
+                                    LocalLayoutKind layout) {
+    if (layout == LocalLayoutKind::StencilWindow1D) {
+        return isStencilWindow1DReader(param);
+    }
+    if (layout == LocalLayoutKind::StencilWindow2D) {
+        return isStencilWindow2DReader(param);
+    }
+    return false;
+}
+
+bool isStencilOutputDirectWriter(const ParamAccessPlan& param,
+                                 LocalLayoutKind layout) {
+    if (layout == LocalLayoutKind::StencilWindow1D) {
+        return param.access == ParamAccessKind::OutputDirect &&
+               param.writes &&
+               !param.reads &&
+               param.tensorDims.size() == 1 &&
+               param.tensorDims[0] == 0;
+    }
+    if (layout == LocalLayoutKind::StencilWindow2D) {
+        return param.access == ParamAccessKind::OutputDirect &&
+               param.writes &&
+               !param.reads &&
+               param.tensorDims.size() == 2 &&
+               param.tensorDims[0] == 0 &&
+               param.tensorDims[1] == 1;
+    }
+    return param.access == ParamAccessKind::OutputDirect &&
+           param.writes &&
+           !param.reads;
+}
+
+bool isSupportedStencilScalarReader(const ParamAccessPlan& param) {
+    return param.access == ParamAccessKind::ReplicatedScalar &&
+           param.reads &&
+           !param.writes;
+}
+
+bool isSupportedStencilDirectReader(const ParamAccessPlan& param) {
+    return param.access == ParamAccessKind::DirectMapped &&
+           param.reads &&
+           !param.writes;
+}
+
+bool exprWritesTensor(const clang::Expr* expr,
+                      const std::set<std::string>& tensorNames);
+
+bool stmtWritesAnyTensor(const clang::Stmt* stmt,
+                         const std::set<std::string>& tensorNames);
+
+bool stmtWritesAnyTensorExcept(
+    const clang::Stmt* stmt,
+    const std::set<std::string>& tensorNames,
+    const std::set<const clang::Stmt*>& ignoredStmts) {
+    if (!stmt || tensorNames.empty() || ignoredStmts.count(stmt) != 0) {
+        return false;
+    }
+    if (const auto* binary = llvm::dyn_cast<clang::BinaryOperator>(stmt)) {
+        if (binary->isAssignmentOp() &&
+            exprWritesTensor(binary->getLHS(), tensorNames)) {
+            return true;
+        }
+    }
+    if (const auto* opCall = llvm::dyn_cast<clang::CXXOperatorCallExpr>(stmt)) {
+        if (opCall->isAssignmentOp() && opCall->getNumArgs() > 0 &&
+            exprWritesTensor(opCall->getArg(0), tensorNames)) {
+            return true;
+        }
+        if ((opCall->getOperator() == clang::OO_PlusPlus ||
+             opCall->getOperator() == clang::OO_MinusMinus) &&
+            opCall->getNumArgs() > 0 &&
+            exprWritesTensor(opCall->getArg(0), tensorNames)) {
+            return true;
+        }
+    }
+    if (const auto* unary = llvm::dyn_cast<clang::UnaryOperator>(stmt)) {
+        if (unary->isIncrementDecrementOp() &&
+            exprWritesTensor(unary->getSubExpr(), tensorNames)) {
+            return true;
+        }
+    }
+    for (const clang::Stmt* child : stmt->children()) {
+        if (stmtWritesAnyTensorExcept(child, tensorNames, ignoredStmts)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool stencilLoopWritesReaderOutsideOrPath(const clang::Stmt* loop,
+                                          DacppFile* dacppFile,
+                                          const ShellPartitionPlan& plan) {
+    std::set<std::string> readerTensors;
+    for (const auto& param : plan.params) {
+        if (isStencilWindowReaderForLayout(param, plan.signature.layout) &&
+            !param.actualTensorName.empty()) {
+            readerTensors.insert(param.actualTensorName);
+        }
+    }
+    if (readerTensors.empty()) {
+        return false;
+    }
+    std::set<const clang::Stmt*> ignoredStmts;
+    const DistributedStencilSitePlan sitePlan = analyzeDistributedStencilSite(
+        dacppFile, plan.exprNode.shell, plan.exprNode.calc,
+        plan.exprNode.dacExpr);
+    if (sitePlan.supported && !sitePlan.hasRootBridge) {
+        for (const auto& region : collectDistributedFollowupRegions(
+                 dacppFile, plan.exprNode.shell, plan.exprNode.calc,
+                 plan.exprNode.dacExpr)) {
+            ignoredStmts.insert(region.stmt);
+        }
+        for (const clang::Stmt* stmt : sitePlan.boundaryLocalStmts) {
+            ignoredStmts.insert(stmt);
+        }
+    }
+    return stmtWritesAnyTensorExcept(loop, readerTensors, ignoredStmts);
+}
+
+const ParamAccessPlan* stencilWindowReaderParam(
+    const ShellPartitionPlan& plan) {
+    for (const auto& param : plan.params) {
+        if (isStencilWindowReaderForLayout(param, plan.signature.layout)) {
+            return &param;
+        }
+    }
+    return nullptr;
+}
+
+const ParamAccessPlan* stencilOutputDirectWriterParam(
+    const ShellPartitionPlan& plan) {
+    for (const auto& param : plan.params) {
+        if (isStencilOutputDirectWriter(param, plan.signature.layout)) {
+            return &param;
+        }
+    }
+    return nullptr;
+}
+
+bool stencilReaderAliasesOutputWriter(const ShellPartitionPlan& plan,
+                                      const ParamAccessPlan& reader) {
+    const ParamAccessPlan* writer = stencilOutputDirectWriterParam(plan);
+    if (!writer) {
+        return false;
+    }
+    if (!reader.actualTensorAliasKey.empty() &&
+        reader.actualTensorAliasKey == writer->actualTensorAliasKey) {
+        return true;
+    }
+    return !reader.actualTensorName.empty() &&
+           reader.actualTensorName == writer->actualTensorName;
+}
+
+bool stencilReaderWriterProvenDistinct(const ShellPartitionPlan& plan,
+                                       const ParamAccessPlan& reader) {
+    const ParamAccessPlan* writer = stencilOutputDirectWriterParam(plan);
+    return writer && reader.actualTensorAliasKeyPrecise &&
+           writer->actualTensorAliasKeyPrecise &&
+           !reader.actualTensorAliasKey.empty() &&
+           !writer->actualTensorAliasKey.empty() &&
+           reader.actualTensorAliasKey != writer->actualTensorAliasKey;
+}
+
+bool siteUpdatesWindowReader(const DistributedStencilSitePlan& sitePlan,
+                             const ParamAccessPlan& reader) {
+    if (!sitePlan.supported) {
+        return false;
+    }
+    for (const auto& mapping : sitePlan.followupMappings) {
+        if (mapping.readerParamIndex == reader.paramIndex ||
+            mapping.readerTensor == reader.actualTensorName ||
+            mapping.readerTensor == reader.shellParamName) {
+            return true;
+        }
+    }
+    for (const auto& transition : sitePlan.readCacheTransitions) {
+        if (transition.readerParamIndex == reader.paramIndex) {
+            return true;
+        }
+    }
+    for (const auto& update : sitePlan.boundaryLocalUpdates) {
+        if (update.paramIndex == reader.paramIndex) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool canHoistStencilReaderSync(DacppFile* dacppFile,
+                               const clang::Stmt* loop,
+                               const ShellPartitionPlan& plan) {
+    const ParamAccessPlan* reader = stencilWindowReaderParam(plan);
+    if (!reader || !loop) {
+        return false;
+    }
+    if (!stencilReaderWriterProvenDistinct(plan, *reader) ||
+        stencilReaderAliasesOutputWriter(plan, *reader)) {
+        return false;
+    }
+    const DistributedStencilSitePlan sitePlan = analyzeDistributedStencilSite(
+        dacppFile, plan.exprNode.shell, plan.exprNode.calc,
+        plan.exprNode.dacExpr);
+    if (sitePlan.hasRootBridge || siteUpdatesWindowReader(sitePlan, *reader)) {
+        return false;
+    }
+    return !stencilLoopWritesReaderOutsideOrPath(loop, dacppFile, plan);
+}
+
 bool exprWritesTensor(const clang::Expr* expr,
                       const std::set<std::string>& tensorNames) {
     const std::string name = baseNameFromExpr(expr);
@@ -403,6 +758,80 @@ std::string loopLowerRejectReason(DacppFile* dacppFile,
     return "";
 }
 
+std::string stencilFullSyncLoopRejectReason(DacppFile* dacppFile,
+                                            const ShellPartitionPlan& plan,
+                                            const clang::Stmt** outerLoop) {
+    if (outerLoop) {
+        *outerLoop = stableOuterLoopForExpr(dacppFile, plan);
+    }
+    if (!stencilFullSyncLoopLayout(plan.signature.layout)) {
+        return std::string("layout ") +
+               localLayoutKindName(plan.signature.layout) +
+               " is outside Phase 4.6 stencil full-sync scope";
+    }
+    const clang::Stmt* loop = outerLoop ? *outerLoop
+                                        : stableOuterLoopForExpr(dacppFile, plan);
+    if (!loop) {
+        return "not inside a stable loop site";
+    }
+    if (!llvm::isa<clang::ForStmt>(loop) && !llvm::isa<clang::WhileStmt>(loop)) {
+        return "stable site is not for/while";
+    }
+    if (loopContainsMultipleDacExprs(dacppFile, loop, plan)) {
+        return "outer loop must contain exactly one DAC expression";
+    }
+    if (!shellArgsDeclaredBeforeLoop(dacppFile, loop, plan)) {
+        return "shell arguments must be declared before the loop";
+    }
+
+    int windowReaderCount = 0;
+    int writerCount = 0;
+    int directReaderCount = 0;
+    for (const auto& param : plan.params) {
+        if (isStencilWindowReaderForLayout(param, plan.signature.layout)) {
+            ++windowReaderCount;
+            continue;
+        }
+        if (isStencilOutputDirectWriter(param, plan.signature.layout)) {
+            ++writerCount;
+            continue;
+        }
+        if (isSupportedStencilDirectReader(param)) {
+            ++directReaderCount;
+            continue;
+        }
+        if (isSupportedStencilScalarReader(param)) {
+            continue;
+        }
+        return "unsupported stencil parameter shape for loop lowering";
+    }
+    const int maxDirectReaders =
+        plan.signature.layout == LocalLayoutKind::StencilWindow2D ? 1 : 0;
+    if (windowReaderCount != 1 || writerCount != 1 ||
+        directReaderCount > maxDirectReaders) {
+        return plan.signature.layout == LocalLayoutKind::StencilWindow2D
+                   ? "requires one 2D window reader, one WRITE-only direct writer, and at most one direct reader"
+                   : "requires one 1D window reader, one WRITE-only direct writer, and no direct readers";
+    }
+
+    const DistributedStencilSitePlan sitePlan = analyzeDistributedStencilSite(
+        dacppFile, plan.exprNode.shell, plan.exprNode.calc,
+        plan.exprNode.dacExpr);
+    if (sitePlan.supported) {
+        if (sitePlan.hasRootBridge) {
+            return "root-bridge stencil sites are outside Phase 4.6 A1";
+        }
+        if (plan.signature.layout == LocalLayoutKind::StencilWindow1D &&
+            !sitePlan.readCacheTransitions.empty()) {
+            return "read-cache transitions are outside Phase 4.6 A1 StencilWindow1D";
+        }
+    }
+    if (stencilLoopWritesReaderOutsideOrPath(loop, dacppFile, plan)) {
+        return "reader modified in loop outside current OR path";
+    }
+    return "";
+}
+
 void annotateLoopLowerCandidates(DacppFile* dacppFile,
                                  std::vector<ShellPartitionPlan>& plans) {
     for (auto& plan : plans) {
@@ -435,6 +864,41 @@ void annotateLoopLowerCandidates(DacppFile* dacppFile,
             }
         } else if (!reason.empty()) {
             llvm::outs() << " reason=" << reason;
+        }
+        llvm::outs() << "\n";
+
+        const clang::Stmt* p46OuterLoop = nullptr;
+        const std::string p46Reason =
+            stencilFullSyncLoopRejectReason(dacppFile, plan, &p46OuterLoop);
+        const bool p46Candidate = p46Reason.empty();
+        plan.orLoopLower = OrLoopLowerPlan{};
+        plan.orLoopLower.kind =
+            p46Candidate ? OrLoopLowerKind::StencilFullSync
+                         : OrLoopLowerKind::None;
+        plan.orLoopLower.outerLoop = p46OuterLoop;
+        plan.orLoopLower.rejectReason = p46Reason;
+        plan.orLoopLower.hoistReaderSync =
+            p46Candidate &&
+            canHoistStencilReaderSync(dacppFile, p46OuterLoop, plan);
+        plan.orLoopLower.runMaterializeEveryStep = p46Candidate;
+        plan.orLoopLower.finalMaterializeRequired = p46Candidate;
+
+        llvm::outs() << "[DACPP][MPI][OR][P4.6][Loop] expr="
+                     << plan.exprIndex << " shell=" << shellName
+                     << " layout=" << localLayoutKindName(plan.signature.layout)
+                     << " loop-lower="
+                     << (p46Reason.empty() ? "candidate" : "rejected");
+        if (p46OuterLoop) {
+            llvm::outs() << " loop=" << loopKindName(p46OuterLoop);
+        }
+        if (p46Reason.empty()) {
+            llvm::outs()
+                << " kind=StencilFullSync structure=ctx/init/run/materialize"
+                << " hoist-reader-sync="
+                << (plan.orLoopLower.hoistReaderSync ? "true" : "false")
+                << " materialize=per-run";
+        } else {
+            llvm::outs() << " reason=" << p46Reason;
         }
         llvm::outs() << "\n";
     }

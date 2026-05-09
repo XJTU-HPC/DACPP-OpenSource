@@ -36,8 +36,26 @@ void emitKernel(std::string& code, const ShellPartitionPlan& plan) {
             param.access == ParamAccessKind::ReplicatedFullTensor) {
             offset = "0";
         } else if (param.access == ParamAccessKind::RowPartitionFullRow) {
-            offset = "static_cast<int>(item_linear * __or_payload_len_" +
-                     param.calcParamName + ")";
+            int indexedBindPos = 0;
+            if (!param.bindOrder.empty()) {
+                for (std::size_t idx = 0;
+                     idx < plan.signature.bindOrder.size(); ++idx) {
+                    if (plan.signature.bindOrder[idx] == param.bindOrder[0]) {
+                        indexedBindPos = static_cast<int>(idx);
+                        break;
+                    }
+                }
+            }
+            std::string localIndex;
+            if (plan.signature.bindOrder.size() == 1) {
+                localIndex = "item_linear";
+            } else if (indexedBindPos == 0) {
+                localIndex = "item_linear / static_cast<int>(__or_cols)";
+            } else {
+                localIndex = "item_linear % static_cast<int>(__or_cols)";
+            }
+            offset = "static_cast<int>((" + localIndex +
+                     ") * __or_payload_len_" + param.calcParamName + ")";
         }
         code += "                    " + viewType(plan, param) + " view_" +
                 param.calcParamName + "{__or_data_" + param.calcParamName +

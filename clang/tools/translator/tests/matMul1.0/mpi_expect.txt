@@ -7,8 +7,12 @@ LOG_CONTAINS:[DACPP][MPI][OR] chain=0 layout=RowPartitionFullRow length=1 chain=
 SYCL_CONTAINS:void __dacpp_mpi_or_matrixMultiply_shell_matrixMultiply_calc_0
 SYCL_CONTAINS:const int64_t __or_payload_len_vecA = __or_arg0.getShape(1);
 SYCL_CONTAINS:const int64_t __or_payload_len_vecB = __or_arg1.getShape(0);
+SYCL_CONTAINS:const int64_t __or_payload_unique_count_vecA = __or_row_range.count;
+SYCL_CONTAINS:const int64_t __or_payload_unique_count_vecB = __or_cols;
 SYCL_CONTAINS:MPI_Scatterv(mpi_rank == 0 ? __or_sendbuf_vecA.data() : nullptr
-SYCL_CONTAINS:MPI_Scatterv(mpi_rank == 0 ? __or_sendbuf_vecB.data() : nullptr
+SYCL_CONTAINS:MPI_Bcast(__or_local_vecB.data()
+SYCL_CONTAINS:static_cast<int>((item_linear / static_cast<int>(__or_cols)) * __or_payload_len_vecA)
+SYCL_CONTAINS:static_cast<int>((item_linear % static_cast<int>(__or_cols)) * __or_payload_len_vecB)
 SYCL_CONTAINS:MPI_Gatherv(__or_local_dotProduct.data()
 SYCL_NOT_CONTAINS:AccessPattern
 SYCL_NOT_CONTAINS:PackPlan

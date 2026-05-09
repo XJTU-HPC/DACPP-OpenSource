@@ -1,6 +1,11 @@
 LOG_CONTAINS:[DACPP][MPI][OR] expr=0 shell=mdp_shell layout=StencilWindow1D partition=accepted
 LOG_CONTAINS:[DACPP][MPI][OR] chain=0 layout=StencilWindow1D length=1 chain=accepted codegen=enabled
 LOG_CONTAINS:[DACPP][MPI] output new_p sync=distributed-followup
+LOG_CONTAINS:[DACPP][MPI][OR][P4.6][Loop] expr=0 shell=mdp_shell layout=StencilWindow1D loop-lower=candidate loop=for kind=StencilFullSync structure=ctx/init/run/materialize hoist-reader-sync=false materialize=per-run
+SYCL_CONTAINS:struct __dacpp_mpi_or_mdp_shell_mdp_0_ctx
+SYCL_CONTAINS:void __dacpp_mpi_or_mdp_shell_mdp_0_init(__dacpp_mpi_or_mdp_shell_mdp_0_ctx& ctx
+SYCL_CONTAINS:void __dacpp_mpi_or_mdp_shell_mdp_0_run(__dacpp_mpi_or_mdp_shell_mdp_0_ctx& ctx
+SYCL_CONTAINS:void __dacpp_mpi_or_mdp_shell_mdp_0_materialize(__dacpp_mpi_or_mdp_shell_mdp_0_ctx& ctx
 SYCL_CONTAINS:void __dacpp_mpi_or_mdp_shell_mdp_0
 SYCL_CONTAINS:MPI_Bcast(__or_global_p.data()
 SYCL_CONTAINS:ContiguousView1D<const double> view_p{__or_reader_data, output_idx}
@@ -9,4 +14,7 @@ SYCL_CONTAINS:__or_followup_global_p
 SYCL_CONTAINS:__or_arg0.array2Tensor(__or_followup_global_p)
 SYCL_CONTAINS:MPI_Bcast(__or_followup_global_p.data()
 SYCL_NOT_CONTAINS:MPI_Bcast(__or_materialized_new_p.data()
+SYCL_NOT_CONTAINS:PackPlan
+SYCL_NOT_CONTAINS:FixedBlock
+SYCL_NOT_CONTAINS:publish_local_writes_with_halo_or_exchange
 SYCL_NOT_CONTAINS:ctx.use_partial_exchange = true;

@@ -62,6 +62,23 @@ enum class ResidencyKind {
     Unknown
 };
 
+enum class OrLoopLowerKind {
+    None,
+    Direct1D,
+    RowBlock2D,
+    StencilFullSync,
+    StencilResidentHalo
+};
+
+struct OrLoopLowerPlan {
+    OrLoopLowerKind kind = OrLoopLowerKind::None;
+    const clang::Stmt* outerLoop = nullptr;
+    bool hoistReaderSync = false;
+    bool runMaterializeEveryStep = false;
+    bool finalMaterializeRequired = false;
+    std::string rejectReason;
+};
+
 struct BindDomain {
     int bindId = -1;
     std::string representative;
@@ -97,6 +114,8 @@ struct ParamAccessPlan {
     std::string shellParamName;
     std::string calcParamName;
     std::string actualTensorName;
+    std::string actualTensorAliasKey;
+    bool actualTensorAliasKeyPrecise = false;
     ParamAccessKind access = ParamAccessKind::Unsupported;
     bool reads = false;
     bool writes = false;
@@ -128,6 +147,7 @@ struct ShellPartitionPlan {
     std::string loopLowerRejectReason;
     const clang::Stmt* loopLowerOuterLoop = nullptr;
     bool loopLowerMaterializeEveryRun = false;
+    OrLoopLowerPlan orLoopLower;
 };
 
 struct TensorResidencyState {

@@ -11,6 +11,11 @@ bool isShellDerivedStencilLayout(LocalLayoutKind layout) {
            layout == LocalLayoutKind::StencilWindow2D;
 }
 
+bool isLoopLoweredOperatorResidentPlan(const ShellPartitionPlan& plan) {
+    return plan.loopLowerCandidate ||
+           plan.orLoopLower.kind == OrLoopLowerKind::StencilFullSync;
+}
+
 std::string operatorResidentWrapperName(Shell* shell,
                                         Calc* calc,
                                         int exprIndex) {
@@ -52,6 +57,16 @@ std::string buildOperatorResidentWrapperCode(
     const std::string wrapper =
         operatorResidentWrapperName(shell, calc, exprPlan.exprIndex);
 
+    if (exprPlan.orLoopLower.kind == OrLoopLowerKind::StencilFullSync &&
+        exprPlan.signature.layout == LocalLayoutKind::StencilWindow1D) {
+        return operator_resident::buildLoopLoweredStencil1DFullSyncFamilyCode(
+            wrapper, dacppFile, exprPlan);
+    }
+    if (exprPlan.orLoopLower.kind == OrLoopLowerKind::StencilFullSync &&
+        exprPlan.signature.layout == LocalLayoutKind::StencilWindow2D) {
+        return operator_resident::buildLoopLoweredStencil2DFullSyncFamilyCode(
+            wrapper, dacppFile, exprPlan);
+    }
     if (isShellDerivedStencilLayout(exprPlan.signature.layout)) {
         if (exprPlan.signature.layout == LocalLayoutKind::StencilWindow1D) {
             return operator_resident::buildStencilWindow1DWrapperCode(

@@ -15,6 +15,16 @@ void emitOutputBuffer(std::string& code,
             "(static_cast<std::size_t>(__or_local_item_count));\n";
 }
 
+void emitAbortIfMpiCountTooLarge(std::string& code,
+                                 const std::string& countExpr,
+                                 const std::string& message) {
+    code += "    if ((" + countExpr + ") > static_cast<int64_t>(2147483647)) {\n";
+    code += "        if (mpi_rank == 0) std::fprintf(stderr, \"" + message +
+            "\\n\");\n";
+    code += "        MPI_Abort(MPI_COMM_WORLD, 5);\n";
+    code += "    }\n";
+}
+
 } // namespace
 
 void emitScalarBroadcast(std::string& code,
@@ -96,11 +106,45 @@ void emitRowPartitionFullRowScatter(std::string& code,
             }
         }
     }
+    const bool broadcastIndexedPayload =
+        plan.signature.bindOrder.size() == 2 && indexedBindPos != 0;
 
     code += "    const int64_t " + payloadLen + " = " + paramVarName(param) +
             ".getShape(" + std::to_string(voidDim) + ");\n";
+    std::string uniqueCount;
+    std::string uniqueBegin;
+    std::string countVar;
+    std::string displVar;
+    if (plan.signature.bindOrder.size() == 1) {
+        uniqueCount = "__or_local_item_count";
+        uniqueBegin = "__or_range.begin";
+        countVar = "__or_counts";
+        displVar = "__or_displs";
+    } else if (indexedBindPos == 0) {
+        uniqueCount = "__or_row_range.count";
+        uniqueBegin = "__or_row_range.begin";
+        countVar = "__or_row_counts";
+        displVar = "__or_row_displs";
+    } else {
+        uniqueCount = "__or_cols";
+        uniqueBegin = "0";
+        countVar = "__or_full_col_counts_" + param.calcParamName;
+        displVar = "__or_full_col_displs_" + param.calcParamName;
+        code += "    std::vector<int> " + countVar + "(mpi_size, 0);\n";
+        code += "    std::vector<int> " + displVar + "(mpi_size, 0);\n";
+        code += "    " + countVar + "[0] = static_cast<int>(__or_cols);\n";
+    }
+    code += "    const int64_t __or_payload_unique_count_" +
+            param.calcParamName + " = " + uniqueCount + ";\n";
+    code += "    const int64_t __or_payload_index_begin_" +
+            param.calcParamName + " = " + uniqueBegin + ";\n";
+    emitAbortIfMpiCountTooLarge(
+        code,
+        "__or_payload_unique_count_" + param.calcParamName + " * " + payloadLen,
+        "[DACPP][MPI][OR] RowPartitionFullRow input payload exceeds MPI int count");
     code += "    std::vector<" + type + "> " + local +
-            "(static_cast<std::size_t>(__or_local_item_count * " +
+            "(static_cast<std::size_t>(__or_payload_unique_count_" +
+            param.calcParamName + " * " +
             payloadLen + "));\n";
     code += "    std::vector<int> __or_payload_counts_" + param.calcParamName +
             "(mpi_size);\n";
@@ -108,9 +152,11 @@ void emitRowPartitionFullRowScatter(std::string& code,
             "(mpi_size);\n";
     code += "    for (int r = 0; r < mpi_size; ++r) {\n";
     code += "        __or_payload_counts_" + param.calcParamName +
-            "[r] = static_cast<int>(__or_counts[r] * " + payloadLen + ");\n";
+            "[r] = static_cast<int>(static_cast<int64_t>(" + countVar +
+            "[r]) * " + payloadLen + ");\n";
     code += "        __or_payload_displs_" + param.calcParamName +
-            "[r] = static_cast<int>(__or_displs[r] * " + payloadLen + ");\n";
+            "[r] = static_cast<int>(static_cast<int64_t>(" + displVar +
+            "[r]) * " + payloadLen + ");\n";
     code += "    }\n";
     code += "    std::vector<" + type + "> __or_sendbuf_" +
             param.calcParamName + ";\n";
@@ -119,20 +165,23 @@ void emitRowPartitionFullRowScatter(std::string& code,
     code += "        " + paramVarName(param) + ".tensor2Array(" + global +
             ");\n";
     code += "        __or_sendbuf_" + param.calcParamName +
-            ".resize(static_cast<std::size_t>(__or_total_items * " +
+            ".resize(static_cast<std::size_t>(";
+    if (plan.signature.bindOrder.size() == 1) {
+        code += "__or_total_items";
+    } else if (indexedBindPos == 0) {
+        code += "__or_rows";
+    } else {
+        code += "__or_cols";
+    }
+    code += " * " +
             payloadLen + "));\n";
     code += "        const int64_t __or_input_cols_" + param.calcParamName +
             " = " + paramVarName(param) + ".getShape(1);\n";
     code += "        for (int r = 0; r < mpi_size; ++r) {\n";
-    code += "            for (int64_t local_i = 0; local_i < __or_counts[r]; ++local_i) {\n";
-    code += "                const int64_t item_global = static_cast<int64_t>(__or_displs[r]) + local_i;\n";
-    if (plan.signature.bindOrder.size() == 1) {
-        code += "                const int64_t indexed_value = item_global;\n";
-    } else if (indexedBindPos == 0) {
-        code += "                const int64_t indexed_value = item_global / __or_cols;\n";
-    } else {
-        code += "                const int64_t indexed_value = item_global % __or_cols;\n";
-    }
+    code += "            for (int64_t local_i = 0; local_i < " + countVar +
+            "[r]; ++local_i) {\n";
+    code += "                const int64_t indexed_value = static_cast<int64_t>(" +
+            displVar + "[r]) + local_i;\n";
     code += "                const int64_t dst_base = (__or_payload_displs_" +
             param.calcParamName + "[r] + local_i * " +
             payloadLen + ");\n";
@@ -152,7 +201,35 @@ void emitRowPartitionFullRowScatter(std::string& code,
     code += "            }\n";
     code += "        }\n";
     code += "    }\n";
-    if (usesByte(plan, param)) {
+    if (broadcastIndexedPayload) {
+        code += "    if (mpi_rank == 0) {\n";
+        code += "        " + local + ".swap(__or_sendbuf_" +
+                param.calcParamName + ");\n";
+        code += "    }\n";
+        if (usesByte(plan, param)) {
+            emitAbortIfMpiCountTooLarge(
+                code,
+                "__or_payload_unique_count_" + param.calcParamName + " * " +
+                    payloadLen + " * static_cast<int64_t>(sizeof(" + type +
+                    "))",
+                "[DACPP][MPI][OR] RowPartitionFullRow input byte payload exceeds MPI int count");
+            code += "    MPI_Bcast(" + local +
+                    ".data(), static_cast<int>(__or_payload_unique_count_" +
+                    param.calcParamName + " * " + payloadLen +
+                    " * sizeof(" + type +
+                    ")), MPI_BYTE, 0, MPI_COMM_WORLD);\n";
+        } else {
+            code += "    MPI_Bcast(" + local +
+                    ".data(), static_cast<int>(__or_payload_unique_count_" +
+                    param.calcParamName + " * " + payloadLen + "), " +
+                    mpiType + ", 0, MPI_COMM_WORLD);\n";
+        }
+    } else if (usesByte(plan, param)) {
+        emitAbortIfMpiCountTooLarge(
+            code,
+            "__or_payload_unique_count_" + param.calcParamName + " * " +
+                payloadLen + " * static_cast<int64_t>(sizeof(" + type + "))",
+            "[DACPP][MPI][OR] RowPartitionFullRow input byte payload exceeds MPI int count");
         code += "    std::vector<int> __or_payload_counts_bytes_" +
                 param.calcParamName + ";\n";
         code += "    std::vector<int> __or_payload_displs_bytes_" +
@@ -169,8 +246,8 @@ void emitRowPartitionFullRowScatter(std::string& code,
                 param.calcParamName +
                 ".data() : nullptr, mpi_rank == 0 ? __or_payload_displs_bytes_" +
                 param.calcParamName + ".data() : nullptr, MPI_BYTE, " +
-                local + ".data(), static_cast<int>(__or_local_item_count * " +
-                payloadLen + " * sizeof(" + type +
+                local + ".data(), static_cast<int>(__or_payload_unique_count_" +
+                param.calcParamName + " * " + payloadLen + " * sizeof(" + type +
                 ")), MPI_BYTE, 0, MPI_COMM_WORLD);\n";
     } else {
         code += "    MPI_Scatterv(mpi_rank == 0 ? __or_sendbuf_" +
@@ -180,7 +257,8 @@ void emitRowPartitionFullRowScatter(std::string& code,
                 ".data() : nullptr, mpi_rank == 0 ? __or_payload_displs_" +
                 param.calcParamName + ".data() : nullptr, " + mpiType +
                 ", " + local +
-                ".data(), static_cast<int>(__or_local_item_count * " +
+                ".data(), static_cast<int>(__or_payload_unique_count_" +
+                param.calcParamName + " * " +
                 payloadLen + "), " + mpiType + ", 0, MPI_COMM_WORLD);\n";
     }
 }

@@ -3,6 +3,11 @@ LOG_CONTAINS:[DACPP][MPI][PhaseC] boundary-local update detected stmt
 LOG_CONTAINS:[DACPP][MPI][OR] expr=0 shell=stencilShell layout=StencilWindow2D partition=accepted
 LOG_CONTAINS:[DACPP][MPI][OR] chain=0 layout=StencilWindow2D length=1 chain=accepted codegen=enabled
 LOG_CONTAINS:[DACPP][MPI] output matOut sync=distributed-followup
+LOG_CONTAINS:[DACPP][MPI][OR][P4.6][Loop] expr=0 shell=stencilShell layout=StencilWindow2D loop-lower=candidate loop=for kind=StencilFullSync structure=ctx/init/run/materialize hoist-reader-sync=false materialize=per-run
+SYCL_CONTAINS:struct __dacpp_mpi_or_stencilShell_stencil_0_ctx
+SYCL_CONTAINS:void __dacpp_mpi_or_stencilShell_stencil_0_init(__dacpp_mpi_or_stencilShell_stencil_0_ctx& ctx
+SYCL_CONTAINS:void __dacpp_mpi_or_stencilShell_stencil_0_run(__dacpp_mpi_or_stencilShell_stencil_0_ctx& ctx
+SYCL_CONTAINS:void __dacpp_mpi_or_stencilShell_stencil_0_materialize(__dacpp_mpi_or_stencilShell_stencil_0_ctx& ctx
 SYCL_CONTAINS:void __dacpp_mpi_or_stencilShell_stencil_0
 SYCL_CONTAINS:MPI_Bcast(__or_global_mat.data()
 SYCL_CONTAINS:dacpp::mpi::ContiguousView2D<const double> view_mat
@@ -20,4 +25,7 @@ SYCL_NOT_CONTAINS:matIn[0][j]=matIn[1][j]
 SYCL_NOT_CONTAINS:MPI_Bcast(__or_materialized_out.data()
 SYCL_NOT_CONTAINS:AccessPattern
 SYCL_NOT_CONTAINS:PackPlan
+SYCL_NOT_CONTAINS:FixedBlock
 SYCL_NOT_CONTAINS:__dacpp_mpi_stencil_
+SYCL_NOT_CONTAINS:publish_local_writes_with_halo_or_exchange
+SYCL_NOT_CONTAINS:ctx.use_partial_exchange = true;

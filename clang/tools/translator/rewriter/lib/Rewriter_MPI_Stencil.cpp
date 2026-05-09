@@ -9,6 +9,7 @@
 
 #include "Rewriter_MPI_Common.h"
 #include "mpi/shared/PostRegion_Internal.h"
+#include "mpi/shared/LoopLoweredRewrite.h"
 #include "Rewriter_MPI_Stencil_Common.h"
 
 namespace {
@@ -184,29 +185,17 @@ void rewriteStencilPhaseCSite(DacppFile* dacppFile,
     const std::string argText = joinShellCallArgs(dacExpr, dacppFile->getContext());
     const std::string ctxVar =
         "__dacpp_mpi_stencil_ctx_" + std::to_string(exprIdx);
-    std::string initCode =
-        "    " + contextTypeName(shell, calc, exprIdx) + " " + ctxVar + ";\n";
-    initCode += "    " + initFunctionName(shell, calc, exprIdx) + "(" + ctxVar;
-    if (!argText.empty()) {
-        initCode += ", " + argText;
-    }
-    initCode += ");\n";
-    rewriter->InsertTextBefore(site.outerLoop->getBeginLoc(), initCode);
-
-    std::string runCall = runFunctionName(shell, calc, exprIdx) + "(" + ctxVar;
-    if (!argText.empty()) {
-        runCall += ", " + argText;
-    }
-    runCall += ")";
-    rewriter->ReplaceText(dacExpr->getSourceRange(), runCall);
-
-    std::string materializeCall =
-        "\n    " + materializeFunctionName(shell, calc, exprIdx) + "(" + ctxVar;
-    if (!argText.empty()) {
-        materializeCall += ", " + argText;
-    }
-    materializeCall += ");\n";
-    rewriter->InsertTextAfterToken(site.outerLoop->getEndLoc(), materializeCall);
+    mpi_rewriter::LoopLoweredRewriteSpec rewriteSpec;
+    rewriteSpec.outerLoop = site.outerLoop;
+    rewriteSpec.dacExpr = dacExpr;
+    rewriteSpec.contextTypeName = contextTypeName(shell, calc, exprIdx);
+    rewriteSpec.contextVariableName = ctxVar;
+    rewriteSpec.initFunctionName = initFunctionName(shell, calc, exprIdx);
+    rewriteSpec.runFunctionName = runFunctionName(shell, calc, exprIdx);
+    rewriteSpec.materializeFunctionName =
+        materializeFunctionName(shell, calc, exprIdx);
+    rewriteSpec.argumentText = argText;
+    mpi_rewriter::rewriteLoopLoweredDacExpr(rewriter, rewriteSpec);
 
     const auto rootRegions =
         mpi_rewriter::collectRootCentricPostRegions(dacppFile, shell, calc,

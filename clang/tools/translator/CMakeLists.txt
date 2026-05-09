@@ -36,6 +36,7 @@ set(REWRITER_SOURCES
   rewriter/lib/mpi/shared/ParamModeAnalysis.cpp
   rewriter/lib/mpi/shared/PostRegionAnalysis.cpp
   rewriter/lib/mpi/shared/PostRegionCodegen.cpp
+  rewriter/lib/mpi/shared/LoopLoweredRewrite.cpp
   rewriter/lib/mpi/shared/MpiPlanBuilder.cpp
   # --- MPI legacy access pattern ---
   rewriter/lib/mpi/legacy_access_pattern/PatternInit.cpp
@@ -57,6 +58,7 @@ set(REWRITER_SOURCES
   rewriter/lib/mpi/operator_resident/LocalKernelCodegen.cpp
   rewriter/lib/mpi/operator_resident/ResidentBufferCodegen.cpp
   rewriter/lib/mpi/operator_resident/LoopLoweredDirectCodegen.cpp
+  rewriter/lib/mpi/operator_resident/LoopLoweredStencil1DCodegen.cpp
   rewriter/lib/mpi/operator_resident/StencilWindow1DCodegen.cpp
   rewriter/lib/mpi/operator_resident/StencilWindowCodegen.cpp
   rewriter/lib/mpi/operator_resident/OperatorResidentCodegen.cpp

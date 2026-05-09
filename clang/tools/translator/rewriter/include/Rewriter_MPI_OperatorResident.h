@@ -61,6 +61,7 @@ std::string buildOperatorResidentWrapperCode(
     const ShellPartitionPlan& exprPlan);
 
 bool isShellDerivedStencilLayout(LocalLayoutKind layout);
+bool isLoopLoweredOperatorResidentPlan(const ShellPartitionPlan& plan);
 
 std::string joinShellCallArgs(const clang::BinaryOperator* dacExpr,
                               DacppFile* dacppFile);

@@ -147,6 +147,15 @@ bool assignStencilWindow1DLayout(DacppFile* dacppFile,
         plan.signature.linearization = "1d-window-root-materialize";
         return true;
     }
+    if (isScalarRootMaterializeShape &&
+        !sitePlan.hasRootBridge &&
+        sitePlan.followupMappings.empty() &&
+        sitePlan.readCacheTransitions.empty() &&
+        sitePlan.boundaryLocalUpdates.empty()) {
+        plan.signature.layout = LocalLayoutKind::StencilWindow1D;
+        plan.signature.linearization = "1d-window-root-materialize";
+        return true;
+    }
     if (!isReadWriteRouteShape) {
         rejectReason =
             "stencil window 1d currently supports only READ_WRITE route shapes or scalar root-materialize shapes";

@@ -54,6 +54,24 @@ Phase 4.5 已经为 `Contiguous1D` direct/resident 的窄切片建立
 `init/run/materialize` family。P4.6 应复用这个方向，但不能把新的 stencil 语义
 混进优化 patch。
 
+### 1.1 Route A 后 large benchmark 观察
+
+2026-05-09 的 large benchmark 暴露了两个性能/正确性边界：
+
+- `matmul2048` 走 OR `RowPartitionFullRow`，旧生成代码曾按每个 output item
+  复制 full row / full column payload，导致 `MPI_Scatterv` count 为
+  `512*2048*2048 = 2,147,483,648`，超过 MPI `int` 上限。修复口径是按
+  unique indexed row/column 存 payload：`matA[idx1][{}]` 按 owned rows
+  scatter，`matB[{}][idx2]` 对所有 row-partition rank broadcast。修复后
+  4 rank `matmul2048` 5 次 wall time 为 0.32 / 0.32 / 0.34 / 0.31 / 0.34s，
+  输出均为 `147385 147273 147961`。
+- `waveEquation1.0` large (`2048x2048`, 500 steps) 在 Route A full-sync skeleton
+  下 300s 内未到最终输出。生成代码没有明显 deadlock；每步仍执行 full
+  window-reader bcast、full direct-reader bcast、writer gatherv、read-cache full
+  tensor replay+bcast、followup/boundary full tensor replay+bcast，并在 root/all-ranks
+  反复 `tensor2Array` / `array2Tensor`。这说明 Route A 只完成结构铺垫，large
+  2D stencil 的主要收益必须来自 Route B resident halo / resident cache。
+
 ---
 
 ## 2. 非目标
@@ -270,6 +288,12 @@ materialize:
 
 目标是用邻居通信替代循环内 full tensor broadcast/gather。
 
+Route A 后的 `waveEquation1.0` large 是 B3 的核心动机：在不牺牲
+host-visible tensor 语义的前提下，`matCur` / `matPrev` / `matNext` 需要长期
+resident state，`matCur -> matPrev` 的 read-cache transition 和
+`matNext -> matCur` 的 followup/boundary update 应更新 owned slice + halo，而不是
+每步在 root 上重建完整 tensor 后 broadcast。
+
 ### 4.2 首批语义范围
 
 路线 B 只覆盖当前 P4 已 accepted 的 stencil 切片，但必须分批进入：
@@ -293,6 +317,8 @@ materialize:
   - 在 B2 通过后再支持 at most one direct reader
   - supported `-1,-1` read-cache transition for `waveEquation1.0`
   - direct reader/cache tensor 也必须有 resident halo state
+  - 必须保留 Route A 的 full-sync fallback；若 resident cache coverage 或 boundary
+    update 无法证明完整，继续使用 full-sync skeleton。
 
 不在首批做：
 

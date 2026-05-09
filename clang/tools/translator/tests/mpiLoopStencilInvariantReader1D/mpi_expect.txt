@@ -1,0 +1,21 @@
+MPI_STRUCTURE_ONLY:1
+LOG_CONTAINS:[DACPP][MPI][OR] expr=0 shell=invariantShell layout=StencilWindow1D partition=accepted
+LOG_CONTAINS:[DACPP][MPI][OR] chain=0 layout=StencilWindow1D length=1 chain=accepted codegen=enabled
+LOG_CONTAINS:[DACPP][MPI][OR][P4.6][Loop] expr=0 shell=invariantShell layout=StencilWindow1D loop-lower=candidate loop=for kind=StencilFullSync structure=ctx/init/run/materialize hoist-reader-sync=true materialize=per-run
+SYCL_CONTAINS:struct __dacpp_mpi_or_invariantShell_invariantStep_0_ctx
+SYCL_CONTAINS:void __dacpp_mpi_or_invariantShell_invariantStep_0_init(__dacpp_mpi_or_invariantShell_invariantStep_0_ctx& ctx
+SYCL_CONTAINS:void __dacpp_mpi_or_invariantShell_invariantStep_0_run(__dacpp_mpi_or_invariantShell_invariantStep_0_ctx& ctx
+SYCL_CONTAINS:void __dacpp_mpi_or_invariantShell_invariantStep_0_materialize(__dacpp_mpi_or_invariantShell_invariantStep_0_ctx& ctx
+SYCL_CONTAINS:__or_arg0.tensor2Array(ctx.__or_global_state);
+SYCL_CONTAINS:MPI_Bcast(ctx.__or_global_state.data()
+SYCL_CONTAINS:ContiguousView1D<const double> view_state{__or_reader_data, output_idx}
+SYCL_CONTAINS:MPI_Gatherv(__or_local_next.data()
+SYCL_NOT_CONTAINS:__or_arg0.tensor2Array(__or_global_state);
+SYCL_NOT_CONTAINS:MPI_Bcast(__or_global_state.data()
+SYCL_NOT_CONTAINS:__or_followup_global_state
+SYCL_NOT_CONTAINS:__or_transition_global_state
+SYCL_NOT_CONTAINS:AccessPattern
+SYCL_NOT_CONTAINS:PackPlan
+SYCL_NOT_CONTAINS:FixedBlock
+SYCL_NOT_CONTAINS:publish_local_writes_with_halo_or_exchange
+SYCL_NOT_CONTAINS:ctx.use_partial_exchange = true;
