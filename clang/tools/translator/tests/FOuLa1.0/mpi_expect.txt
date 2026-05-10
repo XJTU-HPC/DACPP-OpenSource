@@ -1,10 +1,15 @@
 LOG_CONTAINS:[DACPP][MPI][OR] expr=0 shell=PDE layout=StencilWindow1D partition=accepted
 LOG_CONTAINS:[DACPP][MPI][OR] chain=0 layout=StencilWindow1D length=1 chain=accepted codegen=enabled
-LOG_CONTAINS:[DACPP][MPI] output u_kout sync=root-only
-SYCL_CONTAINS:void __dacpp_mpi_or_PDE_pde_0
-SYCL_CONTAINS:MPI_Bcast(__or_global_u_kin.data()
+LOG_CONTAINS:[DACPP][MPI][OR][FOuLa] expr=0 owner-loop=candidate owner=u_tensor
+LOG_CONTAINS:[DACPP][MPI][OR][FOuLa] expr=0 owner-loop=rewrite-enabled
+SYCL_CONTAINS:void __dacpp_mpi_or_PDE_pde_0_owner_loop
+SYCL_CONTAINS:__dacpp_mpi_or_PDE_pde_0_owner_loop(u_tensor, r);
+SYCL_CONTAINS:dacpp::mpi::operator_resident::scatter_window_1d
+SYCL_CONTAINS:dacpp::mpi::operator_resident::exchange_halo_1d_inplace
 SYCL_CONTAINS:ContiguousView1D<const double> view_r{__or_scalar_data, 0}
-SYCL_CONTAINS:MPI_Gatherv(__or_local_u_kout.data()
+SYCL_CONTAINS:MPI_Gatherv(__or_local_history.data()
+SYCL_NOT_CONTAINS:MPI_Bcast(__or_global_u_kin.data()
+SYCL_NOT_CONTAINS:MPI_Gatherv(__or_local_u_kout.data()
 SYCL_NOT_CONTAINS:MPI_Bcast(__or_materialized_u_kout.data()
 SYCL_NOT_CONTAINS:PDE_pde(u_kin, u_kout, r)
 SYCL_NOT_CONTAINS:__dacpp_mpi_stencil_ctx_PDE_pde

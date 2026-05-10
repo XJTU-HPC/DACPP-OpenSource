@@ -10,6 +10,7 @@
 #include <string>
 #include <typeindex>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include <mpi.h>
@@ -167,6 +168,7 @@ template <typename T>
 void scatter_window_1d(const std::vector<T>& global,
                        std::vector<T>& local,
                        int64_t outputTotal,
+                       int64_t inputTotal,
                        int windowSize,
                        const ResidentHalo1DLayout& layout,
                        int rank,
@@ -184,6 +186,12 @@ void scatter_window_1d(const std::vector<T>& global,
                 static_cast<std::size_t>(target.global_begin);
             const std::size_t count =
                 static_cast<std::size_t>(target.local_size);
+            if (static_cast<int64_t>(begin + count) > inputTotal ||
+                begin + count > global.size()) {
+                std::fprintf(stderr,
+                             "[DACPP][MPI][OR] resident halo 1D scatter window exceeds reader size\n");
+                MPI_Abort(MPI_COMM_WORLD, 4);
+            }
             if (r == 0) {
                 std::copy(global.begin() + begin,
                           global.begin() + begin + count,
@@ -903,6 +911,15 @@ std::vector<T>& ensure_resident(const TensorT& tensor, std::size_t size) {
     ResidencyKey key{static_cast<const void*>(&tensor), std::type_index(typeid(T))};
     auto& buffer = typed_resident_storage<T>()[key];
     buffer.resize(size);
+    return buffer;
+}
+
+template <typename T, typename TensorT>
+std::vector<T>& replace_resident(const TensorT& tensor,
+                                 std::vector<T>&& value) {
+    ResidencyKey key{static_cast<const void*>(&tensor), std::type_index(typeid(T))};
+    auto& buffer = typed_resident_storage<T>()[key];
+    buffer = std::move(value);
     return buffer;
 }
 

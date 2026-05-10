@@ -244,21 +244,22 @@ dpcppLib/include/
 
 ### 4.3 当前 Shell-Derived / Operator-Resident 路径
 
-Phase 1/2 已接入 `buildMpiLoweringPlan()`，支持：
+新的 MPI 模型 6P 已经完成当前证明过的 accepted surface。主线策略是
+shell-derived / operator-resident 优先，证明不完整时保守 fallback 到 OR
+FullSync、stencil Phase-C 或 legacy `AccessPattern` / `PackPlan`。
 
-- `direct_1d` / `resident_chain_1d`：1D direct map、scalar broadcast、连续 resident chain。
-- `row_block_2d`：2D row-major direct map，按 row block 分发和收集。
-- `fixed_block_1d`：P5 first slice，非重叠 1D `RegularSplit(size == stride == 2)`，当前为 standalone OR wrapper。
+当前主线覆盖的代表性路径包括：
 
-当前已覆盖：
+- base OR：`Contiguous1D`、`RowBlock2D`、`RowPartitionFullRow`、replicated scalar/full tensor。
+- P4.6：1D/2D stencil resident halo，使用 loop-lowered `ctx/init/run/materialize`、in-place halo exchange 和 resident-state role rotation。
+- P5：`oddeven0.1` canonical shape 的 loop-resident `FixedBlockPhaseExchange`。
+- P6：lowering-contract metadata 与 consistency check，用来约束 statement removal、resident tensors、materialization timing 和 guard reason。
 
-- `vectorAddCombo`：3 个 1D resident chain，`tmp_tensor` / `shifted_tensor` 不 materialize。
-- `imageAdjustment1.0`：2 个 2D row-block image pass，`image_tensor2` 不 materialize。
-- `mandel1.0`：single direct 1D。
-- `decay1.0`：1D direct + replicated scalar。
-- `oddeven0.1`：两个 `split(2,2)` fixed-block call site 进入 P5 `FixedBlock`，不生成 legacy `AccessPattern` / `PackPlan`。
-
-accepted OR 路径不会生成 legacy `AccessPattern` / `PackPlan`，使用 `ContiguousView1D` 和 rank-local resident buffer；unsupported pattern 仍 fallback legacy 或 stencil Phase-C。完整设计见 `docs/mpi_translator/shell_derived_partition_implementation_plan_2026-05-07.md`。
+accepted OR 路径不会生成 legacy `AccessPattern` / `PackPlan`；unsupported pattern
+仍 fallback legacy 或 stencil Phase-C。完整当前状态、case map 和 TODO 见
+`docs/mpi_translator/mpi_translator_current_status.md`。性能优化路线图见
+`docs/mpi_translator/mpi_performance_optimization_todolist.md`。benchmark 汇总见
+`docs/benchmarks/mpi_efficiency_benchmark_summary.md`。
 
 ### 4.4 当前 MPI stencil 代码分层
 
@@ -369,7 +370,9 @@ export DACPP_MPI_PROFILE=1
 - `tests/translated_sycl_runtime_dependencies_cn.md`
 - `docs/macos_local_sycl_setup.md`
 - `docs/local_translator/buffer_region_device_residency.md`
-- `docs/mpi_translator/shell_derived_partition_implementation_plan_2026-05-07.md`
+- `docs/mpi_translator/mpi_translator_current_status.md`
+- `docs/mpi_translator/mpi_performance_optimization_todolist.md`
+- `docs/benchmarks/mpi_efficiency_benchmark_summary.md`
 - `docs/mpi_translator/archive/mpi_stencil_status.md`
 
 ## 9. 常见误区

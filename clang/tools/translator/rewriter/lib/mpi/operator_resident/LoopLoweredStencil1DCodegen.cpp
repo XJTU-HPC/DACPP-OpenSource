@@ -528,7 +528,7 @@ void emitResidentHaloInitFunction(std::string& code,
     code += "    }\n";
     code += "    dacpp::mpi::operator_resident::scatter_window_1d(__or_initial_global_" +
             reader.calcParamName + ", ctx." + localName(reader) +
-            ", ctx.__or_output_size, ctx.__or_window_size, ctx.__or_halo_layout, ctx.mpi_rank, ctx.mpi_size, " +
+            ", ctx.__or_output_size, ctx.__or_input_size, ctx.__or_window_size, ctx.__or_halo_layout, ctx.mpi_rank, ctx.mpi_size, " +
             readerMpiType + ");\n";
     code += "    ctx." + localName(writer) + " = ctx." +
             localName(reader) + ";\n";

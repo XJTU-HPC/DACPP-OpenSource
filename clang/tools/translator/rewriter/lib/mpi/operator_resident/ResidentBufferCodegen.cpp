@@ -289,14 +289,23 @@ void emitResidencyAndMaterialization(std::string& code,
             continue;
         }
         const std::string type = elemType(plan, param);
-        code += "    auto& __or_resident_out_" + param.calcParamName +
-                " = dacpp::mpi::operator_resident::ensure_resident<" + type +
-                ">(" + paramVarName(param) + ", " + localName(param) +
-                ".size());\n";
-        code += "    __or_resident_out_" + param.calcParamName + " = " +
-                localName(param) + ";\n";
         if (param.materializeAfterWrite) {
             emitGatherMaterialize(code, plan, param);
+        }
+        if (param.reads) {
+            code += "    auto& __or_resident_out_" + param.calcParamName +
+                    " = dacpp::mpi::operator_resident::ensure_resident<" +
+                    type + ">(" + paramVarName(param) + ", " +
+                    localName(param) + ".size());\n";
+            code += "    __or_resident_out_" + param.calcParamName + " = " +
+                    localName(param) + ";\n";
+        } else {
+            code += "    auto& __or_resident_out_" + param.calcParamName +
+                    " = dacpp::mpi::operator_resident::replace_resident<" +
+                    type + ">(" + paramVarName(param) + ", std::move(" +
+                    localName(param) + "));\n";
+            code += "    (void)__or_resident_out_" + param.calcParamName +
+                    ";\n";
         }
     }
 }

@@ -87,6 +87,20 @@ void emitResidentOrScatter(std::string& code,
 
     const std::string type = elemType(plan, param);
     const std::string local = localName(param);
+    const std::string resident = "__or_resident_" + param.calcParamName;
+    if (param.reads && !param.writes) {
+        code += "    std::vector<" + type + ">* " + resident +
+                " = dacpp::mpi::operator_resident::find_resident<" + type +
+                ">(" + paramVarName(param) + ");\n";
+        code += "    if (!" + resident + ") {\n";
+        code += "        if (mpi_rank == 0) std::fprintf(stderr, \"[DACPP][MPI][OR] missing resident tensor " +
+                param.shellParamName + "\\n\");\n";
+        code += "        MPI_Abort(MPI_COMM_WORLD, 3);\n";
+        code += "    }\n";
+        code += "    auto& " + local + " = *" + resident + ";\n";
+        return;
+    }
+
     code += "    std::vector<" + type + "> " + local + ";\n";
     code += "    if (auto* __or_resident_" + param.calcParamName +
             " = dacpp::mpi::operator_resident::find_resident<" + type +
