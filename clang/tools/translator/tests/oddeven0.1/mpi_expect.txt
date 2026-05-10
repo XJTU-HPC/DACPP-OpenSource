@@ -1,3 +1,13 @@
 SYCL_NOT_CONTAINS:<->
-SYCL_CONTAINS:ODDEVEN_oddeven(array2_tensor, array_out2_tensor)
-SYCL_CONTAINS:__dacpp_mpi_stencil_run_ODDEVEN_oddeven
+LOG_CONTAINS:[DACPP][MPI][OR] expr=0 shell=ODDEVEN layout=FixedBlock partition=accepted
+LOG_CONTAINS:[DACPP][MPI][OR] expr=1 shell=ODDEVEN layout=FixedBlock partition=accepted
+SYCL_CONTAINS:__dacpp_mpi_or_ODDEVEN_oddeven_0(array_tensor, array_out_tensor)
+SYCL_CONTAINS:__dacpp_mpi_or_ODDEVEN_oddeven_1(array2_tensor, array_out2_tensor)
+SYCL_CONTAINS:dacpp::mpi::operator_resident::fixed_block_count_1d
+SYCL_CONTAINS:dacpp::mpi::ContiguousView1D<const int> view_array{__or_reader_data, __or_block_offset}
+SYCL_CONTAINS:dacpp::mpi::ContiguousView1D<int> view_array_out{__or_writer_data, __or_block_offset}
+SYCL_CONTAINS:MPI_Bcast(__or_materialized_array_out.data()
+SYCL_CONTAINS:narrow_mpi_count_or_abort(static_cast<int64_t>(__or_arg1.getSize()), "[DACPP][MPI][OR][P5] fixed block materialized broadcast count exceeds MPI int range")
+SYCL_NOT_CONTAINS:AccessPattern
+SYCL_NOT_CONTAINS:PackPlan
+SYCL_NOT_CONTAINS:__dacpp_mpi_stencil

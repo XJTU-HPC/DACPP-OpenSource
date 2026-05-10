@@ -155,6 +155,8 @@ struct ParamAccessPlan {
     std::vector<int64_t> voidDimSizes;      // Size of each void dimension
     int indexDim = -1;                      // Which tensor dim is indexed (-1 if none)
     int64_t indexDimSize = 1;               // Size of the indexed dimension
+    int fixedBlockSize = 0;
+    int fixedBlockStride = 0;
 };
 
 struct ShellPartitionPlan {

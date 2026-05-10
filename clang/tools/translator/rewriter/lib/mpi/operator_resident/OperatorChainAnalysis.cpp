@@ -232,7 +232,9 @@ void annotateOutputSync(ShellPartitionPlan& plan, DacppFile* dacppFile) {
         return;
     }
     for (auto& param : plan.params) {
-        if (!param.writes || param.access != ParamAccessKind::OutputDirect) {
+        if (!param.writes ||
+            (param.access != ParamAccessKind::OutputDirect &&
+             param.access != ParamAccessKind::FixedBlock)) {
             continue;
         }
         const OutputSyncRequirement syncRequirement =
@@ -262,7 +264,9 @@ void logCodegenDisabledFallback(const ShellPartitionPlan& plan) {
 std::vector<std::string> outputTensorNames(const ShellPartitionPlan& plan) {
     std::vector<std::string> outputs;
     for (const auto& param : plan.params) {
-        if (param.writes && param.access == ParamAccessKind::OutputDirect) {
+        if (param.writes &&
+            (param.access == ParamAccessKind::OutputDirect ||
+             param.access == ParamAccessKind::FixedBlock)) {
             outputs.push_back(param.actualTensorName);
         }
     }
@@ -307,7 +311,8 @@ bool supportedPhaseLayout(LocalLayoutKind layout) {
            layout == LocalLayoutKind::ReplicatedFullTensor ||
            layout == LocalLayoutKind::RowPartitionFullRow ||
            layout == LocalLayoutKind::StencilWindow1D ||
-           layout == LocalLayoutKind::StencilWindow2D;
+           layout == LocalLayoutKind::StencilWindow2D ||
+           layout == LocalLayoutKind::FixedBlock;
 }
 
 bool directResidentLoopLayout(LocalLayoutKind layout) {

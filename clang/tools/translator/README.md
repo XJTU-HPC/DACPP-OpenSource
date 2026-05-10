@@ -187,6 +187,7 @@ rewriter/lib/mpi/
     ScalarAccessAnalysis.cpp        # `{}` scalar 判定和 calc 参数 `[0]` 使用检查
     Direct1DPartitionAnalysis.cpp   # Contiguous1D layout 判定
     RowBlock2DPartitionAnalysis.cpp # RowBlock2D layout 判定和 phase layout 编排
+    FixedBlockPartitionAnalysis.cpp # P5 FixedBlock first-slice gate
     OperatorChainAnalysis.cpp       # 连续 compatible chain 识别
     ResidencyAnalysis.cpp           # RootOnly/DistributedDirty/ReplicatedScalar/MaterializedRoot 状态分析
     OperatorResidentCodegen.cpp     # OR wrapper 顶层拼装入口
@@ -195,6 +196,7 @@ rewriter/lib/mpi/
     PartitionCodegen.cpp            # 1D contiguous 和 2D row-block ownership codegen
     LocalKernelCodegen.cpp          # SYCL local kernel launch 和 ContiguousView1D 构造
     ResidentBufferCodegen.cpp       # scalar broadcast、resident buffer、final materialize
+    FixedBlockCodegen.cpp           # P5 FixedBlock standalone OR wrapper codegen
 ```
 
 共享 facade 头文件：
@@ -246,6 +248,7 @@ Phase 1/2 已接入 `buildMpiLoweringPlan()`，支持：
 
 - `direct_1d` / `resident_chain_1d`：1D direct map、scalar broadcast、连续 resident chain。
 - `row_block_2d`：2D row-major direct map，按 row block 分发和收集。
+- `fixed_block_1d`：P5 first slice，非重叠 1D `RegularSplit(size == stride == 2)`，当前为 standalone OR wrapper。
 
 当前已覆盖：
 
@@ -253,6 +256,7 @@ Phase 1/2 已接入 `buildMpiLoweringPlan()`，支持：
 - `imageAdjustment1.0`：2 个 2D row-block image pass，`image_tensor2` 不 materialize。
 - `mandel1.0`：single direct 1D。
 - `decay1.0`：1D direct + replicated scalar。
+- `oddeven0.1`：两个 `split(2,2)` fixed-block call site 进入 P5 `FixedBlock`，不生成 legacy `AccessPattern` / `PackPlan`。
 
 accepted OR 路径不会生成 legacy `AccessPattern` / `PackPlan`，使用 `ContiguousView1D` 和 rank-local resident buffer；unsupported pattern 仍 fallback legacy 或 stencil Phase-C。完整设计见 `docs/mpi_translator/shell_derived_partition_implementation_plan_2026-05-07.md`。
 
@@ -328,7 +332,7 @@ __dacpp_mpi_or_VADD_vadd_2(shifted_tensor, c_tensor, out_tensor);
 
 - Phase 3 full payload / replicated full tensor：`gradientSum`、`DFT1.0`、`jacobi1.0`、初版 `matMul1.0`。
 - Phase 4 stencil window：把 `RegularSplit` 纳入 shell-derived owner。
-- Phase 5 fixed block / odd-even：`oddeven0.1`。
+- Phase 5 fixed block / odd-even：`oddeven0.1` 已有保守 standalone OR wrapper 闭环；性能版 loop-resident phase exchange 仍待实现。
 - 输出后的非 root 副本一致性。
 - `liuliang1.0` 这类 shell 后可并行 host loop 的 MPI/SYCL region 化。
 - 基于 pack/writeback plan 的 cache consistency / partial exchange，用 generalized halo 替代手写传统 halo。

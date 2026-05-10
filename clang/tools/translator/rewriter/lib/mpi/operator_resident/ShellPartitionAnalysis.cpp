@@ -167,11 +167,23 @@ ShellPartitionPlan analyzeShellPartition(DacppFile* dacppFile,
                 regularBindIds.insert(bindId);
                 paramPlan.bindOrder.push_back(bindId);
                 paramPlan.tensorDims.push_back(split->getDimIdx());
-                if (!paramPlan.reads || paramPlan.writes) {
-                    reject(plan, "regular split only supported for read-only window");
-                    return plan;
+                auto* regularSplit =
+                    static_cast<RegularSplit*>(split);
+                paramPlan.fixedBlockSize = regularSplit->getSplitSize();
+                paramPlan.fixedBlockStride = regularSplit->getSplitStride();
+                paramPlan.access =
+                    paramPlan.writes ? ParamAccessKind::FixedBlock
+                                     : ParamAccessKind::StencilWindow;
+                if (paramPlan.writes) {
+                    sawDirectParam = true;
+                    sawWriteParam = true;
+                    if (outputDirectOrder.empty()) {
+                        outputDirectOrder = paramPlan.bindOrder;
+                    } else if (outputDirectOrder != paramPlan.bindOrder) {
+                        reject(plan, "fixed block output bind order mismatch");
+                        return plan;
+                    }
                 }
-                paramPlan.access = ParamAccessKind::StencilWindow;
                 TensorDimMapping mapping;
                 mapping.tensorName = shellWrapperParam->getName();
                 mapping.shellParamIndex = paramIdx;

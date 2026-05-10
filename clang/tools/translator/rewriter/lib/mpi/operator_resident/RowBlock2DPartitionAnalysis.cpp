@@ -58,6 +58,12 @@ bool assignPhaseLayout(DacppFile* dacppFile,
         return assignReplicatedFullTensorLayout(plan, sawScalarParam, rejectReason);
     }
 
+    for (const auto& param : plan.params) {
+        if (param.access == ParamAccessKind::FixedBlock) {
+            return assignFixedBlockLayout(plan, rejectReason);
+        }
+    }
+
     if (assignStencilWindow1DLayout(dacppFile, plan, rejectReason)) {
         return true;
     }

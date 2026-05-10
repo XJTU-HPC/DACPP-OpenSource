@@ -1,0 +1,6 @@
+MPI_STRUCTURE_ONLY:true
+LOG_CONTAINS:[DACPP][MPI][OR] expr=0 shell=PAYLOAD partition=rejected reason=fixed block first slice requires one split per parameter
+SYCL_CONTAINS:AccessPattern
+SYCL_CONTAINS:PAYLOAD_copyPayload(input, output)
+SYCL_NOT_CONTAINS:__dacpp_mpi_or_PAYLOAD_copyPayload_0
+SYCL_NOT_CONTAINS:fixed_block_count_1d

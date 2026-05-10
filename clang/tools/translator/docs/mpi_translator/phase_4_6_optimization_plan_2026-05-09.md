@@ -7,7 +7,7 @@ Updated: 2026-05-10
 Phase 4.6 is closed for the currently proven operator-resident stencil slice.
 This closeout keeps the semantic boundary unchanged:
 
-- no Phase 5 `FixedBlock`
+- no Phase 5 `FixedBlock` inside the P4.6 accepted stencil surface
 - no root-bridge stencil
 - no accepted-path reuse of legacy `AccessPattern` / `PackPlan` / root-centric codegen
 - no weakening of host-visible tensor semantics
@@ -179,12 +179,17 @@ wrapper path.
 The current recommendation is:
 
 1. P4.6 can be treated as closed for the currently proven slice.
-2. It is reasonable to move on to Phase 5 and Phase 6 implementation work.
+2. Phase 5 has started with a conservative `FixedBlock` first slice for
+   `oddeven0.1`: 1D non-overlapping `split(2,2)` READ input plus WRITE output now uses a
+   standalone OR wrapper without legacy `AccessPattern` / `PackPlan`.
 3. `FOuLa1.0` should not be merged into Phase 5 planning; it belongs to a later targeted
    rewrite-contract expansion or a post-P6 efficiency pass.
-4. If schedule pressure favors feature completion first, finishing P5 and P6 before
+4. The current P5 first slice is a correctness/structure bridge, not the final performance
+   answer: it still materializes and broadcasts each FixedBlock output for host-visible
+   tensor semantics.
+5. If schedule pressure favors feature completion first, finishing P5 and P6 before
    revisiting `FOuLa1.0` and broader efficiency tuning is a sound direction.
-5. Benchmark checkpoints should stay in place so performance debt is measured, not guessed.
+6. Benchmark checkpoints should stay in place so performance debt is measured, not guessed.
 
 ## 7. Verification
 
@@ -193,6 +198,7 @@ The current code and test expectations were verified with the requested serial c
 ```bash
 cmake --build build --target translator -j8
 bash clang/tools/translator/test_mpi.sh MDP1.0 liuliang1.0 stencil1.0 waveEquation1.0
+bash clang/tools/translator/test_mpi.sh oddeven0.1 mpiFixedBlockOverlapReject1D mpiFixedBlockPayloadReject1D mpiFixedBlockMatrixSingleSplitReject1D
 bash clang/tools/translator/test_mpi.sh mpiLoopStencilResidentHalo1D mpiLoopStencilResidentHaloEmptyRank1D mpiLoopStencilRightBoundaryFullSync1D
 bash clang/tools/translator/test_mpi.sh mpiLoopStencilScalarReject2D mpiLoopStencilCountGuard2D mpiLoopStencilOrderReject2D
 git diff --check

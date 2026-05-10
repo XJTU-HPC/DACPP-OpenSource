@@ -42,6 +42,8 @@ bool assignStencilWindow1DLayout(DacppFile* dacppFile,
 bool assignStencilWindow2DLayout(DacppFile* dacppFile,
                                  ShellPartitionPlan& plan,
                                  std::string& rejectReason);
+bool assignFixedBlockLayout(ShellPartitionPlan& plan,
+                            std::string& rejectReason);
 bool assignPhaseLayout(DacppFile* dacppFile,
                        ShellPartitionPlan& plan,
                        bool sawScalarParam,

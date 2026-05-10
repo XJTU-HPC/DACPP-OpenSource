@@ -1,32 +1,38 @@
-# P4.6 Closeout Task Plan
+# P5 FixedBlock Bring-up Task Plan
 
 ## Objective
 
-Close Phase 4.6 for the currently proven operator-resident stencil slice, keep all gates
-conservative, and hand off the next-stage boundary cleanly.
+Start Phase 5 `FixedBlock` without widening the P4.6 stencil boundary. The first target is
+`oddeven0.1`: move the currently provable non-overlapping fixed-block slice away from
+legacy `AccessPattern` / `PackPlan` and into a conservative operator-resident family with
+fallback preserved.
 
-## Completed
+## Current Baseline
 
 | Item | Status | Notes |
 |---|---|---|
-| 1D resident-state rotation | complete | `MDP1.0` and `liuliang1.0` now use full next-state write plus in-place halo exchange and reader/writer swap. |
-| 2D resident-state rotation | complete | `stencil1.0` uses double-buffer rotation; `waveEquation1.0` uses triple-buffer rotation. |
-| B3 soundness tightening | complete | Current 2D direct-reader/read-cache slice now requires `DAC -> read-cache -> followup -> boundary` source order. |
-| Required regression coverage | complete | Requested serial `test_mpi.sh` groups passed, including resident-halo, empty-rank, right-boundary fallback, scalar reject, count guard, and order reject. |
-| Focused benchmark closeout | complete | Results recorded in `/Volumes/QUQ/working/mpi_tmp/p46_final_close/results.tsv`. |
-| Canonical docs and tracking sync | complete | P4.6 and shell-derived docs rewritten into current-state closeout form; tracking files reduced to the active findings and handoff. |
+| Branch/worktree | complete | On `tqc-2`; review-fix session preserved the existing uncommitted P5 worktree. |
+| P4.6 boundary | complete | P4.6 remains closed for the proven resident stencil slice; do not mix P5 with FOuLa or existing P4.6 accepted paths. |
+| Benchmark split | complete | Old wrapper baseline has `oddeven0.1` at 4.529443s vs hand-written 1.598514s; current closeout benchmark does not include `oddeven0.1`. |
+| P5 code search | complete | `FixedBlock` previously existed only as enum/string metadata; this session added the first accepted codegen path. |
+
+## Planned Work
+
+| Item | Status | Notes |
+|---|---|
+| Define minimal P5 slice | complete | 1D `RegularSplit` where split size equals stride, currently `split(2,2)`, with one READ fixed-block input and one WRITE fixed-block output. |
+| Analysis/metadata/gate | complete | Conservative FixedBlock classification rejects overlapping windows, payload/multi-split params, non-1D wrapper tensors or calc views, mixed dimensions, extra params, read-write fixed blocks, block sizes other than 2, and byte-transport element types. |
+| Codegen/runtime loop | complete | Added standalone OR wrapper path with fixed-block partition/scatter/kernel/gather/materialize/broadcast; materialized broadcasts use checked MPI count narrowing; no legacy `AccessPattern` / `PackPlan` in accepted path. |
+| Positive and negative tests | complete | `oddeven0.1` checks accepted FixedBlock path and checked broadcast count; `mpiFixedBlockOverlapReject1D`, `mpiFixedBlockPayloadReject1D`, and `mpiFixedBlockMatrixSingleSplitReject1D` check fallback guards. |
+| Serial verification | complete | Build, positive/negative P5 tests, P4.6 regression group, and `git diff --check` passed. |
+| Focused benchmark | complete | `oddeven0.1` benchmark recorded in `/Volumes/QUQ/working/mpi_tmp/p5_fixedblock_oddeven/results.tsv`. |
+| Docs/tracking sync | complete | Canonical docs and tracking updated with current P5 first-slice position. |
 
 ## Deferred On Purpose
 
 | Item | Why it stays deferred |
 |---|---|
-| `FOuLa1.0` loop-site acceptance | Needs rewrite/init contract expansion for loop-local shell args; this is not a gate-only change and should not be hidden inside the P4.6 closeout patch. |
-| `oddeven0.1` and broader fixed-pair exchange work | Phase 5 `FixedBlock`, outside current P4.6 scope. |
-| Broader direct-reader/cache forms, root-bridge, dynamic-shape expansion | Beyond the currently proven resident slice. |
-
-## Recommended Next Order
-
-1. Continue with Phase 5.
-2. Continue with Phase 6.
-3. Revisit `FOuLa1.0` and any broader efficiency work as a separate targeted slice with
-   benchmark checkpoints.
+| `FOuLa1.0` loop-site acceptance | Rewrite/init contract expansion for loop-local shell args; not P5. |
+| P4.6 gate widening | P4.6 is closed for the current proven resident stencil slice. |
+| Overlapping regular windows such as stride smaller than size | These remain stencil/legacy fallback until a separate proof exists. |
+| Root-bridge or root-centric accepted FixedBlock | Not part of the new accepted path. |

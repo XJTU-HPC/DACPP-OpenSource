@@ -61,6 +61,10 @@ std::string buildStencilWindow1DWrapperCode(
     const std::string& wrapperName,
     DacppFile* dacppFile,
     const ShellPartitionPlan& plan);
+std::string buildFixedBlockWrapperCode(
+    const std::string& wrapperName,
+    DacppFile* dacppFile,
+    const ShellPartitionPlan& plan);
 std::string buildLoopLoweredDirect1DFamilyCode(
     const std::string& baseName,
     DacppFile* dacppFile,

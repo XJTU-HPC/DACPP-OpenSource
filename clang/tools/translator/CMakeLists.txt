@@ -46,6 +46,7 @@ set(REWRITER_SOURCES
   rewriter/lib/mpi/operator_resident/ScalarAccessAnalysis.cpp
   rewriter/lib/mpi/operator_resident/Direct1DPartitionAnalysis.cpp
   rewriter/lib/mpi/operator_resident/RowBlock2DPartitionAnalysis.cpp
+  rewriter/lib/mpi/operator_resident/FixedBlockPartitionAnalysis.cpp
   rewriter/lib/mpi/operator_resident/FullPayloadPartitionAnalysis.cpp
   rewriter/lib/mpi/operator_resident/StencilWindow1DPartitionAnalysis.cpp
   rewriter/lib/mpi/operator_resident/StencilWindowPartitionAnalysis.cpp
@@ -58,6 +59,7 @@ set(REWRITER_SOURCES
   rewriter/lib/mpi/operator_resident/LocalKernelCodegen.cpp
   rewriter/lib/mpi/operator_resident/ResidentBufferCodegen.cpp
   rewriter/lib/mpi/operator_resident/LoopLoweredDirectCodegen.cpp
+  rewriter/lib/mpi/operator_resident/FixedBlockCodegen.cpp
   rewriter/lib/mpi/operator_resident/LoopLoweredStencil1DCodegen.cpp
   rewriter/lib/mpi/operator_resident/StencilWindow1DCodegen.cpp
   rewriter/lib/mpi/operator_resident/StencilWindowCodegen.cpp

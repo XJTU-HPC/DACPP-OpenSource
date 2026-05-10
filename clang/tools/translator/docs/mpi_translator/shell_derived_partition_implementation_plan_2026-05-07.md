@@ -15,7 +15,9 @@ The document is written as a one-shot status report rather than a step-by-step b
 The accepted OR path continues to preserve these boundaries:
 
 - no root-bridge stencil
-- no Phase 5 `FixedBlock`
+- no Phase 5 `FixedBlock` beyond the current proven first slice
+- no loop-resident `FixedBlock` phase exchange yet
+- no root-centric accepted `FixedBlock`
 - no accepted-path reuse of legacy `AccessPattern` / `PackPlan`
 - no accepted-path return to root-centric gather/broadcast stencil codegen
 - no filename-based lowering decisions
@@ -31,7 +33,8 @@ path or the older fallback path.
 |---|---|---|---|
 | Phase 4 | closed | current OR stencil site acceptance, mixed-site expr dispatch, wrapper-internal followup/read-cache/boundary lowering for the current proven slice | broader stencil semantics, root-bridge |
 | Phase 4.5 | closed | current loop-lowered direct/resident family for stable `Contiguous1D` sites | broader loop families, dynamic-shape and ownership expansion |
-| Phase 4.6 | closed for the current proven slice | loop-lowered stencil resident-halo family, current 1D and 2D resident-state rotation, current `waveEquation1.0` direct-reader/read-cache extension, conservative soundness guards | `FOuLa1.0` rewrite-contract expansion, broader direct-reader/cache forms, root-bridge, Phase 5 `FixedBlock` |
+| Phase 4.6 | closed for the current proven slice | loop-lowered stencil resident-halo family, current 1D and 2D resident-state rotation, current `waveEquation1.0` direct-reader/read-cache extension, conservative soundness guards | `FOuLa1.0` rewrite-contract expansion, broader direct-reader/cache forms, root-bridge |
+| Phase 5 | first slice in progress | `oddeven0.1` now enters a conservative 1D `FixedBlock` standalone OR wrapper path without legacy `AccessPattern` / `PackPlan` | loop-resident phase exchange, overlapping regular windows, read-write fixed blocks, root-bridge |
 
 ## 4. Current Accepted P4.6 Surface
 
@@ -98,7 +101,8 @@ The closeout is considered sound because the following guards are part of the ac
 surface, not optional extras:
 
 - 2D scalar readers are rejected before accepted-path lowering
-- MPI count/displacement products are checked before `int` narrowing
+- MPI count/displacement products are checked before `int` narrowing, including the
+  current P5 FixedBlock materialized broadcast count
 - 1D empty-rank halo exchange routes through the nearest non-empty owned rank
 - unsupported 1D right-boundary forms fall back to full-sync
 - current 2D B3 sites must preserve `DAC -> read-cache -> followup -> boundary` order
@@ -150,14 +154,43 @@ So the ownership is:
 Until that work exists, the correct behavior is to keep `FOuLa1.0` on the existing OR
 wrapper path.
 
-## 8. Handoff Direction
+## 8. Phase 5 FixedBlock First Slice
+
+The first P5 slice is intentionally narrow:
+
+- exactly one 1D READ fixed-block input
+- exactly one 1D WRITE fixed-block output
+- `RegularSplit` size equals stride
+- current accepted block size is `2`
+- matching fixed-block split metadata across the accepted params
+- exactly one split per accepted shell param
+- 1D wrapper tensor rank and 1D calc view rank
+- no payload/void dimensions
+- no READ_WRITE fixed-block params
+- native MPI element datatype
+
+The accepted codegen is a standalone OR wrapper, not a loop-resident phase
+implementation. It partitions the fixed-block item space by rank, scatters contiguous
+block payloads, launches the existing local calc through `ContiguousView1D`, gathers the
+block output, materializes the host-visible output tensor, and broadcasts the materialized
+tensor so later host-side tensor code sees the same state on all ranks.
+
+This removes legacy `AccessPattern` / `PackPlan` from the accepted `oddeven0.1` path, but
+does not yet solve the performance issue caused by two materializing FixedBlock calls per
+phase. Overlapping regular windows such as `split(3,2)`, explicit payload shapes such as
+`tensor[{S1}][{}]`, and implicit non-flat Matrix payloads such as `input[{S1}]` remain
+fallback.
+
+## 9. Handoff Direction
 
 The current handoff is:
 
 1. treat P4.6 as closed for the currently proven resident slice
-2. move on to Phase 5 and Phase 6 implementation work
-3. keep `FOuLa1.0` as a later targeted infrastructure or efficiency item
-4. continue measuring with focused benchmarks rather than relaxing gates
+2. continue P5 from the current FixedBlock standalone correctness slice toward
+   loop-resident phase exchange
+3. move on to Phase 6 only after the chosen P5 boundary is explicit
+4. keep `FOuLa1.0` as a later targeted infrastructure or efficiency item
+5. continue measuring with focused benchmarks rather than relaxing gates
 
 That order keeps the semantic boundary stable and avoids mixing a rewrite-contract change
 into the Phase 5 surface.

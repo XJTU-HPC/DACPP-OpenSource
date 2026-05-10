@@ -48,7 +48,9 @@ void analyzeResidency(OperatorResidentChainPlan& chain) {
     if (!chain.exprPlans.empty()) {
         const auto& last = chain.exprPlans.back();
         for (const auto& param : last.params) {
-            if (param.writes && param.access == ParamAccessKind::OutputDirect) {
+            if (param.writes &&
+                (param.access == ParamAccessKind::OutputDirect ||
+                 param.access == ParamAccessKind::FixedBlock)) {
                 finalOutputs.insert(param.actualTensorName);
             }
         }
@@ -74,7 +76,9 @@ void analyzeResidency(OperatorResidentChainPlan& chain) {
                     param.readFromResident = true;
                 }
             }
-            if (param.writes && param.access == ParamAccessKind::OutputDirect) {
+            if (param.writes &&
+                (param.access == ParamAccessKind::OutputDirect ||
+                 param.access == ParamAccessKind::FixedBlock)) {
                 auto& state = chain.residency[param.actualTensorName];
                 state.tensorName = param.actualTensorName;
                 state.kind = ResidencyKind::DistributedDirty;

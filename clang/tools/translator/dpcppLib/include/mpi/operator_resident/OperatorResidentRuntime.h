@@ -66,6 +66,15 @@ inline RankRange1D rank_range_1d(int64_t total, int rank, int size) {
     return {begin, count};
 }
 
+inline int64_t fixed_block_count_1d(int64_t total,
+                                    int64_t blockSize,
+                                    int64_t blockStride) {
+    if (total < blockSize || blockSize <= 0 || blockStride <= 0) {
+        return 0;
+    }
+    return ((total - blockSize) / blockStride) + 1;
+}
+
 inline void counts_displs_1d(int64_t total,
                              int size,
                              std::vector<int>& counts,

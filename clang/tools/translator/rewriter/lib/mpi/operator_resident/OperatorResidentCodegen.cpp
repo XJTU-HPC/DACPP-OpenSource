@@ -88,6 +88,10 @@ std::string buildOperatorResidentWrapperCode(
         return operator_resident::buildStencilWindow2DWrapperCode(
             wrapper, dacppFile, exprPlan);
     }
+    if (exprPlan.signature.layout == LocalLayoutKind::FixedBlock) {
+        return operator_resident::buildFixedBlockWrapperCode(
+            wrapper, dacppFile, exprPlan);
+    }
     if (exprPlan.loopLowerCandidate &&
         exprPlan.signature.layout == LocalLayoutKind::Contiguous1D) {
         return operator_resident::buildLoopLoweredDirect1DFamilyCode(
