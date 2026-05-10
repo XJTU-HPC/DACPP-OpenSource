@@ -416,6 +416,7 @@ void emitLoopLoweredContextType2D(
     code += "    std::vector<int> __or_row_displs;\n";
     code += "    std::vector<int> __or_counts;\n";
     code += "    std::vector<int> __or_displs;\n";
+    code += "    dacpp::mpi::SegmentedProfile __or_profile;\n";
     code += "    sycl::queue q{sycl::default_selector_v};\n";
     code += "    std::vector<" + elemType(plan, reader) + "> " +
             globalName(reader) + ";\n";
@@ -440,6 +441,7 @@ void emitLoopLoweredInitFunction2D(
     const std::string readerMpiType = mpiDatatypeFor(readerType);
     code += "void " + initName + "(" + ctxName + "& ctx, " +
             wrapperSignature(plan) + ") {\n";
+    code += "    auto dacpp_profile_init_start = dacpp::mpi::profileSegmentStart();\n";
     code += "    MPI_Comm_rank(MPI_COMM_WORLD, &ctx.mpi_rank);\n";
     code += "    MPI_Comm_size(MPI_COMM_WORLD, &ctx.mpi_size);\n";
     code += "    ctx.__or_input_rows = " + paramVarName(reader) +
@@ -522,7 +524,9 @@ void emitLoopLoweredInitFunction2D(
     code += "    ctx." + localName(writer) +
             ".assign(static_cast<std::size_t>(ctx.__or_local_item_count), " +
             elemType(plan, writer) + "{});\n";
+    code += "    dacpp::mpi::recordProfileSegment(ctx.__or_profile, dacpp::mpi::ProfileSegment::Init, dacpp_profile_init_start);\n";
     if (plan.orLoopLower.hoistReaderSync) {
+        code += "    auto dacpp_profile_bcast_start = dacpp::mpi::profileSegmentStart();\n";
         code += "    " + checkedMpiCountExpr(
                 "__or_reader_dense_count",
                 "[DACPP][MPI][OR] StencilWindow2D reader broadcast count exceeds MPI int range") +
@@ -547,6 +551,7 @@ void emitLoopLoweredInitFunction2D(
                     ", " +
                     readerMpiType + ", 0, MPI_COMM_WORLD);\n";
         }
+        code += "    dacpp::mpi::recordProfileSegment(ctx.__or_profile, dacpp::mpi::ProfileSegment::Bcast, dacpp_profile_bcast_start);\n";
     }
     code += "}\n";
 }
@@ -590,6 +595,7 @@ void emitLoopLoweredRunFunction2D(
     code += "    auto& " + localName(writer) + " = ctx." +
             localName(writer) + ";\n";
     if (!plan.orLoopLower.hoistReaderSync) {
+        code += "    auto dacpp_profile_bcast_start = dacpp::mpi::profileSegmentStart();\n";
         code += "    const int64_t __or_reader_dense_count = " +
                 checkedMulExpr(
                     "__or_input_rows", "__or_input_cols",
@@ -610,6 +616,7 @@ void emitLoopLoweredRunFunction2D(
                     "__or_input_rows", "__or_input_cols", readerType,
                     "[DACPP][MPI][OR] StencilWindow2D reader broadcast count exceeds MPI int range") +
                 ", " + readerMpiType + ", 0, MPI_COMM_WORLD);\n";
+        code += "    dacpp::mpi::recordProfileSegment(ctx.__or_profile, dacpp::mpi::ProfileSegment::Bcast, dacpp_profile_bcast_start);\n";
     }
     for (const auto* directReader : directReaders) {
         const std::string directType = elemType(plan, *directReader);
@@ -624,6 +631,9 @@ void emitLoopLoweredRunFunction2D(
                 "__or_direct_dense_count_" + directReader->calcParamName,
                 "[DACPP][MPI][OR] StencilWindow2D direct-reader buffer size exceeds MPI int range") +
                 ";\n";
+        code += "    auto dacpp_profile_bcast_start_" +
+                directReader->calcParamName +
+                " = dacpp::mpi::profileSegmentStart();\n";
         code += "    if (mpi_rank == 0) {\n";
         code += "        " + paramVarName(*directReader) + ".tensor2Array(" +
                 globalName(*directReader) + ");\n";
@@ -636,7 +646,10 @@ void emitLoopLoweredRunFunction2D(
                     "__or_output_rows", "__or_output_cols", directType,
                     "[DACPP][MPI][OR] StencilWindow2D direct-reader broadcast count exceeds MPI int range") +
                 ", " + directMpiType + ", 0, MPI_COMM_WORLD);\n";
+        code += "    dacpp::mpi::recordProfileSegment(ctx.__or_profile, dacpp::mpi::ProfileSegment::Bcast, dacpp_profile_bcast_start_" +
+                directReader->calcParamName + ");\n";
     }
+    code += "    auto dacpp_profile_kernel_start = dacpp::mpi::profileSegmentStart();\n";
     code += "    if (__or_local_item_count > 0) {\n";
     code += "        sycl::buffer<" + readerType +
             ", 1> __or_reader_buf(" + globalName(reader) +
@@ -717,6 +730,7 @@ void emitLoopLoweredRunFunction2D(
     code += "        });\n";
     code += "        q.wait();\n";
     code += "    }\n";
+    code += "    dacpp::mpi::recordProfileSegment(ctx.__or_profile, dacpp::mpi::ProfileSegment::Kernel, dacpp_profile_kernel_start);\n";
     code += "    auto& __or_resident_out_" + writer.calcParamName +
             " = dacpp::mpi::operator_resident::ensure_resident<" +
             writerType + ">(" + paramVarName(writer) + ", " +
@@ -730,7 +744,7 @@ void emitLoopLoweredRunFunction2D(
             "\"[DACPP][MPI][OR] materialized output size exceeds MPI int range\");\n";
     emitGatherMaterializeFromLocalBuffer(
         code, plan, writer, localName(writer),
-        "__or_materialized_output_items");
+        "__or_materialized_output_items", "ctx.__or_profile");
     emitReadCacheTransitions2D(code, plan, sitePlan.readCacheTransitions);
     emitFollowupMaterialize2D(code, plan, writer, followups,
                               sitePlan.boundaryLocalUpdates);
@@ -743,10 +757,14 @@ void emitLoopLoweredMaterializeFunction2D(std::string& code,
                                           const ShellPartitionPlan& plan) {
     code += "void " + materializeName + "(" + ctxName + "& ctx, " +
             wrapperSignature(plan) + ") {\n";
+    code += "    auto dacpp_profile_materialize_start = dacpp::mpi::profileSegmentStart();\n";
     code += "    (void)ctx;\n";
     for (const auto& param : plan.params) {
         code += "    (void)" + paramVarName(param) + ";\n";
     }
+    code += "    dacpp::mpi::recordProfileSegment(ctx.__or_profile, dacpp::mpi::ProfileSegment::Materialize, dacpp_profile_materialize_start);\n";
+    code += "    dacpp::mpi::reportSegmentedProfile(\"" + materializeName +
+            "\", ctx.__or_profile, MPI_COMM_WORLD);\n";
     code += "}\n";
 }
 
@@ -879,6 +897,7 @@ void emitResidentHaloContextType2D(std::string& code,
     code += "    std::vector<int> __or_row_displs;\n";
     code += "    std::vector<int> __or_counts;\n";
     code += "    std::vector<int> __or_displs;\n";
+    code += "    dacpp::mpi::SegmentedProfile __or_profile;\n";
     code += "    sycl::queue q{sycl::default_selector_v};\n";
     code += "    std::vector<" + elemType(plan, reader) + "> " +
             localName(reader) + ";\n";
@@ -906,6 +925,7 @@ void emitResidentHaloInitFunction2D(std::string& code,
         directReader ? mpiDatatypeFor(directReaderType) : std::string();
     code += "void " + initName + "(" + ctxName + "& ctx, " +
             wrapperSignature(plan) + ") {\n";
+    code += "    auto dacpp_profile_init_start = dacpp::mpi::profileSegmentStart();\n";
     code += "    MPI_Comm_rank(MPI_COMM_WORLD, &ctx.mpi_rank);\n";
     code += "    MPI_Comm_size(MPI_COMM_WORLD, &ctx.mpi_size);\n";
     code += "    ctx.__or_input_rows = " + paramVarName(reader) +
@@ -972,6 +992,8 @@ void emitResidentHaloInitFunction2D(std::string& code,
             ";\n";
     code += "    std::vector<" + readerType + "> __or_initial_global_" +
             reader.calcParamName + ";\n";
+    code += "    dacpp::mpi::recordProfileSegment(ctx.__or_profile, dacpp::mpi::ProfileSegment::Init, dacpp_profile_init_start);\n";
+    code += "    auto dacpp_profile_scatter_start = dacpp::mpi::profileSegmentStart();\n";
     code += "    if (ctx.mpi_rank == 0) {\n";
     code += "        " + paramVarName(reader) +
             ".tensor2Array(__or_initial_global_" + reader.calcParamName +
@@ -1022,6 +1044,7 @@ void emitResidentHaloInitFunction2D(std::string& code,
                 directReader->calcParamName +
                 ", ctx.__or_halo_layout, ctx.__or_output_cols, ctx.__or_input_cols, ctx.__or_followup_row_offset, ctx.__or_followup_col_offset);\n";
     }
+    code += "    dacpp::mpi::recordProfileSegment(ctx.__or_profile, dacpp::mpi::ProfileSegment::Scatter, dacpp_profile_scatter_start);\n";
     code += "}\n";
 }
 
@@ -1063,6 +1086,7 @@ void emitResidentHaloRunFunction2D(std::string& code,
     }
     code += "    auto& " + localName(writer) + " = ctx." +
             localName(writer) + ";\n";
+    code += "    auto dacpp_profile_kernel_start = dacpp::mpi::profileSegmentStart();\n";
     code += "    if (__or_local_item_count > 0) {\n";
     code += "        sycl::buffer<" + readerType + ", 1> __or_reader_buf(" +
             localName(reader) + ".data(), sycl::range<1>(" +
@@ -1128,6 +1152,8 @@ void emitResidentHaloRunFunction2D(std::string& code,
     code += "        });\n";
     code += "        q.wait();\n";
     code += "    }\n";
+    code += "    dacpp::mpi::recordProfileSegment(ctx.__or_profile, dacpp::mpi::ProfileSegment::Kernel, dacpp_profile_kernel_start);\n";
+    code += "    auto dacpp_profile_halo_start = dacpp::mpi::profileSegmentStart();\n";
     code += "    dacpp::mpi::operator_resident::exchange_halo_2d_rows_inplace(" +
             localName(writer) +
             ", ctx.__or_halo_layout, __or_output_rows, __or_output_cols, __or_input_cols, ctx.__or_followup_row_offset, ctx.__or_followup_col_offset, mpi_rank, ctx.mpi_size, " +
@@ -1136,6 +1162,7 @@ void emitResidentHaloRunFunction2D(std::string& code,
         code, plan, sitePlan.boundaryLocalUpdates, reader, localName(writer),
         "__or_local_reader_row_begin", "__or_local_reader_rows",
         "__or_input_rows", "__or_input_cols");
+    code += "    dacpp::mpi::recordProfileSegment(ctx.__or_profile, dacpp::mpi::ProfileSegment::Halo, dacpp_profile_halo_start);\n";
     if (directReader) {
         code += "    ctx." + localName(*directReader) + ".swap(ctx." +
                 localName(reader) + ");\n";
@@ -1168,6 +1195,7 @@ void emitResidentHaloMaterializeFunction2D(
     code += "void " + materializeName + "(" + ctxName + "& ctx, " +
             wrapperSignature(plan) + ") {\n";
     code += "    int mpi_rank = ctx.mpi_rank;\n";
+    code += "    auto dacpp_profile_gather_start_writer = dacpp::mpi::profileSegmentStart();\n";
     code += "    std::vector<" + writerType + "> __or_materialized_" +
             writer.calcParamName + ";\n";
     code += "    const int64_t __or_materialized_writer_count = " +
@@ -1199,11 +1227,17 @@ void emitResidentHaloMaterializeFunction2D(
             writer.calcParamName +
             ".data() : nullptr, mpi_rank == 0 ? ctx.__or_counts.data() : nullptr, mpi_rank == 0 ? ctx.__or_displs.data() : nullptr, " +
             writerMpiType + ", 0, MPI_COMM_WORLD);\n";
+    code += "    dacpp::mpi::recordProfileSegment(ctx.__or_profile, dacpp::mpi::ProfileSegment::Gather, dacpp_profile_gather_start_writer);\n";
+    code += "    auto dacpp_profile_materialize_start = dacpp::mpi::profileSegmentStart();\n";
     code += "    if (mpi_rank == 0) {\n";
     code += "        " + paramVarName(writer) + ".array2Tensor(__or_materialized_" +
             writer.calcParamName + ");\n";
     code += "    }\n";
+    code += "    dacpp::mpi::recordProfileSegment(ctx.__or_profile, dacpp::mpi::ProfileSegment::Materialize, dacpp_profile_materialize_start);\n";
     if (directReader) {
+        code += "    auto dacpp_profile_gather_start_" +
+                directReader->calcParamName +
+                " = dacpp::mpi::profileSegmentStart();\n";
         code += "    const auto __or_owned_" + directReader->calcParamName +
                 " = dacpp::mpi::operator_resident::owned_slice_2d_rows(ctx." +
                 localName(*directReader) +
@@ -1225,12 +1259,17 @@ void emitResidentHaloMaterializeFunction2D(
                 directReader->calcParamName +
                 ".data() : nullptr, mpi_rank == 0 ? ctx.__or_counts.data() : nullptr, mpi_rank == 0 ? ctx.__or_displs.data() : nullptr, " +
                 directReaderMpiType + ", 0, MPI_COMM_WORLD);\n";
+        code += "    dacpp::mpi::recordProfileSegment(ctx.__or_profile, dacpp::mpi::ProfileSegment::Gather, dacpp_profile_gather_start_" +
+                directReader->calcParamName + ");\n";
+        code += "    dacpp_profile_materialize_start = dacpp::mpi::profileSegmentStart();\n";
         code += "    if (mpi_rank == 0) {\n";
         code += "        " + paramVarName(*directReader) +
                 ".array2Tensor(__or_materialized_" +
                 directReader->calcParamName + ");\n";
         code += "    }\n";
+        code += "    dacpp::mpi::recordProfileSegment(ctx.__or_profile, dacpp::mpi::ProfileSegment::Materialize, dacpp_profile_materialize_start);\n";
     }
+    code += "    dacpp_profile_materialize_start = dacpp::mpi::profileSegmentStart();\n";
     code += "    if (mpi_rank == 0) {\n";
     code += "        std::vector<" + readerType + "> __or_materialized_" +
             reader.calcParamName + ";\n";
@@ -1263,12 +1302,15 @@ void emitResidentHaloMaterializeFunction2D(
     code += "        " + paramVarName(reader) + ".array2Tensor(__or_materialized_" +
             reader.calcParamName + ");\n";
     code += "    }\n";
+    code += "    dacpp::mpi::recordProfileSegment(ctx.__or_profile, dacpp::mpi::ProfileSegment::Materialize, dacpp_profile_materialize_start);\n";
     for (const auto& param : plan.params) {
         if (param.paramIndex != reader.paramIndex &&
             param.paramIndex != writer.paramIndex) {
             code += "    (void)" + paramVarName(param) + ";\n";
         }
     }
+    code += "    dacpp::mpi::reportSegmentedProfile(\"" + materializeName +
+            "\", ctx.__or_profile, MPI_COMM_WORLD);\n";
     code += "}\n";
 }
 

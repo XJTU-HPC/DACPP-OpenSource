@@ -44,13 +44,15 @@ void emitPartitionCode(std::string& code, const ShellPartitionPlan& plan);
 void emitKernel(std::string& code, const ShellPartitionPlan& plan);
 void emitGatherMaterialize(std::string& code,
                            const ShellPartitionPlan& plan,
-                           const ParamAccessPlan& param);
+                           const ParamAccessPlan& param,
+                           const std::string& profileName = "");
 void emitGatherMaterializeFromLocalBuffer(
     std::string& code,
     const ShellPartitionPlan& plan,
     const ParamAccessPlan& param,
     const std::string& localBufferName,
-    const std::string& totalItemCountExpr);
+    const std::string& totalItemCountExpr,
+    const std::string& profileName = "");
 void emitResidencyAndMaterialization(std::string& code,
                                      const ShellPartitionPlan& plan);
 std::string buildStencilWindow2DWrapperCode(

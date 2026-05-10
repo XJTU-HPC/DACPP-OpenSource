@@ -145,6 +145,96 @@ Readout:
   generated code to parity with the hand-written reference for this focused
   scale.
 
+### 2026-05-10 Phase 1.4 Segmented Profile Reporting
+
+This run validates the new default-off segmented profiling and records raw
+artifacts for future before/after comparisons. It is a measurement run, not a
+translator fast path change.
+
+Driver:
+
+```bash
+python3 clang/tools/translator/bench_mpi_profile_segments.py \
+  --tmp-dir /Volumes/QUQ/working/mpi_tmp/phase1_4_profile_focus \
+  --ranks 1,2,4,8 \
+  --trials 3 \
+  vectorAddCombo FOuLa1.0 MDP1.0 stencil1.0 oddeven0.1 decay1.0
+```
+
+Artifacts:
+
+- `/Volumes/QUQ/working/mpi_tmp/phase1_4_profile_focus/summary.tsv`
+- `/Volumes/QUQ/working/mpi_tmp/phase1_4_profile_focus/results.tsv`
+- `/Volumes/QUQ/working/mpi_tmp/phase1_4_profile_focus/profile_raw.tsv`
+- `/Volumes/QUQ/working/mpi_tmp/phase1_4_profile_focus/profile_summary.tsv`
+- `/Volumes/QUQ/working/mpi_tmp/phase1_4_profile_focus/collect_positions_profile.tsv`
+- generated source snapshots, per-trial stdout/stderr, `metadata.json`,
+  `git_status.txt`, `git_diff_stat.txt`, `git_diff.patch`, `git_untracked.txt`,
+  and untracked-file snapshots
+
+The profile driver runs hand MPI+SYCL, DAC-MPI with profiling disabled, and
+DAC-MPI with `DACPP_MPI_PROFILE=1`. For every focused case/rank/trial in this
+run, profile-enabled DAC stdout matched profile-disabled DAC stdout. Baseline
+correctness against non-MPI DAC remains covered by `test_mpi.sh`; this driver is
+for performance measurement and profile attribution.
+
+4-rank medians:
+
+| Case | Scale | Hand MPI+SYCL (s) | DAC-MPI profile off (s) | DAC / hand | DAC-MPI profile on (s) |
+|---|---:|---:|---:|---:|---:|
+| `FOuLa1.0` | m=8192, n=600 | 0.269842 | 0.373362 | 1.38x | 0.409075 |
+| `MDP1.0` | N=8192, T=600 | 0.269820 | 0.269225 | 1.00x | 0.262492 |
+| `decay1.0` | numIsotopes=8192, steps=600 | 0.330189 | 0.380968 | 1.15x | 0.384194 |
+| `oddeven0.1` | N=4096 | 1.195697 | 0.187462 | 0.16x | 0.150047 |
+| `stencil1.0` | 2048x2048, steps=600 | 1.009845 | 0.954323 | 0.95x | 0.954409 |
+| `vectorAddCombo` | N=8388608 | 0.202725 | 0.267805 | 1.32x | 0.254276 |
+
+DAC-MPI profile-off rank scaling medians:
+
+| Case | np=1 (s) | np=2 (s) | np=4 (s) | np=8 (s) |
+|---|---:|---:|---:|---:|
+| `FOuLa1.0` | 0.270201 | 0.314536 | 0.373362 | 0.551603 |
+| `MDP1.0` | 0.209464 | 0.194843 | 0.269225 | 0.434063 |
+| `decay1.0` | 0.205890 | 0.257869 | 0.380968 | 0.494490 |
+| `oddeven0.1` | 0.144489 | 0.150307 | 0.187462 | 0.196965 |
+| `stencil1.0` | 0.908790 | 0.854567 | 0.954323 | 1.088306 |
+| `vectorAddCombo` | 0.208281 | 0.253783 | 0.267805 | 0.417885 |
+
+4-rank segmented profile readout:
+
+| Case | Largest segment signals from `profile_summary.tsv` |
+|---|---|
+| `vectorAddCombo` | `scatter` 47.954ms, `materialize` 38.883ms, `bcast` 19.832ms, `kernel` 16.179ms, `gather` 10.269ms |
+| `decay1.0` | `kernel` 591.297ms, `gather` 198.918ms, `bcast` 92.985ms, `materialize` 2.477ms |
+| `FOuLa1.0` | `kernel` 482.170ms, `halo` 61.911ms, `bcast` 56.898ms, `materialize` 51.093ms |
+| `MDP1.0` | `kernel` 417.994ms, `halo` 37.296ms; other segments below 1ms aggregate |
+| `stencil1.0` | `kernel` 2318.965ms, `halo` 514.394ms, `scatter` 40.424ms, `materialize` 20.006ms |
+| `oddeven0.1` | `kernel` dominates; communication and materialization are sub-millisecond to low single-digit aggregate |
+
+Profile `sum_ms` is summed across ranks and is therefore an attribution signal,
+not a value to add up into external wall time.
+
+Readout:
+
+- `vectorAddCombo` is still an OR `Contiguous1D` chain, not legacy
+  AccessPattern. The current residual profile points at scatter/final
+  materialize/bcast, not legacy pack.
+- `decay1.0` shows per-step gather and bcast cost and is a strong Phase 3
+  materialization/residency inventory candidate.
+- `MDP1.0`, `stencil1.0`, and `FOuLa1.0` are mostly kernel+halo dominated in
+  this run. Do not widen stencil or FOuLa accepted surface based on this
+  profile alone.
+- `oddeven0.1` remains a strong P5 phase-exchange regression checkpoint.
+
+Legacy fallback smoke artifact:
+`/Volumes/QUQ/working/mpi_tmp/phase1_4_legacy_profile_smoke`.
+
+That smoke compiled and ran `mpiFixedBlockMatrixSingleSplitReject1D` through the
+legacy AccessPattern path with `DACPP_MPI_PROFILE=1`, emitted
+`init/scatter/pack/kernel/gather/materialize/final_sync`, preserved existing
+`collect_positions_for_item` lines, and kept DAC profile-on stdout identical to
+DAC profile-off stdout.
+
 ### P5 Phase-Exchange Closeout
 
 Source recorded in the closed phase document:
@@ -171,7 +261,7 @@ Readout:
 | `DFT1.0` | Baseline already competitive. | Re-run under current code for confirmation. |
 | `FOuLa1.0` | Guarded owner-loop specialization is at parity in the focused 2026-05-10 run. | Generalize owner-loop recognition beyond the current strict shape. |
 | `MDP1.0` | Current resident-halo path is near hand-written MPI. | Keep as regression checkpoint. |
-| `decay1.0` | Baseline competitive. | Re-run current full suite. |
+| `decay1.0` | Current Phase 1.4 profile shows per-step gather+bcast cost despite acceptable wall time. | Build Phase 3 materialization/residency inventory. |
 | `gradientSum` | Baseline slower than hand reference. | Identify current lowering path and isolate overhead. |
 | `imageAdjustment1.0` | DAC-MPI faster after semantic alignment. | Keep semantic alignment note with benchmark logs. |
 | `jacobi1.0` | Baseline competitive despite replicated full tensor broadcast. | Re-run and inspect broadcast sensitivity by N/iter. |
@@ -180,7 +270,7 @@ Readout:
 | `matMul1.0` | RowPartition path has expected payload broadcast cost. | Compare against block/tile-aware future layout if added. |
 | `oddeven0.1` | Current P5 phase exchange is strong. | Keep focused P5 regression and rank-scaling tests. |
 | `stencil1.0` | Current 2D resident halo is near parity or slightly faster in closeout. | Keep as P4.6 regression checkpoint. |
-| `vectorAddCombo` | Current OR chain is already near/faster than hand MPI; resident-buffer copy removal is structurally cleaner but wall-clock neutral. | Add phase timing before further tuning. |
+| `vectorAddCombo` | Current OR chain is not legacy; Phase 1.4 profile points to scatter/final materialize/bcast as the residual cost. | Build Phase 3 materialization inventory before considering more chain tuning. |
 | `waveEquation1.0` | Current 2D resident halo with direct-reader extension is near parity. | Keep as B3 direct-reader regression checkpoint. |
 
 ## Benchmark TODO
@@ -188,8 +278,10 @@ Readout:
 1. Re-run all 14 benchmark cases under the current P6 code with at least three
    runs per side and report medians.
 2. Store raw `results.tsv`, logs, generated source snapshots, and the exact git
-   commit or diff state with the benchmark summary.
-3. Add per-phase timing for generated code:
+   commit or diff state with the benchmark summary. Phase 1.4 now does this for
+   the focused profile run; repeat it for full-suite runs.
+3. Add per-phase timing for generated code. Phase 1.4 now covers focused OR,
+   resident-halo, P5, FOuLa, and a legacy fallback smoke with:
    - init/scatter
    - per-run kernel
    - per-run halo or boundary exchange

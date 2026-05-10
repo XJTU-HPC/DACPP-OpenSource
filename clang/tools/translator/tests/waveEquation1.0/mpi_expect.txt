@@ -6,6 +6,7 @@ LOG_CONTAINS:[DACPP][MPI][PhaseC] route detected matNext->matCur offset=(1,1)
 LOG_CONTAINS:[DACPP][MPI][OR][P4.6][Loop] expr=0 shell=waveEqShell
 LOG_CONTAINS:kind=StencilResidentHalo structure=ctx/init/run/materialize resident-halo=true window-shape=3x3 followup-offset=(1,1) direct-reader=true read-cache-offset=(-1,-1) materialize=final
 SYCL_CONTAINS:struct __dacpp_mpi_or_waveEqShell_waveEq_0_ctx
+SYCL_CONTAINS:dacpp::mpi::SegmentedProfile __or_profile
 SYCL_CONTAINS:void __dacpp_mpi_or_waveEqShell_waveEq_0_init(__dacpp_mpi_or_waveEqShell_waveEq_0_ctx& ctx
 SYCL_CONTAINS:void __dacpp_mpi_or_waveEqShell_waveEq_0_run(__dacpp_mpi_or_waveEqShell_waveEq_0_ctx& ctx
 SYCL_CONTAINS:void __dacpp_mpi_or_waveEqShell_waveEq_0_materialize(__dacpp_mpi_or_waveEqShell_waveEq_0_ctx& ctx
@@ -26,6 +27,8 @@ SYCL_CONTAINS:MPI_Gatherv(__or_owned_next.data()
 SYCL_CONTAINS:MPI_Gatherv(__or_owned_prev.data()
 SYCL_CONTAINS:dacpp::mpi::map_2d_global_with_offset(static_cast<int64_t>(__or_idx), ctx.__or_output_cols, __or_followup_reader_cols_cur, 1, 1)
 SYCL_CONTAINS:__or_local_next[static_cast<std::size_t>(__or_boundary_target_local)] = static_cast<double>(0)
+SYCL_CONTAINS:dacpp::mpi::ProfileSegment::Materialize
+SYCL_CONTAINS:dacpp::mpi::reportSegmentedProfile("__dacpp_mpi_or_waveEqShell_waveEq_0_materialize"
 SYCL_NOT_CONTAINS:matCur[i][NY-1]=0
 SYCL_NOT_CONTAINS:MPI_Bcast(__or_global_cur.data()
 SYCL_NOT_CONTAINS:MPI_Bcast(__or_global_prev.data()

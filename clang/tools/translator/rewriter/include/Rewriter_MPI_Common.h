@@ -168,6 +168,10 @@ std::string buildLocalCalcCode(Shell* shell, Calc* calc);
 std::string buildPackPlanBuilderExpr(IOTYPE mode,
                                      const std::string& rangeName,
                                      const std::string& patternName);
+std::string profileSegmentStartCode(const std::string& varName);
+std::string profileRecordCode(const std::string& profileName,
+                              const std::string& segmentName,
+                              const std::string& startVarName);
 std::string buildWrapperCode(DacppFile* dacppFile,
                              Shell* shell,
                              Calc* calc,

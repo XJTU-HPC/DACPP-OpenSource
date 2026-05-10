@@ -8,6 +8,10 @@ SYCL_CONTAINS:dacpp::mpi::operator_resident::scatter_window_1d
 SYCL_CONTAINS:dacpp::mpi::operator_resident::exchange_halo_1d_inplace
 SYCL_CONTAINS:ContiguousView1D<const double> view_r{__or_scalar_data, 0}
 SYCL_CONTAINS:MPI_Gatherv(__or_local_history.data()
+SYCL_CONTAINS:dacpp::mpi::SegmentedProfile dacpp_profile
+SYCL_CONTAINS:dacpp::mpi::ProfileSegment::Kernel
+SYCL_CONTAINS:dacpp::mpi::ProfileSegment::Halo
+SYCL_CONTAINS:dacpp::mpi::reportSegmentedProfile("__dacpp_mpi_or_PDE_pde_0_owner_loop"
 SYCL_NOT_CONTAINS:MPI_Bcast(__or_global_u_kin.data()
 SYCL_NOT_CONTAINS:MPI_Gatherv(__or_local_u_kout.data()
 SYCL_NOT_CONTAINS:MPI_Bcast(__or_materialized_u_kout.data()

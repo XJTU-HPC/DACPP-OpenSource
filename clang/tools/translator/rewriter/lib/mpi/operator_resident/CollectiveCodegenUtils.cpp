@@ -116,9 +116,10 @@ void emitResidentOrScatter(std::string& code,
 
 void emitGatherMaterialize(std::string& code,
                            const ShellPartitionPlan& plan,
-                           const ParamAccessPlan& param) {
+                           const ParamAccessPlan& param,
+                           const std::string& profileName) {
     emitGatherMaterializeFromLocalBuffer(code, plan, param, localName(param),
-                                         "__or_total_items");
+                                         "__or_total_items", profileName);
 }
 
 void emitGatherMaterializeFromLocalBuffer(
@@ -126,7 +127,8 @@ void emitGatherMaterializeFromLocalBuffer(
     const ShellPartitionPlan& plan,
     const ParamAccessPlan& param,
     const std::string& localBufferName,
-    const std::string& totalItemCountExpr) {
+    const std::string& totalItemCountExpr,
+    const std::string& profileName) {
     const std::string type = elemType(plan, param);
     const std::string mpiType = mpiDatatypeFor(type);
     const std::string global = "__or_materialized_" + param.calcParamName;
@@ -139,6 +141,11 @@ void emitGatherMaterializeFromLocalBuffer(
     code += "        " + global + ".resize(static_cast<std::size_t>(" +
             totalItemCountExpr + "));\n";
     code += "    }\n";
+    const bool hasProfile = !profileName.empty();
+    if (hasProfile) {
+        code += "    auto dacpp_profile_gather_start_" + param.calcParamName +
+                " = dacpp::mpi::profileSegmentStart();\n";
+    }
     if (usesByte(plan, param)) {
         emitByteCounts(code, param.calcParamName + "_gather", type);
         code += "    MPI_Gatherv(" + localBufferName +
@@ -157,6 +164,15 @@ void emitGatherMaterializeFromLocalBuffer(
                 ".data() : nullptr, mpi_rank == 0 ? __or_counts.data() : nullptr, mpi_rank == 0 ? __or_displs.data() : nullptr, " +
                 mpiType + ", 0, MPI_COMM_WORLD);\n";
     }
+    if (hasProfile) {
+        code += "    dacpp::mpi::recordProfileSegment(" + profileName +
+                ", dacpp::mpi::ProfileSegment::Gather, "
+                "dacpp_profile_gather_start_" +
+                param.calcParamName + ");\n";
+        code += "    auto dacpp_profile_materialize_start_" +
+                param.calcParamName +
+                " = dacpp::mpi::profileSegmentStart();\n";
+    }
     code += "    if (mpi_rank == 0) {\n";
     code += "        " + paramVarName(param) + ".array2Tensor(" + global +
             ");\n";
@@ -166,11 +182,23 @@ void emitGatherMaterializeFromLocalBuffer(
                 "[DACPP][MPI][OR] materialized output broadcast count exceeds MPI int range") +
                 ";\n";
         code += "        if (!" + global + ".empty()) {\n";
+        if (hasProfile) {
+            code += "            auto dacpp_profile_bcast_start_" +
+                    param.calcParamName +
+                    " = dacpp::mpi::profileSegmentStart();\n";
+        }
         code += "            MPI_Bcast(" + global + ".data(), " +
                 checkedMpiPayloadCountExpr(
                     paramVarName(param) + ".getSize()", type,
                     "[DACPP][MPI][OR] materialized output broadcast count exceeds MPI int range") +
                 ", " + mpiType + ", 0, MPI_COMM_WORLD);\n";
+        if (hasProfile) {
+            code += "            dacpp::mpi::recordProfileSegment(" +
+                    profileName +
+                    ", dacpp::mpi::ProfileSegment::Bcast, "
+                    "dacpp_profile_bcast_start_" +
+                    param.calcParamName + ");\n";
+        }
         code += "        }\n";
     }
     if (param.broadcastMaterializedOutput) {
@@ -182,17 +210,35 @@ void emitGatherMaterializeFromLocalBuffer(
         code += "        " + global + ".resize(static_cast<std::size_t>(" +
                 paramVarName(param) + ".getSize()));\n";
         code += "        if (!" + global + ".empty()) {\n";
+        if (hasProfile) {
+            code += "            auto dacpp_profile_bcast_start_" +
+                    param.calcParamName +
+                    " = dacpp::mpi::profileSegmentStart();\n";
+        }
         code += "            MPI_Bcast(" + global + ".data(), " +
                 checkedMpiPayloadCountExpr(
                     paramVarName(param) + ".getSize()", type,
                     "[DACPP][MPI][OR] materialized output broadcast count exceeds MPI int range") +
                 ", " + mpiType + ", 0, MPI_COMM_WORLD);\n";
+        if (hasProfile) {
+            code += "            dacpp::mpi::recordProfileSegment(" +
+                    profileName +
+                    ", dacpp::mpi::ProfileSegment::Bcast, "
+                    "dacpp_profile_bcast_start_" +
+                    param.calcParamName + ");\n";
+        }
         code += "        }\n";
         code += "        " + paramVarName(param) + ".array2Tensor(" + global +
                 ");\n";
         code += "    }\n";
     } else {
         code += "    }\n";
+    }
+    if (hasProfile) {
+        code += "    dacpp::mpi::recordProfileSegment(" + profileName +
+                ", dacpp::mpi::ProfileSegment::Materialize, "
+                "dacpp_profile_materialize_start_" +
+                param.calcParamName + ");\n";
     }
 }
 

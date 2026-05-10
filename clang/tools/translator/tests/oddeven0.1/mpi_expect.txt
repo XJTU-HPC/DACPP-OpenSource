@@ -10,6 +10,11 @@ SYCL_CONTAINS:dacpp::mpi::operator_resident::fixed_block_phase_exchange_step
 SYCL_CONTAINS:__dacpp_mpi_or_ODDEVEN_oddeven_0_init(__dacpp_mpi_or_ctx_0, array_tensor, array_out_tensor)
 SYCL_CONTAINS:__dacpp_mpi_or_ODDEVEN_oddeven_0_run(__dacpp_mpi_or_ctx_0, array_tensor, array_out_tensor)
 SYCL_CONTAINS:__dacpp_mpi_or_ODDEVEN_oddeven_0_materialize(__dacpp_mpi_or_ctx_0, array_tensor, array_out_tensor)
+SYCL_CONTAINS:dacpp::mpi::SegmentedProfile profile
+SYCL_CONTAINS:dacpp::mpi::ProfileSegment::Scatter
+SYCL_CONTAINS:dacpp::mpi::ProfileSegment::Kernel
+SYCL_CONTAINS:dacpp::mpi::ProfileSegment::Bcast
+SYCL_CONTAINS:dacpp::mpi::reportSegmentedProfile("__dacpp_mpi_or_ODDEVEN_oddeven_0_materialize"
 SYCL_NOT_CONTAINS:__dacpp_mpi_or_ODDEVEN_oddeven_1(array2_tensor, array_out2_tensor)
 SYCL_NOT_CONTAINS:dacpp::mpi::operator_resident::fixed_block_count_1d
 SYCL_NOT_CONTAINS:fixed_block_phase_exchange_alignment_ok

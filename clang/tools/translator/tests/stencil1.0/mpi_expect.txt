@@ -19,6 +19,11 @@ SYCL_CONTAINS:dacpp::mpi::operator_resident::owned_slice_2d_rows(ctx.__or_local_
 SYCL_CONTAINS:MPI_Gatherv(__or_owned_out.data()
 SYCL_CONTAINS:dacpp::mpi::map_2d_global_with_offset(static_cast<int64_t>(__or_idx), ctx.__or_output_cols, __or_followup_reader_cols_mat, 1, 1)
 SYCL_CONTAINS:__or_materialized_mat[static_cast<std::size_t>(__or_boundary_target)] = __or_materialized_mat[static_cast<std::size_t>(__or_boundary_source)]
+SYCL_CONTAINS:dacpp::mpi::SegmentedProfile __or_profile
+SYCL_CONTAINS:dacpp::mpi::ProfileSegment::Scatter
+SYCL_CONTAINS:dacpp::mpi::ProfileSegment::Kernel
+SYCL_CONTAINS:dacpp::mpi::ProfileSegment::Halo
+SYCL_CONTAINS:dacpp::mpi::reportSegmentedProfile("__dacpp_mpi_or_stencilShell_stencil_0_materialize"
 SYCL_NOT_CONTAINS:matIn[0][j]=matIn[1][j]
 SYCL_NOT_CONTAINS:MPI_Bcast(__or_global_mat.data()
 SYCL_NOT_CONTAINS:apply_followup_2d(__or_local_mat, __or_local_out

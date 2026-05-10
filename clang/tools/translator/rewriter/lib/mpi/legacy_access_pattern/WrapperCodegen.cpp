@@ -34,7 +34,9 @@ std::string buildWrapperCode(DacppFile* dacppFile,
     code += "    MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);\n";
     code += "    MPI_Comm_size(MPI_COMM_WORLD, &mpi_size);\n";
     code += "    dacpp::mpi::resetCollectPositionsProfile();\n";
+    code += "    dacpp::mpi::SegmentedProfile dacpp_profile;\n";
     code += "    auto dacpp_wrapper_start = std::chrono::steady_clock::now();\n";
+    code += profileSegmentStartCode("dacpp_profile_init_start");
     code += "    sycl::queue q(sycl::default_selector_v);\n";
     code += "    std::vector<int64_t> binding_split_sizes;\n";
     code += buildPatternInitCode(shell, calc, splitMeta, paramModes);
@@ -46,6 +48,8 @@ std::string buildWrapperCode(DacppFile* dacppFile,
         const std::string& calcName = calc->getParam(paramIdx)->getName();
         code += "    pattern_" + calcName + ".bind_split_sizes = binding_split_sizes;\n";
     }
+    code += profileRecordCode("dacpp_profile", "Init",
+                              "dacpp_profile_init_start");
 
     for (int paramIdx = 0; paramIdx < shell->getNumShellParams(); ++paramIdx) {
         ShellParam* shellParam = shell->getShellParam(paramIdx);
@@ -61,15 +65,19 @@ std::string buildWrapperCode(DacppFile* dacppFile,
         const std::string globalName = "global_" + calcName;
         const std::string mpiType = mpiDatatypeFor(calcParam->getBasicType());
 
+        code += profileSegmentStartCode("dacpp_profile_pack_start_" + calcName);
         code += "    auto plan_" + calcName + " = " +
                 buildPackPlanBuilderExpr(mode, "item_range", patternName) + ";\n";
         code += "    auto& " + packName + " = plan_" + calcName + ".pack;\n";
         code += "    auto& " + slotsName + " = plan_" + calcName + ".compact_slots;\n";
         code += "    auto& key_offsets_" + calcName + " = plan_" + calcName + ".item_key_offsets;\n";
+        code += profileRecordCode("dacpp_profile", "Pack",
+                                  "dacpp_profile_pack_start_" + calcName);
         code += "    std::vector<" + calcParam->getBasicType() + "> " + localName + "(" +
                 packName + ".globals.size());\n";
 
         if (mode != IOTYPE::WRITE) {
+            code += profileSegmentStartCode("dacpp_profile_scatter_start_" + calcName);
             code += "    std::vector<int> sendcounts_" + calcName + ";\n";
             code += "    std::vector<int> displs_" + calcName + ";\n";
             code += "    int local_global_count_" + calcName + " = static_cast<int>(" +
@@ -121,6 +129,8 @@ std::string buildWrapperCode(DacppFile* dacppFile,
             } else {
                 code += "    MPI_Scatterv(mpi_rank == 0 ? sendbuf_" + calcName + ".data() : nullptr, mpi_rank == 0 ? sendcounts_" + calcName + ".data() : nullptr, mpi_rank == 0 ? displs_" + calcName + ".data() : nullptr, " + mpiType + ", " + localName + ".data(), local_global_count_" + calcName + ", " + mpiType + ", 0, MPI_COMM_WORLD);\n";
             }
+            code += profileRecordCode("dacpp_profile", "Scatter",
+                                      "dacpp_profile_scatter_start_" + calcName);
         }
 
         code += "    const int " + calcName + "_partition_size = static_cast<int>(dacpp::mpi::partition_element_count(" +
@@ -130,6 +140,7 @@ std::string buildWrapperCode(DacppFile* dacppFile,
         }
     }
 
+    code += profileSegmentStartCode("dacpp_profile_kernel_start");
     code += "    if (local_item_count > 0) {\n";
     code += "        {\n";
     for (int paramIdx = 0; paramIdx < shell->getNumShellParams(); ++paramIdx) {
@@ -193,6 +204,8 @@ std::string buildWrapperCode(DacppFile* dacppFile,
     code += "            q.wait();\n";
     code += "        }\n";
     code += "    }\n";
+    code += profileRecordCode("dacpp_profile", "Kernel",
+                              "dacpp_profile_kernel_start");
 
     for (int paramIdx = 0; paramIdx < shell->getNumShellParams(); ++paramIdx) {
         if (paramModes[paramIdx] == IOTYPE::READ) {
@@ -214,9 +227,13 @@ std::string buildWrapperCode(DacppFile* dacppFile,
                      << " sync="
                      << outputSyncRequirementName(syncRequirement) << "\n";
 
+        code += profileSegmentStartCode("dacpp_profile_pack_start_writeback_" + calcName);
         code += "    const auto& writeback_globals_" + calcName + " = " + packName + ".writeback_globals.empty() ? " + packName + ".globals : " + packName + ".writeback_globals;\n";
         code += "    int send_count_" + calcName + " = static_cast<int>(writeback_globals_" + calcName + ".size());\n";
         code += "    std::vector<" + calcParam->getBasicType() + "> writeback_values_" + calcName + " = dacpp::mpi::build_writeback_values_parallel(" + localName + ", " + packName + ");\n";
+        code += profileRecordCode("dacpp_profile", "Pack",
+                                  "dacpp_profile_pack_start_writeback_" + calcName);
+        code += profileSegmentStartCode("dacpp_profile_gather_start_" + calcName);
         code += "    std::vector<int> recvcounts_" + calcName + ";\n";
         code += "    std::vector<int> recvdispls_" + calcName + ";\n";
         code += "    std::vector<int64_t> global_recv_globals_" + calcName + ";\n";
@@ -251,6 +268,9 @@ std::string buildWrapperCode(DacppFile* dacppFile,
         } else {
             code += "    MPI_Gatherv(writeback_values_" + calcName + ".data(), send_count_" + calcName + ", " + mpiType + ", mpi_rank == 0 ? global_recv_values_" + calcName + ".data() : nullptr, mpi_rank == 0 ? recvcounts_" + calcName + ".data() : nullptr, mpi_rank == 0 ? recvdispls_" + calcName + ".data() : nullptr, " + mpiType + ", 0, MPI_COMM_WORLD);\n";
         }
+        code += profileRecordCode("dacpp_profile", "Gather",
+                                  "dacpp_profile_gather_start_" + calcName);
+        code += profileSegmentStartCode("dacpp_profile_materialize_start_" + calcName);
         code += "    if (mpi_rank == 0) {\n";
         code += "        std::vector<" + calcParam->getBasicType() + "> " + globalName + ";\n";
         code += "        " + tensorName + ".tensor2Array(" + globalName + ");\n";
@@ -260,7 +280,9 @@ std::string buildWrapperCode(DacppFile* dacppFile,
                 const std::string bcastCountExpr =
                     mpiPayloadCountExpr(tensorName + ".getSize()", calcParam->getBasicType());
                 code += "        if (!" + globalName + ".empty()) {\n";
+                code += "            auto dacpp_profile_bcast_start_" + calcName + " = dacpp::mpi::profileSegmentStart();\n";
                 code += "            MPI_Bcast(" + globalName + ".data(), " + bcastCountExpr + ", " + mpiType + ", 0, MPI_COMM_WORLD);\n";
+                code += "            dacpp::mpi::recordProfileSegment(dacpp_profile, dacpp::mpi::ProfileSegment::Bcast, dacpp_profile_bcast_start_" + calcName + ");\n";
                 code += "        }\n";
             }
         code += "    } else ";
@@ -268,7 +290,9 @@ std::string buildWrapperCode(DacppFile* dacppFile,
             code += "{\n";
             code += "        std::vector<" + calcParam->getBasicType() + "> " + globalName + "(static_cast<std::size_t>(" + tensorName + ".getSize()));\n";
             code += "        if (!" + globalName + ".empty()) {\n";
+            code += "            auto dacpp_profile_bcast_start_" + calcName + " = dacpp::mpi::profileSegmentStart();\n";
             code += "            MPI_Bcast(" + globalName + ".data(), " + mpiPayloadCountExpr(tensorName + ".getSize()", calcParam->getBasicType()) + ", " + mpiType + ", 0, MPI_COMM_WORLD);\n";
+            code += "            dacpp::mpi::recordProfileSegment(dacpp_profile, dacpp::mpi::ProfileSegment::Bcast, dacpp_profile_bcast_start_" + calcName + ");\n";
             code += "        }\n";
             code += "        " + tensorName + ".array2Tensor(" + globalName + ");\n";
             code += "    }\n";
@@ -276,15 +300,21 @@ std::string buildWrapperCode(DacppFile* dacppFile,
             code += "{\n";
             code += "    }\n";
         }
+        code += profileRecordCode("dacpp_profile", "Materialize",
+                                  "dacpp_profile_materialize_start_" + calcName);
     }
 
     code += "    auto dacpp_wrapper_end = std::chrono::steady_clock::now();\n";
     code += "    double dacpp_wrapper_local_ms = std::chrono::duration<double, std::milli>(dacpp_wrapper_end - dacpp_wrapper_start).count();\n";
     code += "    double dacpp_wrapper_max_ms = 0.0;\n";
+    code += profileSegmentStartCode("dacpp_profile_final_sync_start");
     code += "    MPI_Reduce(&dacpp_wrapper_local_ms, &dacpp_wrapper_max_ms, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);\n";
+    code += profileRecordCode("dacpp_profile", "FinalSync",
+                              "dacpp_profile_final_sync_start");
     code += "    if (mpi_rank == 0 && dacpp::mpi::profilingEnabled()) {\n";
     code += "        std::fprintf(stderr, \"[DACPP][PROFILE][%s] wrapper_total_ms(max): %.3f\\n\", \"" + wrapperName + "\", dacpp_wrapper_max_ms);\n";
     code += "    }\n";
+    code += "    dacpp::mpi::reportSegmentedProfile(\"" + wrapperName + "\", dacpp_profile, MPI_COMM_WORLD);\n";
     code += "    dacpp::mpi::reportCollectPositionsProfile(\"" + wrapperName + "\", MPI_COMM_WORLD);\n";
     code += "}\n";
     return code;

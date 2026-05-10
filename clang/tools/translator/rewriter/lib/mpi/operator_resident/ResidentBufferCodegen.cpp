@@ -290,7 +290,7 @@ void emitResidencyAndMaterialization(std::string& code,
         }
         const std::string type = elemType(plan, param);
         if (param.materializeAfterWrite) {
-            emitGatherMaterialize(code, plan, param);
+            emitGatherMaterialize(code, plan, param, "dacpp_profile");
         }
         if (param.reads) {
             code += "    auto& __or_resident_out_" + param.calcParamName +

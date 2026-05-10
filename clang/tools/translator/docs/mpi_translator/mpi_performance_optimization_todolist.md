@@ -60,6 +60,32 @@ Goal: make performance work evidence-driven. The generated MPI code should be
 able to report time spent in init/scatter, pack, kernel, halo, gather, bcast,
 materialization, and final synchronization without changing normal execution.
 
+Status on 2026-05-10: Phase 1.1 through Phase 1.4 are implemented for the
+current focused surfaces. Profiling is disabled by default and enabled only by
+`DACPP_MPI_PROFILE=1`.
+
+Current driver:
+
+```bash
+python3 clang/tools/translator/bench_mpi_profile_segments.py \
+  --tmp-dir /Volumes/QUQ/working/mpi_tmp/phase1_4_profile_focus \
+  --ranks 1,2,4,8 \
+  --trials 3 \
+  vectorAddCombo FOuLa1.0 MDP1.0 stencil1.0 oddeven0.1 decay1.0
+```
+
+Primary artifact:
+`/Volumes/QUQ/working/mpi_tmp/phase1_4_profile_focus`.
+
+Legacy fallback smoke artifact:
+`/Volumes/QUQ/working/mpi_tmp/phase1_4_legacy_profile_smoke`.
+
+The profile driver stores `results.tsv`, `summary.tsv`, `profile_raw.tsv`,
+`profile_summary.tsv`, per-trial stdout/stderr, generated source snapshots,
+metadata, git status/diff, and snapshots of currently untracked translator
+planning/script files. It checks that DAC profile-enabled stdout matches DAC
+profile-disabled stdout. Baseline correctness remains covered by `test_mpi.sh`.
+
 ### Phase 1.1: Define Profiling Taxonomy
 
 Tasks:
@@ -95,6 +121,13 @@ Done when:
   `DACPP_MPI_PROFILE=1`.
 - Existing tests pass with profiling disabled.
 
+Completion evidence:
+
+- Shared runtime API is in `dpcppLib/include/mpi/common/Profile.h`.
+- Output rows use:
+  `DACPP_MPI_PROFILE\t<label>\t<segment>\tcalls=<n>\tmax_ms=<ms>\tsum_ms=<ms>`.
+- Focused MPI tests passed with profiling disabled.
+
 ### Phase 1.2: Instrument Legacy AccessPattern Path
 
 Tasks:
@@ -112,6 +145,14 @@ Done when:
 - Profiling does not change baseline output.
 - The profiler can identify whether a legacy case is dominated by metadata,
   communication volume, kernel, or final synchronization.
+
+Completion evidence:
+
+- `mpiFixedBlockMatrixSingleSplitReject1D` legacy fallback emits segmented
+  `init/scatter/pack/kernel/gather/materialize/final_sync` rows.
+- Existing `collect_positions_for_item` profile output is preserved.
+- DAC profile-on stdout matched DAC profile-off stdout in the legacy smoke
+  artifact.
 
 ### Phase 1.3: Instrument OR, Stencil, FixedBlock, and FOuLa Paths
 
@@ -133,6 +174,14 @@ Done when:
 - Segment totals are close enough to external `mpirun` wall time to be useful.
 - Profile output remains quiet unless enabled.
 
+Completion evidence:
+
+- Focused profile run covers ordinary OR (`vectorAddCombo`), loop-lowered direct
+  OR (`decay1.0`), 1D resident halo (`MDP1.0`), 2D resident halo
+  (`stencil1.0`), P5 phase exchange (`oddeven0.1`), and FOuLa owner-loop
+  (`FOuLa1.0`).
+- `profile_summary.tsv` provides comparable segment medians for 1/2/4/8 ranks.
+
 ### Phase 1.4: Benchmark Reporting
 
 Tasks:
@@ -149,6 +198,23 @@ Done when:
 - `docs/benchmarks/mpi_efficiency_benchmark_summary.md` can point to raw profile
   artifacts.
 - Each future optimization has a before/after profile, not only total wall time.
+
+Completion evidence:
+
+- `docs/benchmarks/mpi_efficiency_benchmark_summary.md` now records the Phase
+  1.4 command, artifact paths, 4-rank medians, rank scaling, and segmented
+  readout.
+- Future fast-path work should use this driver to capture a before profile and
+  repeat it after the change.
+
+Phase 1.4 readout for next work:
+
+- `vectorAddCombo` remains OR `Contiguous1D`; residual cost points to
+  scatter/final materialize/bcast, not legacy pack.
+- `decay1.0` shows significant per-step gather+bcast and is a strong Phase 3
+  materialization/residency inventory candidate.
+- Resident halo cases are mostly kernel+halo dominated in the focused run; do
+  not widen stencil or FOuLa surface before a separate proof-driven phase.
 
 ## 2. Legacy AccessPattern Simple Contiguous Fast Path
 

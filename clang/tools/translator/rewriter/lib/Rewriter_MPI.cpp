@@ -296,6 +296,8 @@ std::string buildFoulaOwnerLoopSpecializationCode(
     code += "    int mpi_size = 1;\n";
     code += "    MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);\n";
     code += "    MPI_Comm_size(MPI_COMM_WORLD, &mpi_size);\n";
+    code += "    dacpp::mpi::SegmentedProfile dacpp_profile;\n";
+    code += "    auto dacpp_profile_init_start = dacpp::mpi::profileSegmentStart();\n";
     code += "    sycl::queue q(sycl::default_selector_v);\n";
     code += "    const int64_t __or_rows = __or_owner.getShape(0);\n";
     code += "    const int64_t __or_cols = __or_owner.getShape(1);\n";
@@ -309,6 +311,8 @@ std::string buildFoulaOwnerLoopSpecializationCode(
     code += "    const int64_t __or_local_item_count = __or_range.count;\n";
     code += "    const auto __or_halo_layout = dacpp::mpi::operator_resident::resident_halo_1d_layout(__or_output_size, mpi_rank, mpi_size, __or_window_size);\n";
     code += "    std::vector<" + type + "> __or_initial_col;\n";
+    code += "    dacpp::mpi::recordProfileSegment(dacpp_profile, dacpp::mpi::ProfileSegment::Init, dacpp_profile_init_start);\n";
+    code += "    auto dacpp_profile_scatter_start = dacpp::mpi::profileSegmentStart();\n";
     code += "    if (mpi_rank == 0) {\n";
     code += "        __or_initial_col.resize(static_cast<std::size_t>(__or_rows));\n";
     code += "        for (int64_t __or_row = 0; __or_row < __or_rows; ++__or_row) {\n";
@@ -318,6 +322,7 @@ std::string buildFoulaOwnerLoopSpecializationCode(
     code += "    std::vector<" + type + "> __or_curr;\n";
     code += "    dacpp::mpi::operator_resident::scatter_window_1d(__or_initial_col, __or_curr, __or_output_size, __or_rows, __or_window_size, __or_halo_layout, mpi_rank, mpi_size, " +
             mpiType + ");\n";
+    code += "    dacpp::mpi::recordProfileSegment(dacpp_profile, dacpp::mpi::ProfileSegment::Scatter, dacpp_profile_scatter_start);\n";
     code += "    std::vector<" + type + "> __or_next(__or_curr.size(), " +
             type + "{});\n";
     code += "    std::vector<" + type + "> __or_scalar_vec(1, __or_scalar_value);\n";
@@ -329,6 +334,7 @@ std::string buildFoulaOwnerLoopSpecializationCode(
     code += "    const int __or_last_owner_rank = dacpp::mpi::operator_resident::nearest_nonempty_rank_1d(__or_output_size, mpi_size, mpi_size, -1);\n";
     code += "    for (int64_t __or_step = 0; __or_step < __or_steps; ++__or_step) {\n";
     code += "        __or_scalar_vec[0] = __or_scalar_value;\n";
+    code += "        auto dacpp_profile_kernel_start = dacpp::mpi::profileSegmentStart();\n";
     code += "        if (__or_local_item_count > 0) {\n";
     code += "            sycl::buffer<" + type + ", 1> __or_reader_buf(__or_curr.data(), sycl::range<1>(__or_curr.size()));\n";
     code += "            sycl::buffer<" + type + ", 1> __or_writer_buf(__or_next.data(), sycl::range<1>(__or_next.size()));\n";
@@ -373,22 +379,27 @@ std::string buildFoulaOwnerLoopSpecializationCode(
     code += "            });\n";
     code += "            q.wait();\n";
     code += "        }\n";
+    code += "        dacpp::mpi::recordProfileSegment(dacpp_profile, dacpp::mpi::ProfileSegment::Kernel, dacpp_profile_kernel_start);\n";
     code += "        " + type + " __or_left_boundary{};\n";
     code += "        " + type + " __or_right_boundary{};\n";
     code += "        if (mpi_rank == 0) {\n";
     code += "            __or_left_boundary = __or_owner.getElement({0, static_cast<int>(__or_step + 1)});\n";
     code += "            __or_right_boundary = __or_owner.getElement({static_cast<int>(__or_rows - 1), static_cast<int>(__or_step + 1)});\n";
     code += "        }\n";
+    code += "        auto dacpp_profile_bcast_start = dacpp::mpi::profileSegmentStart();\n";
     code += "        MPI_Bcast(&__or_left_boundary, 1, " + mpiType + ", 0, MPI_COMM_WORLD);\n";
     code += "        MPI_Bcast(&__or_right_boundary, 1, " + mpiType + ", 0, MPI_COMM_WORLD);\n";
+    code += "        dacpp::mpi::recordProfileSegment(dacpp_profile, dacpp::mpi::ProfileSegment::Bcast, dacpp_profile_bcast_start);\n";
     code += "        if (mpi_rank == 0 && !__or_next.empty()) {\n";
     code += "            __or_next[0] = __or_left_boundary;\n";
     code += "        }\n";
     code += "        if (mpi_rank == __or_last_owner_rank && __or_local_item_count > 0 && static_cast<std::size_t>(__or_local_item_count + 1) < __or_next.size()) {\n";
     code += "            __or_next[static_cast<std::size_t>(__or_local_item_count + 1)] = __or_right_boundary;\n";
     code += "        }\n";
+    code += "        auto dacpp_profile_halo_start = dacpp::mpi::profileSegmentStart();\n";
     code += "        dacpp::mpi::operator_resident::exchange_halo_1d_inplace(__or_next, __or_halo_layout, __or_output_size, __or_window_size, 1, mpi_rank, mpi_size, " +
             mpiType + ");\n";
+    code += "        dacpp::mpi::recordProfileSegment(dacpp_profile, dacpp::mpi::ProfileSegment::Halo, dacpp_profile_halo_start);\n";
     code += "        __or_curr.swap(__or_next);\n";
     code += "        for (int64_t __or_i = 0; __or_i < __or_local_item_count; ++__or_i) {\n";
     code += "            __or_local_history[static_cast<std::size_t>(__or_i * __or_cols + (__or_step + 1))] = __or_curr[static_cast<std::size_t>(__or_i + 1)];\n";
@@ -405,9 +416,12 @@ std::string buildFoulaOwnerLoopSpecializationCode(
     code += "    if (mpi_rank == 0) {\n";
     code += "        __or_global_history.resize(static_cast<std::size_t>(__or_output_size * __or_cols));\n";
     code += "    }\n";
+    code += "    auto dacpp_profile_gather_start = dacpp::mpi::profileSegmentStart();\n";
     code += "    MPI_Gatherv(__or_local_history.data(), dacpp::mpi::operator_resident::narrow_mpi_count_or_abort(__or_local_item_count * __or_cols, \"[DACPP][MPI][OR][FOuLa] local history gather count exceeds MPI int range\"), " +
             mpiType + ", mpi_rank == 0 ? __or_global_history.data() : nullptr, mpi_rank == 0 ? __or_hist_counts.data() : nullptr, mpi_rank == 0 ? __or_hist_displs.data() : nullptr, " +
             mpiType + ", 0, MPI_COMM_WORLD);\n";
+    code += "    dacpp::mpi::recordProfileSegment(dacpp_profile, dacpp::mpi::ProfileSegment::Gather, dacpp_profile_gather_start);\n";
+    code += "    auto dacpp_profile_materialize_start = dacpp::mpi::profileSegmentStart();\n";
     code += "    if (mpi_rank == 0) {\n";
     code += "        for (int64_t __or_out = 0; __or_out < __or_output_size; ++__or_out) {\n";
     code += "            for (int64_t __or_col = 0; __or_col < __or_cols; ++__or_col) {\n";
@@ -415,6 +429,9 @@ std::string buildFoulaOwnerLoopSpecializationCode(
     code += "            }\n";
     code += "        }\n";
     code += "    }\n";
+    code += "    dacpp::mpi::recordProfileSegment(dacpp_profile, dacpp::mpi::ProfileSegment::Materialize, dacpp_profile_materialize_start);\n";
+    code += "    dacpp::mpi::reportSegmentedProfile(\"" + spec.functionName +
+            "\", dacpp_profile, MPI_COMM_WORLD);\n";
     code += "}\n";
     return code;
 }

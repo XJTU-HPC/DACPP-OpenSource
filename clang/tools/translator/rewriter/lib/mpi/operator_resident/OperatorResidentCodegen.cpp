@@ -2,6 +2,7 @@
 
 #include "DacppStructure.h"
 #include "OperatorResidentCodegen_Internal.h"
+#include "Rewriter_MPI_Common.h"
 
 namespace dacppTranslator {
 namespace mpi_rewriter {
@@ -132,11 +133,25 @@ std::string buildOperatorResidentWrapperCode(
     code += "    int mpi_size = 1;\n";
     code += "    MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);\n";
     code += "    MPI_Comm_size(MPI_COMM_WORLD, &mpi_size);\n";
+    code += "    dacpp::mpi::SegmentedProfile dacpp_profile;\n";
     code += "    sycl::queue q(sycl::default_selector_v);\n";
+    code += mpi_rewriter::profileSegmentStartCode("dacpp_profile_init_start");
     operator_resident::emitPartitionCode(code, exprPlan);
+    code += mpi_rewriter::profileRecordCode("dacpp_profile", "Init",
+                                            "dacpp_profile_init_start");
+    code += mpi_rewriter::profileSegmentStartCode(
+        "dacpp_profile_scatter_start");
     operator_resident::emitParamLocalStorage(code, exprPlan);
+    code += mpi_rewriter::profileRecordCode("dacpp_profile", "Scatter",
+                                            "dacpp_profile_scatter_start");
+    code += mpi_rewriter::profileSegmentStartCode(
+        "dacpp_profile_kernel_start");
     operator_resident::emitKernel(code, exprPlan);
+    code += mpi_rewriter::profileRecordCode("dacpp_profile", "Kernel",
+                                            "dacpp_profile_kernel_start");
     operator_resident::emitResidencyAndMaterialization(code, exprPlan);
+    code += "    dacpp::mpi::reportSegmentedProfile(\"" + wrapper +
+            "\", dacpp_profile, MPI_COMM_WORLD);\n";
     code += "}\n";
     return code;
 }

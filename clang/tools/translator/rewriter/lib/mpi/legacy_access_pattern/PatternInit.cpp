@@ -191,6 +191,18 @@ std::string buildPackPlanBuilderExpr(IOTYPE mode,
            patternName + ")";
 }
 
+std::string profileSegmentStartCode(const std::string& varName) {
+    return "    auto " + varName + " = dacpp::mpi::profileSegmentStart();\n";
+}
+
+std::string profileRecordCode(const std::string& profileName,
+                              const std::string& segmentName,
+                              const std::string& startVarName) {
+    return "    dacpp::mpi::recordProfileSegment(" + profileName +
+           ", dacpp::mpi::ProfileSegment::" + segmentName + ", " +
+           startVarName + ");\n";
+}
+
 std::string buildPrelude(DacppFile* dacppFile) {
     std::string code;
     std::set<std::string> seenHeaders;

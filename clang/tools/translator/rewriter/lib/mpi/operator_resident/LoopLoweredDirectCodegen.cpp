@@ -32,6 +32,7 @@ void emitContextType(std::string& code,
     code += "    dacpp::mpi::operator_resident::RankRange1D __or_range{};\n";
     code += "    std::vector<int> __or_counts;\n";
     code += "    std::vector<int> __or_displs;\n";
+    code += "    dacpp::mpi::SegmentedProfile __or_profile;\n";
     code += "    sycl::queue q{sycl::default_selector_v};\n";
     for (const auto& param : plan.params) {
         const std::string type = elemType(plan, param);
@@ -57,6 +58,7 @@ void emitInitFunction(std::string& code,
             firstDomain.runtimeSizeParam)]);
     code += "void " + initName + "(" + ctxName + "& ctx, " +
             wrapperSignature(plan) + ") {\n";
+    code += "    auto dacpp_profile_init_start = dacpp::mpi::profileSegmentStart();\n";
     code += "    MPI_Comm_rank(MPI_COMM_WORLD, &ctx.mpi_rank);\n";
     code += "    MPI_Comm_size(MPI_COMM_WORLD, &ctx.mpi_size);\n";
     code += "    ctx.__or_total_items = " + firstTensor + ".getShape(" +
@@ -64,6 +66,7 @@ void emitInitFunction(std::string& code,
     code += "    ctx.__or_range = dacpp::mpi::operator_resident::rank_range_1d(ctx.__or_total_items, ctx.mpi_rank, ctx.mpi_size);\n";
     code += "    ctx.__or_local_item_count = ctx.__or_range.count;\n";
     code += "    dacpp::mpi::operator_resident::counts_displs_1d(ctx.__or_total_items, ctx.mpi_size, ctx.__or_counts, ctx.__or_displs);\n";
+    code += "    dacpp::mpi::recordProfileSegment(ctx.__or_profile, dacpp::mpi::ProfileSegment::Init, dacpp_profile_init_start);\n";
     for (const auto& param : plan.params) {
         if (!isLoopInvariantDirectRead(param)) {
             continue;
@@ -72,6 +75,9 @@ void emitInitFunction(std::string& code,
         const std::string mpiType = mpiDatatypeFor(type);
         const std::string local = ctxLocalName(param);
         const std::string global = "__or_global_" + param.calcParamName;
+        code += "    auto dacpp_profile_scatter_start_" +
+                param.calcParamName +
+                " = dacpp::mpi::profileSegmentStart();\n";
         code += "    " + local +
                 ".resize(static_cast<std::size_t>(ctx.__or_local_item_count));\n";
         code += "    std::vector<" + type + "> " + global + ";\n";
@@ -102,6 +108,8 @@ void emitInitFunction(std::string& code,
                     ".data(), static_cast<int>(ctx.__or_local_item_count), " +
                     mpiType + ", 0, MPI_COMM_WORLD);\n";
         }
+        code += "    dacpp::mpi::recordProfileSegment(ctx.__or_profile, dacpp::mpi::ProfileSegment::Scatter, dacpp_profile_scatter_start_" +
+                param.calcParamName + ");\n";
     }
     for (const auto& param : plan.params) {
         if (!param.writes || param.access != ParamAccessKind::OutputDirect) {
@@ -213,6 +221,8 @@ void emitMaterializeOutput(std::string& code,
     code += "        " + global +
             ".resize(static_cast<std::size_t>(ctx.__or_total_items));\n";
     code += "    }\n";
+    code += "    auto dacpp_profile_gather_start_" + param.calcParamName +
+            " = dacpp::mpi::profileSegmentStart();\n";
     if (usesByte(plan, param)) {
         code += "    std::vector<int> __or_counts_bytes_" +
                 param.calcParamName + "_gather;\n";
@@ -237,14 +247,23 @@ void emitMaterializeOutput(std::string& code,
                 ".data() : nullptr, ctx.mpi_rank == 0 ? ctx.__or_counts.data() : nullptr, ctx.mpi_rank == 0 ? ctx.__or_displs.data() : nullptr, " +
                 mpiType + ", 0, MPI_COMM_WORLD);\n";
     }
+    code += "    dacpp::mpi::recordProfileSegment(ctx.__or_profile, dacpp::mpi::ProfileSegment::Gather, dacpp_profile_gather_start_" +
+            param.calcParamName + ");\n";
+    code += "    auto dacpp_profile_materialize_start_" + param.calcParamName +
+            " = dacpp::mpi::profileSegmentStart();\n";
     code += "    if (ctx.mpi_rank == 0) {\n";
     code += "        " + paramVarName(param) + ".array2Tensor(" + global +
             ");\n";
     if (param.broadcastMaterializedOutput) {
         code += "        if (!" + global + ".empty()) {\n";
+        code += "            auto dacpp_profile_bcast_start_" +
+                param.calcParamName +
+                " = dacpp::mpi::profileSegmentStart();\n";
         code += "            MPI_Bcast(" + global + ".data(), " +
                 mpiPayloadCountExpr(paramVarName(param) + ".getSize()", type) +
                 ", " + mpiType + ", 0, MPI_COMM_WORLD);\n";
+        code += "            dacpp::mpi::recordProfileSegment(ctx.__or_profile, dacpp::mpi::ProfileSegment::Bcast, dacpp_profile_bcast_start_" +
+                param.calcParamName + ");\n";
         code += "        }\n";
     }
     if (param.broadcastMaterializedOutput) {
@@ -252,9 +271,14 @@ void emitMaterializeOutput(std::string& code,
         code += "        " + global + ".resize(static_cast<std::size_t>(" +
                 paramVarName(param) + ".getSize()));\n";
         code += "        if (!" + global + ".empty()) {\n";
+        code += "            auto dacpp_profile_bcast_start_" +
+                param.calcParamName +
+                " = dacpp::mpi::profileSegmentStart();\n";
         code += "            MPI_Bcast(" + global + ".data(), " +
                 mpiPayloadCountExpr(paramVarName(param) + ".getSize()", type) +
                 ", " + mpiType + ", 0, MPI_COMM_WORLD);\n";
+        code += "            dacpp::mpi::recordProfileSegment(ctx.__or_profile, dacpp::mpi::ProfileSegment::Bcast, dacpp_profile_bcast_start_" +
+                param.calcParamName + ");\n";
         code += "        }\n";
         code += "        " + paramVarName(param) + ".array2Tensor(" + global +
                 ");\n";
@@ -262,6 +286,8 @@ void emitMaterializeOutput(std::string& code,
     } else {
         code += "    }\n";
     }
+    code += "    dacpp::mpi::recordProfileSegment(ctx.__or_profile, dacpp::mpi::ProfileSegment::Materialize, dacpp_profile_materialize_start_" +
+            param.calcParamName + ");\n";
 }
 
 void emitRunFunction(std::string& code,
@@ -270,8 +296,24 @@ void emitRunFunction(std::string& code,
                      const ShellPartitionPlan& plan) {
     code += "void " + runName + "(" + ctxName + "& ctx, " +
             wrapperSignature(plan) + ") {\n";
+    const bool hasScalarRefresh = [&]() {
+        for (const auto& param : plan.params) {
+            if (param.access == ParamAccessKind::ReplicatedScalar) {
+                return true;
+            }
+        }
+        return false;
+    }();
+    if (hasScalarRefresh) {
+        code += "    auto dacpp_profile_bcast_start = dacpp::mpi::profileSegmentStart();\n";
+    }
     emitScalarRefreshes(code, plan);
+    if (hasScalarRefresh) {
+        code += "    dacpp::mpi::recordProfileSegment(ctx.__or_profile, dacpp::mpi::ProfileSegment::Bcast, dacpp_profile_bcast_start);\n";
+    }
+    code += "    auto dacpp_profile_kernel_start = dacpp::mpi::profileSegmentStart();\n";
     emitRunKernel(code, plan);
+    code += "    dacpp::mpi::recordProfileSegment(ctx.__or_profile, dacpp::mpi::ProfileSegment::Kernel, dacpp_profile_kernel_start);\n";
     for (const auto& param : plan.params) {
         if (!param.writes || param.access != ParamAccessKind::OutputDirect) {
             continue;
@@ -302,11 +344,17 @@ void emitMaterializeFunction(std::string& code,
         }
         if (plan.loopLowerMaterializeEveryRun) {
             code += "    (void)ctx;\n";
+            code += "    dacpp::mpi::reportSegmentedProfile(\"" + materializeName +
+                    "\", ctx.__or_profile, MPI_COMM_WORLD);\n";
             code += "}\n";
             return;
         }
         emitMaterializeOutput(code, plan, param, ctxLocalName(param));
     }
+    code += "    auto dacpp_profile_materialize_start = dacpp::mpi::profileSegmentStart();\n";
+    code += "    dacpp::mpi::recordProfileSegment(ctx.__or_profile, dacpp::mpi::ProfileSegment::Materialize, dacpp_profile_materialize_start);\n";
+    code += "    dacpp::mpi::reportSegmentedProfile(\"" + materializeName +
+            "\", ctx.__or_profile, MPI_COMM_WORLD);\n";
     code += "}\n";
 }
 

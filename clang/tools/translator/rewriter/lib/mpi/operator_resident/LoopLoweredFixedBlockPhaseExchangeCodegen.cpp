@@ -91,10 +91,12 @@ std::string buildLoopLoweredFixedBlockPhaseExchangeFamilyCode(
     code += "    std::vector<int> elem_counts;\n";
     code += "    std::vector<int> elem_displs;\n";
     code += "    std::vector<" + elemType + "> local;\n";
+    code += "    dacpp::mpi::SegmentedProfile profile;\n";
     code += "};\n";
 
     // init: scatter once
     code += "void " + initName + "(" + ctxName + "& ctx, " + sig + ") {\n";
+    code += "    auto dacpp_profile_init_start = dacpp::mpi::profileSegmentStart();\n";
     code += "    MPI_Comm_rank(MPI_COMM_WORLD, &ctx.mpi_rank);\n";
     code += "    MPI_Comm_size(MPI_COMM_WORLD, &ctx.mpi_size);\n";
     code += "    ctx.total = static_cast<int64_t>(" + readerVar +
@@ -117,6 +119,8 @@ std::string buildLoopLoweredFixedBlockPhaseExchangeFamilyCode(
             "ctx.total, ctx.mpi_size, ctx.elem_counts, ctx.elem_displs);\n";
     code += "    ctx.local.assign(static_cast<std::size_t>(ctx.layout.local_count), " +
             elemType + "{});\n";
+    code += "    dacpp::mpi::recordProfileSegment(ctx.profile, dacpp::mpi::ProfileSegment::Init, dacpp_profile_init_start);\n";
+    code += "    auto dacpp_profile_scatter_start = dacpp::mpi::profileSegmentStart();\n";
     code += "    std::vector<" + elemType + "> __or_global;\n";
     code += "    if (ctx.mpi_rank == 0) {\n";
     code += "        " + readerVar + ".tensor2Array(__or_global);\n";
@@ -130,6 +134,7 @@ std::string buildLoopLoweredFixedBlockPhaseExchangeFamilyCode(
             " ctx.mpi_rank == 0 ? ctx.elem_displs.data() : nullptr, " +
             mpiType + ", ctx.local.data(), __or_local_count, " + mpiType +
             ", 0, MPI_COMM_WORLD);\n";
+    code += "    dacpp::mpi::recordProfileSegment(ctx.profile, dacpp::mpi::ProfileSegment::Scatter, dacpp_profile_scatter_start);\n";
     // Suppress unused warnings on writer
     code += "    (void)" + writerVar + ";\n";
     code += "}\n";
@@ -151,10 +156,12 @@ std::string buildLoopLoweredFixedBlockPhaseExchangeFamilyCode(
     }
     code += ");\n";
     code += "    };\n";
+    code += "    auto dacpp_profile_kernel_start = dacpp::mpi::profileSegmentStart();\n";
     code += "    dacpp::mpi::operator_resident::fixed_block_phase_exchange_step("
             "ctx.local, ctx.layout.local_begin, ctx.total, ctx.mpi_rank, ctx.mpi_size, "
             "ctx.block_size, ctx.phase_shift_offset, " +
             mpiType + ", __or_compare_swap);\n";
+    code += "    dacpp::mpi::recordProfileSegment(ctx.profile, dacpp::mpi::ProfileSegment::Kernel, dacpp_profile_kernel_start);\n";
     code += "    (void)" + readerVar + ";\n";
     code += "    (void)" + writerVar + ";\n";
     code += "}\n";
@@ -174,11 +181,14 @@ std::string buildLoopLoweredFixedBlockPhaseExchangeFamilyCode(
             narrowMpi("ctx.layout.local_count",
                       "[DACPP][MPI][OR][P5][PhaseExchange] gather count exceeds MPI int range") +
             ";\n";
+    code += "    auto dacpp_profile_gather_start = dacpp::mpi::profileSegmentStart();\n";
     code += "    MPI_Gatherv(ctx.local.data(), __or_local_count, " + mpiType +
             ", ctx.mpi_rank == 0 ? __or_global.data() : nullptr,"
             " ctx.mpi_rank == 0 ? ctx.elem_counts.data() : nullptr,"
             " ctx.mpi_rank == 0 ? ctx.elem_displs.data() : nullptr, " +
             mpiType + ", 0, MPI_COMM_WORLD);\n";
+    code += "    dacpp::mpi::recordProfileSegment(ctx.profile, dacpp::mpi::ProfileSegment::Gather, dacpp_profile_gather_start);\n";
+    code += "    auto dacpp_profile_materialize_start = dacpp::mpi::profileSegmentStart();\n";
     code += "    if (ctx.mpi_rank == 0) {\n";
     code += "        __or_writable_reader.array2Tensor(__or_global);\n";
     code += "    } else {\n";
@@ -186,15 +196,20 @@ std::string buildLoopLoweredFixedBlockPhaseExchangeFamilyCode(
             elemType + "{});\n";
     code += "    }\n";
     code += "    if (ctx.total > 0) {\n";
+    code += "        auto dacpp_profile_bcast_start = dacpp::mpi::profileSegmentStart();\n";
     code += "        MPI_Bcast(__or_global.data(), " +
             narrowMpi("ctx.total",
                       "[DACPP][MPI][OR][P5][PhaseExchange] broadcast count exceeds MPI int range") +
             ", " + mpiType + ", 0, MPI_COMM_WORLD);\n";
+    code += "        dacpp::mpi::recordProfileSegment(ctx.profile, dacpp::mpi::ProfileSegment::Bcast, dacpp_profile_bcast_start);\n";
     code += "        if (ctx.mpi_rank != 0) {\n";
     code += "            __or_writable_reader.array2Tensor(__or_global);\n";
     code += "        }\n";
     code += "    }\n";
+    code += "    dacpp::mpi::recordProfileSegment(ctx.profile, dacpp::mpi::ProfileSegment::Materialize, dacpp_profile_materialize_start);\n";
     code += "    (void)" + writerVar + ";\n";
+    code += "    dacpp::mpi::reportSegmentedProfile(\"" + materializeName +
+            "\", ctx.profile, MPI_COMM_WORLD);\n";
     code += "}\n";
 
     // Wrapper that simply runs the standalone init/run/materialize sequence,

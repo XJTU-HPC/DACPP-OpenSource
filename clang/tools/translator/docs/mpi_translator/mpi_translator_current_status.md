@@ -37,6 +37,8 @@ The completed current surface includes:
 - generic OR resident-buffer ownership optimization for ordinary OR chains
 - a guarded `FOuLa1.0` owner-loop specialization for loop-local 1D stencil
   slices over a stable matrix owner
+- default-off segmented MPI profiling and a Phase 1.4 benchmark/profile artifact
+  driver
 - conservative fallback to OR FullSync, Phase-C stencil, or legacy
   AccessPattern when proof is incomplete
 
@@ -80,8 +82,17 @@ Runtime helpers:
 - `dpcppLib/include/mpi/operator_resident/OperatorResidentRuntime.h`: rank
   ranges, counts/displacements, resident-halo layouts, halo exchange,
   owned-slice extraction, and FixedBlock phase exchange.
+- `dpcppLib/include/mpi/common/Profile.h`: `DACPP_MPI_PROFILE=1` gated
+  segmented profiling and legacy `collect_positions_for_item` diagnostics.
 - `dpcppLib/include/mpi/legacy_access_pattern/*`: legacy AccessPattern/PackPlan
   runtime used by fallback wrappers.
+
+Benchmark/profile helpers:
+
+- `bench_mpi_only_requested.py`: enlarged wall-time benchmark driver.
+- `bench_mpi_profile_segments.py`: Phase 1.4 companion driver that collects
+  profile-off wall time, profile-on segmented logs, rank scaling, raw logs,
+  generated source snapshots, and git/diff metadata.
 
 Executable specifications:
 
@@ -283,6 +294,29 @@ Current fallback families:
 The legacy path remains intentionally available. It is slower on simple regular
 patterns because it builds and communicates global-index pack metadata, but it
 keeps unsupported shapes correct.
+
+## Profiling Status
+
+Segmented profiling is implemented for the current focused paths and is quiet by
+default. Set `DACPP_MPI_PROFILE=1` on the generated MPI executable to emit
+stderr rows in this format:
+
+```text
+DACPP_MPI_PROFILE	<label>	<segment>	calls=<n>	max_ms=<ms>	sum_ms=<ms>
+```
+
+Current segment names are `init`, `scatter`, `pack`, `kernel`, `halo`,
+`gather`, `bcast`, `materialize`, and `final_sync`.
+
+The focused Phase 1.4 artifact is:
+`/Volumes/QUQ/working/mpi_tmp/phase1_4_profile_focus`.
+
+The legacy fallback smoke artifact is:
+`/Volumes/QUQ/working/mpi_tmp/phase1_4_legacy_profile_smoke`.
+
+Profile `sum_ms` is summed across ranks and should be used for attribution, not
+as external wall time. External wall time remains the `mpirun` timing in
+`summary.tsv`/`results.tsv`.
 
 ## Current Case Map
 
