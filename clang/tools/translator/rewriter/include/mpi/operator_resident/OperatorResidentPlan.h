@@ -10,6 +10,7 @@
 
 namespace clang {
 class Stmt;
+class BinaryOperator;
 } // namespace clang
 
 namespace dacppTranslator {
@@ -67,7 +68,9 @@ enum class OrLoopLowerKind {
     Direct1D,
     RowBlock2D,
     StencilFullSync,
-    StencilResidentHalo
+    StencilResidentHalo,
+    FixedBlockPhaseExchange,
+    FixedBlockPhaseExchangeFollower
 };
 
 struct OrLoopLowerPlan {
@@ -99,6 +102,19 @@ struct OrLoopLowerPlan {
         int rightHalo = 0;
         std::string rejectReason;
     } stencilResidentHalo;
+    struct FixedBlockPhaseExchangeMetadata {
+        bool enabled = false;
+        int blockSize = 0;
+        int blockStride = 0;
+        int phaseShiftOffset = 0;
+        int64_t provenEvenTotal = 0;
+        std::string sourceTensorName;
+        std::string phaseAOutputTensorName;
+        std::string elementType;
+        std::vector<const clang::Stmt*> followerStmtsToRemove;
+        const clang::BinaryOperator* followerDacExpr = nullptr;
+        std::string rejectReason;
+    } fixedBlockPhaseExchange;
     std::string rejectReason;
 };
 

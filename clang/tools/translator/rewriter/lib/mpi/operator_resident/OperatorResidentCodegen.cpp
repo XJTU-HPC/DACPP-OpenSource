@@ -14,7 +14,11 @@ bool isShellDerivedStencilLayout(LocalLayoutKind layout) {
 bool isLoopLoweredOperatorResidentPlan(const ShellPartitionPlan& plan) {
     return plan.loopLowerCandidate ||
            plan.orLoopLower.kind == OrLoopLowerKind::StencilFullSync ||
-           plan.orLoopLower.kind == OrLoopLowerKind::StencilResidentHalo;
+           plan.orLoopLower.kind == OrLoopLowerKind::StencilResidentHalo ||
+           plan.orLoopLower.kind ==
+               OrLoopLowerKind::FixedBlockPhaseExchange ||
+           plan.orLoopLower.kind ==
+               OrLoopLowerKind::FixedBlockPhaseExchangeFollower;
 }
 
 std::string operatorResidentWrapperName(Shell* shell,
@@ -87,6 +91,29 @@ std::string buildOperatorResidentWrapperCode(
         }
         return operator_resident::buildStencilWindow2DWrapperCode(
             wrapper, dacppFile, exprPlan);
+    }
+    if (exprPlan.orLoopLower.kind ==
+            OrLoopLowerKind::FixedBlockPhaseExchange &&
+        exprPlan.signature.layout == LocalLayoutKind::FixedBlock) {
+        return operator_resident::
+            buildLoopLoweredFixedBlockPhaseExchangeFamilyCode(
+                wrapper, dacppFile, exprPlan);
+    }
+    if (exprPlan.orLoopLower.kind ==
+            OrLoopLowerKind::FixedBlockPhaseExchangeFollower) {
+        // The follower DAC expression is removed at rewrite time, so its
+        // wrapper body is intentionally empty. Emitting a stub keeps the
+        // generated wrapper-name table consistent for any leftover
+        // references but the function is never called.
+        std::string stub;
+        stub += "void " + wrapper + "(" +
+                operator_resident::wrapperSignature(exprPlan) + ") {\n";
+        for (const auto& param : exprPlan.params) {
+            stub += "    (void)" + operator_resident::paramVarName(param) +
+                    ";\n";
+        }
+        stub += "}\n";
+        return stub;
     }
     if (exprPlan.signature.layout == LocalLayoutKind::FixedBlock) {
         return operator_resident::buildFixedBlockWrapperCode(

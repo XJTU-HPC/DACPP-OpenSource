@@ -1,0 +1,8 @@
+MPI_RANKS:3
+SYCL_NOT_CONTAINS:<->
+LOG_CONTAINS:[DACPP][MPI][OR][P5][PhaseExchange] expr=0 shell=ODDEVEN phase-exchange=accepted block-size=2 phase-shift=1
+SYCL_CONTAINS:dacpp::mpi::operator_resident::fixed_block_phase_exchange_step
+SYCL_NOT_CONTAINS:fixed_block_phase_exchange_alignment_ok
+SYCL_NOT_CONTAINS:abort_fixed_block_phase_exchange_alignment
+SYCL_NOT_CONTAINS:AccessPattern
+SYCL_NOT_CONTAINS:PackPlan

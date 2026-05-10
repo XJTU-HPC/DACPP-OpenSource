@@ -684,6 +684,188 @@ inline void byte_counts_displs(const std::vector<int>& elemCounts,
     }
 }
 
+struct FixedBlockPhaseExchangeLayout {
+    int64_t total = 0;
+    RankRange1D owned{};
+    int64_t local_begin = 0;
+    int64_t local_count = 0;
+};
+
+inline FixedBlockPhaseExchangeLayout fixed_block_phase_exchange_layout(
+    int64_t total,
+    int rank,
+    int size) {
+    FixedBlockPhaseExchangeLayout layout;
+    layout.total = total;
+    layout.owned = rank_range_1d(total, rank, size);
+    layout.local_begin = layout.owned.begin;
+    layout.local_count = layout.owned.count;
+    return layout;
+}
+
+inline bool fixed_block_phase_exchange_alignment_ok(
+    int64_t total,
+    int size,
+    int blockSize) {
+    if (blockSize <= 0 || total < 0 || size <= 0) {
+        return false;
+    }
+    if (blockSize == 1) {
+        return true;
+    }
+    for (int r = 0; r < size; ++r) {
+        const RankRange1D range = rank_range_1d(total, r, size);
+        if (range.count <= 0) {
+            continue;
+        }
+        if ((range.begin % blockSize) != 0) {
+            return false;
+        }
+        if ((range.count % blockSize) != 0) {
+            return false;
+        }
+    }
+    return true;
+}
+
+[[noreturn]] inline void abort_fixed_block_phase_exchange_alignment(
+    int64_t total,
+    int size,
+    int blockSize) {
+    int mpi_rank = 0;
+    MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);
+    if (mpi_rank == 0) {
+        std::fprintf(stderr,
+                     "[DACPP][MPI][OR][P5] fixed-block phase-exchange alignment failed: total=%lld size=%d blockSize=%d\n",
+                     static_cast<long long>(total), size, blockSize);
+    }
+    MPI_Abort(MPI_COMM_WORLD, 7);
+    std::abort();
+}
+
+[[noreturn]] inline void abort_fixed_block_phase_exchange_total_mismatch(
+    int64_t runtimeTotal,
+    int64_t provenEvenTotal) {
+    int mpi_rank = 0;
+    MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);
+    if (mpi_rank == 0) {
+        std::fprintf(stderr,
+                     "[DACPP][MPI][OR][P5] fixed-block phase-exchange total mismatch: runtime=%lld proven-even=%lld\n",
+                     static_cast<long long>(runtimeTotal),
+                     static_cast<long long>(provenEvenTotal));
+    }
+    MPI_Abort(MPI_COMM_WORLD, 8);
+    std::abort();
+}
+
+inline void check_fixed_block_phase_exchange_total(int64_t runtimeTotal,
+                                                   int64_t provenEvenTotal) {
+    if (provenEvenTotal <= 0 || (provenEvenTotal % 2) != 0 ||
+        runtimeTotal != provenEvenTotal) {
+        abort_fixed_block_phase_exchange_total_mismatch(runtimeTotal,
+                                                        provenEvenTotal);
+    }
+}
+
+template <typename T, typename CompareSwap>
+inline void fixed_block_phase_exchange_phase(
+    std::vector<T>& local,
+    int64_t globalBegin,
+    int64_t totalGlobal,
+    int rank,
+    int size,
+    int phaseOffset,
+    MPI_Datatype mpiType,
+    CompareSwap compareSwap) {
+    const int64_t localCount = static_cast<int64_t>(local.size());
+    if (localCount <= 0 || totalGlobal <= 1) {
+        (void)mpiType;
+        return;
+    }
+
+    for (int64_t pos = 0; pos + 1 < localCount; ++pos) {
+        const int64_t globalPos = globalBegin + pos;
+        if ((globalPos % 2) == phaseOffset) {
+            compareSwap(local.data() + pos);
+        }
+    }
+
+    const int prev = nearest_nonempty_rank_1d(totalGlobal, rank, size, -1);
+    const int next = nearest_nonempty_rank_1d(totalGlobal, rank, size, 1);
+    const int sendTag = phaseOffset == 0 ? 4501 : 4503;
+    const int recvTag = phaseOffset == 0 ? 4502 : 4504;
+
+    const int64_t rightPairStart = globalBegin + localCount - 1;
+    const bool hasRightCross =
+        next != MPI_PROC_NULL && localCount > 0 &&
+        rightPairStart + 1 < totalGlobal &&
+        (rightPairStart % 2) == phaseOffset;
+    const int64_t leftPairStart = globalBegin - 1;
+    const bool hasLeftCross =
+        prev != MPI_PROC_NULL && localCount > 0 &&
+        leftPairStart >= 0 && leftPairStart + 1 < totalGlobal &&
+        (leftPairStart % 2) == phaseOffset;
+
+    T sendLeft = local[0];
+    T sendRight = local[static_cast<std::size_t>(localCount - 1)];
+    T recvLeft{};
+    T recvRight{};
+    MPI_Request requests[4];
+    int requestCount = 0;
+    if (hasLeftCross) {
+        MPI_Irecv(&recvLeft, 1, mpiType, prev, sendTag, MPI_COMM_WORLD,
+                  &requests[requestCount++]);
+    }
+    if (hasRightCross) {
+        MPI_Irecv(&recvRight, 1, mpiType, next, recvTag, MPI_COMM_WORLD,
+                  &requests[requestCount++]);
+    }
+    if (hasLeftCross) {
+        MPI_Isend(&sendLeft, 1, mpiType, prev, recvTag, MPI_COMM_WORLD,
+                  &requests[requestCount++]);
+    }
+    if (hasRightCross) {
+        MPI_Isend(&sendRight, 1, mpiType, next, sendTag, MPI_COMM_WORLD,
+                  &requests[requestCount++]);
+    }
+    if (requestCount > 0) {
+        MPI_Waitall(requestCount, requests, MPI_STATUSES_IGNORE);
+    }
+
+    if (hasRightCross) {
+        T pair[2] = {sendRight, recvRight};
+        compareSwap(pair);
+        local[static_cast<std::size_t>(localCount - 1)] = pair[0];
+    }
+    if (hasLeftCross) {
+        T pair[2] = {recvLeft, sendLeft};
+        compareSwap(pair);
+        local[0] = pair[1];
+    }
+}
+
+template <typename T, typename CompareSwap>
+inline void fixed_block_phase_exchange_step(
+    std::vector<T>& local,
+    int64_t globalBegin,
+    int64_t totalGlobal,
+    int rank,
+    int size,
+    int blockSize,
+    int phaseShiftOffset,
+    MPI_Datatype mpiType,
+    CompareSwap compareSwap) {
+    if (blockSize != 2 || phaseShiftOffset != 1) {
+        (void)mpiType;
+        return;
+    }
+    fixed_block_phase_exchange_phase(local, globalBegin, totalGlobal, rank,
+                                     size, 0, mpiType, compareSwap);
+    fixed_block_phase_exchange_phase(local, globalBegin, totalGlobal, rank,
+                                     size, phaseShiftOffset, mpiType,
+                                     compareSwap);
+}
+
 struct ResidencyKey {
     const void* tensor = nullptr;
     std::type_index type = std::type_index(typeid(void));

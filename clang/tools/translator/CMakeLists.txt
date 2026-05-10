@@ -60,6 +60,7 @@ set(REWRITER_SOURCES
   rewriter/lib/mpi/operator_resident/ResidentBufferCodegen.cpp
   rewriter/lib/mpi/operator_resident/LoopLoweredDirectCodegen.cpp
   rewriter/lib/mpi/operator_resident/FixedBlockCodegen.cpp
+  rewriter/lib/mpi/operator_resident/LoopLoweredFixedBlockPhaseExchangeCodegen.cpp
   rewriter/lib/mpi/operator_resident/LoopLoweredStencil1DCodegen.cpp
   rewriter/lib/mpi/operator_resident/StencilWindow1DCodegen.cpp
   rewriter/lib/mpi/operator_resident/StencilWindowCodegen.cpp

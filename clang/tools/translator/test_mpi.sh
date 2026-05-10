@@ -43,6 +43,14 @@ MPI_TESTS=(
     "mpiFixedBlockOverlapReject1D"
     "mpiFixedBlockPayloadReject1D"
     "mpiFixedBlockMatrixSingleSplitReject1D"
+    "mpiFixedBlockPhaseExchangeOffsetReject1D"
+    "mpiFixedBlockPhaseExchangeMissingBoundaryReject1D"
+    "mpiFixedBlockPhaseExchangeNonAdjacentReject1D"
+    "mpiFixedBlockPhaseExchangeRank3Run1D"
+    "mpiFixedBlockPhaseExchangeWrongArgsReject1D"
+    "mpiFixedBlockPhaseExchangePostOutputUseReject1D"
+    "mpiFixedBlockPhaseExchangePostOutputAliasReject1D"
+    "mpiFixedBlockPhaseExchangeOddNReject1D"
     "gradientSum"
     "mpiBroadcastRootOnlyCout"
     "mpiBroadcastTensor2Array"
@@ -239,6 +247,8 @@ check_mpi_expectations() {
                 ;;
             MPI_STRUCTURE_ONLY)
                 ;;
+            MPI_RANKS)
+                ;;
             *)
                 echo "[FAIL] Unknown expectation kind in $expect_file: $kind"
                 failed=1
@@ -247,6 +257,34 @@ check_mpi_expectations() {
     done < "$expect_file"
 
     return "$failed"
+}
+
+mpi_ranks_for_test() {
+    local expect_file="$1"
+    local ranks="${MPI_TEST_RANKS:-4}"
+
+    [[ -f "$expect_file" ]] || {
+        printf '%s\n' "$ranks"
+        return
+    }
+
+    while IFS= read -r raw_line || [[ -n "$raw_line" ]]; do
+        local line kind value
+        line="${raw_line#"${raw_line%%[![:space:]]*}"}"
+        line="${line%"${line##*[![:space:]]}"}"
+        [[ -z "$line" || "$line" == \#* ]] && continue
+
+        kind="${line%%:*}"
+        value="${line#*:}"
+        value="${value#"${value%%[![:space:]]*}"}"
+        value="${value%"${value##*[![:space:]]}"}"
+
+        if [[ "$kind" == "MPI_RANKS" && "$value" =~ ^[1-9][0-9]*$ ]]; then
+            ranks="$value"
+        fi
+    done < "$expect_file"
+
+    printf '%s\n' "$ranks"
 }
 
 TOTAL=0; PASSED=0; FAILED=0; SKIPPED=0
@@ -262,6 +300,7 @@ for test_name in "${MPI_TESTS[@]}"; do
     if is_structure_only_test "$expect_file"; then
         structure_only=1
     fi
+    mpi_ranks="$(mpi_ranks_for_test "$expect_file")"
 
     dac_file="$(pick_dac_source "$TESTS_DIR/$test_name")"
     if [[ -z "$dac_file" ]]; then
@@ -344,8 +383,8 @@ for test_name in "${MPI_TESTS[@]}"; do
     fi
 
     # Step 3: Run MPI and Compare
-    echo "  [Step 3] Run MPI (mpirun -np 4) and compare"
-    DYLD_LIBRARY_PATH="$ACPP_ROOT/lib" mpirun -np 4 "$mpi_bin" > "$work_dir/mpi.out" 2>&1
+    echo "  [Step 3] Run MPI (mpirun -np $mpi_ranks) and compare"
+    DYLD_LIBRARY_PATH="$ACPP_ROOT/lib" mpirun -np "$mpi_ranks" "$mpi_bin" > "$work_dir/mpi.out" 2>&1
     if [[ $? -ne 0 ]]; then
         echo "[FAIL] MPI execution failed."
         head -n 20 "$work_dir/mpi.out"

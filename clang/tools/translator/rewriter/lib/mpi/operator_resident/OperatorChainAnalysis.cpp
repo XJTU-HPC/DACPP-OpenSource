@@ -336,6 +336,10 @@ const char* orLoopLowerKindName(OrLoopLowerKind kind) {
         return "StencilFullSync";
     case OrLoopLowerKind::StencilResidentHalo:
         return "StencilResidentHalo";
+    case OrLoopLowerKind::FixedBlockPhaseExchange:
+        return "FixedBlockPhaseExchange";
+    case OrLoopLowerKind::FixedBlockPhaseExchangeFollower:
+        return "FixedBlockPhaseExchangeFollower";
     }
     return "None";
 }
@@ -1430,6 +1434,1027 @@ std::string stencilResidentHaloRejectReason(
     return "";
 }
 
+struct PhaseExchangeDetection {
+    bool valid = false;
+    std::size_t planAIndex = 0;
+    std::size_t planBIndex = 0;
+    const clang::Stmt* outerLoop = nullptr;
+    const clang::BinaryOperator* followerDacExpr = nullptr;
+    std::string sourceTensorName;
+    std::string phaseAOutputTensorName;
+    std::string elementType;
+    std::vector<const clang::Stmt*> followerStmts;
+    int phaseShiftOffset = 1;
+    int blockSize = 2;
+    int blockStride = 2;
+    int64_t provenEvenTotal = 0;
+    std::string rejectReason;
+};
+
+const clang::Expr* ignoreParenImp(const clang::Expr* expr) {
+    return expr ? expr->IgnoreParenImpCasts() : nullptr;
+}
+
+const clang::ValueDecl* declRefTarget(const clang::Expr* expr) {
+    if (const auto* declRef =
+            llvm::dyn_cast_or_null<clang::DeclRefExpr>(ignoreParenImp(expr))) {
+        return declRef->getDecl();
+    }
+    return nullptr;
+}
+
+bool isFixedBlockPlanWithBlockSize(const ShellPartitionPlan& plan,
+                                   int blockSize,
+                                   int blockStride) {
+    if (!plan.supported ||
+        plan.signature.layout != LocalLayoutKind::FixedBlock) {
+        return false;
+    }
+    for (const auto& param : plan.params) {
+        if (param.access != ParamAccessKind::FixedBlock) {
+            return false;
+        }
+        if (param.fixedBlockSize != blockSize ||
+            param.fixedBlockStride != blockStride) {
+            return false;
+        }
+    }
+    return true;
+}
+
+const ParamAccessPlan* fixedBlockReaderParam(const ShellPartitionPlan& plan) {
+    for (const auto& param : plan.params) {
+        if (param.access == ParamAccessKind::FixedBlock && param.reads &&
+            !param.writes) {
+            return &param;
+        }
+    }
+    return nullptr;
+}
+
+const ParamAccessPlan* fixedBlockWriterParam(const ShellPartitionPlan& plan) {
+    for (const auto& param : plan.params) {
+        if (param.access == ParamAccessKind::FixedBlock && param.writes &&
+            !param.reads) {
+            return &param;
+        }
+    }
+    return nullptr;
+}
+
+const clang::Expr* unwrapExprFully(const clang::Expr* expr) {
+    if (!expr) {
+        return nullptr;
+    }
+    while (true) {
+        const clang::Expr* next = expr->IgnoreParenImpCasts();
+        if (const auto* cleanups =
+                llvm::dyn_cast<clang::ExprWithCleanups>(next)) {
+            next = cleanups->getSubExpr();
+        } else if (const auto* materialized =
+                       llvm::dyn_cast<clang::MaterializeTemporaryExpr>(next)) {
+            next = materialized->getSubExpr();
+        } else if (const auto* temporary =
+                       llvm::dyn_cast<clang::CXXBindTemporaryExpr>(next)) {
+            next = temporary->getSubExpr();
+        } else if (const auto* construct =
+                       llvm::dyn_cast<clang::CXXConstructExpr>(next)) {
+            // Strip single-argument constructors (copy/move/conversion).
+            if (construct->getNumArgs() == 1) {
+                next = construct->getArg(0);
+            } else {
+                return next;
+            }
+        }
+        if (!next || next == expr) {
+            return next;
+        }
+        expr = next;
+    }
+}
+
+// Recognizes `T[{offsetExpr, endExpr}]` and returns offset value if it parses
+// as an integer literal. Returns -1 otherwise. On match, *baseDecl is set
+// to the decl of T.
+int recognizePhaseShiftSlice(const clang::Expr* expr,
+                             const clang::ValueDecl** baseDecl) {
+    expr = unwrapExprFully(expr);
+    if (!expr) {
+        return -1;
+    }
+    const auto* opCall = llvm::dyn_cast<clang::CXXOperatorCallExpr>(expr);
+    if (!opCall || opCall->getOperator() != clang::OO_Subscript ||
+        opCall->getNumArgs() < 2) {
+        return -1;
+    }
+    const clang::Expr* base = unwrapExprFully(opCall->getArg(0));
+    const clang::Expr* index = unwrapExprFully(opCall->getArg(1));
+    if (!base || !index) {
+        return -1;
+    }
+    const auto* declRef = llvm::dyn_cast<clang::DeclRefExpr>(base);
+    if (!declRef) {
+        return -1;
+    }
+    if (baseDecl) {
+        *baseDecl = declRef->getDecl();
+    }
+    // index should be {offset, end}: an InitListExpr, CXXStdInitializerListExpr,
+    // or CXXConstructExpr.
+    const clang::Expr* offsetArg = nullptr;
+    const auto* listExpr = llvm::dyn_cast<clang::InitListExpr>(index);
+    if (!listExpr) {
+        if (const auto* stdList =
+                llvm::dyn_cast<clang::CXXStdInitializerListExpr>(index)) {
+            const clang::Expr* sub = unwrapExprFully(stdList->getSubExpr());
+            listExpr = llvm::dyn_cast_or_null<clang::InitListExpr>(sub);
+        }
+    }
+    if (listExpr) {
+        if (listExpr->getNumInits() != 2) {
+            return -1;
+        }
+        offsetArg = unwrapExprFully(listExpr->getInit(0));
+    } else if (const auto* construct =
+                   llvm::dyn_cast<clang::CXXConstructExpr>(index)) {
+        if (construct->getNumArgs() < 2) {
+            return -1;
+        }
+        offsetArg = unwrapExprFully(construct->getArg(0));
+    } else {
+        return -1;
+    }
+    if (!offsetArg) {
+        return -1;
+    }
+    if (const auto* intLit =
+            llvm::dyn_cast<clang::IntegerLiteral>(offsetArg)) {
+        return static_cast<int>(intLit->getValue().getSExtValue());
+    }
+    return -1;
+}
+
+const clang::Expr* skipImplicitWrappers(const clang::Expr* expr) {
+    return unwrapExprFully(expr);
+}
+
+bool isTensorIndexExpr(const clang::Expr* expr,
+                       const clang::ValueDecl* tensorDecl,
+                       const clang::Expr** indexOut) {
+    expr = skipImplicitWrappers(expr);
+    if (!expr) {
+        return false;
+    }
+    if (const auto* opCall =
+            llvm::dyn_cast<clang::CXXOperatorCallExpr>(expr)) {
+        if (opCall->getOperator() != clang::OO_Subscript ||
+            opCall->getNumArgs() < 2) {
+            return false;
+        }
+        if (declRefTarget(opCall->getArg(0)) != tensorDecl) {
+            return false;
+        }
+        if (indexOut) {
+            *indexOut = ignoreParenImp(opCall->getArg(1));
+        }
+        return true;
+    }
+    return false;
+}
+
+bool isIntegerLiteralValue(const clang::Expr* expr, int64_t value) {
+    expr = ignoreParenImp(expr);
+    if (const auto* lit = llvm::dyn_cast_or_null<clang::IntegerLiteral>(expr)) {
+        return lit->getValue().getSExtValue() == value;
+    }
+    return false;
+}
+
+bool isLastIndexExpr(const clang::Expr* expr) {
+    expr = ignoreParenImp(expr);
+    if (!expr) {
+        return false;
+    }
+    if (const auto* binOp = llvm::dyn_cast<clang::BinaryOperator>(expr)) {
+        if (binOp->getOpcode() == clang::BO_Sub &&
+            isIntegerLiteralValue(binOp->getRHS(), 1)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool isLoopVarPlusOrMinus(const clang::Expr* expr,
+                          const clang::ValueDecl* loopVar,
+                          int delta) {
+    expr = ignoreParenImp(expr);
+    if (!expr) {
+        return false;
+    }
+    if (delta == 0) {
+        return declRefTarget(expr) == loopVar;
+    }
+    if (const auto* binOp = llvm::dyn_cast<clang::BinaryOperator>(expr)) {
+        if (binOp->getOpcode() == clang::BO_Sub && delta == -1 &&
+            declRefTarget(binOp->getLHS()) == loopVar &&
+            isIntegerLiteralValue(binOp->getRHS(), 1)) {
+            return true;
+        }
+        if (binOp->getOpcode() == clang::BO_Add && delta == 1 &&
+            declRefTarget(binOp->getLHS()) == loopVar &&
+            isIntegerLiteralValue(binOp->getRHS(), 1)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Look at the slice that initialized array2_tensor. We accept tensor decl
+// `dacpp::Tensor<E,1> array2_tensor = T_out[{1, end}];`
+bool tryRecognizePhaseSliceDecl(const clang::Stmt* stmt,
+                                const clang::ValueDecl* expectedBase,
+                                const clang::ValueDecl** sliceVarOut,
+                                int* offsetOut) {
+    const auto* declStmt = llvm::dyn_cast_or_null<clang::DeclStmt>(stmt);
+    if (!declStmt || !declStmt->isSingleDecl()) {
+        return false;
+    }
+    const auto* varDecl =
+        llvm::dyn_cast_or_null<clang::VarDecl>(declStmt->getSingleDecl());
+    if (!varDecl || !varDecl->hasInit()) {
+        return false;
+    }
+    const clang::ValueDecl* baseDecl = nullptr;
+    int offset = recognizePhaseShiftSlice(varDecl->getInit(), &baseDecl);
+    if (offset < 0 || baseDecl != expectedBase) {
+        return false;
+    }
+    if (sliceVarOut) {
+        *sliceVarOut = varDecl;
+    }
+    if (offsetOut) {
+        *offsetOut = offset;
+    }
+    return true;
+}
+
+bool isVectorOrTensorDeclStmt(const clang::Stmt* stmt,
+                              const clang::ValueDecl** declOut) {
+    const auto* declStmt = llvm::dyn_cast_or_null<clang::DeclStmt>(stmt);
+    if (!declStmt || !declStmt->isSingleDecl()) {
+        return false;
+    }
+    const auto* varDecl =
+        llvm::dyn_cast_or_null<clang::VarDecl>(declStmt->getSingleDecl());
+    if (!varDecl) {
+        return false;
+    }
+    if (declOut) {
+        *declOut = varDecl;
+    }
+    return true;
+}
+
+bool isInteriorCopyForLoop(const clang::Stmt* stmt,
+                           const clang::ValueDecl* sourceTensor,
+                           const clang::ValueDecl* phaseBWriter) {
+    const auto* forStmt = llvm::dyn_cast_or_null<clang::ForStmt>(stmt);
+    if (!forStmt) {
+        return false;
+    }
+    // Init must declare `int i = 1` (DeclStmt with init = 1)
+    const auto* initDecl =
+        llvm::dyn_cast_or_null<clang::DeclStmt>(forStmt->getInit());
+    if (!initDecl || !initDecl->isSingleDecl()) {
+        return false;
+    }
+    const auto* loopVar =
+        llvm::dyn_cast_or_null<clang::VarDecl>(initDecl->getSingleDecl());
+    if (!loopVar || !loopVar->hasInit() ||
+        !isIntegerLiteralValue(loopVar->getInit(), 1)) {
+        return false;
+    }
+    // Cond must be `i < N - 1` (BinaryOperator with LT and RHS = last index).
+    const auto* cond = llvm::dyn_cast_or_null<clang::BinaryOperator>(
+        ignoreParenImp(forStmt->getCond()));
+    if (!cond || cond->getOpcode() != clang::BO_LT) {
+        return false;
+    }
+    if (declRefTarget(cond->getLHS()) != loopVar) {
+        return false;
+    }
+    if (!isLastIndexExpr(cond->getRHS())) {
+        return false;
+    }
+    // Body must be a single assignment: `sourceTensor[i] = phaseBWriter[i-1]`.
+    const clang::Stmt* body = forStmt->getBody();
+    if (const auto* compound = llvm::dyn_cast_or_null<clang::CompoundStmt>(body)) {
+        if (compound->size() != 1) {
+            return false;
+        }
+        body = *compound->body_begin();
+    }
+    const clang::Expr* bodyExpr =
+        llvm::dyn_cast_or_null<clang::Expr>(body);
+    if (!bodyExpr) {
+        return false;
+    }
+    bodyExpr = skipImplicitWrappers(bodyExpr);
+    const clang::Expr* lhs = nullptr;
+    const clang::Expr* rhs = nullptr;
+    if (const auto* binAssign = llvm::dyn_cast<clang::BinaryOperator>(bodyExpr)) {
+        if (binAssign->getOpcode() != clang::BO_Assign) {
+            return false;
+        }
+        lhs = binAssign->getLHS();
+        rhs = binAssign->getRHS();
+    } else if (const auto* opCall =
+                   llvm::dyn_cast<clang::CXXOperatorCallExpr>(bodyExpr)) {
+        if (!opCall->isAssignmentOp() || opCall->getNumArgs() < 2) {
+            return false;
+        }
+        lhs = opCall->getArg(0);
+        rhs = opCall->getArg(1);
+    } else {
+        return false;
+    }
+    const clang::Expr* indexL = nullptr;
+    if (!isTensorIndexExpr(lhs, sourceTensor, &indexL)) {
+        return false;
+    }
+    if (!isLoopVarPlusOrMinus(indexL, loopVar, 0)) {
+        return false;
+    }
+    const clang::Expr* indexR = nullptr;
+    if (!isTensorIndexExpr(rhs, phaseBWriter, &indexR)) {
+        return false;
+    }
+    if (!isLoopVarPlusOrMinus(indexR, loopVar, -1)) {
+        return false;
+    }
+    return true;
+}
+
+bool isBoundaryAssign(const clang::Stmt* stmt,
+                      const clang::ValueDecl* sourceTensor,
+                      const clang::ValueDecl* phaseAOutput,
+                      bool wantLastIndex) {
+    const clang::Expr* expr =
+        skipImplicitWrappers(llvm::dyn_cast_or_null<clang::Expr>(stmt));
+    if (!expr) {
+        return false;
+    }
+    const clang::Expr* lhs = nullptr;
+    const clang::Expr* rhs = nullptr;
+    if (const auto* binAssign = llvm::dyn_cast<clang::BinaryOperator>(expr)) {
+        if (binAssign->getOpcode() != clang::BO_Assign) {
+            return false;
+        }
+        lhs = binAssign->getLHS();
+        rhs = binAssign->getRHS();
+    } else if (const auto* opCall =
+                   llvm::dyn_cast<clang::CXXOperatorCallExpr>(expr)) {
+        if (!opCall->isAssignmentOp() || opCall->getNumArgs() < 2) {
+            return false;
+        }
+        lhs = opCall->getArg(0);
+        rhs = opCall->getArg(1);
+    } else {
+        return false;
+    }
+    const clang::Expr* indexL = nullptr;
+    if (!isTensorIndexExpr(lhs, sourceTensor, &indexL)) {
+        return false;
+    }
+    const clang::Expr* indexR = nullptr;
+    if (!isTensorIndexExpr(rhs, phaseAOutput, &indexR)) {
+        return false;
+    }
+    if (wantLastIndex) {
+        return isLastIndexExpr(indexL) && isLastIndexExpr(indexR);
+    }
+    return isIntegerLiteralValue(indexL, 0) && isIntegerLiteralValue(indexR, 0);
+}
+
+bool stmtUsesAnyDeclAfterLoop(
+    const clang::Stmt* stmt,
+    const std::set<const clang::ValueDecl*>& targetDecls,
+    const clang::Stmt* outerLoop,
+    const clang::SourceManager& sourceManager) {
+    if (!stmt || targetDecls.empty() || !outerLoop) {
+        return false;
+    }
+    if (sourceRangeContains(sourceManager, outerLoop->getSourceRange(),
+                            stmt->getSourceRange())) {
+        return false;
+    }
+    if (stmt->getEndLoc().isValid() &&
+        sourceManager.isBeforeInTranslationUnit(stmt->getEndLoc(),
+                                                outerLoop->getEndLoc())) {
+        return false;
+    }
+    if (const auto* declRef = llvm::dyn_cast<clang::DeclRefExpr>(stmt)) {
+        if (declRef->getDecl() &&
+            targetDecls.count(declRef->getDecl()) != 0 &&
+            declRef->getExprLoc().isValid() &&
+            sourceManager.isBeforeInTranslationUnit(outerLoop->getEndLoc(),
+                                                    declRef->getExprLoc())) {
+            return true;
+        }
+    }
+    for (const clang::Stmt* child : stmt->children()) {
+        if (stmtUsesAnyDeclAfterLoop(child, targetDecls, outerLoop,
+                                     sourceManager)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool exprReferencesAnyDecl(const clang::Stmt* stmt,
+                           const std::set<const clang::ValueDecl*>& decls) {
+    if (!stmt || decls.empty()) {
+        return false;
+    }
+    if (const auto* declRef = llvm::dyn_cast<clang::DeclRefExpr>(stmt)) {
+        if (declRef->getDecl() && decls.count(declRef->getDecl()) != 0) {
+            return true;
+        }
+    }
+    for (const clang::Stmt* child : stmt->children()) {
+        if (exprReferencesAnyDecl(child, decls)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void collectDeclStmtsRecursive(const clang::Stmt* stmt,
+                               std::vector<const clang::DeclStmt*>& out) {
+    if (!stmt) {
+        return;
+    }
+    if (const auto* declStmt = llvm::dyn_cast<clang::DeclStmt>(stmt)) {
+        out.push_back(declStmt);
+    }
+    for (const clang::Stmt* child : stmt->children()) {
+        collectDeclStmtsRecursive(child, out);
+    }
+}
+
+// Collect VarDecls declared before `outerLoop` whose initializer transitively
+// references the phase-A output. Narrowly covers patterns like
+// `auto& alias = array_out_tensor;` or `auto* p = &array_out_tensor;` and
+// chains through other pre-loop aliases.
+std::set<const clang::ValueDecl*> collectPhaseAOutputAliases(
+    DacppFile* dacppFile,
+    const clang::ValueDecl* phaseAOutput,
+    const clang::Stmt* outerLoop) {
+    std::set<const clang::ValueDecl*> aliases;
+    if (!phaseAOutput) {
+        return aliases;
+    }
+    aliases.insert(phaseAOutput);
+    if (!dacppFile || !outerLoop ||
+        !dacppFile->getTranslationUnitDecl() || !dacppFile->getContext()) {
+        return aliases;
+    }
+    const auto& sourceManager = dacppFile->getContext()->getSourceManager();
+    std::vector<const clang::DeclStmt*> declStmts;
+    for (const clang::Decl* decl :
+         dacppFile->getTranslationUnitDecl()->decls()) {
+        const auto* functionDecl =
+            llvm::dyn_cast_or_null<clang::FunctionDecl>(decl);
+        if (!functionDecl || !functionDecl->hasBody()) {
+            continue;
+        }
+        collectDeclStmtsRecursive(functionDecl->getBody(), declStmts);
+    }
+    bool changed = true;
+    while (changed) {
+        changed = false;
+        for (const clang::DeclStmt* declStmt : declStmts) {
+            if (!declStmt) {
+                continue;
+            }
+            // Pre-loop decls only.
+            if (declStmt->getBeginLoc().isInvalid() ||
+                !sourceManager.isBeforeInTranslationUnit(
+                    declStmt->getBeginLoc(), outerLoop->getBeginLoc())) {
+                continue;
+            }
+            for (const clang::Decl* d : declStmt->decls()) {
+                const auto* varDecl = llvm::dyn_cast<clang::VarDecl>(d);
+                if (!varDecl || !varDecl->hasInit()) {
+                    continue;
+                }
+                if (aliases.count(varDecl) != 0) {
+                    continue;
+                }
+                if (exprReferencesAnyDecl(varDecl->getInit(), aliases)) {
+                    aliases.insert(varDecl);
+                    changed = true;
+                }
+            }
+        }
+    }
+    return aliases;
+}
+
+bool phaseAOutputUsedAfterLoop(DacppFile* dacppFile,
+                               const clang::ValueDecl* phaseAOutput,
+                               const clang::Stmt* outerLoop) {
+    if (!dacppFile || !phaseAOutput || !outerLoop ||
+        !dacppFile->getTranslationUnitDecl() || !dacppFile->getContext()) {
+        return true;
+    }
+    const auto& sourceManager = dacppFile->getContext()->getSourceManager();
+    const std::set<const clang::ValueDecl*> aliases =
+        collectPhaseAOutputAliases(dacppFile, phaseAOutput, outerLoop);
+    for (const clang::Decl* decl : dacppFile->getTranslationUnitDecl()->decls()) {
+        const auto* functionDecl = llvm::dyn_cast_or_null<clang::FunctionDecl>(decl);
+        if (!functionDecl || !functionDecl->hasBody()) {
+            continue;
+        }
+        if (stmtUsesAnyDeclAfterLoop(functionDecl->getBody(), aliases,
+                                     outerLoop, sourceManager)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Walks the tensor VarDecl's initializer chain to the underlying vector and
+// returns that vector's size if it is a compile-time constant. Returns -1
+// otherwise. Covers the canonical `std::vector<T> v(N)` / `std::vector<T>{...}`
+// patterns used by the accepted phase-exchange source tensor.
+int64_t staticTensorTotalSize(const clang::ValueDecl* sourceDecl,
+                              clang::ASTContext* context) {
+    if (!sourceDecl || !context) {
+        return -1;
+    }
+    const auto* tensorVar = llvm::dyn_cast<clang::VarDecl>(sourceDecl);
+    if (!tensorVar || !tensorVar->hasInit()) {
+        return -1;
+    }
+    // Locate the std::vector VarDecl referenced inside the tensor's init.
+    const clang::VarDecl* vectorVar = nullptr;
+    std::vector<const clang::Stmt*> worklist;
+    worklist.push_back(tensorVar->getInit());
+    while (!worklist.empty() && !vectorVar) {
+        const clang::Stmt* cur = worklist.back();
+        worklist.pop_back();
+        if (!cur) {
+            continue;
+        }
+        if (const auto* declRef = llvm::dyn_cast<clang::DeclRefExpr>(cur)) {
+            if (const auto* vd = llvm::dyn_cast_or_null<clang::VarDecl>(
+                    declRef->getDecl())) {
+                const std::string typeName = vd->getType().getAsString();
+                if (typeName.find("vector") != std::string::npos ||
+                    typeName.find("Vector") != std::string::npos) {
+                    vectorVar = vd;
+                    break;
+                }
+            }
+        }
+        for (const clang::Stmt* child : cur->children()) {
+            worklist.push_back(child);
+        }
+    }
+    if (!vectorVar || !vectorVar->hasInit()) {
+        return -1;
+    }
+    // Try `std::vector<T> v(N)` — first integer argument of the ctor.
+    const clang::Expr* vecInit = vectorVar->getInit();
+    if (!vecInit) {
+        return -1;
+    }
+    const clang::Expr* unwrapped = vecInit->IgnoreImplicit();
+    if (const auto* cce =
+            llvm::dyn_cast_or_null<clang::CXXConstructExpr>(unwrapped)) {
+        // Only the first positional argument of a std::vector ctor carries the
+        // size. Looking past it would let `std::vector<T>(runtimeN, 2)` fold
+        // the fill value `2` into a bogus size proof.
+        if (cce->getNumArgs() >= 1) {
+            const clang::Expr* arg = cce->getArg(0);
+            if (arg && arg->getType()->isIntegerType()) {
+                clang::Expr::EvalResult evalResult;
+                if (arg->EvaluateAsInt(evalResult, *context) &&
+                    evalResult.Val.isInt()) {
+                    const int64_t value =
+                        evalResult.Val.getInt().getSExtValue();
+                    if (value > 0) {
+                        return value;
+                    }
+                }
+            }
+        }
+    }
+    // Try `std::vector<T>{a, b, c, ...}` — count of integer initializers.
+    if (const auto* initList =
+            llvm::dyn_cast_or_null<clang::InitListExpr>(unwrapped)) {
+        int64_t count = 0;
+        for (unsigned idx = 0; idx < initList->getNumInits(); ++idx) {
+            const clang::Expr* init = initList->getInit(idx);
+            if (init && init->getType()->isIntegerType()) {
+                ++count;
+            }
+        }
+        if (count > 0) {
+            return count;
+        }
+    }
+    return -1;
+}
+
+PhaseExchangeDetection detectPhaseExchange(
+    DacppFile* dacppFile,
+    const std::vector<ShellPartitionPlan>& plans,
+    std::size_t planAIdx) {
+    PhaseExchangeDetection result;
+    result.planAIndex = planAIdx;
+    if (planAIdx >= plans.size() || !dacppFile || !dacppFile->getContext()) {
+        result.rejectReason = "phase-exchange context unavailable";
+        return result;
+    }
+    const ShellPartitionPlan& planA = plans[planAIdx];
+    if (!isFixedBlockPlanWithBlockSize(planA, 2, 2)) {
+        result.rejectReason = "phase-exchange A is not FixedBlock(2,2)";
+        return result;
+    }
+    const clang::Stmt* outerLoop =
+        stableOuterLoopForExpr(dacppFile, planA);
+    if (!outerLoop ||
+        (!llvm::isa<clang::ForStmt>(outerLoop) &&
+         !llvm::isa<clang::WhileStmt>(outerLoop))) {
+        result.rejectReason = "phase-exchange A not in stable for/while loop";
+        return result;
+    }
+    if (!shellArgsDeclaredBeforeLoop(dacppFile, outerLoop, planA)) {
+        result.rejectReason =
+            "phase-exchange A shell args must be declared before the loop";
+        return result;
+    }
+    const ParamAccessPlan* readerA = fixedBlockReaderParam(planA);
+    const ParamAccessPlan* writerA = fixedBlockWriterParam(planA);
+    if (!readerA || !writerA) {
+        result.rejectReason = "phase-exchange A missing reader or writer";
+        return result;
+    }
+    const clang::CallExpr* shellCallA =
+        getShellCallExpr(planA.exprNode.dacExpr);
+    if (!shellCallA) {
+        result.rejectReason = "phase-exchange A shell call unavailable";
+        return result;
+    }
+    const clang::ValueDecl* readerDecl =
+        declRefTarget(shellCallA->getArg(readerA->paramIndex));
+    const clang::ValueDecl* writerDecl =
+        declRefTarget(shellCallA->getArg(writerA->paramIndex));
+    if (!readerDecl || !writerDecl || readerDecl == writerDecl) {
+        result.rejectReason =
+            "phase-exchange A reader/writer must be distinct decl-ref tensors";
+        return result;
+    }
+
+    // Find planB: next FixedBlock(2,2) plan inside the same outer loop.
+    const ShellPartitionPlan* planBPtr = nullptr;
+    std::size_t planBIdx = planAIdx;
+    const auto& sourceManager = dacppFile->getContext()->getSourceManager();
+    for (std::size_t idx = planAIdx + 1; idx < plans.size(); ++idx) {
+        const ShellPartitionPlan& candidate = plans[idx];
+        if (!candidate.exprNode.dacExpr) {
+            continue;
+        }
+        if (!isFixedBlockPlanWithBlockSize(candidate, 2, 2)) {
+            continue;
+        }
+        if (!sourceRangeContains(
+                sourceManager, outerLoop->getSourceRange(),
+                candidate.exprNode.dacExpr->getSourceRange())) {
+            continue;
+        }
+        planBPtr = &candidate;
+        planBIdx = idx;
+        break;
+    }
+    if (!planBPtr) {
+        result.rejectReason =
+            "phase-exchange B not found inside outer loop";
+        return result;
+    }
+    const ShellPartitionPlan& planB = *planBPtr;
+    const ParamAccessPlan* readerB = fixedBlockReaderParam(planB);
+    const ParamAccessPlan* writerB = fixedBlockWriterParam(planB);
+    if (!readerB || !writerB) {
+        result.rejectReason = "phase-exchange B missing reader or writer";
+        return result;
+    }
+    const clang::CallExpr* shellCallB =
+        getShellCallExpr(planB.exprNode.dacExpr);
+    if (!shellCallB) {
+        result.rejectReason = "phase-exchange B shell call unavailable";
+        return result;
+    }
+    if (!planA.exprNode.calc || !planB.exprNode.calc ||
+        !planA.exprNode.shell || !planB.exprNode.shell ||
+        planA.exprNode.calc->getName() != planB.exprNode.calc->getName() ||
+        planA.exprNode.shell->getName() != planB.exprNode.shell->getName()) {
+        result.rejectReason =
+            "phase-exchange A and B must share the same shell and calc";
+        return result;
+    }
+    if (planA.signature.layout != planB.signature.layout) {
+        result.rejectReason = "phase-exchange A/B layouts differ";
+        return result;
+    }
+
+    // Ensure no other DAC expression sits between A and B inside the loop body.
+    int dacExprCountInLoop = 0;
+    for (const auto* candidate : dacppFile->dacExprs) {
+        if (candidate &&
+            sourceRangeContains(sourceManager, outerLoop->getSourceRange(),
+                                candidate->getSourceRange())) {
+            ++dacExprCountInLoop;
+        }
+    }
+    if (dacExprCountInLoop != 2) {
+        result.rejectReason =
+            "phase-exchange requires exactly two DAC expressions in the loop body";
+        return result;
+    }
+
+    // Now walk the loop body to verify the exact statement order.
+    const clang::CompoundStmt* compound = nullptr;
+    if (const auto* forStmt = llvm::dyn_cast<clang::ForStmt>(outerLoop)) {
+        compound =
+            llvm::dyn_cast_or_null<clang::CompoundStmt>(forStmt->getBody());
+    } else if (const auto* whileStmt =
+                   llvm::dyn_cast<clang::WhileStmt>(outerLoop)) {
+        compound =
+            llvm::dyn_cast_or_null<clang::CompoundStmt>(whileStmt->getBody());
+    }
+    if (!compound) {
+        result.rejectReason = "phase-exchange loop body not a compound stmt";
+        return result;
+    }
+
+    enum class WalkPhase {
+        ExpectDacA,
+        AfterA_BeforeB,
+        ExpectDacB,
+        AfterB,
+        Done
+    };
+    WalkPhase phase = WalkPhase::ExpectDacA;
+    const clang::ValueDecl* sliceVarDecl = nullptr;
+    const clang::ValueDecl* phaseBWriterDecl = nullptr;
+    bool sawSliceDecl = false;
+    bool sawIntermediateContainerDecl = false;
+    bool sawPhaseBWriterDecl = false;
+    bool sawInteriorCopyLoop = false;
+    bool sawBoundaryFirst = false;
+    bool sawBoundaryLast = false;
+
+    for (const clang::Stmt* child : compound->body()) {
+        if (!child) {
+            result.rejectReason = "phase-exchange loop body has null stmt";
+            return result;
+        }
+        switch (phase) {
+        case WalkPhase::ExpectDacA: {
+            if (sourceRangeContains(sourceManager, child->getSourceRange(),
+                                    planA.exprNode.dacExpr->getSourceRange())) {
+                result.followerStmts.push_back(nullptr);
+                phase = WalkPhase::AfterA_BeforeB;
+                continue;
+            }
+            result.rejectReason =
+                "phase-exchange first stmt must be DAC expression A";
+            return result;
+        }
+        case WalkPhase::AfterA_BeforeB: {
+            if (sourceRangeContains(sourceManager, child->getSourceRange(),
+                                    planB.exprNode.dacExpr->getSourceRange())) {
+                if (!sawSliceDecl || !sawIntermediateContainerDecl ||
+                    !sawPhaseBWriterDecl) {
+                    result.rejectReason =
+                        "phase-exchange follower decls before B are incomplete";
+                    return result;
+                }
+                result.followerStmts.push_back(child);
+                phase = WalkPhase::AfterB;
+                continue;
+            }
+            int sliceOffset = -1;
+            const clang::ValueDecl* candidateSlice = nullptr;
+            if (!sawSliceDecl &&
+                tryRecognizePhaseSliceDecl(child, writerDecl,
+                                           &candidateSlice, &sliceOffset)) {
+                if (sliceOffset != 1) {
+                    result.rejectReason =
+                        "phase-exchange slice offset must be 1";
+                    return result;
+                }
+                sliceVarDecl = candidateSlice;
+                sawSliceDecl = true;
+                result.followerStmts.push_back(child);
+                continue;
+            }
+            const clang::ValueDecl* otherDecl = nullptr;
+            if (sawSliceDecl && !sawIntermediateContainerDecl &&
+                isVectorOrTensorDeclStmt(child, &otherDecl)) {
+                sawIntermediateContainerDecl = true;
+                result.followerStmts.push_back(child);
+                continue;
+            }
+            if (sawIntermediateContainerDecl && !sawPhaseBWriterDecl &&
+                isVectorOrTensorDeclStmt(child, &otherDecl)) {
+                phaseBWriterDecl = otherDecl;
+                sawPhaseBWriterDecl = true;
+                result.followerStmts.push_back(child);
+                continue;
+            }
+            result.rejectReason =
+                "phase-exchange unexpected stmt between DAC A and DAC B";
+            return result;
+        }
+        case WalkPhase::AfterB: {
+            if (!sawInteriorCopyLoop) {
+                if (isInteriorCopyForLoop(child, readerDecl, phaseBWriterDecl)) {
+                    sawInteriorCopyLoop = true;
+                    result.followerStmts.push_back(child);
+                    continue;
+                }
+                result.rejectReason =
+                    "phase-exchange missing interior copy for-loop";
+                return result;
+            }
+            if (!sawBoundaryFirst) {
+                if (isBoundaryAssign(child, readerDecl, writerDecl, false)) {
+                    sawBoundaryFirst = true;
+                    result.followerStmts.push_back(child);
+                    continue;
+                }
+                result.rejectReason =
+                    "phase-exchange missing boundary[0] copy";
+                return result;
+            }
+            if (!sawBoundaryLast) {
+                if (isBoundaryAssign(child, readerDecl, writerDecl, true)) {
+                    sawBoundaryLast = true;
+                    result.followerStmts.push_back(child);
+                    phase = WalkPhase::Done;
+                    continue;
+                }
+                result.rejectReason =
+                    "phase-exchange missing boundary[N-1] copy";
+                return result;
+            }
+            result.rejectReason =
+                "phase-exchange unexpected trailing stmt after boundary";
+            return result;
+        }
+        case WalkPhase::Done:
+            result.rejectReason = "phase-exchange unexpected trailing stmt";
+            return result;
+        case WalkPhase::ExpectDacB:
+            return result;
+        }
+    }
+    if (phase != WalkPhase::Done || !sawInteriorCopyLoop ||
+        !sawBoundaryFirst || !sawBoundaryLast) {
+        result.rejectReason =
+            "phase-exchange loop body did not match expected structure";
+        return result;
+    }
+    if (!sliceVarDecl || !phaseBWriterDecl) {
+        result.rejectReason =
+            "phase-exchange B helper decls were not recognized";
+        return result;
+    }
+    if (readerB->paramIndex < 0 ||
+        readerB->paramIndex >= static_cast<int>(shellCallB->getNumArgs()) ||
+        writerB->paramIndex < 0 ||
+        writerB->paramIndex >= static_cast<int>(shellCallB->getNumArgs())) {
+        result.rejectReason = "phase-exchange B shell args unavailable";
+        return result;
+    }
+    if (declRefTarget(shellCallB->getArg(readerB->paramIndex)) !=
+            sliceVarDecl ||
+        declRefTarget(shellCallB->getArg(writerB->paramIndex)) !=
+            phaseBWriterDecl) {
+        result.rejectReason =
+            "phase-exchange B shell args must use the recognized helper decls";
+        return result;
+    }
+    if (phaseAOutputUsedAfterLoop(dacppFile, writerDecl, outerLoop)) {
+        result.rejectReason =
+            "phase-exchange phase-A output is used after the outer loop";
+        return result;
+    }
+    // Require the writer (phase-A output) to be a statically proven even-length
+    // vector. The writer is the locally declared phase-A output tensor whose
+    // underlying vector size is the canonical even N. The reader's total may
+    // still be dynamic (e.g. a function-parameter vector reference), so the
+    // generated init also emits a runtime guard that the scattered total
+    // equals this proven value — see LoopLoweredFixedBlockPhaseExchangeCodegen.
+    const int64_t writerTotal =
+        staticTensorTotalSize(writerDecl, dacppFile->getContext());
+    auto provenEven = [](int64_t n) { return n > 0 && (n % 2) == 0; };
+    if (!provenEven(writerTotal)) {
+        result.rejectReason =
+            "phase-exchange requires a statically proven even total";
+        return result;
+    }
+
+    result.valid = true;
+    result.planAIndex = planAIdx;
+    result.planBIndex = planBIdx;
+    result.outerLoop = outerLoop;
+    result.followerDacExpr = planB.exprNode.dacExpr;
+    result.sourceTensorName = readerDecl->getNameAsString();
+    result.phaseAOutputTensorName = writerDecl->getNameAsString();
+    result.provenEvenTotal = writerTotal;
+    if (planA.exprNode.calc &&
+        readerA->paramIndex < planA.exprNode.calc->getNumParams()) {
+        result.elementType =
+            planA.exprNode.calc->getParam(readerA->paramIndex)->getBasicType();
+    }
+    return result;
+}
+
+void detectAndAnnotateFixedBlockPhaseExchange(
+    DacppFile* dacppFile,
+    std::vector<ShellPartitionPlan>& plans) {
+    if (!dacppFile) {
+        return;
+    }
+    for (std::size_t idx = 0; idx < plans.size(); ++idx) {
+        ShellPartitionPlan& planA = plans[idx];
+        if (planA.orLoopLower.kind != OrLoopLowerKind::None) {
+            continue;
+        }
+        if (!isFixedBlockPlanWithBlockSize(planA, 2, 2)) {
+            continue;
+        }
+        PhaseExchangeDetection detection =
+            detectPhaseExchange(dacppFile, plans, idx);
+        const std::string shellName =
+            planA.exprNode.shell ? planA.exprNode.shell->getName() : "<null>";
+        if (!detection.valid) {
+            llvm::outs()
+                << "[DACPP][MPI][OR][P5][PhaseExchange] expr="
+                << planA.exprIndex << " shell=" << shellName
+                << " phase-exchange=rejected reason="
+                << detection.rejectReason << "\n";
+            continue;
+        }
+        ShellPartitionPlan& planB = plans[detection.planBIndex];
+        // Mark plan A
+        planA.orLoopLower.kind = OrLoopLowerKind::FixedBlockPhaseExchange;
+        planA.orLoopLower.outerLoop = detection.outerLoop;
+        planA.orLoopLower.finalMaterializeRequired = true;
+        planA.orLoopLower.runMaterializeEveryStep = false;
+        planA.orLoopLower.fixedBlockPhaseExchange.enabled = true;
+        planA.orLoopLower.fixedBlockPhaseExchange.blockSize =
+            detection.blockSize;
+        planA.orLoopLower.fixedBlockPhaseExchange.blockStride =
+            detection.blockStride;
+        planA.orLoopLower.fixedBlockPhaseExchange.phaseShiftOffset =
+            detection.phaseShiftOffset;
+        planA.orLoopLower.fixedBlockPhaseExchange.provenEvenTotal =
+            detection.provenEvenTotal;
+        planA.orLoopLower.fixedBlockPhaseExchange.sourceTensorName =
+            detection.sourceTensorName;
+        planA.orLoopLower.fixedBlockPhaseExchange.phaseAOutputTensorName =
+            detection.phaseAOutputTensorName;
+        planA.orLoopLower.fixedBlockPhaseExchange.elementType =
+            detection.elementType;
+        planA.orLoopLower.fixedBlockPhaseExchange.followerStmtsToRemove =
+            detection.followerStmts;
+        planA.orLoopLower.fixedBlockPhaseExchange.followerDacExpr =
+            detection.followerDacExpr;
+
+        // Mark plan B
+        planB.orLoopLower.kind =
+            OrLoopLowerKind::FixedBlockPhaseExchangeFollower;
+        planB.orLoopLower.outerLoop = detection.outerLoop;
+        planB.orLoopLower.fixedBlockPhaseExchange.enabled = true;
+
+        llvm::outs()
+            << "[DACPP][MPI][OR][P5][PhaseExchange] expr="
+            << planA.exprIndex << " shell=" << shellName
+            << " phase-exchange=accepted block-size=" << detection.blockSize
+            << " phase-shift=" << detection.phaseShiftOffset
+            << " follower-expr=" << planB.exprIndex
+            << " source=" << detection.sourceTensorName
+            << " phase-a-output=" << detection.phaseAOutputTensorName
+            << "\n";
+    }
+}
+
 void annotateLoopLowerCandidates(DacppFile* dacppFile,
                                  std::vector<ShellPartitionPlan>& plans) {
     for (auto& plan : plans) {
@@ -1600,6 +2625,7 @@ std::vector<OperatorResidentChainPlan> buildOperatorResidentChains(
         annotateOutputSync(plan, dacppFile);
     }
     annotateLoopLowerCandidates(dacppFile, plans);
+    detectAndAnnotateFixedBlockPhaseExchange(dacppFile, plans);
 
     std::vector<OperatorResidentChainPlan> chains;
     OperatorResidentChainPlan current;

@@ -1,13 +1,18 @@
 SYCL_NOT_CONTAINS:<->
 LOG_CONTAINS:[DACPP][MPI][OR] expr=0 shell=ODDEVEN layout=FixedBlock partition=accepted
 LOG_CONTAINS:[DACPP][MPI][OR] expr=1 shell=ODDEVEN layout=FixedBlock partition=accepted
-SYCL_CONTAINS:__dacpp_mpi_or_ODDEVEN_oddeven_0(array_tensor, array_out_tensor)
-SYCL_CONTAINS:__dacpp_mpi_or_ODDEVEN_oddeven_1(array2_tensor, array_out2_tensor)
-SYCL_CONTAINS:dacpp::mpi::operator_resident::fixed_block_count_1d
-SYCL_CONTAINS:dacpp::mpi::ContiguousView1D<const int> view_array{__or_reader_data, __or_block_offset}
-SYCL_CONTAINS:dacpp::mpi::ContiguousView1D<int> view_array_out{__or_writer_data, __or_block_offset}
-SYCL_CONTAINS:MPI_Bcast(__or_materialized_array_out.data()
-SYCL_CONTAINS:narrow_mpi_count_or_abort(static_cast<int64_t>(__or_arg1.getSize()), "[DACPP][MPI][OR][P5] fixed block materialized broadcast count exceeds MPI int range")
+LOG_CONTAINS:[DACPP][MPI][OR][P5][PhaseExchange] expr=0 shell=ODDEVEN phase-exchange=accepted block-size=2 phase-shift=1
+SYCL_CONTAINS:struct __dacpp_mpi_or_ODDEVEN_oddeven_0_ctx
+SYCL_CONTAINS:dacpp::mpi::operator_resident::FixedBlockPhaseExchangeLayout layout
+SYCL_CONTAINS:dacpp::mpi::operator_resident::fixed_block_phase_exchange_layout
+SYCL_CONTAINS:dacpp::mpi::operator_resident::fixed_block_phase_exchange_step
+SYCL_CONTAINS:__dacpp_mpi_or_ODDEVEN_oddeven_0_init(__dacpp_mpi_or_ctx_0, array_tensor, array_out_tensor)
+SYCL_CONTAINS:__dacpp_mpi_or_ODDEVEN_oddeven_0_run(__dacpp_mpi_or_ctx_0, array_tensor, array_out_tensor)
+SYCL_CONTAINS:__dacpp_mpi_or_ODDEVEN_oddeven_0_materialize(__dacpp_mpi_or_ctx_0, array_tensor, array_out_tensor)
+SYCL_NOT_CONTAINS:__dacpp_mpi_or_ODDEVEN_oddeven_1(array2_tensor, array_out2_tensor)
+SYCL_NOT_CONTAINS:dacpp::mpi::operator_resident::fixed_block_count_1d
+SYCL_NOT_CONTAINS:fixed_block_phase_exchange_alignment_ok
+SYCL_NOT_CONTAINS:abort_fixed_block_phase_exchange_alignment
 SYCL_NOT_CONTAINS:AccessPattern
 SYCL_NOT_CONTAINS:PackPlan
 SYCL_NOT_CONTAINS:__dacpp_mpi_stencil

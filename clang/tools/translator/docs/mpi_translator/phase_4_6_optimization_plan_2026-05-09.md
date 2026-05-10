@@ -1,6 +1,6 @@
 # Phase 4.6 Optimization Closeout
 
-Updated: 2026-05-10
+Updated: 2026-05-10 (P5 closeout and P6 boundary)
 
 ## 1. Closeout Summary
 
@@ -179,16 +179,25 @@ wrapper path.
 The current recommendation is:
 
 1. P4.6 can be treated as closed for the currently proven slice.
-2. Phase 5 has started with a conservative `FixedBlock` first slice for
-   `oddeven0.1`: 1D non-overlapping `split(2,2)` READ input plus WRITE output now uses a
-   standalone OR wrapper without legacy `AccessPattern` / `PackPlan`.
+2. Phase 5 is complete for the current first slice. It has the conservative
+   `FixedBlock` standalone fallback for `oddeven0.1`
+   (1D non-overlapping `split(2,2)` READ input plus WRITE output via a
+   standalone OR wrapper without legacy `AccessPattern` / `PackPlan`) and now
+   the loop-resident `FixedBlockPhaseExchange` slice on top of it. The
+   loop-resident path is gated on the canonical `oddeven0.1` shape (two
+   sibling DAC expressions in one loop, slice offset `+1`, boundary `[0]` and
+   `[N-1]` preserved); anything that fails the gate falls back to the
+   standalone first slice.
 3. `FOuLa1.0` should not be merged into Phase 5 planning; it belongs to a later targeted
    rewrite-contract expansion or a post-P6 efficiency pass.
-4. The current P5 first slice is a correctness/structure bridge, not the final performance
-   answer: it still materializes and broadcasts each FixedBlock output for host-visible
-   tensor semantics.
-5. If schedule pressure favors feature completion first, finishing P5 and P6 before
-   revisiting `FOuLa1.0` and broader efficiency tuning is a sound direction.
+4. The standalone P5 first slice is a correctness/structure bridge. The
+   loop-resident phase-exchange slice removes the per-iteration
+   gather/materialize/broadcast cost; further P5 efficiency widening should
+   wait until the P6 lowering contract is explicit.
+5. Phase 6 should build shared lowering-contract infrastructure for statement
+   removal, resident-state ownership, host-visible materialization,
+   use/alias/write guards, and compile-time fallback vs runtime-abort policy.
+   It should not widen P5 or accept `FOuLa1.0` as its first step.
 6. Benchmark checkpoints should stay in place so performance debt is measured, not guessed.
 
 ## 7. Verification
@@ -198,7 +207,7 @@ The current code and test expectations were verified with the requested serial c
 ```bash
 cmake --build build --target translator -j8
 bash clang/tools/translator/test_mpi.sh MDP1.0 liuliang1.0 stencil1.0 waveEquation1.0
-bash clang/tools/translator/test_mpi.sh oddeven0.1 mpiFixedBlockOverlapReject1D mpiFixedBlockPayloadReject1D mpiFixedBlockMatrixSingleSplitReject1D
+bash clang/tools/translator/test_mpi.sh oddeven0.1 mpiFixedBlockOverlapReject1D mpiFixedBlockPayloadReject1D mpiFixedBlockMatrixSingleSplitReject1D mpiFixedBlockPhaseExchangeOffsetReject1D mpiFixedBlockPhaseExchangeMissingBoundaryReject1D mpiFixedBlockPhaseExchangeNonAdjacentReject1D mpiFixedBlockPhaseExchangeRank3Run1D mpiFixedBlockPhaseExchangeWrongArgsReject1D mpiFixedBlockPhaseExchangePostOutputUseReject1D mpiFixedBlockPhaseExchangePostOutputAliasReject1D mpiFixedBlockPhaseExchangeOddNReject1D
 bash clang/tools/translator/test_mpi.sh mpiLoopStencilResidentHalo1D mpiLoopStencilResidentHaloEmptyRank1D mpiLoopStencilRightBoundaryFullSync1D
 bash clang/tools/translator/test_mpi.sh mpiLoopStencilScalarReject2D mpiLoopStencilCountGuard2D mpiLoopStencilOrderReject2D
 git diff --check
@@ -213,3 +222,49 @@ MPI_ONLY_BENCH_TIMEOUT_SECONDS=1800 \
 python3 clang/tools/translator/bench_mpi_only_requested.py \
   MDP1.0 liuliang1.0 stencil1.0 waveEquation1.0 FOuLa1.0
 ```
+
+## 8. Phase 5 Loop-Resident Phase-Exchange Benchmark
+
+Source of truth:
+`/Volumes/QUQ/working/mpi_tmp/p5_fixedblock_oddeven_loop_resident/results.tsv`
+
+| Case | Standard hand-written MPI+SYCL (s) | Current P5 DAC-MPI loop-resident (s) | DAC vs hand-written |
+|---|---:|---:|---:|
+| `oddeven0.1` (N=4096) | 2.112300 | 1.129017 | 1.87x faster |
+
+The same `oddeven0.1` workload on the standalone P5 first-slice path measured
+at roughly `7.83s` against `1.81s` hand-written reference per the prior
+checkpoint, so the loop-resident slice removes the per-iteration
+gather/materialize/broadcast cost that dominated the standalone path.
+
+The P5 accepted path also carries guards for phase-B argument binding,
+post-loop phase-A output use and pre-loop initializer aliases, odd-total
+fallback, runtime reader/writer/proven-total mismatch abort before scatter, and
+rank-contiguous non-block-aligned partitions.
+
+Focused benchmark command:
+
+```bash
+MPI_ONLY_BENCH_TMP_DIR=/Volumes/QUQ/working/mpi_tmp/p5_fixedblock_oddeven_loop_resident \
+MPI_ONLY_BENCH_RANKS=4 \
+MPI_ONLY_BENCH_TIMEOUT_SECONDS=1800 \
+python3 clang/tools/translator/bench_mpi_only_requested.py oddeven0.1
+```
+
+## 9. Phase 6 Boundary
+
+P6 starts after this P5 closeout. Its goal is a reusable lowering contract for
+loop-lowered OR paths rather than another shape-specific optimization.
+
+The P6 contract should make each accepted lowering describe:
+
+- source statements removed by rewrite
+- resident tensors and final host-visible tensor ownership
+- materialize timing and required runtime guards
+- post-loop use, alias, write, and loop-local argument lifetime rejection rules
+- accepted/rejected reason strings that tests can pin
+
+P6 should begin by expressing the already-working P5
+`FixedBlockPhaseExchange` rules through contract metadata without changing the
+generated code. Only after that path is behavior-preserving should the same
+contract shape be migrated into the current P4.6 resident-halo/full-sync paths.

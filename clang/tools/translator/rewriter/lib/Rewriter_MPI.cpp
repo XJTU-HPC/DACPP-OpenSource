@@ -139,6 +139,15 @@ void rewriteLoopLoweredOperatorResidentSite(
     if (!outerLoop) {
         return;
     }
+
+    // FixedBlockPhaseExchangeFollower: the follower's DAC expression and
+    // surrounding helper statements were already removed when plan A was
+    // rewritten. Skip to avoid double rewriting.
+    if (exprPlan.orLoopLower.kind ==
+        mpi_rewriter::OrLoopLowerKind::FixedBlockPhaseExchangeFollower) {
+        return;
+    }
+
     const std::string argText =
         mpi_rewriter::joinShellCallArgs(dacExpr, dacppFile);
     const std::string ctxVar =
@@ -166,6 +175,20 @@ void rewriteLoopLoweredOperatorResidentSite(
             mpi_rewriter::OrLoopLowerKind::StencilResidentHalo) {
         removeOperatorResidentLoweredPostStmts(dacppFile, rewriter, shell,
                                                calc, dacExpr);
+    }
+
+    if (exprPlan.orLoopLower.kind ==
+        mpi_rewriter::OrLoopLowerKind::FixedBlockPhaseExchange) {
+        const auto& exchange = exprPlan.orLoopLower.fixedBlockPhaseExchange;
+        for (const clang::Stmt* stmt : exchange.followerStmtsToRemove) {
+            // The first follower stmt is the planA DAC expression itself
+            // (recorded as nullptr); rewriteLoopLoweredDacExpr already
+            // replaced its source range. Skip null/dac-A entries.
+            if (!stmt || stmt == dacExpr) {
+                continue;
+            }
+            rewriter->RemoveText(stmt->getSourceRange());
+        }
     }
 }
 
