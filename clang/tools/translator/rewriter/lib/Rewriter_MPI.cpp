@@ -6,6 +6,7 @@
 #include "clang/AST/Decl.h"
 #include "clang/AST/Stmt.h"
 #include "clang/Rewrite/Core/Rewriter.h"
+#include "llvm/Support/raw_ostream.h"
 
 #include "Rewriter_MPI_Common.h"
 #include "Rewriter_MPI_OperatorResident.h"
@@ -104,6 +105,19 @@ void removeOperatorResidentLoweredPostStmts(
     }
 }
 
+void removeContractStmts(clang::Rewriter* rewriter,
+                         const mpi_rewriter::LoopLoweringContract& contract) {
+    if (!rewriter) {
+        return;
+    }
+    for (const clang::Stmt* stmt :
+         mpi_rewriter::loweringContractRemoveStmtSet(contract)) {
+        if (stmt) {
+            rewriter->RemoveText(stmt->getSourceRange());
+        }
+    }
+}
+
 bool isLoopLoweredOperatorResidentExpr(
     const mpi_rewriter::MpiLoweringPlan& plan,
     int exprIdx,
@@ -173,22 +187,25 @@ void rewriteLoopLoweredOperatorResidentSite(
             mpi_rewriter::OrLoopLowerKind::StencilFullSync ||
         exprPlan.orLoopLower.kind ==
             mpi_rewriter::OrLoopLowerKind::StencilResidentHalo) {
-        removeOperatorResidentLoweredPostStmts(dacppFile, rewriter, shell,
-                                               calc, dacExpr);
+        if (exprPlan.orLoopLower.contractRemovalSetMatchesLegacy) {
+            removeContractStmts(rewriter, exprPlan.orLoopLower.contract);
+        } else {
+            llvm::outs()
+                << "[DACPP][MPI][OR][P4.6][ContractRemoval] expr="
+                << exprIdx
+                << " fallback=legacy reason="
+                << (exprPlan.orLoopLower.contractRemovalSetReason.empty()
+                        ? "contract removal set mismatch"
+                        : exprPlan.orLoopLower.contractRemovalSetReason)
+                << "\n";
+            removeOperatorResidentLoweredPostStmts(dacppFile, rewriter, shell,
+                                                   calc, dacExpr);
+        }
     }
 
     if (exprPlan.orLoopLower.kind ==
         mpi_rewriter::OrLoopLowerKind::FixedBlockPhaseExchange) {
-        const auto& exchange = exprPlan.orLoopLower.fixedBlockPhaseExchange;
-        for (const clang::Stmt* stmt : exchange.followerStmtsToRemove) {
-            // The first follower stmt is the planA DAC expression itself
-            // (recorded as nullptr); rewriteLoopLoweredDacExpr already
-            // replaced its source range. Skip null/dac-A entries.
-            if (!stmt || stmt == dacExpr) {
-                continue;
-            }
-            rewriter->RemoveText(stmt->getSourceRange());
-        }
+        removeContractStmts(rewriter, exprPlan.orLoopLower.contract);
     }
 }
 

@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <cctype>
+#include <sstream>
 #include <set>
 #include <string>
 #include <unordered_map>
@@ -177,6 +178,14 @@ bool sourceRangeContains(const clang::SourceManager& sourceManager,
     };
     return beforeOrEqual(outer.getBegin(), inner.getBegin()) &&
            beforeOrEqual(inner.getEnd(), outer.getEnd());
+}
+
+bool stmtSourceRangeContains(const clang::SourceManager& sourceManager,
+                             const clang::Stmt* outer,
+                             const clang::Stmt* inner) {
+    return outer && inner &&
+           sourceRangeContains(sourceManager, outer->getSourceRange(),
+                               inner->getSourceRange());
 }
 
 TensorAliasKey actualTensorKeyForArg(const clang::Expr* expr,
@@ -771,6 +780,16 @@ const ParamAccessPlan* singleStencilDirectReaderParam(
     return directReader;
 }
 
+const ParamAccessPlan* paramByIndex(const ShellPartitionPlan& plan,
+                                    int paramIndex) {
+    for (const auto& param : plan.params) {
+        if (param.paramIndex == paramIndex) {
+            return &param;
+        }
+    }
+    return nullptr;
+}
+
 bool paramsAlias(const ParamAccessPlan& lhs, const ParamAccessPlan& rhs) {
     if (!lhs.actualTensorAliasKey.empty() &&
         lhs.actualTensorAliasKey == rhs.actualTensorAliasKey) {
@@ -909,6 +928,379 @@ bool hasCurrentResidentHaloB3StmtOrder(const clang::Stmt* loop,
         }
     }
     return true;
+}
+
+void addContractResidentTensor(LoopLoweringContract& contract,
+                               const ParamAccessPlan* param,
+                               const std::string& role) {
+    if (!param || param->actualTensorName.empty()) {
+        return;
+    }
+    for (const auto& tensor : contract.residentTensors) {
+        if (tensor.tensorName == param->actualTensorName &&
+            tensor.role == role) {
+            return;
+        }
+    }
+    contract.residentTensors.push_back({param->actualTensorName, role});
+}
+
+void addContractMaterialization(LoopLoweringContract& contract,
+                                const ParamAccessPlan* param,
+                                LoweringContractMaterializeTiming timing,
+                                const std::string& reason) {
+    if (!param || param->actualTensorName.empty()) {
+        return;
+    }
+    for (const auto& materialization : contract.materializations) {
+        if (materialization.tensorName == param->actualTensorName &&
+            materialization.timing == timing) {
+            return;
+        }
+    }
+    contract.materializations.push_back(
+        {param->actualTensorName, timing, reason});
+}
+
+std::string stencilContractRemovalRole(
+    const clang::Stmt* stmt,
+    const DistributedStencilSitePlan& sitePlan,
+    const clang::SourceManager* sourceManager) {
+    bool removesReadCache = false;
+    bool removesFollowup = false;
+    if (stmt && sourceManager) {
+        for (const auto& transition : sitePlan.readCacheTransitions) {
+            if (stmtSourceRangeContains(*sourceManager, stmt,
+                                        transition.stmt)) {
+                removesReadCache = true;
+                break;
+            }
+        }
+        for (const auto& mapping : sitePlan.followupMappings) {
+            if (stmtSourceRangeContains(*sourceManager, stmt, mapping.stmt)) {
+                removesFollowup = true;
+                break;
+            }
+        }
+    }
+    if (removesReadCache && removesFollowup) {
+        return "read-cache+followup";
+    }
+    if (removesReadCache) {
+        return "read-cache";
+    }
+    if (removesFollowup) {
+        return "followup";
+    }
+    return "followup/read-cache";
+}
+
+void addContractRemoveStmt(
+    LoopLoweringContract& contract,
+    std::set<const clang::Stmt*>& seenRemovedStmts,
+    const clang::Stmt* stmt,
+    const std::string& role,
+    const std::string& reason) {
+    if (!stmt || seenRemovedStmts.count(stmt) != 0) {
+        return;
+    }
+    seenRemovedStmts.insert(stmt);
+    contract.statements.push_back(
+        {stmt, LoweringContractStmtAction::Remove, role, reason});
+}
+
+std::set<const clang::Stmt*> legacyStencilLoopRemovalSet(
+    DacppFile* dacppFile,
+    const ShellPartitionPlan& plan) {
+    std::set<const clang::Stmt*> result;
+    if (!dacppFile || !plan.exprNode.shell || !plan.exprNode.calc ||
+        !plan.exprNode.dacExpr) {
+        return result;
+    }
+    for (const auto& region : collectDistributedFollowupRegions(
+             dacppFile, plan.exprNode.shell, plan.exprNode.calc,
+             plan.exprNode.dacExpr)) {
+        if (region.stmt) {
+            result.insert(region.stmt);
+        }
+    }
+
+    const DistributedStencilSitePlan sitePlan = analyzeDistributedStencilSite(
+        dacppFile, plan.exprNode.shell, plan.exprNode.calc,
+        plan.exprNode.dacExpr);
+    if (sitePlan.supported && !sitePlan.hasRootBridge) {
+        for (const clang::Stmt* stmt : sitePlan.boundaryLocalStmts) {
+            if (stmt) {
+                result.insert(stmt);
+            }
+        }
+    }
+    return result;
+}
+
+std::string stencilRemovalSetMismatchReason(
+    const std::set<const clang::Stmt*>& legacySet,
+    const std::set<const clang::Stmt*>& contractSet) {
+    if (legacySet == contractSet) {
+        return "";
+    }
+    int missingFromContract = 0;
+    int extraInContract = 0;
+    for (const clang::Stmt* stmt : legacySet) {
+        if (contractSet.count(stmt) == 0) {
+            ++missingFromContract;
+        }
+    }
+    for (const clang::Stmt* stmt : contractSet) {
+        if (legacySet.count(stmt) == 0) {
+            ++extraInContract;
+        }
+    }
+    return "contract removal set mismatch legacy=" +
+           std::to_string(legacySet.size()) + " contract=" +
+           std::to_string(contractSet.size()) + " missing=" +
+           std::to_string(missingFromContract) + " extra=" +
+           std::to_string(extraInContract);
+}
+
+void annotateStencilContractRemovalSetEquivalence(
+    DacppFile* dacppFile,
+    ShellPartitionPlan& plan) {
+    if (!plan.orLoopLower.contract.enabled ||
+        (plan.orLoopLower.kind != OrLoopLowerKind::StencilFullSync &&
+         plan.orLoopLower.kind != OrLoopLowerKind::StencilResidentHalo)) {
+        return;
+    }
+
+    const std::set<const clang::Stmt*> legacySet =
+        legacyStencilLoopRemovalSet(dacppFile, plan);
+    const std::set<const clang::Stmt*> contractSet =
+        loweringContractRemoveStmtSet(plan.orLoopLower.contract);
+    const std::string mismatchReason =
+        stencilRemovalSetMismatchReason(legacySet, contractSet);
+    plan.orLoopLower.contractRemovalSetMatchesLegacy =
+        mismatchReason.empty();
+    plan.orLoopLower.contractRemovalSetReason =
+        mismatchReason.empty() ? "match" : mismatchReason;
+}
+
+void populateStencilLoopLoweringContract(
+    DacppFile* dacppFile,
+    ShellPartitionPlan& plan,
+    const std::string& residentHaloRejectReason) {
+    if (!plan.exprNode.dacExpr ||
+        (plan.orLoopLower.kind != OrLoopLowerKind::StencilFullSync &&
+         plan.orLoopLower.kind != OrLoopLowerKind::StencilResidentHalo)) {
+        return;
+    }
+
+    const bool residentHalo =
+        plan.orLoopLower.kind == OrLoopLowerKind::StencilResidentHalo;
+    const ParamAccessPlan* reader = stencilWindowReaderParam(plan);
+    const ParamAccessPlan* writer = stencilOutputDirectWriterParam(plan);
+    const ParamAccessPlan* directReader = singleStencilDirectReaderParam(plan);
+    const DistributedStencilSitePlan sitePlan =
+        analyzeDistributedStencilSite(dacppFile, plan.exprNode.shell,
+                                      plan.exprNode.calc,
+                                      plan.exprNode.dacExpr);
+
+    LoopLoweringContract contract;
+    contract.enabled = true;
+    contract.loweringName =
+        residentHalo ? "StencilResidentHalo" : "StencilFullSync";
+    contract.acceptedReason =
+        residentHalo ? "stencil resident-halo accepted current P4.6 proof"
+                     : "stencil full-sync accepted current P4.6 proof";
+    if (!residentHalo && !residentHaloRejectReason.empty()) {
+        contract.rejectedReason = residentHaloRejectReason;
+    }
+
+    contract.statements.push_back(
+        {plan.exprNode.dacExpr, LoweringContractStmtAction::Replace,
+         "source-dac", "replace source DAC with loop-lowered OR run call"});
+
+    const clang::SourceManager* sourceManager =
+        dacppFile && dacppFile->getContext()
+            ? &dacppFile->getContext()->getSourceManager()
+            : nullptr;
+    std::set<const clang::Stmt*> seenRemovedStmts;
+    if (sitePlan.supported && !sitePlan.hasRootBridge) {
+        for (const clang::Stmt* stmt : sitePlan.distributedFollowupStmts) {
+            const std::string role =
+                stencilContractRemovalRole(stmt, sitePlan, sourceManager);
+            addContractRemoveStmt(
+                contract, seenRemovedStmts, stmt, role,
+                "removed source stmt is absorbed by P4.6 " + role +
+                    " materialization");
+        }
+        for (const clang::Stmt* stmt : sitePlan.boundaryLocalStmts) {
+            addContractRemoveStmt(
+                contract, seenRemovedStmts, stmt, "boundary-local",
+                "removed source stmt is absorbed by P4.6 boundary-local materialization");
+        }
+    }
+
+    if (residentHalo) {
+        addContractResidentTensor(contract, reader,
+                                  "resident halo reader state");
+        addContractResidentTensor(contract, writer,
+                                  "rank-owned halo writer buffer");
+        addContractResidentTensor(contract, directReader,
+                                  "resident halo direct-reader state");
+        addContractMaterialization(
+            contract, writer, LoweringContractMaterializeTiming::LoopExit,
+            "materialize writer tensor after the outer loop");
+        addContractMaterialization(
+            contract, reader, LoweringContractMaterializeTiming::LoopExit,
+            "materialize resident reader after followup/boundary updates");
+        addContractMaterialization(
+            contract, directReader,
+            LoweringContractMaterializeTiming::LoopExit,
+            "materialize resident direct reader after loop-exit rotation");
+    } else {
+        addContractResidentTensor(contract, reader,
+                                  "full-sync reader broadcast state");
+        addContractResidentTensor(contract, writer,
+                                  "rank-owned writer slice");
+        addContractResidentTensor(contract, directReader,
+                                  "full-sync direct-reader broadcast state");
+        addContractMaterialization(
+            contract, writer, LoweringContractMaterializeTiming::EveryRun,
+            "full-sync gathers writer tensor inside each run call");
+        for (const auto& mapping : sitePlan.followupMappings) {
+            addContractMaterialization(
+                contract, paramByIndex(plan, mapping.readerParamIndex),
+                LoweringContractMaterializeTiming::EveryRun,
+                "full-sync applies followup materialization inside each run call");
+        }
+        for (const auto& transition : sitePlan.readCacheTransitions) {
+            addContractMaterialization(
+                contract, paramByIndex(plan, transition.readerParamIndex),
+                LoweringContractMaterializeTiming::EveryRun,
+                "full-sync applies read-cache materialization inside each run call");
+        }
+    }
+
+    contract.guards.push_back(
+        {LoweringContractGuardDisposition::CompileTimeFallback,
+         "P4.6 loop lifetime guard requires shell arguments declared before the loop"});
+    contract.guards.push_back(
+        {LoweringContractGuardDisposition::CompileTimeFallback,
+         "P4.6 parameter gate rejects unsupported order, scalar-reader, and stencil shapes"});
+    contract.guards.push_back(
+        {LoweringContractGuardDisposition::CompileTimeFallback,
+         "P4.6 boundary gate accepts only current followup/read-cache/boundary-local forms"});
+    contract.guards.push_back(
+        {LoweringContractGuardDisposition::CompileTimeFallback,
+         "P4.6 write/alias gate rejects reader or direct-reader writes outside the current OR path"});
+    if (residentHalo) {
+        contract.guards.push_back(
+            {LoweringContractGuardDisposition::RuntimeAbort,
+             "resident-halo runtime MPI count narrowing and overflow guards"});
+        if (directReader) {
+            contract.guards.push_back(
+                {LoweringContractGuardDisposition::RuntimeAbort,
+                 "resident-halo direct-reader runtime shape/count guard"});
+        }
+    } else if (plan.signature.layout == LocalLayoutKind::StencilWindow2D) {
+        contract.guards.push_back(
+            {LoweringContractGuardDisposition::RuntimeAbort,
+             "StencilWindow2D full-sync MPI count narrowing and direct-reader shape guards"});
+    } else if (hasReplicatedScalarParam(plan)) {
+        contract.guards.push_back(
+            {LoweringContractGuardDisposition::RuntimeAbort,
+             "StencilWindow1D full-sync scalar reader size guard"});
+    }
+
+    plan.orLoopLower.contract = contract;
+}
+
+LoweringContractMaterializeTiming primaryMaterializeTiming(
+    const LoopLoweringContract& contract) {
+    for (const auto& materialization : contract.materializations) {
+        if (materialization.timing != LoweringContractMaterializeTiming::None) {
+            return materialization.timing;
+        }
+    }
+    return LoweringContractMaterializeTiming::None;
+}
+
+std::string contractRemoveRoleSummary(
+    const LoopLoweringContract& contract) {
+    std::set<std::string> roles;
+    for (const auto& stmtContract : contract.statements) {
+        if (stmtContract.action == LoweringContractStmtAction::Remove &&
+            !stmtContract.role.empty()) {
+            roles.insert(stmtContract.role);
+        }
+    }
+    if (roles.empty()) {
+        return "none";
+    }
+    std::string result;
+    for (const auto& role : roles) {
+        if (!result.empty()) {
+            result += ",";
+        }
+        result += role;
+    }
+    return result;
+}
+
+bool contractHasGuardDisposition(
+    const LoopLoweringContract& contract,
+    LoweringContractGuardDisposition disposition) {
+    for (const auto& guard : contract.guards) {
+        if (guard.disposition == disposition) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void logLoopLoweringContractSummary(
+    const LoopLoweringContract& contract) {
+    if (!contract.enabled) {
+        return;
+    }
+    llvm::outs() << " contract=" << contract.loweringName
+                 << " contract-source=replace"
+                 << " contract-remove=" << contractRemoveRoleSummary(contract)
+                 << " contract-resident="
+                 << contract.residentTensors.size()
+                 << " contract-materialize="
+                 << loweringContractMaterializeTimingName(
+                        primaryMaterializeTiming(contract));
+    if (contractHasGuardDisposition(
+            contract,
+            LoweringContractGuardDisposition::CompileTimeFallback)) {
+        llvm::outs() << " guard-compile=fallback";
+    }
+    if (contractHasGuardDisposition(
+            contract, LoweringContractGuardDisposition::RuntimeAbort)) {
+        llvm::outs() << " guard-runtime=count-or-shape";
+    }
+    if (!contract.acceptedReason.empty()) {
+        llvm::outs() << " accepted-reason=" << contract.acceptedReason;
+    }
+    if (!contract.rejectedReason.empty()) {
+        llvm::outs() << " rejected-reason=" << contract.rejectedReason;
+    }
+}
+
+void logContractRemovalSetEquivalence(const OrLoopLowerPlan& plan) {
+    if (!plan.contract.enabled ||
+        (plan.kind != OrLoopLowerKind::StencilFullSync &&
+         plan.kind != OrLoopLowerKind::StencilResidentHalo)) {
+        return;
+    }
+    llvm::outs() << " contract-removal-set="
+                 << (plan.contractRemovalSetMatchesLegacy ? "match"
+                                                          : "mismatch");
+    if (!plan.contractRemovalSetMatchesLegacy &&
+        !plan.contractRemovalSetReason.empty()) {
+        llvm::outs() << " reason=" << plan.contractRemovalSetReason;
+    }
 }
 
 bool exprWritesTensor(const clang::Expr* expr,
@@ -1450,6 +1842,54 @@ struct PhaseExchangeDetection {
     int64_t provenEvenTotal = 0;
     std::string rejectReason;
 };
+
+void populateFixedBlockPhaseExchangeContract(
+    OrLoopLowerPlan& plan,
+    const PhaseExchangeDetection& detection,
+    const clang::Stmt* phaseADacExpr) {
+    LoopLoweringContract contract;
+    contract.enabled = true;
+    contract.loweringName = "FixedBlockPhaseExchange";
+    contract.acceptedReason =
+        "phase-exchange accepted canonical fixed-block loop contract";
+
+    contract.statements.push_back(
+        {phaseADacExpr, LoweringContractStmtAction::Replace,
+         "phase-a-dac", "replace phase-A DAC with resident run call"});
+    for (const clang::Stmt* stmt : detection.followerStmts) {
+        if (!stmt || stmt == phaseADacExpr) {
+            continue;
+        }
+        contract.statements.push_back(
+            {stmt, LoweringContractStmtAction::Remove, "phase-exchange-follower",
+             "removed source stmt is absorbed by resident phase exchange"});
+    }
+
+    contract.residentTensors.push_back(
+        {detection.sourceTensorName, "rank-contiguous resident state"});
+    contract.materializations.push_back(
+        {detection.sourceTensorName,
+         LoweringContractMaterializeTiming::LoopExit,
+         "materialize host-visible source tensor after outer loop"});
+
+    contract.guards.push_back(
+        {LoweringContractGuardDisposition::CompileTimeFallback,
+         "phase-exchange removed statements must not be referenced after rewrite"});
+    contract.guards.push_back(
+        {LoweringContractGuardDisposition::CompileTimeFallback,
+         "phase-exchange phase-A output is used after the outer loop"});
+    contract.guards.push_back(
+        {LoweringContractGuardDisposition::CompileTimeFallback,
+         "phase-exchange unexpected write to resident source tensor"});
+    contract.guards.push_back(
+        {LoweringContractGuardDisposition::CompileTimeFallback,
+         "phase-exchange requires a statically proven even total"});
+    contract.guards.push_back(
+        {LoweringContractGuardDisposition::RuntimeAbort,
+         "phase-exchange runtime total mismatch"});
+
+    plan.contract = contract;
+}
 
 const clang::Expr* ignoreParenImp(const clang::Expr* expr) {
     return expr ? expr->IgnoreParenImpCasts() : nullptr;
@@ -2317,7 +2757,29 @@ PhaseExchangeDetection detectPhaseExchange(
             return result;
         }
         case WalkPhase::Done:
-            result.rejectReason = "phase-exchange unexpected trailing stmt";
+            {
+                std::set<const clang::ValueDecl*> removedFollowerDecls;
+                if (sliceVarDecl) {
+                    removedFollowerDecls.insert(sliceVarDecl);
+                }
+                if (phaseBWriterDecl) {
+                    removedFollowerDecls.insert(phaseBWriterDecl);
+                }
+                if (exprReferencesAnyDecl(child, removedFollowerDecls)) {
+                    result.rejectReason =
+                        "phase-exchange removed follower stmt is referenced after canonical rewrite region";
+                    return result;
+                }
+                const std::set<std::string> sourceTensors{
+                    readerDecl->getNameAsString()};
+                if (stmtWritesAnyTensor(child, sourceTensors)) {
+                    result.rejectReason =
+                        "phase-exchange unexpected write to resident source tensor";
+                    return result;
+                }
+                result.rejectReason =
+                    "phase-exchange unexpected trailing stmt";
+            }
             return result;
         case WalkPhase::ExpectDacB:
             return result;
@@ -2436,18 +2898,30 @@ void detectAndAnnotateFixedBlockPhaseExchange(
             detection.followerStmts;
         planA.orLoopLower.fixedBlockPhaseExchange.followerDacExpr =
             detection.followerDacExpr;
+        populateFixedBlockPhaseExchangeContract(
+            planA.orLoopLower, detection, planA.exprNode.dacExpr);
 
         // Mark plan B
         planB.orLoopLower.kind =
             OrLoopLowerKind::FixedBlockPhaseExchangeFollower;
         planB.orLoopLower.outerLoop = detection.outerLoop;
         planB.orLoopLower.fixedBlockPhaseExchange.enabled = true;
+        planB.orLoopLower.contract.enabled = true;
+        planB.orLoopLower.contract.loweringName =
+            "FixedBlockPhaseExchangeFollower";
+        planB.orLoopLower.contract.acceptedReason =
+            "phase-exchange follower removed by leader contract";
 
         llvm::outs()
             << "[DACPP][MPI][OR][P5][PhaseExchange] expr="
             << planA.exprIndex << " shell=" << shellName
             << " phase-exchange=accepted block-size=" << detection.blockSize
             << " phase-shift=" << detection.phaseShiftOffset
+            << " contract=FixedBlockPhaseExchange"
+            << " materialize="
+            << loweringContractMaterializeTimingName(
+                   LoweringContractMaterializeTiming::LoopExit)
+            << " guard-runtime=total-mismatch"
             << " follower-expr=" << planB.exprIndex
             << " source=" << detection.sourceTensorName
             << " phase-a-output=" << detection.phaseAOutputTensorName
@@ -2518,6 +2992,10 @@ void annotateLoopLowerCandidates(DacppFile* dacppFile,
         if (!haloCandidate) {
             plan.orLoopLower.stencilResidentHalo.rejectReason = haloReason;
         }
+        if (p46Candidate) {
+            populateStencilLoopLoweringContract(dacppFile, plan, haloReason);
+            annotateStencilContractRemovalSetEquivalence(dacppFile, plan);
+        }
 
         llvm::outs() << "[DACPP][MPI][OR][P4.6][Loop] expr="
                      << plan.exprIndex << " shell=" << shellName
@@ -2574,6 +3052,8 @@ void annotateLoopLowerCandidates(DacppFile* dacppFile,
                     llvm::outs() << " resident-halo-reject=" << haloReason;
                 }
             }
+            logLoopLoweringContractSummary(plan.orLoopLower.contract);
+            logContractRemovalSetEquivalence(plan.orLoopLower);
         } else {
             llvm::outs() << " reason=" << p46Reason;
         }
@@ -2588,11 +3068,17 @@ void finalizeChain(OperatorResidentChainPlan& chain) {
     analyzeResidency(chain);
     // Note: chain accepted does not mean OR codegen is enabled for this layout
     // Check supportedPhaseLayout() to see which layouts actually generate OR code
-    llvm::outs() << "[DACPP][MPI][OR] chain=" << chain.chainId
-                 << " layout=" << localLayoutKindName(chain.signature.layout)
-                 << " length=" << chain.exprPlans.size() << " chain=accepted codegen="
-                 << (supportedPhaseLayout(chain.signature.layout) ? "enabled" : "disabled")
-                 << "\n";
+    std::ostringstream log;
+    log << "[DACPP][MPI][OR] chain=" << chain.chainId
+        << " layout=" << localLayoutKindName(chain.signature.layout)
+        << " length=" << chain.exprPlans.size()
+        << " chain=accepted codegen="
+        << (supportedPhaseLayout(chain.signature.layout) ? "enabled"
+                                                         : "disabled")
+        << "\n";
+    llvm::outs().flush();
+    llvm::outs() << log.str();
+    llvm::outs().flush();
 }
 
 } // namespace

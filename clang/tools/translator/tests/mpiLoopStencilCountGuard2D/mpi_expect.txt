@@ -3,6 +3,9 @@ LOG_CONTAINS:[DACPP][MPI][OR] expr=0 shell=countGuardShell layout=StencilWindow2
 LOG_CONTAINS:[DACPP][MPI][OR] chain=0 layout=StencilWindow2D length=1 chain=accepted codegen=enabled
 LOG_CONTAINS:[DACPP][MPI][OR][P4.6][Loop] expr=0 shell=countGuardShell
 LOG_CONTAINS:kind=StencilResidentHalo structure=ctx/init/run/materialize resident-halo=true window-shape=3x3 followup-offset=(1,1) materialize=final
+LOG_CONTAINS:contract=StencilResidentHalo
+LOG_CONTAINS:contract-materialize=loop-exit guard-compile=fallback guard-runtime=count-or-shape
+LOG_CONTAINS:contract-removal-set=match
 SYCL_CONTAINS:checked_mul_int64_or_abort(
 SYCL_CONTAINS:narrow_mpi_count_or_abort(
 SYCL_CONTAINS:resident halo 2D gather count exceeds MPI int range

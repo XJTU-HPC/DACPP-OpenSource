@@ -3,6 +3,9 @@ LOG_CONTAINS:[DACPP][MPI][OR] expr=0 shell=haloShell layout=StencilWindow1D part
 LOG_CONTAINS:[DACPP][MPI][OR] chain=0 layout=StencilWindow1D length=1 chain=accepted codegen=enabled
 LOG_CONTAINS:[DACPP][MPI] output next sync=distributed-followup
 LOG_CONTAINS:[DACPP][MPI][OR][P4.6][Loop] expr=0 shell=haloShell layout=StencilWindow1D loop-lower=candidate loop=for kind=StencilResidentHalo structure=ctx/init/run/materialize resident-halo=true window-size=3 followup-offset=1 materialize=final
+LOG_CONTAINS:contract=StencilResidentHalo contract-source=replace contract-remove=followup contract-resident=2 contract-materialize=loop-exit guard-compile=fallback guard-runtime=count-or-shape
+LOG_CONTAINS:contract-removal-set=match
+LOG_CONTAINS:accepted-reason=stencil resident-halo accepted current P4.6 proof
 SYCL_CONTAINS:struct __dacpp_mpi_or_haloShell_haloStep_0_ctx
 SYCL_CONTAINS:void __dacpp_mpi_or_haloShell_haloStep_0_init(__dacpp_mpi_or_haloShell_haloStep_0_ctx& ctx
 SYCL_CONTAINS:void __dacpp_mpi_or_haloShell_haloStep_0_run(__dacpp_mpi_or_haloShell_haloStep_0_ctx& ctx
@@ -20,7 +23,9 @@ SYCL_NOT_CONTAINS:ContiguousView1D<const double> view_state{__or_reader_data, ou
 SYCL_NOT_CONTAINS:apply_followup_1d(__or_local_state, __or_local_next
 SYCL_NOT_CONTAINS:exchange_halo_1d(__or_local_state, __or_local_next
 SYCL_NOT_CONTAINS:MPI_Gatherv(ctx.__or_local_next.data()
+SYCL_NOT_CONTAINS:__or_resident_out_next
 SYCL_NOT_CONTAINS:__or_followup_global_state
+SYCL_NOT_CONTAINS:state[i + 1] = next[i]
 SYCL_NOT_CONTAINS:AccessPattern
 SYCL_NOT_CONTAINS:PackPlan
 SYCL_NOT_CONTAINS:FixedBlock

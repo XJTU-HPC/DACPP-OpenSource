@@ -6,6 +6,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "mpi/shared/LoweringContract.h"
 #include "mpi/shared/MpiPlanBase.h"
 
 namespace clang {
@@ -76,6 +77,9 @@ enum class OrLoopLowerKind {
 struct OrLoopLowerPlan {
     OrLoopLowerKind kind = OrLoopLowerKind::None;
     const clang::Stmt* outerLoop = nullptr;
+    LoopLoweringContract contract;
+    bool contractRemovalSetMatchesLegacy = false;
+    std::string contractRemovalSetReason;
     bool hoistReaderSync = false;
     bool runMaterializeEveryStep = false;
     bool finalMaterializeRequired = false;

@@ -3,6 +3,9 @@ LOG_CONTAINS:[DACPP][MPI][OR] expr=0 shell=orderRejectShell layout=StencilWindow
 LOG_CONTAINS:[DACPP][MPI][OR] chain=0 layout=StencilWindow2D length=1 chain=accepted codegen=enabled
 LOG_CONTAINS:[DACPP][MPI][OR][P4.6][Loop] expr=0 shell=orderRejectShell
 LOG_CONTAINS:kind=StencilFullSync structure=ctx/init/run/materialize hoist-reader-sync=false materialize=per-run resident-halo-reject=resident halo B3 requires the current DAC -> read-cache -> followup -> boundary statement order
+LOG_CONTAINS:contract=StencilFullSync
+LOG_CONTAINS:contract-removal-set=match
+LOG_CONTAINS:rejected-reason=resident halo B3 requires the current DAC -> read-cache -> followup -> boundary statement order
 SYCL_CONTAINS:struct __dacpp_mpi_or_orderRejectShell_orderRejectStep_0_ctx
 SYCL_CONTAINS:void __dacpp_mpi_or_orderRejectShell_orderRejectStep_0_run(__dacpp_mpi_or_orderRejectShell_orderRejectStep_0_ctx& ctx
 SYCL_CONTAINS:MPI_Bcast(__or_global_cur.data()

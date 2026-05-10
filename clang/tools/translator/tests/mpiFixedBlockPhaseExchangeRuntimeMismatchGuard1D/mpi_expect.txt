@@ -1,0 +1,7 @@
+MPI_STRUCTURE_ONLY:true
+LOG_CONTAINS:[DACPP][MPI][OR][P5][PhaseExchange] expr=0 shell=ODDEVEN phase-exchange=accepted block-size=2 phase-shift=1 contract=FixedBlockPhaseExchange materialize=loop-exit guard-runtime=total-mismatch
+SYCL_CONTAINS:dacpp::mpi::operator_resident::check_fixed_block_phase_exchange_total(ctx.total, static_cast<int64_t>(__or_arg1.getSize()))
+SYCL_CONTAINS:dacpp::mpi::operator_resident::check_fixed_block_phase_exchange_total(ctx.total, static_cast<int64_t>(16))
+SYCL_CONTAINS:dacpp::mpi::operator_resident::fixed_block_phase_exchange_step
+SYCL_NOT_CONTAINS:AccessPattern
+SYCL_NOT_CONTAINS:PackPlan
