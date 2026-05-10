@@ -2,6 +2,7 @@ SYCL_NOT_CONTAINS:<->
 LOG_CONTAINS:[DACPP][MPI][OR] expr=0 shell=ODDEVEN layout=FixedBlock partition=accepted
 LOG_CONTAINS:[DACPP][MPI][OR] expr=1 shell=ODDEVEN layout=FixedBlock partition=accepted
 LOG_CONTAINS:[DACPP][MPI][OR][P5][PhaseExchange] expr=0 shell=ODDEVEN phase-exchange=accepted block-size=2 phase-shift=1
+LOG_CONTAINS:contract-check=pass reason=p5-contract-consistent
 SYCL_CONTAINS:struct __dacpp_mpi_or_ODDEVEN_oddeven_0_ctx
 SYCL_CONTAINS:dacpp::mpi::operator_resident::FixedBlockPhaseExchangeLayout layout
 SYCL_CONTAINS:dacpp::mpi::operator_resident::fixed_block_phase_exchange_layout

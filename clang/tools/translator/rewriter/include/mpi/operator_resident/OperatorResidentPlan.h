@@ -80,6 +80,8 @@ struct OrLoopLowerPlan {
     LoopLoweringContract contract;
     bool contractRemovalSetMatchesLegacy = false;
     std::string contractRemovalSetReason;
+    bool contractConsistencyCheckPassed = false;
+    std::string contractConsistencyCheckReason;
     bool hoistReaderSync = false;
     bool runMaterializeEveryStep = false;
     bool finalMaterializeRequired = false;

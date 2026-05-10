@@ -1,6 +1,6 @@
 # Phase 4.6 Optimization Closeout
 
-Updated: 2026-05-10 (P5 closeout and P6 boundary)
+Updated: 2026-05-10 (P6 lowering-contract closeout)
 
 ## 1. Closeout Summary
 
@@ -251,12 +251,12 @@ MPI_ONLY_BENCH_TIMEOUT_SECONDS=1800 \
 python3 clang/tools/translator/bench_mpi_only_requested.py oddeven0.1
 ```
 
-## 9. Phase 6 Boundary
+## 9. Phase 6 Lowering-Contract Closeout
 
-P6 starts after this P5 closeout. Its goal is a reusable lowering contract for
+P6 closes the first reusable lowering-contract infrastructure slice for
 loop-lowered OR paths rather than another shape-specific optimization.
 
-The P6 contract should make each accepted lowering describe:
+The P6 contract now makes each accepted P4.6/P5 lowering describe:
 
 - source statements removed by rewrite
 - resident tensors and final host-visible tensor ownership
@@ -264,7 +264,22 @@ The P6 contract should make each accepted lowering describe:
 - post-loop use, alias, write, and loop-local argument lifetime rejection rules
 - accepted/rejected reason strings that tests can pin
 
-P6 should begin by expressing the already-working P5
-`FixedBlockPhaseExchange` rules through contract metadata without changing the
-generated code. Only after that path is behavior-preserving should the same
-contract shape be migrated into the current P4.6 resident-halo/full-sync paths.
+The current closeout also records a lightweight consistency check on accepted
+contract facts. The checker logs `contract-check=pass reason=...` when:
+
+- the contract is enabled and its name matches the accepted lowering kind
+- the source DAC is marked `Replace`
+- the remove-list matches the current proven source of truth: legacy P4.6
+  removal set for stencil paths, P5 follower statements for phase exchange
+- resident tensor facts, materialized tensor ownership, and materialization timing
+  match the current path
+- statement, materialization, and guard reason metadata is present
+- compile-time fallback guards and required runtime abort guards are represented,
+  including 1D FullSync replicated-scalar and 2D FullSync/runtime-count cases
+
+This checker is diagnostic and does not choose codegen. P4.6 still removes via
+contract Remove statements only when the legacy-vs-contract removal set matches;
+mismatch falls back to the legacy remover. Current focused accepted P4.6 tests
+assert the match path; this closeout does not force an artificial mismatch
+fixture. The standalone P5 fallback remains available, `FOuLa1.0` remains
+outside this accepted surface, and generated-code semantics are unchanged.

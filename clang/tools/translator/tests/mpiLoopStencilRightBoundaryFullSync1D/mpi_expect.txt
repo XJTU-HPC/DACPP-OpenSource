@@ -4,6 +4,7 @@ LOG_CONTAINS:[DACPP][MPI][OR] chain=0 layout=StencilWindow1D length=1 chain=acce
 LOG_CONTAINS:[DACPP][MPI] output next sync=distributed-followup
 LOG_CONTAINS:kind=StencilFullSync structure=ctx/init/run/materialize hoist-reader-sync=false materialize=per-run resident-halo-reject=resident halo B1 boundary update target must be left boundary index 0
 LOG_CONTAINS:contract=StencilFullSync contract-source=replace contract-remove=boundary-local,followup contract-resident=2 contract-materialize=every-run guard-compile=fallback
+LOG_CONTAINS:contract-check=pass reason=p4.6-contract-consistent
 LOG_CONTAINS:contract-removal-set=match
 LOG_CONTAINS:accepted-reason=stencil full-sync accepted current P4.6 proof rejected-reason=resident halo B1 boundary update target must be left boundary index 0
 SYCL_CONTAINS:struct __dacpp_mpi_or_rightBoundaryShell_rightBoundaryStep_0_ctx

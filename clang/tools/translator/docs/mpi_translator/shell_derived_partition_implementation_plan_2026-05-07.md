@@ -1,6 +1,6 @@
 # Shell-Derived Partition Implementation Status
 
-Updated: 2026-05-10 (P5 first-slice closeout; P6 lowering-contract target)
+Updated: 2026-05-10 (P6 lowering-contract infrastructure closeout)
 
 ## 1. Purpose
 
@@ -35,7 +35,7 @@ path or the older fallback path.
 | Phase 4.5 | closed | current loop-lowered direct/resident family for stable `Contiguous1D` sites | broader loop families, dynamic-shape and ownership expansion |
 | Phase 4.6 | closed for the current proven slice | loop-lowered stencil resident-halo family, current 1D and 2D resident-state rotation, current `waveEquation1.0` direct-reader/read-cache extension, conservative soundness guards | `FOuLa1.0` rewrite-contract expansion, broader direct-reader/cache forms, root-bridge |
 | Phase 5 | complete for the current first slice | `oddeven0.1` now enters the loop-resident `FixedBlockPhaseExchange` path; sites that fail the phase-exchange gate fall back to the standalone P5 wrapper without legacy `AccessPattern` / `PackPlan` | overlapping regular windows, non-shifted phase patterns, read-write fixed blocks, root-bridge |
-| Phase 6 | next target | unified lowering-contract infrastructure for loop-lowered OR paths: statement removal, resident state ownership, host-visible materialization, use/alias/write guards, and runtime guard policy | expanding P5 shapes, `FOuLa1.0` acceptance, payload/multi-split/read-write FixedBlock |
+| Phase 6 | closed for the current infrastructure slice | unified lowering-contract metadata for P4.6/P5 loop-lowered OR paths, contract-driven removal for proven-equivalent P4.6/P5 paths, and lightweight consistency-check logs | expanding P5 shapes, `FOuLa1.0` acceptance, payload/multi-split/read-write FixedBlock, codegen semantic changes |
 
 ## 4. Current Accepted P4.6 Surface
 
@@ -249,13 +249,13 @@ Phase 5 is complete for the current first slice. The completed scope is:
 
 Further FixedBlock shape widening is not part of this P5 closeout.
 
-## 11. Phase 6 Target
+## 11. Phase 6 Closeout
 
-Phase 6 should start from the closed P5 boundary and build a shared lowering
-contract for OR loop-lowered paths. The target is infrastructure, not a wider
-accepted surface.
+Phase 6 now closes the first shared lowering-contract infrastructure slice for
+OR loop-lowered paths. The target remains infrastructure, not a wider accepted
+surface.
 
-The contract should make each accepted lowering declare:
+Each current accepted lowering now declares:
 
 - which source statements are removed or replaced by the rewrite
 - which tensors become resident state and which host-visible tensor is
@@ -267,24 +267,35 @@ The contract should make each accepted lowering declare:
   guards
 - the accepted/rejected reason text needed for review and regression tests
 
-P6 non-goals:
+P6 also adds a lightweight consistency checker on the accepted contract facts.
+The checker validates:
+
+- contract enabled/name matches the accepted lowering kind
+- the source DAC is a `Replace` statement
+- the remove-list matches the current proven source of truth: legacy P4.6
+  removal set for stencil paths, follower metadata for P5 phase exchange
+- materialization timing matches the current path (`loop-exit` resident halo and
+  phase exchange, `every-run` full-sync)
+- materialized tensors are also declared as resident tensor facts
+- statement, materialization, and guard reason metadata is present
+- compile-time fallback guards and required runtime abort guards are represented,
+  including 1D FullSync replicated-scalar and 2D FullSync/runtime-count cases
+
+The checker is diagnostic. It logs `contract-check=pass reason=...` for current
+accepted paths and does not choose codegen. P4.6 removal still uses contract
+Remove statements only when the legacy-vs-contract removal set matches; mismatch
+falls back to the legacy remover. Current focused accepted P4.6 fixtures cover
+the `contract-removal-set=match` path; no natural mismatch fixture is asserted in
+this closeout. P5 standalone fallback remains intact.
+
+P6 non-goals remain:
 
 - do not widen P5 FixedBlock beyond the closed first slice
 - do not accept payload, multi-split, overlapping, or READ_WRITE FixedBlock
 - do not absorb `FOuLa1.0` until the rewrite/init argument ownership contract is
   explicit
 - do not weaken the P4.6 resident-halo accepted boundary
-
-Recommended first P6 slice:
-
-1. introduce a small contract metadata structure shared by loop-lowered OR
-   plans
-2. express the current P5 `FixedBlockPhaseExchange` removal/materialization
-   rules through that metadata without changing generated code
-3. add contract negative tests for removed-statement reuse, post-loop alias/use,
-   unexpected writes, and runtime total mismatch
-4. migrate the current P4.6 resident-halo/full-sync contract facts only after
-   the P5 contract path is behavior-preserving
+- do not change generated-code semantics
 
 ## 12. Handoff Direction
 
@@ -292,10 +303,10 @@ The current handoff is:
 
 1. treat P4.6 as closed for the currently proven resident slice
 2. treat P5 as complete for the current first slice and keep its gate intact
-3. move to Phase 6 lowering-contract infrastructure before any further shape
-   widening
+3. treat P6 lowering-contract infrastructure as the guardrail for future
+   loop-lowered OR work
 4. keep `FOuLa1.0` as a later targeted infrastructure or efficiency item
-5. continue measuring with focused benchmarks rather than relaxing gates
+5. continue measuring and pinning focused contract logs before relaxing gates
 
 That order keeps the semantic boundary stable and avoids mixing a rewrite-contract change
 into the Phase 5 surface.

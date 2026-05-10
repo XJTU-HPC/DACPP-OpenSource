@@ -1258,6 +1258,217 @@ bool contractHasGuardDisposition(
     return false;
 }
 
+int contractReplaceStmtCount(const LoopLoweringContract& contract,
+                             const clang::Stmt* stmt) {
+    if (!stmt) {
+        return 0;
+    }
+    int count = 0;
+    for (const auto& statement : contract.statements) {
+        if (statement.stmt == stmt &&
+            statement.action == LoweringContractStmtAction::Replace) {
+            ++count;
+        }
+    }
+    return count;
+}
+
+bool contractStatementsHaveRolesAndReasons(
+    const LoopLoweringContract& contract) {
+    for (const auto& statement : contract.statements) {
+        if (!statement.stmt || statement.role.empty() ||
+            statement.reason.empty()) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool contractHasMaterializeTiming(
+    const LoopLoweringContract& contract,
+    LoweringContractMaterializeTiming timing) {
+    for (const auto& materialization : contract.materializations) {
+        if (materialization.timing == timing) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool contractMaterializationsUseTiming(
+    const LoopLoweringContract& contract,
+    LoweringContractMaterializeTiming timing) {
+    if (contract.materializations.empty()) {
+        return false;
+    }
+    for (const auto& materialization : contract.materializations) {
+        if (materialization.tensorName.empty() ||
+            materialization.reason.empty() ||
+            materialization.timing != timing) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool contractMaterializedTensorsAreResident(
+    const LoopLoweringContract& contract) {
+    std::set<std::string> residentTensorNames;
+    for (const auto& tensor : contract.residentTensors) {
+        if (tensor.tensorName.empty() || tensor.role.empty()) {
+            return false;
+        }
+        residentTensorNames.insert(tensor.tensorName);
+    }
+    for (const auto& materialization : contract.materializations) {
+        if (residentTensorNames.count(materialization.tensorName) == 0) {
+            return false;
+        }
+    }
+    return true;
+}
+
+int contractGuardDispositionCount(
+    const LoopLoweringContract& contract,
+    LoweringContractGuardDisposition disposition) {
+    int count = 0;
+    for (const auto& guard : contract.guards) {
+        if (guard.disposition == disposition) {
+            ++count;
+        }
+    }
+    return count;
+}
+
+bool contractGuardsHaveReasons(const LoopLoweringContract& contract) {
+    for (const auto& guard : contract.guards) {
+        if (guard.reason.empty()) {
+            return false;
+        }
+    }
+    return true;
+}
+
+std::string checkLoopLoweringContractConsistency(
+    const ShellPartitionPlan& plan) {
+    const OrLoopLowerPlan& loopLower = plan.orLoopLower;
+    const LoopLoweringContract& contract = loopLower.contract;
+    if (!contract.enabled) {
+        return "contract-disabled";
+    }
+    if (contract.loweringName != orLoopLowerKindName(loopLower.kind)) {
+        return "kind-mismatch";
+    }
+    if (contractReplaceStmtCount(contract, plan.exprNode.dacExpr) != 1) {
+        return "missing-replace-stmt";
+    }
+    if (!contractStatementsHaveRolesAndReasons(contract)) {
+        return "stmt-metadata-missing";
+    }
+    if (!contractGuardsHaveReasons(contract)) {
+        return "guard-reason-missing";
+    }
+    const int compileGuardCount = contractGuardDispositionCount(
+        contract, LoweringContractGuardDisposition::CompileTimeFallback);
+    if (compileGuardCount < 4) {
+        return "missing-compile-guard";
+    }
+
+    const bool hasRuntimeGuard = contractHasGuardDisposition(
+        contract, LoweringContractGuardDisposition::RuntimeAbort);
+    switch (loopLower.kind) {
+    case OrLoopLowerKind::StencilResidentHalo:
+        if (!loopLower.contractRemovalSetMatchesLegacy) {
+            return "remove-list-mismatch";
+        }
+        if (contract.residentTensors.empty()) {
+            return "missing-resident-tensor";
+        }
+        if (!contractMaterializedTensorsAreResident(contract)) {
+            return "materialized-tensor-not-resident";
+        }
+        if (!contractHasMaterializeTiming(
+                contract, LoweringContractMaterializeTiming::LoopExit)) {
+            return "materialize-timing-mismatch";
+        }
+        if (!contractMaterializationsUseTiming(
+                contract, LoweringContractMaterializeTiming::LoopExit)) {
+            return "materialize-timing-mismatch";
+        }
+        if (!hasRuntimeGuard) {
+            return "missing-runtime-guard";
+        }
+        return "p4.6-contract-consistent";
+    case OrLoopLowerKind::StencilFullSync:
+        if (!loopLower.contractRemovalSetMatchesLegacy) {
+            return "remove-list-mismatch";
+        }
+        if (contract.residentTensors.empty()) {
+            return "missing-resident-tensor";
+        }
+        if (!contractMaterializedTensorsAreResident(contract)) {
+            return "materialized-tensor-not-resident";
+        }
+        if (!contractHasMaterializeTiming(
+                contract, LoweringContractMaterializeTiming::EveryRun)) {
+            return "materialize-timing-mismatch";
+        }
+        if (!contractMaterializationsUseTiming(
+                contract, LoweringContractMaterializeTiming::EveryRun)) {
+            return "materialize-timing-mismatch";
+        }
+        if ((plan.signature.layout == LocalLayoutKind::StencilWindow2D ||
+             hasReplicatedScalarParam(plan)) &&
+            !hasRuntimeGuard) {
+            return "missing-runtime-guard";
+        }
+        return "p4.6-contract-consistent";
+    case OrLoopLowerKind::FixedBlockPhaseExchange: {
+        std::set<const clang::Stmt*> metadataRemoveSet;
+        for (const clang::Stmt* stmt :
+             loopLower.fixedBlockPhaseExchange.followerStmtsToRemove) {
+            if (stmt) {
+                metadataRemoveSet.insert(stmt);
+            }
+        }
+        if (loweringContractRemoveStmtSet(contract) != metadataRemoveSet) {
+            return "remove-list-mismatch";
+        }
+        if (contract.residentTensors.empty()) {
+            return "missing-resident-tensor";
+        }
+        if (!contractMaterializedTensorsAreResident(contract)) {
+            return "materialized-tensor-not-resident";
+        }
+        if (!contractHasMaterializeTiming(
+                contract, LoweringContractMaterializeTiming::LoopExit)) {
+            return "materialize-timing-mismatch";
+        }
+        if (!contractMaterializationsUseTiming(
+                contract, LoweringContractMaterializeTiming::LoopExit)) {
+            return "materialize-timing-mismatch";
+        }
+        if (!hasRuntimeGuard) {
+            return "missing-runtime-guard";
+        }
+        return "p5-contract-consistent";
+    }
+    default:
+        return "unsupported-kind";
+    }
+}
+
+void annotateLoopLoweringContractConsistency(ShellPartitionPlan& plan) {
+    if (!plan.orLoopLower.contract.enabled) {
+        return;
+    }
+    const std::string reason = checkLoopLoweringContractConsistency(plan);
+    plan.orLoopLower.contractConsistencyCheckPassed =
+        reason == "p4.6-contract-consistent" ||
+        reason == "p5-contract-consistent";
+    plan.orLoopLower.contractConsistencyCheckReason = reason;
+}
+
 void logLoopLoweringContractSummary(
     const LoopLoweringContract& contract) {
     if (!contract.enabled) {
@@ -1286,6 +1497,16 @@ void logLoopLoweringContractSummary(
     if (!contract.rejectedReason.empty()) {
         llvm::outs() << " rejected-reason=" << contract.rejectedReason;
     }
+}
+
+void logContractConsistencyCheck(const OrLoopLowerPlan& plan) {
+    if (!plan.contract.enabled ||
+        plan.contractConsistencyCheckReason.empty()) {
+        return;
+    }
+    llvm::outs() << " contract-check="
+                 << (plan.contractConsistencyCheckPassed ? "pass" : "fail")
+                 << " reason=" << plan.contractConsistencyCheckReason;
 }
 
 void logContractRemovalSetEquivalence(const OrLoopLowerPlan& plan) {
@@ -2900,6 +3121,7 @@ void detectAndAnnotateFixedBlockPhaseExchange(
             detection.followerDacExpr;
         populateFixedBlockPhaseExchangeContract(
             planA.orLoopLower, detection, planA.exprNode.dacExpr);
+        annotateLoopLoweringContractConsistency(planA);
 
         // Mark plan B
         planB.orLoopLower.kind =
@@ -2922,6 +3144,11 @@ void detectAndAnnotateFixedBlockPhaseExchange(
             << loweringContractMaterializeTimingName(
                    LoweringContractMaterializeTiming::LoopExit)
             << " guard-runtime=total-mismatch"
+            << " contract-check="
+            << (planA.orLoopLower.contractConsistencyCheckPassed ? "pass"
+                                                                 : "fail")
+            << " reason="
+            << planA.orLoopLower.contractConsistencyCheckReason
             << " follower-expr=" << planB.exprIndex
             << " source=" << detection.sourceTensorName
             << " phase-a-output=" << detection.phaseAOutputTensorName
@@ -2995,6 +3222,7 @@ void annotateLoopLowerCandidates(DacppFile* dacppFile,
         if (p46Candidate) {
             populateStencilLoopLoweringContract(dacppFile, plan, haloReason);
             annotateStencilContractRemovalSetEquivalence(dacppFile, plan);
+            annotateLoopLoweringContractConsistency(plan);
         }
 
         llvm::outs() << "[DACPP][MPI][OR][P4.6][Loop] expr="
@@ -3053,6 +3281,7 @@ void annotateLoopLowerCandidates(DacppFile* dacppFile,
                 }
             }
             logLoopLoweringContractSummary(plan.orLoopLower.contract);
+            logContractConsistencyCheck(plan.orLoopLower);
             logContractRemovalSetEquivalence(plan.orLoopLower);
         } else {
             llvm::outs() << " reason=" << p46Reason;
