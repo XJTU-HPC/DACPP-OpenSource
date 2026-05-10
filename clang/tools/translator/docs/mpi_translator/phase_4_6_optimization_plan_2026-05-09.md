@@ -279,7 +279,14 @@ contract facts. The checker logs `contract-check=pass reason=...` when:
 
 This checker is diagnostic and does not choose codegen. P4.6 still removes via
 contract Remove statements only when the legacy-vs-contract removal set matches;
-mismatch falls back to the legacy remover. Current focused accepted P4.6 tests
-assert the match path; this closeout does not force an artificial mismatch
-fixture. The standalone P5 fallback remains available, `FOuLa1.0` remains
-outside this accepted surface, and generated-code semantics are unchanged.
+mismatch falls back to the legacy remover. The current P4.6 contract
+construction and legacy removal-set calculation intentionally share the same
+source: both derive removable followup/read-cache statements and boundary-local
+statements from `analyzeDistributedStencilSite()`. Current focused accepted
+P4.6 tests assert the match path. The mismatch fallback is a defensive
+compatibility path for future contract-construction evolution; no current
+natural accepted source shape can produce it without changing production
+behavior or artificially corrupting contract construction, so this closeout does
+not add a mismatch fixture. The standalone P5 fallback remains available,
+`FOuLa1.0` remains outside this accepted surface, and generated-code semantics
+are unchanged.
