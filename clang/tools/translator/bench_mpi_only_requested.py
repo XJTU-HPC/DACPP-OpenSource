@@ -11,7 +11,7 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).resolve().parent
 TESTS_DIR = SCRIPT_DIR / "tests"
 ENV_SH = SCRIPT_DIR / "env.sh"
-TMP_DIR = Path(os.environ.get("MPI_ONLY_BENCH_TMP_DIR", "/Volumes/QUQ/working/mpi_tmp/mpi_only_requested"))
+TMP_DIR = Path(os.environ.get("MPI_ONLY_BENCH_TMP_DIR", "/Volumes/QUQ/working/mpi_tmp_benchmark/"))
 RANKS = int(os.environ.get("MPI_ONLY_BENCH_RANKS", "4"))
 TIMEOUT = float(os.environ.get("MPI_ONLY_BENCH_TIMEOUT_SECONDS", "1800"))
 

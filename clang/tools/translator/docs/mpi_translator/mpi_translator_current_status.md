@@ -1,6 +1,6 @@
 # MPI Translator Current Status
 
-Updated: 2026-05-10
+Updated: 2026-05-11
 
 This is the canonical current-state document for the new MPI translator model.
 It replaces the phase handoff notes that were used while P4.6, P5, and P6 were
@@ -35,8 +35,8 @@ The completed current surface includes:
 - P6 lowering-contract metadata and consistency checks for accepted loop-lowered
   paths
 - generic OR resident-buffer ownership optimization for ordinary OR chains
-- a guarded `FOuLa1.0` owner-loop specialization for loop-local 1D stencil
-  slices over a stable matrix owner
+- a guarded loop-local stencil owner-loop contract for the current `FOuLa1.0`
+  1D stencil slice shape over a stable matrix owner
 - default-off segmented MPI profiling and a Phase 1.4 benchmark/profile artifact
   driver
 - conservative fallback to OR FullSync, Phase-C stencil, or legacy
@@ -69,6 +69,10 @@ Operator-resident path:
 
 - `rewriter/include/mpi/operator_resident/OperatorResidentPlan.h`: OR IR,
   layouts, access plans, loop-lowered metadata, and resident facts.
+- `rewriter/include/mpi/operator_resident/LoopLocalStencilOwnerLoop.h` and
+  `rewriter/lib/mpi/operator_resident/LoopLocalStencilOwnerLoop.cpp`: the
+  current loop-local stencil owner-loop contract, proof gate, and codegen used
+  by `FOuLa1.0`.
 - `rewriter/lib/mpi/operator_resident/ShellPartitionAnalysis.cpp`: shell/calc
   parameter analysis and layout selection.
 - `rewriter/lib/mpi/operator_resident/OperatorChainAnalysis.cpp`: compatible
@@ -203,22 +207,45 @@ Current implementation shape:
 
 `FOuLa1.0` is no longer handled by the ordinary per-step `StencilWindow1D`
 wrapper. The generic P4.6 loop contract still rejects it because the shell
-arguments are loop-local temporary slices, but `rewriteMPI()` now recognizes a
-strict owner-loop shape and replaces the whole source loop with a generated
-owner-loop function.
+arguments are loop-local temporary slices, but the focused
+`LoopLocalStencilOwnerLoop` contract now recognizes a strict owner-loop shape
+and `rewriteMPI()` replaces the whole source loop with a generated owner-loop
+function.
 
 Accepted current shape:
 
 - one shell-derived `StencilWindow1D` reader, one WRITE-only direct writer, and
   one replicated scalar reader
 - all three calc element types are the same native MPI datatype
+- the owner matrix is initialized with the current `{m+1,n+1}`-style shape,
+  and the outer loop bound is proven to cover the owner time columns
 - the outer loop constructs `reader = owner[{}][k]`
-- the writer slice is `writer = owner[{1,...}][k+1]`
+- the writer slice is exactly the proven owner interior range
+  `writer = owner[{1,m}][k+1]`
 - the scalar shell argument is built from a loop-local vector whose sole
-  payload is the detected scalar expression
-- the loop writes the computed writer slice back into `owner[*][k+1]`
+  payload is the detected strict token-like scalar expression
+- the scalar shell argument is a single-argument `dacpp::Vector` construction
+  from that same loop-local vector; C++ copy-construction wrappers are accepted
+  only when the source argument remains exactly that vector variable
+- the loop writes the computed writer slice back into
+  `owner[i][k+1] = writer[i-1]` over the proven owner interior range
 - the current loop body has the proven seven top-level statements used by
   `FOuLa1.0`
+
+Current contract semantics:
+
+- source replacement is the whole owner loop, not only the DAC expression
+- absorbed source statements are the writer slice, scalar vector storage,
+  scalar payload, scalar shell argument, reader slice, DAC expression, and
+  owner writeback
+- resident state is owner-derived stencil state plus loop-local reader/writer
+  slices
+- materialization is loop-exit owner history gather and root writeback
+- compile-time fallback guards reject wrong owner slice, variant scalar
+  payload, variant scalar shell argument, mismatched owner loop bound, wrong
+  writer range, missing/variant post-writeback, extra owner mutation, and
+  multiple writer slices
+- runtime guards remain MPI count/shape narrowing checks in generated code
 
 Current implementation shape:
 

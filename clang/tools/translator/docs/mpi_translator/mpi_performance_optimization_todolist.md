@@ -1,6 +1,6 @@
 # MPI Performance Optimization TODO
 
-Updated: 2026-05-10
+Updated: 2026-05-11
 
 This document is the working TODO for the next MPI translator performance
 optimization pass. It is intentionally ordered from measurement and broad
@@ -623,6 +623,23 @@ shape. The next step should generalize the proof model, not loosen checks.
 
 ### Phase 4.1: Specify The Contract
 
+Status on 2026-05-11: complete for the current strict `FOuLa1.0` shape.
+
+Implemented:
+
+- Added a focused `LoopLocalStencilOwnerLoop` contract module under
+  `rewriter/include/mpi/operator_resident` and
+  `rewriter/lib/mpi/operator_resident`.
+- The contract describes the current source replacement as whole-loop
+  replacement, with absorbed writer-slice/scalar/reader/DAC/writeback
+  statements, owner-derived resident state, loop-exit materialization, and
+  compile/runtime guards.
+- Accepted `FOuLa1.0` now logs:
+  `contract=LoopLocalStencilOwnerLoop`, `contract-source=replace-loop`,
+  the absorbed statement roles, resident count, loop-exit materialization, and
+  guard classes.
+- This did not widen accepted shape.
+
 Tasks:
 
 - Define a contract for loop-local shell arguments:
@@ -650,6 +667,40 @@ Done when:
 
 ### Phase 4.2: AST-Based Extraction
 
+Status on 2026-05-11: partial, advanced again for the current strict
+owner-loop shape without widening accepted surface.
+
+Implemented:
+
+- The detector now uses AST proof for the current strict owner-loop body:
+  enclosing forward unit `for` loop, top-level statement role order, DAC
+  expression position, reader and writer owner slices, scalar vector
+  storage/payload/shell argument, post-writeback loop, multiple writer slices,
+  and extra owner mutation.
+- The proof was tightened further to require the owner matrix `{m+1,n+1}` style
+  shape, the outer loop `k <= n-1` time-column bound, exact writer range end,
+  exact scalar shell vector argument after C++ copy-construction wrappers, and
+  exact post-writeback RHS/index shape.
+- Additional conservative reasoned rejects now cover wrong writer slice,
+  variant scalar payload, missing `owner[*][k+1]` writeback, extra owner
+  mutation, and multiple writer slices.
+- New reject fixtures also cover scalar payload expressions, scalar shell
+  argument variants, loop-bound variants, writer-range variants, and writeback
+  RHS/index variants.
+- Source-text extraction remains only for the scalar payload expression, which
+  is still checked with the existing strict token-like rule so broader payload
+  forms are not accepted.
+- Accepted `FOuLa1.0` logs local owner-loop consistency:
+  `contract-check=pass reason=owner-loop-contract-consistent`.
+
+Parked:
+
+- Parameterizing beyond the current seven-statement FOuLa body, scalar payload
+  expression form, owner matrix shape, writer range, owner writeback indexing,
+  loop bound style, window width, and boundary policy.
+  Do not broaden accepted syntax until each expansion has its own proof and
+  fixtures.
+
 Tasks:
 
 - Replace regex-heavy detection with AST extraction where practical:
@@ -670,6 +721,23 @@ Done when:
 - Detection does not depend on file names.
 
 ### Phase 4.3: Codegen Reuse
+
+Status on 2026-05-11: complete for behavior-preserving extraction.
+
+Implemented:
+
+- Moved owner-loop proof/codegen out of `Rewriter_MPI.cpp` into the focused
+  `LoopLocalStencilOwnerLoop` operator-resident module.
+- `Rewriter_MPI.cpp` now only orchestrates detection, generated-function
+  emission, and whole-loop replacement.
+- Generated `FOuLa1.0` behavior remains equivalent: initial column scatter,
+  per-step kernel, boundary scalar bcast, in-place halo exchange, final history
+  gather, and root owner writeback.
+
+Parked:
+
+- Further parameterization beyond the current strict window width, scalar
+  count, boundary policy, and history materialization shape.
 
 Tasks:
 
