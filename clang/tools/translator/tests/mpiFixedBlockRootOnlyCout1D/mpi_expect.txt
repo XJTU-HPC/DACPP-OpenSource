@@ -1,0 +1,9 @@
+LOG_CONTAINS:[DACPP][MPI][OR] expr=0 shell=COPY_BLOCK layout=FixedBlock partition=accepted
+LOG_CONTAINS:[DACPP][MPI] output output sync=root-only
+SYCL_CONTAINS:void __dacpp_mpi_or_COPY_BLOCK_copy_block_0
+SYCL_CONTAINS:dacpp::mpi::operator_resident::fixed_block_count_1d
+SYCL_CONTAINS:MPI_Gatherv(__or_local_output.data()
+SYCL_CONTAINS:__or_arg1.array2Tensor(__or_materialized_output)
+SYCL_NOT_CONTAINS:MPI_Bcast(__or_materialized_output.data()
+SYCL_NOT_CONTAINS:AccessPattern
+SYCL_NOT_CONTAINS:PackPlan

@@ -249,7 +249,43 @@ Done when:
 - `vectorAddCombo` is either confirmed as OR-current or selected only if it has
   a real legacy segment left.
 
+Status on 2026-05-10: complete as an inventory-only phase.
+
+Artifact:
+`/Volumes/QUQ/working/mpi_tmp/phase2_1_legacy_inventory`.
+
+Completion evidence:
+
+- `clang/tools/translator/findings.md` contains the Phase 2.1 table covering
+  the 14 benchmark cases and focused `mpi*` fixtures.
+- The artifact contains 63 current translation records with `translation_runs.tsv`,
+  `marker_scan.tsv`, per-case `step2.log`, and generated-code snapshots.
+- All 14 benchmark cases translated successfully and none of their generated
+  code snapshots contain `AccessPattern` or `PackPlan`.
+- `vectorAddCombo` is confirmed OR-current: a `Contiguous1D` chain of
+  `VADD`, `VSHIFT`, `VADD` with a replicated scalar bias and no legacy marker.
+- Remaining true legacy wrapper evidence is limited to focused FixedBlock
+  reject fixtures:
+  `mpiFixedBlockMatrixSingleSplitReject1D`,
+  `mpiFixedBlockOverlapReject1D`, and `mpiFixedBlockPayloadReject1D`.
+- Remaining `AccessPattern`+`PackPlan` evidence outside those wrappers belongs
+  to focused Phase-C stencil fallback fixtures, not simple contiguous 1D legacy
+  wrapper lowering.
+- No Phase 2.2 simple contiguous 1D legacy fast-path candidate was selected.
+  Selecting the current FixedBlock rejects or Phase-C stencil fallbacks would
+  expand accepted surface rather than optimize a proven simple legacy case.
+
+Closeout recheck on 2026-05-10 confirmed the same decision. Phase 2.2 through
+Phase 2.4 are parked as blocked/no-op completion until a real simple contiguous
+1D legacy wrapper candidate appears in current generated code.
+
 ### Phase 2.2: Add Detection for Simple Contiguous Legacy Shapes
+
+Status on 2026-05-10: blocked/parked.
+
+Reason: no current simple contiguous 1D legacy candidate exists. The current
+simple contiguous 1D benchmark/fixture shapes route through OR, and the
+remaining legacy wrapper evidence is FixedBlock reject surface.
 
 Tasks:
 
@@ -272,7 +308,20 @@ Done when:
 - New fast path accepts only the intended contiguous shape.
 - Near-miss tests still fall back to legacy and log why.
 
+Blocked completion note:
+
+- No detection gate was added in Phase 2, because adding one without a selected
+  candidate would be speculative.
+- Future work may reopen this phase only when fresh inventory shows a generated
+  legacy wrapper for a true simple contiguous 1D shape.
+
 ### Phase 2.3: Generate Fast Path Without AccessPattern Metadata
+
+Status on 2026-05-10: blocked/parked.
+
+Reason: there is no selected fast-path case to generate for. Generating code
+for the current FixedBlock rejects or Phase-C stencil fallbacks would expand the
+accepted surface, which is outside Phase 2.
 
 Tasks:
 
@@ -288,7 +337,19 @@ Done when:
 - Output matches the baseline for 1, 2, and 4 ranks where feasible.
 - Profile shows the expected reduction in pack/init overhead.
 
+Blocked completion note:
+
+- No translator code was changed.
+- The correct current behavior remains OR for simple contiguous 1D shapes and
+  conservative fallback for unsupported FixedBlock/stencil surfaces.
+
 ### Phase 2.4: Regression Surface
+
+Status on 2026-05-10: no-op completion.
+
+Reason: no new fast path was implemented, so there is no new accepted/rejected
+Phase 2 structure surface to test. Existing focused tests remain the regression
+surface for OR-current simple contiguous cases and residual fallback cases.
 
 Tasks:
 
@@ -301,6 +362,31 @@ Done when:
 
 - The fast path is covered by structure and output tests.
 - Legacy fallback still works for unsupported cases.
+
+No-op completion note:
+
+- Existing focused validation should continue to cover:
+  `vectorAddCombo`, `mandel1.0`, `decay1.0`, `gradientSum`,
+  `mpiFixedBlockMatrixSingleSplitReject1D`,
+  `mpiFixedBlockOverlapReject1D`,
+  `mpiFixedBlockPayloadReject1D`,
+  `mpiOrReadWriteAccumulate1D`, and `mpiOrReadWriteAccumulate2D`.
+- A full benchmark closeout can be run into
+  `/Volumes/QUQ/working/mpi_tmp/phase2_closeout_full_benchmark` with:
+
+```bash
+cd /Volumes/QUQ/working/dacpp
+MPI_ONLY_BENCH_TMP_DIR=/Volumes/QUQ/working/mpi_tmp/phase2_closeout_full_benchmark \
+MPI_ONLY_BENCH_RANKS=4 \
+MPI_ONLY_BENCH_TIMEOUT_SECONDS=1800 \
+python3 clang/tools/translator/bench_mpi_only_requested.py \
+  DFT1.0 FOuLa1.0 MDP1.0 decay1.0 gradientSum imageAdjustment1.0 \
+  jacobi1.0 liuliang1.0 mandel1.0 matMul1.0 oddeven0.1 \
+  stencil1.0 vectorAddCombo waveEquation1.0
+```
+
+Expected primary output is `results.tsv` plus per-case build/translation/run
+logs, generated DAC MPI snapshots, and binaries under the artifact root.
 
 ## 3. Resident Chain And Materialization Elimination
 
@@ -331,6 +417,22 @@ Done when:
 - There is a case-by-case materialization table in benchmark notes or findings.
 - Each high-cost materialization has a semantic reason or an optimization TODO.
 
+Status on 2026-05-10: complete.
+
+Artifact:
+`/Volumes/QUQ/working/phase3_mpi_tmp/phase3_1_materialization_inventory`.
+
+Completion evidence:
+
+- `clang/tools/translator/findings.md` records the case-by-case table for all
+  14 benchmark generated sources.
+- The artifact contains `materialization_inventory.tsv`, `summary.md`, and
+  per-case `generated.cpp`/`step2.log`.
+- All 14 generated snapshots remain free of `AccessPattern` and `PackPlan`.
+- The main semantic reasons are final host/all-ranks output visibility,
+  replicated-full input broadcast, resident-halo final materialization, and the
+  `decay1.0` source-level post-DAC copy.
+
 ### Phase 3.2: Strengthen Residency Facts
 
 Tasks:
@@ -356,7 +458,92 @@ Done when:
 - Chain-local materialization decisions are explainable in logs.
 - Existing output-sync tests still pass.
 
+Status on 2026-05-10: complete for the narrow proven registry-update
+elimination.
+
+Implemented:
+
+- Added `retainResidentAfterWrite` to `ParamAccessPlan`.
+- `ResidencyAnalysis` now records whether a written tensor has a future
+  non-scalar resident reader later in the same accepted OR chain and logs:
+  `resident-write tensor=<name> retain=yes/no reason=...`.
+- Ordinary OR codegen skips the final `replace_resident` when the write is
+  materialized and no downstream resident reader exists.
+- Loop-lowered direct OR codegen skips the per-run resident `ensure_resident`
+  update under the same proof.
+- Final `Gatherv`, `array2Tensor`, required `Bcast`, and materialize helper
+  calls are preserved.
+
+Completion evidence:
+
+- `vectorAddCombo` retains `tmp_tensor` and `shifted_tensor` for downstream
+  resident reads but skips the final `out_tensor` resident registry rewrite
+  after materialization.
+- `decay1.0` and `jacobi1.0` document no-downstream resident writes and keep
+  required host/all-ranks materialization.
+- Structure checks were added or updated for `vectorAddCombo`, `decay1.0`, and
+  `jacobi1.0`.
+
+### Phase 3.2b: Reuse Legacy Gather/Bcast Output-Sync Proof In FixedBlock
+
+Status on 2026-05-11: complete for standalone FixedBlock final materialization.
+
+Finding:
+
+- The legacy AccessPattern wrapper already uses shared
+  `classifyOutputSyncRequirement`/`requiresBroadcast` for writeback Bcast.
+- Ordinary OR and loop-lowered direct materialization already use the same
+  result through `broadcastMaterializedOutput`.
+- Standalone FixedBlock still emitted unconditional final `MPI_Bcast`.
+
+Implemented:
+
+- `FixedBlockCodegen.cpp` now emits the final standalone FixedBlock Bcast and
+  non-root `array2Tensor` only when `writer->broadcastMaterializedOutput` is
+  true.
+- Root `Gatherv` and root `array2Tensor` are preserved.
+- `all-ranks-needed` standalone FixedBlock keeps the previous broadcast path.
+
+Tests:
+
+- `mpiFixedBlockRootOnlyCout1D`: `sync=root-only`, final FixedBlock Bcast
+  absent, output comparison passes.
+- `mpiFixedBlockAllRanksFunctionRead1D`: `sync=all-ranks-needed`, final
+  FixedBlock Bcast present, output comparison passes.
+
+Artifacts:
+
+- Before generated snapshot:
+  `/Volumes/QUQ/working/phase3_mpi_tmp/phase3_2_fixedblock_bcast_before`.
+- After generated snapshot:
+  `/Volumes/QUQ/working/phase3_mpi_tmp/phase3_2_fixedblock_bcast_after`.
+- Micro benchmark:
+  `/Volumes/QUQ/working/phase3_mpi_tmp/phase3_2_fixedblock_bcast_micro_benchmark`.
+
+Readout:
+
+- Root-only generated code removed two final
+  `MPI_Bcast(__or_materialized_output.data()...)` sites.
+- Tiny 8-element micro benchmark medians were effectively unchanged:
+  0.076915s before and 0.076529s after. Timing is too noisy for a performance
+  claim.
+- Full MPI suite with both new fixtures passed: 62/62.
+
+Parked:
+
+- Loop-resident P5 phase-exchange final Bcast. It materializes the contracted
+  source/reader tensor after absorbing followup statements, so the standalone
+  FixedBlock writer-output proof is not directly equivalent.
+
 ### Phase 3.3: Defer Or Remove Final Broadcast Where Semantically Safe
+
+Status on 2026-05-11: parked for the general case; the standalone FixedBlock
+gap covered by Phase 3.2b is complete.
+
+Reason: Phase 3 did not produce a new proof that default all-ranks output
+visibility can be weakened. Final bcast deferral or root-only substitution must
+remain controlled by `OutputSyncAnalysis`/selected policy, not inferred from
+performance pressure.
 
 Tasks:
 
@@ -376,6 +563,8 @@ Done when:
 
 ### Phase 3.4: Benchmark And Guard
 
+Status on 2026-05-10: complete for the narrow Phase 3.2 change.
+
 Tasks:
 
 - Re-run `vectorAddCombo`, `decay1.0`, `jacobi1.0`, and any chain-heavy case
@@ -388,6 +577,41 @@ Done when:
 
 - Each removed materialization has a documented proof.
 - No benchmark improvement is accepted without output comparison passing.
+
+Completion evidence:
+
+- Before full benchmark:
+  `/Volumes/QUQ/working/phase3_mpi_tmp/phase3_0_baseline_full_benchmark/results.tsv`.
+- After full benchmark:
+  `/Volumes/QUQ/working/phase3_mpi_tmp/phase3_1_after_full_benchmark/results.tsv`.
+- Before focused profile:
+  `/Volumes/QUQ/working/phase3_mpi_tmp/phase3_0_baseline_profile_focus`.
+- After focused profile:
+  `/Volumes/QUQ/working/phase3_mpi_tmp/phase3_1_after_profile_focus`.
+- Focused profile stdout matched DAC profile-off stdout for the measured
+  before/after runs.
+- Required focused tests plus full MPI suite passed; output-sync/broadcast
+  fixtures were included in the focused run.
+
+Readout:
+
+- Full benchmark single-run DAC wall showed wins for `FOuLa1.0`,
+  `decay1.0`, `imageAdjustment1.0`, `oddeven0.1`, and `vectorAddCombo`, but
+  also noisy regressions for `DFT1.0`, `gradientSum`, `stencil1.0`, and
+  `waveEquation1.0`.
+- Focused 3-trial 4-rank medians showed `DFT1.0` 0.207593s before and
+  0.191026s after, `decay1.0` 0.425867s before and 0.380414s after,
+  `jacobi1.0` 0.366836s before and 0.328427s after, and `vectorAddCombo`
+  0.257293s before and 0.265042s after.
+- The skipped resident registry update is not separately segmented, so profile
+  attribution remains dominated by scatter, kernel, gather, bcast, and
+  materialize.
+
+Related guard work:
+
+- A latent 1D resident-halo misaccept was fixed by requiring static reader
+  extent proof. `mpiOrStencilRefreshPolicy1D` now falls back to FullSync with
+  `resident halo B1 requires reader extent to cover writer slice plus halo`.
 
 ## 4. FOuLa Loop-Local Argument Contract
 

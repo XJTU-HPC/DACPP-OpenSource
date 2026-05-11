@@ -1,3 +1,4 @@
+#include <map>
 #include <set>
 #include <string>
 
@@ -44,6 +45,18 @@ void analyzeResidency(OperatorResidentChainPlan& chain) {
         return;
     }
 
+    std::map<std::string, std::set<std::size_t>> futureReadPositions;
+    for (std::size_t exprPos = 0; exprPos < chain.exprPlans.size(); ++exprPos) {
+        const auto& exprPlan = chain.exprPlans[exprPos];
+        for (const auto& param : exprPlan.params) {
+            if (param.reads &&
+                param.access != ParamAccessKind::ReplicatedScalar &&
+                !param.actualTensorName.empty()) {
+                futureReadPositions[param.actualTensorName].insert(exprPos);
+            }
+        }
+    }
+
     std::set<std::string> finalOutputs;
     if (!chain.exprPlans.empty()) {
         const auto& last = chain.exprPlans.back();
@@ -87,6 +100,23 @@ void analyzeResidency(OperatorResidentChainPlan& chain) {
                 state.rootValid = false;
                 state.localValid = true;
                 param.writeToResident = true;
+                auto futureReads =
+                    futureReadPositions.find(param.actualTensorName);
+                if (futureReads != futureReadPositions.end()) {
+                    auto nextRead = futureReads->second.upper_bound(exprPos);
+                    param.retainResidentAfterWrite =
+                        nextRead != futureReads->second.end();
+                }
+                llvm::outs() << "[DACPP][MPI][OR]   resident-write tensor="
+                             << param.actualTensorName
+                             << " retain="
+                             << (param.retainResidentAfterWrite ? "yes"
+                                                                : "no")
+                             << " reason="
+                             << (param.retainResidentAfterWrite
+                                     ? "downstream-resident-reader"
+                                     : "no-downstream-resident-reader")
+                             << "\n";
                 if (isLast || finalOutputs.count(param.actualTensorName) != 0) {
                     param.materializeAfterWrite = true;
                 }

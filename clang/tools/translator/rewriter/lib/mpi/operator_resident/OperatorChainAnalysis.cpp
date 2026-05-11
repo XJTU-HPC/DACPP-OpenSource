@@ -73,6 +73,237 @@ std::string exprSource(const clang::Expr* expr, clang::ASTContext* context) {
                     .str());
 }
 
+const clang::Expr* unwrapExtentExpr(const clang::Expr* expr) {
+    if (!expr) {
+        return nullptr;
+    }
+    while (true) {
+        const clang::Expr* next = expr->IgnoreParenImpCasts();
+        if (const auto* cleanups =
+                llvm::dyn_cast<clang::ExprWithCleanups>(next)) {
+            next = cleanups->getSubExpr();
+        } else if (const auto* materialized =
+                       llvm::dyn_cast<clang::MaterializeTemporaryExpr>(next)) {
+            next = materialized->getSubExpr();
+        } else if (const auto* temporary =
+                       llvm::dyn_cast<clang::CXXBindTemporaryExpr>(next)) {
+            next = temporary->getSubExpr();
+        } else if (const auto* construct =
+                       llvm::dyn_cast<clang::CXXConstructExpr>(next)) {
+            if (construct->getNumArgs() == 1) {
+                next = construct->getArg(0);
+            } else {
+                return next;
+            }
+        }
+        if (!next || next == expr) {
+            return next;
+        }
+        expr = next;
+    }
+}
+
+bool evaluateInt64Expr(const clang::Expr* expr,
+                       clang::ASTContext* context,
+                       int64_t& value) {
+    expr = unwrapExtentExpr(expr);
+    if (!expr || !context) {
+        return false;
+    }
+    if (const auto* lit = llvm::dyn_cast<clang::IntegerLiteral>(expr)) {
+        value = lit->getValue().getSExtValue();
+        return true;
+    }
+    if (!expr->getType()->isIntegerType()) {
+        return false;
+    }
+    clang::Expr::EvalResult evalResult;
+    if (!expr->EvaluateAsInt(evalResult, *context) ||
+        !evalResult.Val.isInt()) {
+        return false;
+    }
+    value = evalResult.Val.getInt().getSExtValue();
+    return true;
+}
+
+int64_t staticVectorVarSize(const clang::VarDecl* varDecl,
+                            clang::ASTContext* context) {
+    if (!varDecl || !varDecl->hasInit() || !context) {
+        return -1;
+    }
+    const std::string typeName = varDecl->getType().getAsString();
+    if (typeName.find("vector") == std::string::npos &&
+        typeName.find("Vector") == std::string::npos) {
+        return -1;
+    }
+    const clang::Expr* init = unwrapExtentExpr(varDecl->getInit());
+    if (const auto* construct =
+            llvm::dyn_cast_or_null<clang::CXXConstructExpr>(init)) {
+        if (construct->getNumArgs() >= 1) {
+            int64_t size = -1;
+            if (evaluateInt64Expr(construct->getArg(0), context, size) &&
+                size > 0) {
+                return size;
+            }
+        }
+    }
+    if (const auto* initList =
+            llvm::dyn_cast_or_null<clang::InitListExpr>(init)) {
+        return initList->getNumInits() > 0
+                   ? static_cast<int64_t>(initList->getNumInits())
+                   : -1;
+    }
+    return -1;
+}
+
+int64_t staticOneDimExtentForExpr(
+    const clang::Expr* expr,
+    clang::ASTContext* context,
+    std::set<const clang::ValueDecl*>& seenDecls);
+
+int64_t staticOneDimExtentForVar(
+    const clang::VarDecl* varDecl,
+    clang::ASTContext* context,
+    std::set<const clang::ValueDecl*>& seenDecls) {
+    if (!varDecl || !context) {
+        return -1;
+    }
+    const int64_t vectorSize = staticVectorVarSize(varDecl, context);
+    if (vectorSize > 0) {
+        return vectorSize;
+    }
+    if (!varDecl->hasInit() || seenDecls.count(varDecl) != 0) {
+        return -1;
+    }
+    seenDecls.insert(varDecl);
+    const int64_t initExtent =
+        staticOneDimExtentForExpr(varDecl->getInit(), context, seenDecls);
+    seenDecls.erase(varDecl);
+    return initExtent;
+}
+
+int64_t staticSliceExtent(const clang::Expr* indexExpr,
+                          int64_t baseExtent,
+                          clang::ASTContext* context) {
+    indexExpr = unwrapExtentExpr(indexExpr);
+    if (!indexExpr || !context) {
+        return -1;
+    }
+    const clang::InitListExpr* listExpr =
+        llvm::dyn_cast<clang::InitListExpr>(indexExpr);
+    if (!listExpr) {
+        if (const auto* stdList =
+                llvm::dyn_cast<clang::CXXStdInitializerListExpr>(indexExpr)) {
+            const clang::Expr* sub = unwrapExtentExpr(stdList->getSubExpr());
+            listExpr = llvm::dyn_cast_or_null<clang::InitListExpr>(sub);
+        }
+    }
+    if (!listExpr) {
+        if (const auto* construct =
+                llvm::dyn_cast<clang::CXXConstructExpr>(indexExpr)) {
+            if (construct->getNumArgs() == 0) {
+                return baseExtent;
+            }
+            if (construct->getNumArgs() == 1) {
+                return 1;
+            }
+            int64_t start = -1;
+            int64_t end = -1;
+            int64_t stride = 1;
+            if (!evaluateInt64Expr(construct->getArg(0), context, start) ||
+                !evaluateInt64Expr(construct->getArg(1), context, end)) {
+                return -1;
+            }
+            if (construct->getNumArgs() >= 3 &&
+                !evaluateInt64Expr(construct->getArg(2), context, stride)) {
+                return -1;
+            }
+            if (start < 0 || end < start || stride <= 0) {
+                return -1;
+            }
+            return ((end - start - 1) / stride) + 1;
+        }
+        return -1;
+    }
+    if (listExpr->getNumInits() == 0) {
+        return baseExtent;
+    }
+    if (listExpr->getNumInits() == 1) {
+        return 1;
+    }
+    int64_t start = -1;
+    int64_t end = -1;
+    int64_t stride = 1;
+    if (!evaluateInt64Expr(listExpr->getInit(0), context, start) ||
+        !evaluateInt64Expr(listExpr->getInit(1), context, end)) {
+        return -1;
+    }
+    if (listExpr->getNumInits() >= 3 &&
+        !evaluateInt64Expr(listExpr->getInit(2), context, stride)) {
+        return -1;
+    }
+    if (start < 0 || end < start || stride <= 0) {
+        return -1;
+    }
+    return ((end - start - 1) / stride) + 1;
+}
+
+int64_t staticOneDimExtentForExpr(
+    const clang::Expr* expr,
+    clang::ASTContext* context,
+    std::set<const clang::ValueDecl*>& seenDecls) {
+    expr = unwrapExtentExpr(expr);
+    if (!expr || !context) {
+        return -1;
+    }
+    if (const auto* declRef = llvm::dyn_cast<clang::DeclRefExpr>(expr)) {
+        if (const auto* varDecl =
+                llvm::dyn_cast_or_null<clang::VarDecl>(declRef->getDecl())) {
+            return staticOneDimExtentForVar(varDecl, context, seenDecls);
+        }
+        return -1;
+    }
+    if (const auto* opCall =
+            llvm::dyn_cast<clang::CXXOperatorCallExpr>(expr)) {
+        if (opCall->getOperator() == clang::OO_Subscript &&
+            opCall->getNumArgs() >= 2) {
+            const int64_t baseExtent = staticOneDimExtentForExpr(
+                opCall->getArg(0), context, seenDecls);
+            return staticSliceExtent(opCall->getArg(1), baseExtent, context);
+        }
+    }
+    if (const auto* construct =
+            llvm::dyn_cast<clang::CXXConstructExpr>(expr)) {
+        if (construct->getNumArgs() == 1) {
+            return staticOneDimExtentForExpr(construct->getArg(0), context,
+                                             seenDecls);
+        }
+    }
+    return -1;
+}
+
+int64_t staticOneDimShellArgExtent(DacppFile* dacppFile,
+                                   const ShellPartitionPlan& plan,
+                                   const ParamAccessPlan& param) {
+    if (!dacppFile || !dacppFile->getContext() || !plan.exprNode.dacExpr) {
+        return operator_resident::shapeValueFor(plan.exprNode.shell,
+                                                param.paramIndex, 0);
+    }
+    const clang::CallExpr* shellCall = getShellCallExpr(plan.exprNode.dacExpr);
+    if (shellCall && param.paramIndex >= 0 &&
+        param.paramIndex < static_cast<int>(shellCall->getNumArgs())) {
+        std::set<const clang::ValueDecl*> seenDecls;
+        const int64_t extent = staticOneDimExtentForExpr(
+            shellCall->getArg(param.paramIndex), dacppFile->getContext(),
+            seenDecls);
+        if (extent > 0) {
+            return extent;
+        }
+    }
+    return operator_resident::shapeValueFor(plan.exprNode.shell,
+                                            param.paramIndex, 0);
+}
+
 std::string baseNameFromExpr(const clang::Expr* expr) {
     if (!expr) {
         return "";
@@ -1771,6 +2002,18 @@ std::string stencilResidentHaloRejectReason(
         metadata.followupTargetOffset = mapping.targetOffset;
         metadata.leftHalo = 0;
         metadata.rightHalo = metadata.windowSize - 1;
+        const int64_t readerExtent =
+            staticOneDimShellArgExtent(dacppFile, plan, *reader);
+        const int64_t writerExtent =
+            staticOneDimShellArgExtent(dacppFile, plan, *writer);
+        const int64_t requiredReaderExtent =
+            writerExtent > 0
+                ? writerExtent + static_cast<int64_t>(metadata.windowSize) - 1
+                : -1;
+        if (readerExtent <= 0 || writerExtent <= 0 ||
+            readerExtent != requiredReaderExtent) {
+            return "resident halo B1 requires reader extent to cover writer slice plus halo";
+        }
 
         if (sitePlan.boundaryLocalUpdates.size() > 1) {
             return "resident halo B1 supports at most one boundary-local update";

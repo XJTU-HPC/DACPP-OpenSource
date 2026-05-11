@@ -319,12 +319,18 @@ void emitRunFunction(std::string& code,
             continue;
         }
         const std::string type = elemType(plan, param);
-        code += "    auto& __or_resident_out_" + param.calcParamName +
-                " = dacpp::mpi::operator_resident::ensure_resident<" + type +
-                ">(" + paramVarName(param) + ", " + ctxLocalName(param) +
-                ".size());\n";
-        code += "    __or_resident_out_" + param.calcParamName + " = " +
-                ctxLocalName(param) + ";\n";
+        if (!param.materializeAfterWrite || param.retainResidentAfterWrite) {
+            code += "    auto& __or_resident_out_" + param.calcParamName +
+                    " = dacpp::mpi::operator_resident::ensure_resident<" +
+                    type + ">(" + paramVarName(param) + ", " +
+                    ctxLocalName(param) + ".size());\n";
+            code += "    __or_resident_out_" + param.calcParamName + " = " +
+                    ctxLocalName(param) + ";\n";
+        } else {
+            code += "    // No downstream resident reader for " +
+                    param.calcParamName +
+                    "; host materialization below preserves visibility.\n";
+        }
         if (plan.loopLowerMaterializeEveryRun || param.materializeAfterWrite) {
             emitMaterializeOutput(code, plan, param, ctxLocalName(param));
         }

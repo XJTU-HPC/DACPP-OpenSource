@@ -235,6 +235,166 @@ legacy AccessPattern path with `DACPP_MPI_PROFILE=1`, emitted
 `collect_positions_for_item` lines, and kept DAC profile-on stdout identical to
 DAC profile-off stdout.
 
+### 2026-05-10 Phase 2.1 Legacy Inventory
+
+This was a translation/log/generated-code inventory run, not a benchmark or
+translator fast-path change.
+
+Artifact:
+`/Volumes/QUQ/working/mpi_tmp/phase2_1_legacy_inventory`.
+
+Contents:
+
+- `translation_runs.tsv`
+- `marker_scan.tsv`
+- per-case `step2.log`
+- per-case generated-code snapshots
+
+Readout:
+
+- The run covered the 14 benchmark cases plus focused `mpi*` fixtures, 63
+  current translations total.
+- All 14 benchmark generated-code snapshots are free of `AccessPattern` and
+  `PackPlan`.
+- `vectorAddCombo` remains OR `Contiguous1D` chain lowering, not legacy.
+- Remaining true legacy wrapper evidence is in focused FixedBlock reject
+  fixtures only. Remaining `PackPlan` evidence is Phase-C stencil fallback
+  infrastructure.
+- No simple contiguous 1D legacy fast-path candidate was selected from current
+  evidence.
+
+### 2026-05-10 Phase 2 Closeout
+
+Phase 2.1 evidence was rechecked against the artifact above. The closeout did
+not add benchmark numbers and did not change translator code.
+
+Readout:
+
+- Phase 2.2 through Phase 2.4 are closed as blocked/parked/no-op completion.
+- No legacy simple contiguous 1D fast path was implemented because current
+  simple contiguous 1D benchmark/fixture shapes already route through OR.
+- The remaining legacy wrapper evidence is FixedBlock reject surface, and the
+  remaining `AccessPattern`+`PackPlan` evidence is Phase-C stencil fallback
+  surface. Neither is a Phase 2 fast-path target.
+
+Prepared full-suite benchmark command:
+
+```bash
+cd /Volumes/QUQ/working/dacpp
+MPI_ONLY_BENCH_TMP_DIR=/Volumes/QUQ/working/mpi_tmp/phase2_closeout_full_benchmark \
+MPI_ONLY_BENCH_RANKS=4 \
+MPI_ONLY_BENCH_TIMEOUT_SECONDS=1800 \
+python3 clang/tools/translator/bench_mpi_only_requested.py \
+  DFT1.0 FOuLa1.0 MDP1.0 decay1.0 gradientSum imageAdjustment1.0 \
+  jacobi1.0 liuliang1.0 mandel1.0 matMul1.0 oddeven0.1 \
+  stencil1.0 vectorAddCombo waveEquation1.0
+```
+
+Expected artifact:
+`/Volumes/QUQ/working/mpi_tmp/phase2_closeout_full_benchmark`, with
+`results.tsv` plus per-case patched sources, generated MPI source snapshots,
+build logs, translation logs, run logs, and binaries.
+
+### 2026-05-10 Phase 3 Materialization/Residency Closeout
+
+Phase 3 built a generated-code materialization inventory and implemented one
+narrow resident-registry optimization. It did not change final output
+visibility semantics and did not defer all-ranks broadcasts.
+
+Inventory artifact:
+`/Volumes/QUQ/working/phase3_mpi_tmp/phase3_1_materialization_inventory`.
+
+Benchmark artifacts:
+
+- Before full benchmark:
+  `/Volumes/QUQ/working/phase3_mpi_tmp/phase3_0_baseline_full_benchmark/results.tsv`
+- After full benchmark:
+  `/Volumes/QUQ/working/phase3_mpi_tmp/phase3_1_after_full_benchmark/results.tsv`
+- Before focused profile:
+  `/Volumes/QUQ/working/phase3_mpi_tmp/phase3_0_baseline_profile_focus`
+- After focused profile:
+  `/Volumes/QUQ/working/phase3_mpi_tmp/phase3_1_after_profile_focus`
+
+Full benchmark 4-rank single-run DAC wall comparison:
+
+| Case | Before DAC-MPI (s) | After DAC-MPI (s) | Delta |
+|---|---:|---:|---:|
+| `DFT1.0` | 0.662391 | 0.723748 | +9.3% |
+| `FOuLa1.0` | 0.980144 | 0.903839 | -7.8% |
+| `MDP1.0` | 0.829755 | 0.841678 | +1.4% |
+| `decay1.0` | 0.993337 | 0.937886 | -5.6% |
+| `gradientSum` | 1.055654 | 1.122434 | +6.3% |
+| `imageAdjustment1.0` | 1.002949 | 0.946576 | -5.6% |
+| `jacobi1.0` | 0.962429 | 0.934480 | -2.9% |
+| `liuliang1.0` | 0.846241 | 0.827197 | -2.3% |
+| `mandel1.0` | 3.017854 | 3.039062 | +0.7% |
+| `matMul1.0` | 0.856220 | 0.830678 | -3.0% |
+| `oddeven0.1` | 0.827537 | 0.634033 | -23.4% |
+| `stencil1.0` | 1.448044 | 1.604763 | +10.8% |
+| `vectorAddCombo` | 0.839850 | 0.829981 | -1.2% |
+| `waveEquation1.0` | 1.528466 | 1.585345 | +3.7% |
+
+Focused profile 4-rank DAC wall medians:
+
+| Case | Before (s) | After (s) | Delta |
+|---|---:|---:|---:|
+| `DFT1.0` | 0.207593 | 0.191026 | -8.0% |
+| `decay1.0` | 0.425867 | 0.380414 | -10.7% |
+| `gradientSum` | 0.440146 | 0.436874 | -0.7% |
+| `jacobi1.0` | 0.366836 | 0.328427 | -10.5% |
+| `mandel1.0` | 2.511430 | 2.581752 | +2.8% |
+| `vectorAddCombo` | 0.257293 | 0.265042 | +3.0% |
+
+Readout:
+
+- The optimization removes only unnecessary resident registry updates after a
+  materialized write when no downstream resident reader exists.
+- Required final `Gatherv`, `array2Tensor`, and `Bcast` remain in generated
+  code. The inventory records their semantic reasons per case.
+- The skipped registry update is not separately segmented, so profile
+  attribution does not show a clean materialize/gather/bcast drop.
+- `vectorAddCombo` remains structurally cleaner but wall-clock neutral at the
+  focused scale.
+- `decay1.0` still has semantic per-run gather+bcast because the source copies
+  `local_A_tensor` into `A_tensor` immediately after each DAC expression.
+- Single-run full benchmark deltas are noisy; use the 3-trial focused profile
+  for close comparisons.
+
+### 2026-05-11 FixedBlock Output-Sync Follow-up
+
+The old legacy wrapper's Gather/Bcast policy was compared against current OR
+paths. Ordinary OR already used the shared output-sync result, but standalone
+FixedBlock still broadcast materialized output unconditionally.
+
+Implemented follow-up:
+
+- Standalone FixedBlock final materialization now emits final `MPI_Bcast` only
+  when `broadcastMaterializedOutput` is true.
+- Root `Gatherv` and root `array2Tensor` remain unchanged.
+- Loop-resident P5 phase exchange was left unchanged because its final
+  materializer writes the contracted source/reader tensor, not the standalone
+  writer output.
+
+Artifacts:
+
+- Before:
+  `/Volumes/QUQ/working/phase3_mpi_tmp/phase3_2_fixedblock_bcast_before`
+- After:
+  `/Volumes/QUQ/working/phase3_mpi_tmp/phase3_2_fixedblock_bcast_after`
+- Micro benchmark:
+  `/Volumes/QUQ/working/phase3_mpi_tmp/phase3_2_fixedblock_bcast_micro_benchmark`
+
+Micro result for the tiny 8-element fixture:
+
+| Variant | Median wall (s) | Mean wall (s) |
+|---|---:|---:|
+| Before | 0.076915 | 0.135527 |
+| After | 0.076529 | 0.186126 |
+
+Interpretation: runtime is too small/noisy for a speed claim. The useful
+evidence is structural: root-only standalone FixedBlock removes two final
+`MPI_Bcast` sites, while the all-ranks FixedBlock counterpart keeps Bcast.
+
 ### P5 Phase-Exchange Closeout
 
 Source recorded in the closed phase document:
@@ -261,16 +421,16 @@ Readout:
 | `DFT1.0` | Baseline already competitive. | Re-run under current code for confirmation. |
 | `FOuLa1.0` | Guarded owner-loop specialization is at parity in the focused 2026-05-10 run. | Generalize owner-loop recognition beyond the current strict shape. |
 | `MDP1.0` | Current resident-halo path is near hand-written MPI. | Keep as regression checkpoint. |
-| `decay1.0` | Current Phase 1.4 profile shows per-step gather+bcast cost despite acceptable wall time. | Build Phase 3 materialization/residency inventory. |
-| `gradientSum` | Baseline slower than hand reference. | Identify current lowering path and isolate overhead. |
-| `imageAdjustment1.0` | DAC-MPI faster after semantic alignment. | Keep semantic alignment note with benchmark logs. |
-| `jacobi1.0` | Baseline competitive despite replicated full tensor broadcast. | Re-run and inspect broadcast sensitivity by N/iter. |
+| `decay1.0` | Phase 3 inventory confirms per-run gather+bcast is tied to source-level host copy into `A_tensor`; registry update after materialization is now skipped. | Needs a later source/contract proof to avoid per-run host visibility. |
+| `gradientSum` | Current profile points mostly at row-partition input scatter, not materialization. | Investigate input distribution/layout reuse if this remains slow. |
+| `imageAdjustment1.0` | Two-expression OR chain retains the first output for downstream resident use and materializes only the final host-visible output. | Keep semantic alignment note with benchmark logs. |
+| `jacobi1.0` | Replicated full tensor broadcast is expected by current row-partition shape; final no-downstream resident update is skipped. | Re-run and inspect broadcast sensitivity by N/iter. |
 | `liuliang1.0` | Current resident-halo path is close to parity. | Keep as 1D resident regression checkpoint. |
-| `mandel1.0` | Baseline about 2x slower. | Identify current lowering path and kernel/communication split. |
+| `mandel1.0` | Current profile is kernel dominated with required final gather/bcast/materialize. | Investigate kernel-side and output-sync alternatives only with proof. |
 | `matMul1.0` | RowPartition path has expected payload broadcast cost. | Compare against block/tile-aware future layout if added. |
 | `oddeven0.1` | Current P5 phase exchange is strong. | Keep focused P5 regression and rank-scaling tests. |
 | `stencil1.0` | Current 2D resident halo is near parity or slightly faster in closeout. | Keep as P4.6 regression checkpoint. |
-| `vectorAddCombo` | Current OR chain is not legacy; Phase 1.4 profile points to scatter/final materialize/bcast as the residual cost. | Build Phase 3 materialization inventory before considering more chain tuning. |
+| `vectorAddCombo` | Current OR chain keeps intermediates resident and only final output materializes/bcasts for all-ranks visibility. | Further broadcast/materialize removal requires output-sync proof. |
 | `waveEquation1.0` | Current 2D resident halo with direct-reader extension is near parity. | Keep as B3 direct-reader regression checkpoint. |
 
 ## Benchmark TODO

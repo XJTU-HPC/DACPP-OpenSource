@@ -43,6 +43,8 @@ MPI_TESTS=(
     "mpiFixedBlockOverlapReject1D"
     "mpiFixedBlockPayloadReject1D"
     "mpiFixedBlockMatrixSingleSplitReject1D"
+    "mpiFixedBlockAllRanksFunctionRead1D"
+    "mpiFixedBlockRootOnlyCout1D"
     "mpiFixedBlockPhaseExchangeOffsetReject1D"
     "mpiFixedBlockPhaseExchangeMissingBoundaryReject1D"
     "mpiFixedBlockPhaseExchangeNonAdjacentReject1D"

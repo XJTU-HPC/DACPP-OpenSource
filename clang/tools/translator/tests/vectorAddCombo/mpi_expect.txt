@@ -1,0 +1,12 @@
+LOG_CONTAINS:[DACPP][MPI][OR] chain=0 layout=Contiguous1D length=3 chain=accepted codegen=enabled
+LOG_CONTAINS:[DACPP][MPI][OR]   resident-write tensor=tmp_tensor retain=yes reason=downstream-resident-reader
+LOG_CONTAINS:[DACPP][MPI][OR]   resident-write tensor=shifted_tensor retain=yes reason=downstream-resident-reader
+LOG_CONTAINS:[DACPP][MPI][OR]   resident-write tensor=out_tensor retain=no reason=no-downstream-resident-reader
+LOG_CONTAINS:[DACPP][MPI] output out_tensor sync=all-ranks-needed
+SYCL_CONTAINS:dacpp::mpi::operator_resident::replace_resident<float>(__or_arg2, std::move(__or_local_out));
+SYCL_CONTAINS:No downstream resident reader for out; host materialization above preserves visibility.
+SYCL_CONTAINS:MPI_Gatherv(__or_local_out.data()
+SYCL_CONTAINS:MPI_Bcast(__or_materialized_out.data()
+SYCL_CONTAINS:__or_arg2.array2Tensor(__or_materialized_out);
+SYCL_NOT_CONTAINS:AccessPattern
+SYCL_NOT_CONTAINS:PackPlan

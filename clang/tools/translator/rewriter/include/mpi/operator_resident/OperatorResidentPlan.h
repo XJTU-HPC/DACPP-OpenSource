@@ -168,6 +168,7 @@ struct ParamAccessPlan {
     std::vector<int> tensorDims;
     bool readFromResident = false;
     bool writeToResident = false;
+    bool retainResidentAfterWrite = false;
     bool materializeAfterWrite = false;
     bool broadcastMaterializedOutput = false;
 

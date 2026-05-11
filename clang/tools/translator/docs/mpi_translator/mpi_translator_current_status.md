@@ -138,6 +138,18 @@ Representative tests:
 - `jacobi1.0`: `RowPartitionFullRow` plus replicated full tensor
 - `matMul1.0`: `RowPartitionFullRow`
 
+Current residency behavior:
+
+- ordinary OR chains retain resident writes only when a downstream non-scalar
+  resident reader in the same accepted chain needs them
+- materialized writes with no downstream resident reader skip the extra
+  resident registry update
+- final host/all-ranks materialization and broadcast policy is still controlled
+  by output-sync analysis and is not weakened by the registry optimization
+- standalone FixedBlock final broadcast also follows the shared output-sync
+  proof: `root-only` output skips Bcast, while `all-ranks-needed` output keeps
+  Bcast
+
 ### P4/P4.5/P4.6: Stencil OR And Resident Halo
 
 The current optimized stencil surface is resident and loop-lowered.
@@ -147,6 +159,7 @@ Accepted 1D resident halo:
 - stable loop site
 - exactly one 1D stencil-window reader
 - exactly one WRITE-only direct writer
+- static proof that reader extent equals writer extent plus `windowSize - 1`
 - current `writer -> reader` followup route
 - no direct reader
 - no read-cache transition
@@ -232,6 +245,8 @@ Accepted standalone FixedBlock:
 - no multi-split parameters
 - no READ_WRITE FixedBlock parameters
 - native MPI element datatype
+- final `Gatherv` plus root `array2Tensor`, with final Bcast emitted only when
+  output-sync analysis requires all-ranks visibility
 
 The optimized P5 path is the loop-resident phase-exchange lowering for the
 canonical `oddeven0.1` shape.
@@ -325,7 +340,7 @@ as external wall time. External wall time remains the `mpirun` timing in
 | `DFT1.0` | OR or legacy depending on current generated path | No focused `mpi_expect.txt` in tree. |
 | `FOuLa1.0` | guarded owner-loop `StencilWindow1D` specialization | Replaces loop-local slice wrapper with resident local state, per-step halo exchange, and final history gather. |
 | `MDP1.0` | P4.6 `StencilWindow1D` resident halo | Near hand-written MPI in closeout benchmark. |
-| `decay1.0` | loop-lowered `Contiguous1D` | Materializes per run because scalar/host-visible semantics require it. |
+| `decay1.0` | loop-lowered `Contiguous1D` | Materializes per run because scalar/host-visible semantics require it; final no-downstream resident registry update is skipped. |
 | `gradientSum` | OR or legacy depending on current generated path | No focused `mpi_expect.txt` in tree. |
 | `imageAdjustment1.0` | OR or legacy depending on current generated path | Semantics of hand-written reference were aligned after baseline. |
 | `jacobi1.0` | `RowPartitionFullRow` + `ReplicatedFullTensor` | Full-vector broadcast is expected by the current accepted shape. |
@@ -334,7 +349,7 @@ as external wall time. External wall time remains the `mpirun` timing in
 | `matMul1.0` | `RowPartitionFullRow` | Broadcasts one matrix/payload side by current row-partition design. |
 | `oddeven0.1` | P5 loop-resident `FixedBlockPhaseExchange` | Current optimized path removes per-iteration materialization. |
 | `stencil1.0` | P4.6 `StencilWindow2D` resident halo | Current closeout path is near hand-written MPI. |
-| `vectorAddCombo` | `Contiguous1D` OR chain | Uses resident-buffer reference/move optimization for chain intermediates. |
+| `vectorAddCombo` | `Contiguous1D` OR chain | Uses resident-buffer reference/move optimization for chain intermediates and skips the final no-downstream resident registry rewrite after required output materialization. |
 | `waveEquation1.0` | P4.6 `StencilWindow2D` resident halo with direct-reader extension | Triple resident role rotation. |
 
 ## TODO

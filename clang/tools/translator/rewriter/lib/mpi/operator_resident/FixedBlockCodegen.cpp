@@ -211,32 +211,36 @@ std::string buildFixedBlockWrapperCode(const std::string& wrapperName,
     code += "        }\n";
     code += "        " + paramVarName(*writer) + ".array2Tensor(__or_materialized_" +
             writer->calcParamName + ");\n";
-    code += "        if (!__or_materialized_" + writer->calcParamName +
-            ".empty()) {\n";
-    code += "            MPI_Bcast(__or_materialized_" +
-            writer->calcParamName + ".data(), " +
-            checkedMpiPayloadCountExpr(
-                paramVarName(*writer) + ".getSize()", writerType,
-                "[DACPP][MPI][OR][P5] fixed block materialized broadcast count exceeds MPI int range") +
-            ", " + writerMpiType + ", 0, MPI_COMM_WORLD);\n";
-    code += "        }\n";
-    code += "    } else {\n";
-    code += "        __or_materialized_" + writer->calcParamName +
-            ".resize(static_cast<std::size_t>(" + paramVarName(*writer) +
-            ".getSize()));\n";
-    code += "        if (!__or_materialized_" + writer->calcParamName +
-            ".empty()) {\n";
-    code += "            MPI_Bcast(__or_materialized_" +
-            writer->calcParamName + ".data(), " +
-            checkedMpiPayloadCountExpr(
-                paramVarName(*writer) + ".getSize()", writerType,
-                "[DACPP][MPI][OR][P5] fixed block materialized broadcast count exceeds MPI int range") +
-            ", " + writerMpiType + ", 0, MPI_COMM_WORLD);\n";
-    code += "        }\n";
-    code += "        " + paramVarName(*writer) +
-            ".array2Tensor(__or_materialized_" +
-            writer->calcParamName + ");\n";
-    code += "    }\n";
+    if (writer->broadcastMaterializedOutput) {
+        code += "        if (!__or_materialized_" + writer->calcParamName +
+                ".empty()) {\n";
+        code += "            MPI_Bcast(__or_materialized_" +
+                writer->calcParamName + ".data(), " +
+                checkedMpiPayloadCountExpr(
+                    paramVarName(*writer) + ".getSize()", writerType,
+                    "[DACPP][MPI][OR][P5] fixed block materialized broadcast count exceeds MPI int range") +
+                ", " + writerMpiType + ", 0, MPI_COMM_WORLD);\n";
+        code += "        }\n";
+        code += "    } else {\n";
+        code += "        __or_materialized_" + writer->calcParamName +
+                ".resize(static_cast<std::size_t>(" + paramVarName(*writer) +
+                ".getSize()));\n";
+        code += "        if (!__or_materialized_" + writer->calcParamName +
+                ".empty()) {\n";
+        code += "            MPI_Bcast(__or_materialized_" +
+                writer->calcParamName + ".data(), " +
+                checkedMpiPayloadCountExpr(
+                    paramVarName(*writer) + ".getSize()", writerType,
+                    "[DACPP][MPI][OR][P5] fixed block materialized broadcast count exceeds MPI int range") +
+                ", " + writerMpiType + ", 0, MPI_COMM_WORLD);\n";
+        code += "        }\n";
+        code += "        " + paramVarName(*writer) +
+                ".array2Tensor(__or_materialized_" +
+                writer->calcParamName + ");\n";
+        code += "    }\n";
+    } else {
+        code += "    }\n";
+    }
     code += "}\n";
     return code;
 }

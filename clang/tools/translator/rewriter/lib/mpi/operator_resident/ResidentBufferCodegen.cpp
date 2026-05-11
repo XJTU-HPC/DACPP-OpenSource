@@ -292,6 +292,12 @@ void emitResidencyAndMaterialization(std::string& code,
         if (param.materializeAfterWrite) {
             emitGatherMaterialize(code, plan, param, "dacpp_profile");
         }
+        if (param.materializeAfterWrite && !param.retainResidentAfterWrite) {
+            code += "    // No downstream resident reader for " +
+                    param.calcParamName +
+                    "; host materialization above preserves visibility.\n";
+            continue;
+        }
         if (param.reads) {
             code += "    auto& __or_resident_out_" + param.calcParamName +
                     " = dacpp::mpi::operator_resident::ensure_resident<" +
