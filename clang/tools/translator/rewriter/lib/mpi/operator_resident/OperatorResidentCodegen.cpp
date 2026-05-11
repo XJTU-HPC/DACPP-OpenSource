@@ -139,11 +139,7 @@ std::string buildOperatorResidentWrapperCode(
     operator_resident::emitPartitionCode(code, exprPlan);
     code += mpi_rewriter::profileRecordCode("dacpp_profile", "Init",
                                             "dacpp_profile_init_start");
-    code += mpi_rewriter::profileSegmentStartCode(
-        "dacpp_profile_scatter_start");
     operator_resident::emitParamLocalStorage(code, exprPlan);
-    code += mpi_rewriter::profileRecordCode("dacpp_profile", "Scatter",
-                                            "dacpp_profile_scatter_start");
     code += mpi_rewriter::profileSegmentStartCode(
         "dacpp_profile_kernel_start");
     operator_resident::emitKernel(code, exprPlan);

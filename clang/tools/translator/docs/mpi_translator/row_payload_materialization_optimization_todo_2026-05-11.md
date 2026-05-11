@@ -1,11 +1,61 @@
 # Row Payload And Demand Materialization Optimization TODO
 
 Updated: 2026-05-11
+Updated status: 2026-05-11 (Partial completion)
 
 This document records the focused performance analysis for
 `gradientSum` and `imageAdjustment1.0` from
 `/Volumes/QUQ/working/mpi_tmp_benchmark`, and turns it into a non-specialized
 optimization TODO.
+
+## Implementation Status (2026-05-11)
+
+### Completed
+
+**TODO 1: Split Pack And Scatter Profiling** ✅
+- Added `ProfileSegment::Pack` profiling around root-side tensor2Array and sendbuf construction in:
+  - `emitRowPartitionFullRowScatter` (ResidentBufferCodegen.cpp)
+  - `emitScatter` (CollectiveCodegenUtils.cpp)
+  - `emitReplicatedFullTensorBroadcast` (ResidentBufferCodegen.cpp)
+- Removed outer scatter profiling from generic wrapper (OperatorResidentCodegen.cpp)
+- Now produces separate `pack` and `scatter` profile segments
+
+**TODO 3: RowBlock2D Local Extraction Fast Path** ✅
+- Implemented `MPI_Bcast + memcpy` fast path for RowBlock2D layout
+- Replaces root-only `MPI_Scatterv` with all-ranks broadcast + local memcpy
+- Updated `tests/mpiOrReadWriteAccumulate2D/mpi_expect.txt` expectations
+- 72/72 tests pass
+
+### Not Completed / Needs More Analysis
+
+**TODO 2: RowPartitionFullRow Payload Fast Path** ⚠️
+- Attempted strided broadcast fast path but disabled due to complex data layout
+- The RowPartitionFullRow payload layout depends on indexedBindPos, voidDim,
+  and kernel view semantics in ways that require deeper analysis
+- Original scatter path remains as fallback
+- The profiling infrastructure is in place for future work
+
+**TODO 4: Demand-Driven Final Materialization** ⏳
+- Not implemented in this round
+- Would require extending post-region analysis to classify output uses
+
+### Benchmark Results (After Optimization)
+
+| Case | Scale | Standard MPI+SYCL | DAC translated MPI | Ratio |
+|---|---:|---:|---:|---:|
+| `gradientSum` | `8192x4096` | `0.657s` | `1.205s` | `1.84x` |
+| `imageAdjustment1.0` | `4096x4096` | `0.752s` | `1.084s` | `1.44x` |
+| `oddeven0.1` | `N=4096` | `1.679s` | `0.661s` | `0.39x` ✅ |
+| `matMul1.0` | `2048x2048` | `6.170s` | `0.841s` | `0.14x` ✅ |
+| `stencil1.0` | `2048x2048, steps=600` | `1.494s` | `1.416s` | `0.95x` ✅ |
+
+Note: gradientSum and imageAdjustment1.0 remain slower than hand-written due to
+serial root packing in the scatter phase. The Pack profiling now makes this
+measurable for future optimization work.
+
+---
+
+## Original TODO (Preserved for Reference)
 
 The goal is not to add case-name specializations. The goal is to improve the
 generic operator-resident paths that these two cases expose:

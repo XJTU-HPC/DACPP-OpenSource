@@ -70,8 +70,14 @@ void emitReplicatedFullTensorBroadcast(std::string& code,
             "(static_cast<std::size_t>(__or_full_count_" +
             param.calcParamName + "));\n";
     code += "    if (mpi_rank == 0) {\n";
+    code += "        auto dacpp_profile_pack_start_" + param.calcParamName +
+            " = dacpp::mpi::profileSegmentStart();\n";
     code += "        " + paramVarName(param) + ".tensor2Array(" + local +
             ");\n";
+    code += "        dacpp::mpi::recordProfileSegment(dacpp_profile, "
+            "dacpp::mpi::ProfileSegment::Pack, "
+            "dacpp_profile_pack_start_" +
+            param.calcParamName + ");\n";
     code += "    }\n";
     if (usesByte(plan, param)) {
         code += "    MPI_Bcast(" + local +
@@ -108,6 +114,11 @@ void emitRowPartitionFullRowScatter(std::string& code,
     }
     const bool broadcastIndexedPayload =
         plan.signature.bindOrder.size() == 2 && indexedBindPos != 0;
+    // TODO(qc): Re-enable strided fast path after proper layout analysis.
+    // The RowPartitionFullRow payload layout is complex and depends on
+    // indexedBindPos, voidDim, and the kernel's view semantics.
+    // const bool useStridedBroadcastFastPath =
+    //     indexDim != 0 && !broadcastIndexedPayload && !usesByte(plan, param);
 
     code += "    const int64_t " + payloadLen + " = " + paramVarName(param) +
             ".getShape(" + std::to_string(voidDim) + ");\n";
@@ -161,6 +172,8 @@ void emitRowPartitionFullRowScatter(std::string& code,
     code += "    std::vector<" + type + "> __or_sendbuf_" +
             param.calcParamName + ";\n";
     code += "    if (mpi_rank == 0) {\n";
+    code += "        auto dacpp_profile_pack_start_" + param.calcParamName +
+            " = dacpp::mpi::profileSegmentStart();\n";
     code += "        std::vector<" + type + "> " + global + ";\n";
     code += "        " + paramVarName(param) + ".tensor2Array(" + global +
             ");\n";
@@ -200,6 +213,10 @@ void emitRowPartitionFullRowScatter(std::string& code,
     code += "                }\n";
     code += "            }\n";
     code += "        }\n";
+    code += "        dacpp::mpi::recordProfileSegment(dacpp_profile, "
+            "dacpp::mpi::ProfileSegment::Pack, "
+            "dacpp_profile_pack_start_" +
+            param.calcParamName + ");\n";
     code += "    }\n";
     if (broadcastIndexedPayload) {
         code += "    if (mpi_rank == 0) {\n";
@@ -240,6 +257,8 @@ void emitRowPartitionFullRowScatter(std::string& code,
                 "), __or_payload_counts_bytes_" + param.calcParamName +
                 ", __or_payload_displs_bytes_" + param.calcParamName +
                 ");\n";
+        code += "    auto dacpp_profile_scatter_start_" + param.calcParamName +
+                " = dacpp::mpi::profileSegmentStart();\n";
         code += "    MPI_Scatterv(mpi_rank == 0 ? __or_sendbuf_" +
                 param.calcParamName +
                 ".data() : nullptr, mpi_rank == 0 ? __or_payload_counts_bytes_" +
@@ -249,7 +268,13 @@ void emitRowPartitionFullRowScatter(std::string& code,
                 local + ".data(), static_cast<int>(__or_payload_unique_count_" +
                 param.calcParamName + " * " + payloadLen + " * sizeof(" + type +
                 ")), MPI_BYTE, 0, MPI_COMM_WORLD);\n";
+        code += "    dacpp::mpi::recordProfileSegment(dacpp_profile, "
+                "dacpp::mpi::ProfileSegment::Scatter, "
+                "dacpp_profile_scatter_start_" +
+                param.calcParamName + ");\n";
     } else {
+        code += "    auto dacpp_profile_scatter_start_" + param.calcParamName +
+                " = dacpp::mpi::profileSegmentStart();\n";
         code += "    MPI_Scatterv(mpi_rank == 0 ? __or_sendbuf_" +
                 param.calcParamName +
                 ".data() : nullptr, mpi_rank == 0 ? __or_payload_counts_" +
@@ -260,6 +285,10 @@ void emitRowPartitionFullRowScatter(std::string& code,
                 ".data(), static_cast<int>(__or_payload_unique_count_" +
                 param.calcParamName + " * " +
                 payloadLen + "), " + mpiType + ", 0, MPI_COMM_WORLD);\n";
+        code += "    dacpp::mpi::recordProfileSegment(dacpp_profile, "
+                "dacpp::mpi::ProfileSegment::Scatter, "
+                "dacpp_profile_scatter_start_" +
+                param.calcParamName + ");\n";
     }
 }
 

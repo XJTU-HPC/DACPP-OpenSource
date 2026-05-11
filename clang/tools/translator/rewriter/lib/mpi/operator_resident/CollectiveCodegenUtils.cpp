@@ -1,5 +1,7 @@
-#include "Rewriter_MPI_Common.h"
+#include <cstring>
+
 #include "OperatorResidentCodegen_Internal.h"
+#include "Rewriter_MPI_Common.h"
 
 namespace dacppTranslator {
 namespace mpi_rewriter {
@@ -54,11 +56,45 @@ void emitScatter(std::string& code,
             "(static_cast<std::size_t>(__or_local_item_count));\n";
     code += "    std::vector<" + type + "> " + global + ";\n";
     code += "    if (mpi_rank == 0) {\n";
+    code += "        auto dacpp_profile_pack_start_" + param.calcParamName +
+            " = dacpp::mpi::profileSegmentStart();\n";
     code += "        " + paramVarName(param) + ".tensor2Array(" + global +
             ");\n";
+    code += "        dacpp::mpi::recordProfileSegment(dacpp_profile, "
+            "dacpp::mpi::ProfileSegment::Pack, "
+            "dacpp_profile_pack_start_" +
+            param.calcParamName + ");\n";
     code += "    }\n";
+    if (!usesByte(plan, param) &&
+        plan.signature.layout == LocalLayoutKind::RowBlock2D) {
+        code += "    if (mpi_rank != 0) {\n";
+        code += "        " + global +
+                ".resize(static_cast<std::size_t>(__or_total_items));\n";
+        code += "    }\n";
+        code += "    auto dacpp_profile_bcast_start_" + param.calcParamName +
+                " = dacpp::mpi::profileSegmentStart();\n";
+        code += "    MPI_Bcast(" + global + ".data(), " +
+                checkedMpiPayloadCountExpr(
+                    "__or_total_items", type,
+                    "[DACPP][MPI][OR] row-block broadcast count exceeds MPI int range") +
+                ", " + mpiType + ", 0, MPI_COMM_WORLD);\n";
+        code += "    dacpp::mpi::recordProfileSegment(dacpp_profile, "
+                "dacpp::mpi::ProfileSegment::Bcast, "
+                "dacpp_profile_bcast_start_" +
+                param.calcParamName + ");\n";
+        code += "    const int64_t __or_rowblock_offset_" + param.calcParamName +
+                " = __or_row_range.begin * __or_cols;\n";
+        code += "    std::memcpy(" + local +
+                ".data(), " + global + ".data() + __or_rowblock_offset_" +
+                param.calcParamName +
+                ", static_cast<std::size_t>(__or_local_item_count) * sizeof(" +
+                type + "));\n";
+        return;
+    }
     if (usesByte(plan, param)) {
         emitByteCounts(code, param.calcParamName, type);
+        code += "    auto dacpp_profile_scatter_start_" + param.calcParamName +
+                " = dacpp::mpi::profileSegmentStart();\n";
         code += "    MPI_Scatterv(mpi_rank == 0 ? " + global +
                 ".data() : nullptr, mpi_rank == 0 ? __or_counts_bytes_" +
                 param.calcParamName +
@@ -68,12 +104,22 @@ void emitScatter(std::string& code,
                 ".data(), dacpp::mpi::operator_resident::narrow_mpi_count_or_abort(dacpp::mpi::operator_resident::checked_mul_int64_or_abort(static_cast<int64_t>(__or_local_item_count), static_cast<int64_t>(sizeof(" +
                 type + ")), \"[DACPP][MPI][OR] scatter byte count exceeds MPI int range\"), \"[DACPP][MPI][OR] scatter byte count exceeds MPI int range\"), " +
                 mpiType + ", 0, MPI_COMM_WORLD);\n";
+        code += "    dacpp::mpi::recordProfileSegment(dacpp_profile, "
+                "dacpp::mpi::ProfileSegment::Scatter, "
+                "dacpp_profile_scatter_start_" +
+                param.calcParamName + ");\n";
     } else {
+        code += "    auto dacpp_profile_scatter_start_" + param.calcParamName +
+                " = dacpp::mpi::profileSegmentStart();\n";
         code += "    MPI_Scatterv(mpi_rank == 0 ? " + global +
                 ".data() : nullptr, mpi_rank == 0 ? __or_counts.data() : nullptr, mpi_rank == 0 ? __or_displs.data() : nullptr, " +
                 mpiType + ", " + local +
                 ".data(), dacpp::mpi::operator_resident::narrow_mpi_count_or_abort(static_cast<int64_t>(__or_local_item_count), \"[DACPP][MPI][OR] scatter count exceeds MPI int range\"), " +
                 mpiType + ", 0, MPI_COMM_WORLD);\n";
+        code += "    dacpp::mpi::recordProfileSegment(dacpp_profile, "
+                "dacpp::mpi::ProfileSegment::Scatter, "
+                "dacpp_profile_scatter_start_" +
+                param.calcParamName + ");\n";
     }
 }
 
