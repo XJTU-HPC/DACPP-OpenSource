@@ -354,6 +354,15 @@ void emitRowPartitionFullRowScatter(std::string& code,
             "(static_cast<std::size_t>(__or_payload_unique_count_" +
             param.calcParamName + " * " +
             payloadLen + "));\n";
+    if (param.constantInit.supported) {
+        code += "    std::fill(" + local + ".begin(), " + local +
+                ".end(), static_cast<" + type + ">(" +
+                param.constantInit.valueExpr + "));\n";
+        code += "    // Constant-initialized RowPartitionFullRow input " +
+                param.calcParamName +
+                " is filled locally; skip root pack/scatter.\n";
+        return;
+    }
     code += "    std::vector<int> __or_payload_counts_" + param.calcParamName +
             "(mpi_size);\n";
     code += "    std::vector<int> __or_payload_displs_" + param.calcParamName +

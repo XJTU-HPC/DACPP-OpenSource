@@ -6,6 +6,8 @@ LOG_CONTAINS:[DACPP][MPI][PhaseC] route detected matNext->matCur offset=(1,1)
 LOG_CONTAINS:[DACPP][MPI][OR] output matCur post-use=full fallback reason=member call on tensor
 LOG_CONTAINS:[DACPP][MPI][OR] output matPrev post-use=none reason=no host-visible post-DAC use
 LOG_CONTAINS:[DACPP][MPI][OR] output matNext post-use=none reason=no host-visible post-DAC use
+LOG_CONTAINS:[DACPP][MPI][OR] input matCur init-sync=constant-local value=0
+LOG_CONTAINS:[DACPP][MPI][OR] input matPrev init-sync=scatter fallback reason=tensor is not constructed from a vector variable
 LOG_CONTAINS:[DACPP][MPI][OR][P4.6][Loop] expr=0 shell=waveEqShell
 LOG_CONTAINS:kind=StencilResidentHalo structure=ctx/init/run/materialize resident-halo=true window-shape=3x3 followup-offset=(1,1) direct-reader=true read-cache-offset=(-1,-1) materialize=final
 SYCL_CONTAINS:struct __dacpp_mpi_or_waveEqShell_waveEq_0_ctx
@@ -15,7 +17,7 @@ SYCL_CONTAINS:void __dacpp_mpi_or_waveEqShell_waveEq_0_run(__dacpp_mpi_or_waveEq
 SYCL_CONTAINS:void __dacpp_mpi_or_waveEqShell_waveEq_0_materialize(__dacpp_mpi_or_waveEqShell_waveEq_0_ctx& ctx
 SYCL_CONTAINS:void __dacpp_mpi_or_waveEqShell_waveEq_0
 SYCL_CONTAINS:dacpp::mpi::operator_resident::ResidentHalo2DRowLayout __or_halo_layout
-SYCL_CONTAINS:dacpp::mpi::operator_resident::scatter_window_2d_rows(__or_initial_global_cur
+SYCL_CONTAINS:Constant-initialized resident halo reader cur is filled locally
 SYCL_CONTAINS:MPI_Scatterv(ctx.mpi_rank == 0 ? __or_initial_global_prev.data()
 SYCL_CONTAINS:dacpp::mpi::operator_resident::write_owned_slice_2d_rows(ctx.__or_local_prev, __or_initial_owned_prev
 SYCL_CONTAINS:dacpp::mpi::ResidentHaloView2D<const double> view_cur{__or_reader_data, local_row * static_cast<int>(__or_input_cols) + local_col
@@ -34,6 +36,8 @@ SYCL_CONTAINS:dacpp::mpi::reportSegmentedProfile("__dacpp_mpi_or_waveEqShell_wav
 SYCL_NOT_CONTAINS:matCur[i][NY-1]=0
 SYCL_NOT_CONTAINS:MPI_Bcast(__or_global_cur.data()
 SYCL_NOT_CONTAINS:MPI_Bcast(__or_global_prev.data()
+SYCL_NOT_CONTAINS:tensor2Array(__or_initial_global_cur
+SYCL_NOT_CONTAINS:scatter_window_2d_rows(__or_initial_global_cur
 SYCL_NOT_CONTAINS:__or_transition_global_prev
 SYCL_NOT_CONTAINS:MPI_Bcast(__or_transition_global_prev.data()
 SYCL_NOT_CONTAINS:__or_followup_global_cur

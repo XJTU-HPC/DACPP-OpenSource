@@ -11,6 +11,7 @@
 #include "clang/AST/Stmt.h"
 #include "clang/AST/Expr.h"
 #include "clang/AST/ExprCXX.h"
+#include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/Basic/SourceManager.h"
 #include "clang/Lex/Lexer.h"
 #include "llvm/Support/raw_ostream.h"
@@ -467,6 +468,68 @@ void fillActualTensorNames(ShellPartitionPlan& plan, DacppFile* dacppFile) {
     }
 }
 
+bool paramMayUseConstantInit(const ParamAccessPlan& param) {
+    if (!param.reads || param.writes || param.actualTensorName.empty()) {
+        return false;
+    }
+    return param.access == ParamAccessKind::DirectMapped ||
+           param.access == ParamAccessKind::RowPartitionFullRow ||
+           param.access == ParamAccessKind::StencilWindow ||
+           param.access == ParamAccessKind::ReplicatedFullTensor;
+}
+
+ConstantInitPlan analyzeConstantInitForShellArg(
+    DacppFile* dacppFile,
+    const clang::Expr* shellArg,
+    const std::string& targetType);
+
+std::string analysisElemType(const ShellPartitionPlan& plan,
+                             const ParamAccessPlan& param) {
+    if (plan.exprNode.calc && param.paramIndex >= 0 &&
+        param.paramIndex < plan.exprNode.calc->getNumParams()) {
+        return plan.exprNode.calc->getParam(param.paramIndex)->getBasicType();
+    }
+    return "double";
+}
+
+void annotateConstantInputInit(ShellPartitionPlan& plan, DacppFile* dacppFile) {
+    if (!dacppFile || !plan.exprNode.dacExpr) {
+        return;
+    }
+    const clang::CallExpr* shellCall = getShellCallExpr(plan.exprNode.dacExpr);
+    if (!shellCall) {
+        return;
+    }
+    for (auto& param : plan.params) {
+        if (!paramMayUseConstantInit(param)) {
+            continue;
+        }
+        if (param.paramIndex < 0 ||
+            param.paramIndex >= static_cast<int>(shellCall->getNumArgs())) {
+            param.constantInit.reason = "shell argument unavailable";
+        } else {
+            param.constantInit = analyzeConstantInitForShellArg(
+                dacppFile, shellCall->getArg(param.paramIndex),
+                analysisElemType(plan, param));
+        }
+        llvm::outs() << "[DACPP][MPI][OR] input " << param.actualTensorName
+                     << " init-sync=";
+        if (param.constantInit.supported) {
+            llvm::outs() << "constant-local value="
+                         << (param.constantInit.logValue.empty()
+                                 ? param.constantInit.valueExpr
+                                 : param.constantInit.logValue);
+        } else {
+            llvm::outs() << "scatter";
+            if (!param.constantInit.reason.empty()) {
+                llvm::outs() << " fallback reason="
+                             << param.constantInit.reason;
+            }
+        }
+        llvm::outs() << "\n";
+    }
+}
+
 bool paramMayNeedHostPostUseSync(const ParamAccessPlan& param) {
     if (param.writes &&
         (param.access == ParamAccessKind::OutputDirect ||
@@ -783,6 +846,177 @@ bool hasReplicatedScalarParam(const ShellPartitionPlan& plan) {
         }
     }
     return false;
+}
+
+bool exprWritesTensor(const clang::Expr* expr,
+                      const std::set<std::string>& tensorNames);
+bool stmtWritesAnyTensor(const clang::Stmt* stmt,
+                         const std::set<std::string>& tensorNames);
+
+std::vector<std::string> replicatedScalarTensorNames(
+    const ShellPartitionPlan& plan) {
+    std::vector<std::string> names;
+    for (const auto& param : plan.params) {
+        if (param.access == ParamAccessKind::ReplicatedScalar &&
+            !param.actualTensorName.empty()) {
+            names.push_back(param.actualTensorName);
+        }
+    }
+    return names;
+}
+
+bool isIntegerZeroExpr(const clang::Expr* expr,
+                       clang::ASTContext* context) {
+    expr = expr ? expr->IgnoreParenImpCasts() : nullptr;
+    if (!expr) {
+        return false;
+    }
+    if (const auto* integer = llvm::dyn_cast<clang::IntegerLiteral>(expr)) {
+        return integer->getValue().isZero();
+    }
+    return compactExprText(exprSource(expr, context)) == "0";
+}
+
+bool isRootRankGuardExpr(const clang::Expr* expr,
+                         clang::ASTContext* context) {
+    if (!expr) {
+        return false;
+    }
+    expr = expr->IgnoreParenImpCasts();
+    if (const auto* call = llvm::dyn_cast<clang::CallExpr>(expr)) {
+        if (const clang::FunctionDecl* callee = call->getDirectCallee()) {
+            if (callee->getNameAsString() == "__dacpp_mpi_is_root_rank") {
+                return true;
+            }
+        }
+    }
+    if (const auto* binary = llvm::dyn_cast<clang::BinaryOperator>(expr)) {
+        if (binary->isComparisonOp()) {
+            const std::string lhs = compactExprText(baseNameFromExpr(binary->getLHS()));
+            const std::string rhs = compactExprText(baseNameFromExpr(binary->getRHS()));
+            const std::string lhsText =
+                compactExprText(exprSource(binary->getLHS(), context));
+            const std::string rhsText =
+                compactExprText(exprSource(binary->getRHS(), context));
+            const auto mentionsRank = [](const std::string& text) {
+                return text == "mpi_rank" || text == "__dacpp_mpi_rank" ||
+                       text == "rank" ||
+                       text.find("mpi_rank") != std::string::npos;
+            };
+            if ((mentionsRank(lhs) || mentionsRank(lhsText)) &&
+                isIntegerZeroExpr(binary->getRHS(), context)) {
+                return true;
+            }
+            if ((mentionsRank(rhs) || mentionsRank(rhsText)) &&
+                isIntegerZeroExpr(binary->getLHS(), context)) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+bool stmtWritesAnyNamedTensorAtTopLevel(const clang::Stmt* stmt,
+                                        const std::set<std::string>& names) {
+    if (!stmt || names.empty()) {
+        return false;
+    }
+    if (const auto* binary = llvm::dyn_cast<clang::BinaryOperator>(stmt)) {
+        return binary->isAssignmentOp() &&
+               exprWritesTensor(binary->getLHS(), names);
+    }
+    if (const auto* opCall = llvm::dyn_cast<clang::CXXOperatorCallExpr>(stmt)) {
+        if (opCall->isAssignmentOp() && opCall->getNumArgs() > 0) {
+            return exprWritesTensor(opCall->getArg(0), names);
+        }
+        if ((opCall->getOperator() == clang::OO_PlusPlus ||
+             opCall->getOperator() == clang::OO_MinusMinus) &&
+            opCall->getNumArgs() > 0) {
+            return exprWritesTensor(opCall->getArg(0), names);
+        }
+    }
+    if (const auto* unary = llvm::dyn_cast<clang::UnaryOperator>(stmt)) {
+        return unary->isIncrementDecrementOp() &&
+               exprWritesTensor(unary->getSubExpr(), names);
+    }
+    return false;
+}
+
+bool stmtContainsRootOnlyGuard(const clang::Stmt* stmt,
+                               clang::ASTContext* context) {
+    if (!stmt) {
+        return false;
+    }
+    if (const auto* ifStmt = llvm::dyn_cast<clang::IfStmt>(stmt)) {
+        if (isRootRankGuardExpr(ifStmt->getCond(), context)) {
+            return true;
+        }
+    }
+    for (const clang::Stmt* child : stmt->children()) {
+        if (stmtContainsRootOnlyGuard(child, context)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool loopBodyHasOnlyUnguardedTopLevelScalarWrites(
+    DacppFile* dacppFile,
+    const clang::Stmt* loop,
+    const ShellPartitionPlan& plan,
+    std::string& reason) {
+    if (!dacppFile || !dacppFile->getContext() || !loop ||
+        !plan.exprNode.dacExpr) {
+        reason = "analysis context unavailable";
+        return false;
+    }
+    const auto& sourceManager = dacppFile->getContext()->getSourceManager();
+    const auto scalarNames = replicatedScalarTensorNames(plan);
+    if (scalarNames.empty()) {
+        reason = "no replicated scalar";
+        return false;
+    }
+    std::set<std::string> scalarSet(scalarNames.begin(), scalarNames.end());
+    const clang::CompoundStmt* compound = nullptr;
+    if (const auto* forStmt = llvm::dyn_cast<clang::ForStmt>(loop)) {
+        compound = llvm::dyn_cast_or_null<clang::CompoundStmt>(
+            forStmt->getBody());
+    } else if (const auto* whileStmt = llvm::dyn_cast<clang::WhileStmt>(loop)) {
+        compound = llvm::dyn_cast_or_null<clang::CompoundStmt>(
+            whileStmt->getBody());
+    }
+    if (!compound) {
+        reason = "loop body is not compound";
+        return false;
+    }
+    bool sawScalarWrite = false;
+    for (const clang::Stmt* child : compound->body()) {
+        if (!child) {
+            continue;
+        }
+        if (sourceRangeContains(sourceManager, child->getSourceRange(),
+                                plan.exprNode.dacExpr->getSourceRange())) {
+            continue;
+        }
+        if (!stmtWritesAnyTensor(child, scalarSet)) {
+            continue;
+        }
+        if (!stmtWritesAnyNamedTensorAtTopLevel(child, scalarSet)) {
+            reason = "scalar tensor write is nested or compound";
+            return false;
+        }
+        if (stmtContainsRootOnlyGuard(child, dacppFile->getContext())) {
+            reason = "scalar tensor write is root-guarded";
+            return false;
+        }
+        sawScalarWrite = true;
+    }
+    if (!sawScalarWrite) {
+        reason = "no scalar tensor write in loop body";
+        return false;
+    }
+    reason = "all ranks update replicated scalar in loop";
+    return true;
 }
 
 bool loopContainsMultipleDacExprs(DacppFile* dacppFile,
@@ -2486,6 +2720,582 @@ const clang::ValueDecl* declRefTarget(const clang::Expr* expr) {
     return nullptr;
 }
 
+const clang::Expr* unwrapExprFully(const clang::Expr* expr);
+
+const clang::VarDecl* declRefVarTarget(const clang::Expr* expr) {
+    return llvm::dyn_cast_or_null<clang::VarDecl>(declRefTarget(expr));
+}
+
+const clang::Expr* stripAddressOf(const clang::Expr* expr) {
+    expr = unwrapExprFully(expr);
+    if (const auto* unary = llvm::dyn_cast_or_null<clang::UnaryOperator>(expr)) {
+        if (unary->getOpcode() == clang::UO_AddrOf) {
+            return unwrapExprFully(unary->getSubExpr());
+        }
+    }
+    return expr;
+}
+
+bool isStdVectorLikeType(clang::QualType type) {
+    const std::string typeName = type.getAsString();
+    return typeName.find("vector") != std::string::npos ||
+           typeName.find("Vector") != std::string::npos;
+}
+
+bool isArithmeticLikeType(clang::QualType type) {
+    const clang::Type* raw = type.getTypePtrOrNull();
+    return raw && raw->isArithmeticType();
+}
+
+clang::QualType vectorElementType(const clang::VarDecl* vectorVar) {
+    if (!vectorVar) {
+        return {};
+    }
+    clang::QualType type = vectorVar->getType();
+    const clang::Type* raw = type.getTypePtrOrNull();
+    if (!raw) {
+        return {};
+    }
+    if (const auto* specialization =
+            raw->getAs<clang::TemplateSpecializationType>()) {
+        const auto args = specialization->template_arguments();
+        if (args.size() >= 1) {
+            const clang::TemplateArgument& arg = args[0];
+            if (arg.getKind() == clang::TemplateArgument::Type) {
+                return arg.getAsType();
+            }
+        }
+    }
+    if (const auto* recordDecl = type->getAsCXXRecordDecl()) {
+        if (const auto* specialization =
+                llvm::dyn_cast<clang::ClassTemplateSpecializationDecl>(
+                    recordDecl)) {
+            const auto& args = specialization->getTemplateArgs();
+            if (args.size() >= 1 &&
+                args[0].getKind() == clang::TemplateArgument::Type) {
+                return args[0].getAsType();
+            }
+        }
+    }
+    return {};
+}
+
+bool constantInitValueExpr(const clang::Expr* expr,
+                           clang::ASTContext* context,
+                           const std::string& targetType,
+                           std::string& valueExpr,
+                           std::string& logValue) {
+    expr = unwrapExprFully(expr);
+    if (!expr || !context) {
+        return false;
+    }
+    if (const auto* construct =
+            llvm::dyn_cast<clang::CXXConstructExpr>(expr)) {
+        if (construct->getNumArgs() == 0) {
+            valueExpr = targetType + "{}";
+            logValue = "0";
+            return true;
+        }
+        if (construct->getNumArgs() == 1) {
+            return constantInitValueExpr(construct->getArg(0), context,
+                                         targetType, valueExpr, logValue);
+        }
+        return false;
+    }
+    if (llvm::isa<clang::CXXScalarValueInitExpr>(expr) ||
+        llvm::isa<clang::ImplicitValueInitExpr>(expr)) {
+        valueExpr = targetType + "{}";
+        logValue = "0";
+        return true;
+    }
+    if (const auto* initList = llvm::dyn_cast<clang::InitListExpr>(expr)) {
+        if (initList->getNumInits() == 0) {
+            valueExpr = targetType + "{}";
+            logValue = "0";
+            return true;
+        }
+        if (initList->getNumInits() == 1) {
+            return constantInitValueExpr(initList->getInit(0), context,
+                                         targetType, valueExpr, logValue);
+        }
+        return false;
+    }
+    if (const auto* intLit = llvm::dyn_cast<clang::IntegerLiteral>(expr)) {
+        valueExpr = exprSource(expr, context);
+        logValue = intLit->getValue().isZero() ? "0" : valueExpr;
+        return true;
+    }
+    if (const auto* floatLit =
+            llvm::dyn_cast<clang::FloatingLiteral>(expr)) {
+        valueExpr = exprSource(expr, context);
+        logValue = floatLit->getValue().isZero() ? "0" : valueExpr;
+        return true;
+    }
+    return false;
+}
+
+struct VectorConstantInit {
+    bool supported = false;
+    std::string valueExpr;
+    std::string logValue;
+    std::string reason;
+};
+
+VectorConstantInit analyzeVectorConstantConstructor(
+    const clang::VarDecl* vectorVar,
+    clang::ASTContext* context,
+    const std::string& targetType) {
+    VectorConstantInit result;
+    if (!vectorVar || !context || !vectorVar->hasInit()) {
+        result.reason = "vector initializer unavailable";
+        return result;
+    }
+    if (!isStdVectorLikeType(vectorVar->getType())) {
+        result.reason = "source initializer is not std::vector";
+        return result;
+    }
+    clang::QualType elemType = vectorElementType(vectorVar);
+    if (elemType.isNull()) {
+        result.reason = "vector element type unavailable";
+        return result;
+    }
+    if (!isArithmeticLikeType(elemType)) {
+        result.reason = "vector element type is not arithmetic";
+        return result;
+    }
+    const clang::Expr* init = unwrapExprFully(vectorVar->getInit());
+    const auto* construct = llvm::dyn_cast_or_null<clang::CXXConstructExpr>(init);
+    if (!construct) {
+        result.reason = "vector initializer is not a constructor";
+        return result;
+    }
+    if (construct->getNumArgs() == 1) {
+        result.supported = true;
+        result.valueExpr = targetType + "{}";
+        result.logValue = "0";
+        return result;
+    }
+    if (construct->getNumArgs() >= 2) {
+        if (constantInitValueExpr(construct->getArg(1), context, targetType,
+                                  result.valueExpr, result.logValue)) {
+            result.supported = true;
+            return result;
+        }
+        result.reason = "vector fill value is not a supported constant";
+        return result;
+    }
+    result.reason = "unsupported vector constructor arity";
+    return result;
+}
+
+const clang::VarDecl* findVectorDeclInTensorInitializer(
+    const clang::VarDecl* tensorVar) {
+    if (!tensorVar || !tensorVar->hasInit()) {
+        return nullptr;
+    }
+    const clang::Stmt* root = tensorVar->getInit();
+    std::vector<const clang::Stmt*> worklist;
+    worklist.push_back(root);
+    while (!worklist.empty()) {
+        const clang::Stmt* current = worklist.back();
+        worklist.pop_back();
+        if (!current) {
+            continue;
+        }
+        if (const auto* declRef = llvm::dyn_cast<clang::DeclRefExpr>(current)) {
+            const auto* varDecl =
+                llvm::dyn_cast_or_null<clang::VarDecl>(declRef->getDecl());
+            if (varDecl && isStdVectorLikeType(varDecl->getType())) {
+                return varDecl;
+            }
+        }
+        for (const clang::Stmt* child : current->children()) {
+            worklist.push_back(child);
+        }
+    }
+    return nullptr;
+}
+
+bool stmtIsDeclForVar(const clang::Stmt* stmt, const clang::VarDecl* varDecl) {
+    const auto* declStmt = llvm::dyn_cast_or_null<clang::DeclStmt>(stmt);
+    if (!declStmt || !varDecl) {
+        return false;
+    }
+    for (const clang::Decl* decl : declStmt->decls()) {
+        if (decl == varDecl) {
+            return true;
+        }
+    }
+    return false;
+}
+
+const clang::Expr* calleeObjectExpr(const clang::CXXMemberCallExpr* call) {
+    if (!call) {
+        return nullptr;
+    }
+    return call->getImplicitObjectArgument();
+}
+
+bool callIsKnownReadOnlyVectorMember(const clang::CXXMemberCallExpr* call) {
+    if (!call || !call->getMethodDecl()) {
+        return false;
+    }
+    const std::string name = call->getMethodDecl()->getNameAsString();
+    return name == "size" || name == "empty" || name == "capacity" ||
+           name == "max_size";
+}
+
+class VectorUseSafetyVisitor
+    : public clang::RecursiveASTVisitor<VectorUseSafetyVisitor> {
+public:
+    const clang::VarDecl* Target = nullptr;
+    bool SawUse = false;
+    bool Unsafe = false;
+    std::string Reason;
+
+    explicit VectorUseSafetyVisitor(const clang::VarDecl* target)
+        : Target(target) {}
+
+    bool VisitDeclRefExpr(clang::DeclRefExpr* expr) {
+        if (!expr || expr->getDecl() != Target) {
+            return true;
+        }
+        SawUse = true;
+        if (AllowedRefs.count(expr) == 0) {
+            Unsafe = true;
+            if (Reason.empty()) {
+                Reason = "vector alias/function escape before tensor construction";
+            }
+        }
+        return true;
+    }
+
+    bool VisitBinaryOperator(clang::BinaryOperator* op) {
+        if (!op || !op->isAssignmentOp()) {
+            return true;
+        }
+        if (exprReferencesTarget(op->getLHS())) {
+            Unsafe = true;
+            if (Reason.empty()) {
+                Reason = "vector write before tensor construction";
+            }
+        }
+        return true;
+    }
+
+    bool VisitCXXOperatorCallExpr(clang::CXXOperatorCallExpr* call) {
+        if (!call || call->getNumArgs() == 0) {
+            return true;
+        }
+        if (call->isAssignmentOp() && exprReferencesTarget(call->getArg(0))) {
+            Unsafe = true;
+            if (Reason.empty()) {
+                Reason = "vector write before tensor construction";
+            }
+        }
+        if ((call->getOperator() == clang::OO_Subscript ||
+             call->getOperator() == clang::OO_Call) &&
+            exprReferencesTarget(call->getArg(0))) {
+            Unsafe = true;
+            if (Reason.empty()) {
+                Reason = "vector element access before tensor construction";
+            }
+        }
+        return true;
+    }
+
+    bool VisitUnaryOperator(clang::UnaryOperator* op) {
+        if (!op) {
+            return true;
+        }
+        if (op->isIncrementDecrementOp() && exprReferencesTarget(op->getSubExpr())) {
+            Unsafe = true;
+            if (Reason.empty()) {
+                Reason = "vector write before tensor construction";
+            }
+        }
+        if (op->getOpcode() == clang::UO_AddrOf &&
+            exprReferencesTarget(op->getSubExpr())) {
+            Unsafe = true;
+            if (Reason.empty()) {
+                Reason = "vector address escape before tensor construction";
+            }
+        }
+        return true;
+    }
+
+    bool VisitCXXMemberCallExpr(clang::CXXMemberCallExpr* call) {
+        if (!call || !exprReferencesTarget(calleeObjectExpr(call))) {
+            return true;
+        }
+        if (!callIsKnownReadOnlyVectorMember(call)) {
+            Unsafe = true;
+            if (Reason.empty()) {
+                Reason = "vector mutating/unknown member call before tensor construction";
+            }
+        }
+        return true;
+    }
+
+private:
+    std::set<const clang::DeclRefExpr*> AllowedRefs;
+
+    bool exprReferencesTarget(const clang::Expr* expr) {
+        expr = stripAddressOf(expr);
+        if (!expr) {
+            return false;
+        }
+        if (const auto* declRef = llvm::dyn_cast<clang::DeclRefExpr>(expr)) {
+            if (declRef->getDecl() == Target) {
+                AllowedRefs.insert(declRef);
+                return true;
+            }
+        }
+        bool found = false;
+        std::vector<const clang::Stmt*> worklist;
+        worklist.push_back(expr);
+        while (!worklist.empty()) {
+            const clang::Stmt* current = worklist.back();
+            worklist.pop_back();
+            if (!current) {
+                continue;
+            }
+            if (const auto* declRef =
+                    llvm::dyn_cast<clang::DeclRefExpr>(current)) {
+                if (declRef->getDecl() == Target) {
+                    AllowedRefs.insert(declRef);
+                    found = true;
+                }
+            }
+            for (const clang::Stmt* child : current->children()) {
+                worklist.push_back(child);
+            }
+        }
+        return found;
+    }
+};
+
+bool stmtReferencesDecl(const clang::Stmt* stmt,
+                        const clang::ValueDecl* decl) {
+    if (!stmt || !decl) {
+        return false;
+    }
+    if (const auto* declRef = llvm::dyn_cast<clang::DeclRefExpr>(stmt)) {
+        if (declRef->getDecl() == decl) {
+            return true;
+        }
+    }
+    for (const clang::Stmt* child : stmt->children()) {
+        if (stmtReferencesDecl(child, decl)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+std::string tensorReferenceEscapeReason(const clang::Stmt* stmt,
+                                        const clang::VarDecl* tensorVar) {
+    if (!stmt || !tensorVar || !stmtReferencesDecl(stmt, tensorVar)) {
+        return "";
+    }
+    if (stmtIsDeclForVar(stmt, tensorVar)) {
+        return "";
+    }
+    if (const auto* expr = llvm::dyn_cast<clang::Expr>(stmt)) {
+        const clang::Expr* unwrapped = unwrapExprFully(expr);
+        if (const auto* declRef =
+                llvm::dyn_cast_or_null<clang::DeclRefExpr>(unwrapped)) {
+            if (declRef->getDecl() == tensorVar) {
+                return "tensor referenced before shell call";
+            }
+        }
+    }
+    if (const auto* binary = llvm::dyn_cast<clang::BinaryOperator>(stmt)) {
+        if (binary->isAssignmentOp() && stmtReferencesDecl(binary->getLHS(), tensorVar)) {
+            return "tensor write before shell call";
+        }
+    }
+    if (const auto* opCall = llvm::dyn_cast<clang::CXXOperatorCallExpr>(stmt)) {
+        if (opCall->isAssignmentOp() && opCall->getNumArgs() > 0 &&
+            stmtReferencesDecl(opCall->getArg(0), tensorVar)) {
+            return "tensor write before shell call";
+        }
+        if (opCall->getOperator() == clang::OO_Subscript &&
+            opCall->getNumArgs() > 0 &&
+            declRefVarTarget(opCall->getArg(0)) == tensorVar) {
+            return "tensor view/slice before shell call";
+        }
+    }
+    if (const auto* call = llvm::dyn_cast<clang::CallExpr>(stmt)) {
+        for (const clang::Expr* arg : call->arguments()) {
+            if (stmtReferencesDecl(arg, tensorVar)) {
+                return "tensor function escape before shell call";
+            }
+        }
+    }
+    if (const auto* memberCall =
+            llvm::dyn_cast<clang::CXXMemberCallExpr>(stmt)) {
+        if (stmtReferencesDecl(calleeObjectExpr(memberCall), tensorVar)) {
+            return "tensor member call before shell call";
+        }
+    }
+    return "tensor referenced before shell call";
+}
+
+bool findTensorReferenceBeforeLimit(const clang::Stmt* stmt,
+                                    const clang::VarDecl* tensorVar,
+                                    const clang::Expr* limitExpr,
+                                    const clang::SourceManager& sourceManager,
+                                    std::string& reason) {
+    if (!stmt || !tensorVar || !limitExpr ||
+        stmt->getBeginLoc().isInvalid()) {
+        return false;
+    }
+    if (!sourceManager.isBeforeInTranslationUnit(stmt->getBeginLoc(),
+                                                 limitExpr->getBeginLoc())) {
+        return false;
+    }
+    if (sourceRangeContains(sourceManager, stmt->getSourceRange(),
+                            limitExpr->getSourceRange())) {
+        for (const clang::Stmt* child : stmt->children()) {
+            if (findTensorReferenceBeforeLimit(child, tensorVar, limitExpr,
+                                               sourceManager, reason)) {
+                return true;
+            }
+        }
+        return false;
+    }
+    reason = tensorReferenceEscapeReason(stmt, tensorVar);
+    return !reason.empty();
+}
+
+bool sourceBefore(const clang::SourceManager& sourceManager,
+                  clang::SourceLocation lhs,
+                  clang::SourceLocation rhs) {
+    if (lhs.isInvalid() || rhs.isInvalid()) {
+        return false;
+    }
+    return sourceManager.isBeforeInTranslationUnit(lhs, rhs);
+}
+
+ConstantInitPlan analyzeConstantInitForShellArg(
+    DacppFile* dacppFile,
+    const clang::Expr* shellArg,
+    const std::string& targetType) {
+    ConstantInitPlan plan;
+    if (!dacppFile || !dacppFile->getContext() || !shellArg) {
+        plan.reason = "analysis context unavailable";
+        return plan;
+    }
+    const auto* tensorVar = declRefVarTarget(shellArg);
+    if (!tensorVar) {
+        plan.reason = "shell argument is not a direct tensor variable";
+        return plan;
+    }
+    if (!tensorVar->hasInit()) {
+        plan.reason = "tensor initializer unavailable";
+        return plan;
+    }
+    const clang::VarDecl* vectorVar =
+        findVectorDeclInTensorInitializer(tensorVar);
+    if (!vectorVar) {
+        plan.reason = "tensor is not constructed from a vector variable";
+        return plan;
+    }
+    const VectorConstantInit vectorInit =
+        analyzeVectorConstantConstructor(vectorVar, dacppFile->getContext(),
+                                         targetType);
+    if (!vectorInit.supported) {
+        plan.reason = vectorInit.reason.empty()
+                          ? "vector constant initializer unsupported"
+                          : vectorInit.reason;
+        return plan;
+    }
+
+    const auto& sourceManager = dacppFile->getContext()->getSourceManager();
+    if (!sourceBefore(sourceManager, vectorVar->getBeginLoc(),
+                      tensorVar->getBeginLoc())) {
+        plan.reason = "vector declaration is not before tensor construction";
+        return plan;
+    }
+    if (!sourceBefore(sourceManager, tensorVar->getBeginLoc(),
+                      shellArg->getBeginLoc())) {
+        plan.reason = "tensor declaration is not before shell call";
+        return plan;
+    }
+
+    const clang::Stmt* body = dacppFile->getMainBody();
+    if (!body) {
+        plan.reason = "main body unavailable";
+        return plan;
+    }
+    bool sawVectorDecl = false;
+    bool sawTensorDecl = false;
+    bool checkedVectorWindow = false;
+    bool checkedTensorWindow = false;
+    const auto* compound = llvm::dyn_cast<clang::CompoundStmt>(body);
+    if (!compound) {
+        plan.reason = "main body is not compound";
+        return plan;
+    }
+    for (const clang::Stmt* child : compound->body()) {
+        if (!child) {
+            continue;
+        }
+        if (!sawVectorDecl) {
+            if (stmtIsDeclForVar(child, vectorVar)) {
+                sawVectorDecl = true;
+            }
+            continue;
+        }
+        if (!sawTensorDecl) {
+            if (stmtIsDeclForVar(child, tensorVar)) {
+                sawTensorDecl = true;
+                checkedVectorWindow = true;
+                continue;
+            }
+            VectorUseSafetyVisitor visitor(vectorVar);
+            visitor.TraverseStmt(const_cast<clang::Stmt*>(child));
+            if (visitor.Unsafe) {
+                plan.reason = visitor.Reason.empty()
+                                  ? "vector unsafe use before tensor construction"
+                                  : visitor.Reason;
+                return plan;
+            }
+            continue;
+        }
+        std::string tensorReason;
+        if (findTensorReferenceBeforeLimit(child, tensorVar, shellArg,
+                                           sourceManager, tensorReason)) {
+            plan.reason = tensorReason;
+            return plan;
+        }
+        if (sourceRangeContains(sourceManager, child->getSourceRange(),
+                                shellArg->getSourceRange())) {
+            break;
+        }
+        tensorReason = tensorReferenceEscapeReason(child, tensorVar);
+        if (!tensorReason.empty()) {
+            plan.reason = tensorReason;
+            return plan;
+        }
+    }
+    if (!sawVectorDecl) {
+        plan.reason = "vector declaration not found in main body";
+        return plan;
+    }
+    if (!sawTensorDecl || !checkedVectorWindow) {
+        plan.reason = "tensor declaration not found after vector";
+        return plan;
+    }
+    (void)checkedTensorWindow;
+    plan.supported = true;
+    plan.valueExpr = vectorInit.valueExpr;
+    plan.logValue = vectorInit.logValue.empty() ? vectorInit.valueExpr
+                                                : vectorInit.logValue;
+    return plan;
+}
+
 bool isFixedBlockPlanWithBlockSize(const ShellPartitionPlan& plan,
                                    int blockSize,
                                    int blockStride) {
@@ -3532,6 +4342,14 @@ void annotateLoopLowerCandidates(DacppFile* dacppFile,
         plan.loopLowerCandidate = reason.empty();
         plan.loopLowerMaterializeEveryRun =
             plan.loopLowerCandidate && hasReplicatedScalarParam(plan);
+        plan.loopLowerReplicatedScalarLocalRefresh = false;
+        plan.loopLowerScalarRefreshReason.clear();
+        if (plan.loopLowerMaterializeEveryRun) {
+            plan.loopLowerReplicatedScalarLocalRefresh =
+                loopBodyHasOnlyUnguardedTopLevelScalarWrites(
+                    dacppFile, outerLoop, plan,
+                    plan.loopLowerScalarRefreshReason);
+        }
 
         const std::string shellName =
             plan.exprNode.shell ? plan.exprNode.shell->getName() : "<null>";
@@ -3547,6 +4365,12 @@ void annotateLoopLowerCandidates(DacppFile* dacppFile,
             llvm::outs() << " structure=init/run/materialize";
             if (plan.loopLowerMaterializeEveryRun) {
                 llvm::outs() << " materialize=per-run";
+                if (plan.loopLowerReplicatedScalarLocalRefresh) {
+                    llvm::outs() << " scalar-refresh=local-replicated";
+                } else if (!plan.loopLowerScalarRefreshReason.empty()) {
+                    llvm::outs() << " scalar-refresh=bcast reason="
+                                 << plan.loopLowerScalarRefreshReason;
+                }
             }
         } else if (!reason.empty()) {
             llvm::outs() << " reason=" << reason;
@@ -3699,6 +4523,7 @@ std::vector<OperatorResidentChainPlan> buildOperatorResidentChains(
     std::vector<ShellPartitionPlan> plans = shellPlans;
     for (auto& plan : plans) {
         fillActualTensorNames(plan, dacppFile);
+        annotateConstantInputInit(plan, dacppFile);
         annotateOutputSync(plan, dacppFile);
     }
     annotateLoopLowerCandidates(dacppFile, plans);

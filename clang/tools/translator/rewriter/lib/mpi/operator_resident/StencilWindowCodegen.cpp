@@ -1239,15 +1239,24 @@ void emitResidentHaloInitFunction2D(std::string& code,
             reader.calcParamName + ";\n";
     code += "    dacpp::mpi::recordProfileSegment(ctx.__or_profile, dacpp::mpi::ProfileSegment::Init, dacpp_profile_init_start);\n";
     code += "    auto dacpp_profile_scatter_start = dacpp::mpi::profileSegmentStart();\n";
-    code += "    if (ctx.mpi_rank == 0) {\n";
-    code += "        " + paramVarName(reader) +
-            ".tensor2Array(__or_initial_global_" + reader.calcParamName +
-            ");\n";
-    code += "    }\n";
-    code += "    dacpp::mpi::operator_resident::scatter_window_2d_rows(__or_initial_global_" +
-            reader.calcParamName + ", ctx." + localName(reader) +
-            ", ctx.__or_output_rows, ctx.__or_input_cols, ctx.__or_window_rows, ctx.__or_halo_layout, ctx.mpi_rank, ctx.mpi_size, " +
-            readerMpiType + ");\n";
+    if (reader.constantInit.supported) {
+        code += "    std::fill(ctx." + localName(reader) + ".begin(), ctx." +
+                localName(reader) + ".end(), static_cast<" + readerType +
+                ">(" + reader.constantInit.valueExpr + "));\n";
+        code += "    // Constant-initialized resident halo reader " +
+                reader.calcParamName +
+                " is filled locally; skip root tensor2Array/scatter_window_2d_rows.\n";
+    } else {
+        code += "    if (ctx.mpi_rank == 0) {\n";
+        code += "        " + paramVarName(reader) +
+                ".tensor2Array(__or_initial_global_" + reader.calcParamName +
+                ");\n";
+        code += "    }\n";
+        code += "    dacpp::mpi::operator_resident::scatter_window_2d_rows(__or_initial_global_" +
+                reader.calcParamName + ", ctx." + localName(reader) +
+                ", ctx.__or_output_rows, ctx.__or_input_cols, ctx.__or_window_rows, ctx.__or_halo_layout, ctx.mpi_rank, ctx.mpi_size, " +
+                readerMpiType + ");\n";
+    }
     if (directReader) {
         code += "    const int64_t __or_direct_rows_" +
                 directReader->calcParamName + " = " +
@@ -1263,31 +1272,49 @@ void emitResidentHaloInitFunction2D(std::string& code,
                 " shape mismatch with output\\n\");\n";
         code += "        MPI_Abort(MPI_COMM_WORLD, 4);\n";
         code += "    }\n";
-        code += "    std::vector<" + directReaderType + "> __or_initial_global_" +
-                directReader->calcParamName + ";\n";
-        code += "    if (ctx.mpi_rank == 0) {\n";
-        code += "        " + paramVarName(*directReader) +
-                ".tensor2Array(__or_initial_global_" +
-                directReader->calcParamName + ");\n";
-        code += "    }\n";
-        code += "    std::vector<" + directReaderType + "> __or_initial_owned_" +
-                directReader->calcParamName +
-                "(static_cast<std::size_t>(ctx.__or_local_item_count), " +
-                directReaderType + "{});\n";
-        code += "    MPI_Scatterv(ctx.mpi_rank == 0 ? __or_initial_global_" +
-                directReader->calcParamName +
-                ".data() : nullptr, ctx.mpi_rank == 0 ? ctx.__or_counts.data() : nullptr, ctx.mpi_rank == 0 ? ctx.__or_displs.data() : nullptr, " +
-                directReaderMpiType + ", __or_initial_owned_" +
-                directReader->calcParamName +
-                ".data(), " + checkedMpiCountExpr(
-                    "ctx.__or_local_item_count",
-                    "[DACPP][MPI][OR] resident halo direct reader scatter count exceeds MPI int range") +
-                ", " + directReaderMpiType +
-                ", 0, MPI_COMM_WORLD);\n";
-        code += "    dacpp::mpi::operator_resident::write_owned_slice_2d_rows(ctx." +
-                localName(*directReader) + ", __or_initial_owned_" +
-                directReader->calcParamName +
-                ", ctx.__or_halo_layout, ctx.__or_output_cols, ctx.__or_input_cols, ctx.__or_followup_row_offset, ctx.__or_followup_col_offset);\n";
+        if (directReader->constantInit.supported) {
+            code += "    std::fill(ctx." + localName(*directReader) +
+                    ".begin(), ctx." + localName(*directReader) +
+                    ".end(), " + directReaderType + "{});\n";
+            code += "    std::vector<" + directReaderType +
+                    "> __or_initial_owned_" + directReader->calcParamName +
+                    "(static_cast<std::size_t>(ctx.__or_local_item_count), static_cast<" +
+                    directReaderType + ">(" +
+                    directReader->constantInit.valueExpr + "));\n";
+            code += "    dacpp::mpi::operator_resident::write_owned_slice_2d_rows(ctx." +
+                    localName(*directReader) + ", __or_initial_owned_" +
+                    directReader->calcParamName +
+                    ", ctx.__or_halo_layout, ctx.__or_output_cols, ctx.__or_input_cols, ctx.__or_followup_row_offset, ctx.__or_followup_col_offset);\n";
+            code += "    // Constant-initialized resident direct reader " +
+                    directReader->calcParamName +
+                    " is filled locally; skip root tensor2Array/MPI_Scatterv.\n";
+        } else {
+            code += "    std::vector<" + directReaderType + "> __or_initial_global_" +
+                    directReader->calcParamName + ";\n";
+            code += "    if (ctx.mpi_rank == 0) {\n";
+            code += "        " + paramVarName(*directReader) +
+                    ".tensor2Array(__or_initial_global_" +
+                    directReader->calcParamName + ");\n";
+            code += "    }\n";
+            code += "    std::vector<" + directReaderType + "> __or_initial_owned_" +
+                    directReader->calcParamName +
+                    "(static_cast<std::size_t>(ctx.__or_local_item_count), " +
+                    directReaderType + "{});\n";
+            code += "    MPI_Scatterv(ctx.mpi_rank == 0 ? __or_initial_global_" +
+                    directReader->calcParamName +
+                    ".data() : nullptr, ctx.mpi_rank == 0 ? ctx.__or_counts.data() : nullptr, ctx.mpi_rank == 0 ? ctx.__or_displs.data() : nullptr, " +
+                    directReaderMpiType + ", __or_initial_owned_" +
+                    directReader->calcParamName +
+                    ".data(), " + checkedMpiCountExpr(
+                        "ctx.__or_local_item_count",
+                        "[DACPP][MPI][OR] resident halo direct reader scatter count exceeds MPI int range") +
+                    ", " + directReaderMpiType +
+                    ", 0, MPI_COMM_WORLD);\n";
+            code += "    dacpp::mpi::operator_resident::write_owned_slice_2d_rows(ctx." +
+                    localName(*directReader) + ", __or_initial_owned_" +
+                    directReader->calcParamName +
+                    ", ctx.__or_halo_layout, ctx.__or_output_cols, ctx.__or_input_cols, ctx.__or_followup_row_offset, ctx.__or_followup_col_offset);\n";
+        }
     }
     code += "    dacpp::mpi::recordProfileSegment(ctx.__or_profile, dacpp::mpi::ProfileSegment::Scatter, dacpp_profile_scatter_start);\n";
     code += "}\n";

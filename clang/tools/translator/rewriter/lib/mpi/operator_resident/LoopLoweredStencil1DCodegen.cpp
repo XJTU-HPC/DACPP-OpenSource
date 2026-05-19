@@ -545,15 +545,24 @@ void emitResidentHaloInitFunction(std::string& code,
             reader.calcParamName + ";\n";
     code += "    dacpp::mpi::recordProfileSegment(ctx.__or_profile, dacpp::mpi::ProfileSegment::Init, dacpp_profile_init_start);\n";
     code += "    auto dacpp_profile_scatter_start = dacpp::mpi::profileSegmentStart();\n";
-    code += "    if (ctx.mpi_rank == 0) {\n";
-    code += "        " + paramVarName(reader) +
-            ".tensor2Array(__or_initial_global_" + reader.calcParamName +
-            ");\n";
-    code += "    }\n";
-    code += "    dacpp::mpi::operator_resident::scatter_window_1d(__or_initial_global_" +
-            reader.calcParamName + ", ctx." + localName(reader) +
-            ", ctx.__or_output_size, ctx.__or_input_size, ctx.__or_window_size, ctx.__or_halo_layout, ctx.mpi_rank, ctx.mpi_size, " +
-            readerMpiType + ");\n";
+    if (reader.constantInit.supported) {
+        code += "    std::fill(ctx." + localName(reader) + ".begin(), ctx." +
+                localName(reader) + ".end(), static_cast<" + readerType +
+                ">(" + reader.constantInit.valueExpr + "));\n";
+        code += "    // Constant-initialized resident halo reader " +
+                reader.calcParamName +
+                " is filled locally; skip root tensor2Array/scatter_window_1d.\n";
+    } else {
+        code += "    if (ctx.mpi_rank == 0) {\n";
+        code += "        " + paramVarName(reader) +
+                ".tensor2Array(__or_initial_global_" + reader.calcParamName +
+                ");\n";
+        code += "    }\n";
+        code += "    dacpp::mpi::operator_resident::scatter_window_1d(__or_initial_global_" +
+                reader.calcParamName + ", ctx." + localName(reader) +
+                ", ctx.__or_output_size, ctx.__or_input_size, ctx.__or_window_size, ctx.__or_halo_layout, ctx.mpi_rank, ctx.mpi_size, " +
+                readerMpiType + ");\n";
+    }
     code += "    dacpp::mpi::recordProfileSegment(ctx.__or_profile, dacpp::mpi::ProfileSegment::Scatter, dacpp_profile_scatter_start);\n";
     code += "    ctx." + localName(writer) + " = ctx." +
             localName(reader) + ";\n";

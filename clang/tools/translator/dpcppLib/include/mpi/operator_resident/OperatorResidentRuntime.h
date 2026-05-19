@@ -117,6 +117,8 @@ struct ResidentHalo1DLayout {
     int64_t local_size = 0;
     int64_t owned_offset = 0;
     int64_t global_begin = 0;
+    int prev_rank = MPI_PROC_NULL;
+    int next_rank = MPI_PROC_NULL;
 };
 
 inline ResidentHalo1DLayout resident_halo_1d_layout(
@@ -132,6 +134,8 @@ inline ResidentHalo1DLayout resident_halo_1d_layout(
     layout.owned_offset = 0;
     layout.local_size = layout.owned.count + layout.right_halo;
     layout.global_begin = layout.owned.begin;
+    layout.prev_rank = nearest_nonempty_rank_1d(outputTotal, rank, size, -1);
+    layout.next_rank = nearest_nonempty_rank_1d(outputTotal, rank, size, 1);
     return layout;
 }
 
@@ -141,6 +145,8 @@ struct ResidentHalo2DRowLayout {
     int64_t local_row_count = 0;
     int64_t local_size = 0;
     int64_t global_row_begin = 0;
+    int prev_rank = MPI_PROC_NULL;
+    int next_rank = MPI_PROC_NULL;
 };
 
 inline ResidentHalo2DRowLayout resident_halo_2d_row_layout(
@@ -161,6 +167,8 @@ inline ResidentHalo2DRowLayout resident_halo_2d_row_layout(
         inputCols,
         "[DACPP][MPI][OR] resident halo 2D local size exceeds MPI int range");
     layout.global_row_begin = layout.owned_rows.begin;
+    layout.prev_rank = nearest_nonempty_rank_1d(outputRows, rank, size, -1);
+    layout.next_rank = nearest_nonempty_rank_1d(outputRows, rank, size, 1);
     return layout;
 }
 
@@ -363,27 +371,65 @@ void exchange_halo_1d(std::vector<T>& local,
     if (followupTargetOffset != 1 || layout.owned.count <= 0) {
         return;
     }
-    const int prev = nearest_nonempty_rank_1d(outputTotal, rank, size, -1);
-    const int next = nearest_nonempty_rank_1d(outputTotal, rank, size, 1);
-    T recvLeft{};
+    (void)outputTotal;
+    (void)rank;
+    (void)size;
+    const int prev = layout.prev_rank;
+    const int next = layout.next_rank;
     T sendRight = writerLocal.empty() ? T{} : writerLocal.back();
-    MPI_Sendrecv(&sendRight, 1, mpiType, next, 4101,
-                 &recvLeft, 1, mpiType, prev, 4101,
-                 MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+    T sendLeft = writerLocal.empty() ? T{} : writerLocal.front();
+    T recvLeft{};
+    T recvRight{};
+    MPI_Request requests[4];
+    int requestCount = 0;
+    if (prev != MPI_PROC_NULL) {
+        MPI_Irecv(&recvLeft,
+                  1,
+                  mpiType,
+                  prev,
+                  4101,
+                  MPI_COMM_WORLD,
+                  &requests[requestCount++]);
+    }
+    if (windowSize > 2) {
+        if (next != MPI_PROC_NULL) {
+            MPI_Irecv(&recvRight,
+                      1,
+                      mpiType,
+                      next,
+                      4102,
+                      MPI_COMM_WORLD,
+                      &requests[requestCount++]);
+        }
+    }
+    if (next != MPI_PROC_NULL) {
+        MPI_Isend(&sendRight,
+                  1,
+                  mpiType,
+                  next,
+                  4101,
+                  MPI_COMM_WORLD,
+                  &requests[requestCount++]);
+    }
+    if (windowSize > 2 && prev != MPI_PROC_NULL) {
+        MPI_Isend(&sendLeft,
+                  1,
+                  mpiType,
+                  prev,
+                  4102,
+                  MPI_COMM_WORLD,
+                  &requests[requestCount++]);
+    }
+    if (requestCount > 0) {
+        MPI_Waitall(requestCount, requests, MPI_STATUSES_IGNORE);
+    }
     if (prev != MPI_PROC_NULL && !local.empty()) {
         local[0] = recvLeft;
     }
-    if (windowSize > 2) {
-        T recvRight{};
-        T sendLeft = writerLocal.empty() ? T{} : writerLocal.front();
-        MPI_Sendrecv(&sendLeft, 1, mpiType, prev, 4102,
-                     &recvRight, 1, mpiType, next, 4102,
-                     MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-        const int64_t rightIdx = layout.owned.count + windowSize - 2;
-        if (next != MPI_PROC_NULL && rightIdx >= 0 &&
-            rightIdx < static_cast<int64_t>(local.size())) {
-            local[static_cast<std::size_t>(rightIdx)] = recvRight;
-        }
+    const int64_t rightIdx = layout.owned.count + windowSize - 2;
+    if (windowSize > 2 && next != MPI_PROC_NULL && rightIdx >= 0 &&
+        rightIdx < static_cast<int64_t>(local.size())) {
+        local[static_cast<std::size_t>(rightIdx)] = recvRight;
     }
 }
 
@@ -399,47 +445,67 @@ void exchange_halo_1d_inplace(std::vector<T>& local,
     if (interiorOffset != 1 || layout.owned.count <= 0 || local.empty()) {
         return;
     }
-    const int prev = nearest_nonempty_rank_1d(outputTotal, rank, size, -1);
-    const int next = nearest_nonempty_rank_1d(outputTotal, rank, size, 1);
+    (void)outputTotal;
+    (void)rank;
+    (void)size;
+    const int prev = layout.prev_rank;
+    const int next = layout.next_rank;
     const std::ptrdiff_t firstInterior =
         static_cast<std::ptrdiff_t>(interiorOffset);
     const std::ptrdiff_t lastInterior = static_cast<std::ptrdiff_t>(
         interiorOffset + layout.owned.count - 1);
+    MPI_Request requests[4];
+    int requestCount = 0;
     T recvLeft{};
-    MPI_Sendrecv(local.data() + lastInterior,
-                 1,
-                 mpiType,
-                 next,
-                 4101,
-                 &recvLeft,
-                 1,
-                 mpiType,
-                 prev,
-                 4101,
-                 MPI_COMM_WORLD,
-                 MPI_STATUS_IGNORE);
+    T recvRight{};
+    if (prev != MPI_PROC_NULL) {
+        MPI_Irecv(&recvLeft,
+                  1,
+                  mpiType,
+                  prev,
+                  4101,
+                  MPI_COMM_WORLD,
+                  &requests[requestCount++]);
+    }
+    if (windowSize > 2) {
+        if (next != MPI_PROC_NULL) {
+            MPI_Irecv(&recvRight,
+                      1,
+                      mpiType,
+                      next,
+                      4102,
+                      MPI_COMM_WORLD,
+                      &requests[requestCount++]);
+        }
+    }
+    if (next != MPI_PROC_NULL) {
+        MPI_Isend(local.data() + lastInterior,
+                  1,
+                  mpiType,
+                  next,
+                  4101,
+                  MPI_COMM_WORLD,
+                  &requests[requestCount++]);
+    }
+    if (windowSize > 2 && prev != MPI_PROC_NULL) {
+        MPI_Isend(local.data() + firstInterior,
+                  1,
+                  mpiType,
+                  prev,
+                  4102,
+                  MPI_COMM_WORLD,
+                  &requests[requestCount++]);
+    }
+    if (requestCount > 0) {
+        MPI_Waitall(requestCount, requests, MPI_STATUSES_IGNORE);
+    }
     if (prev != MPI_PROC_NULL && firstInterior > 0) {
         local[static_cast<std::size_t>(firstInterior - 1)] = recvLeft;
     }
-    if (windowSize > 2) {
-        T recvRight{};
-        MPI_Sendrecv(local.data() + firstInterior,
-                     1,
-                     mpiType,
-                     prev,
-                     4102,
-                     &recvRight,
-                     1,
-                     mpiType,
-                     next,
-                     4102,
-                     MPI_COMM_WORLD,
-                     MPI_STATUS_IGNORE);
-        const int64_t rightIdx = interiorOffset + layout.owned.count;
-        if (next != MPI_PROC_NULL && rightIdx >= 0 &&
-            rightIdx < static_cast<int64_t>(local.size())) {
-            local[static_cast<std::size_t>(rightIdx)] = recvRight;
-        }
+    const int64_t rightIdx = interiorOffset + layout.owned.count;
+    if (windowSize > 2 && next != MPI_PROC_NULL && rightIdx >= 0 &&
+        rightIdx < static_cast<int64_t>(local.size())) {
+        local[static_cast<std::size_t>(rightIdx)] = recvRight;
     }
 }
 
@@ -460,8 +526,11 @@ void exchange_halo_2d_rows(std::vector<T>& local,
         local.empty() || writerLocal.empty()) {
         return;
     }
-    const int prev = nearest_nonempty_rank_1d(outputRows, rank, size, -1);
-    const int next = nearest_nonempty_rank_1d(outputRows, rank, size, 1);
+    (void)outputRows;
+    (void)rank;
+    (void)size;
+    const int prev = layout.prev_rank;
+    const int next = layout.next_rank;
     const int sendCount = narrow_mpi_count_or_abort(
         outputCols,
         "[DACPP][MPI][OR] resident halo 2D halo width exceeds MPI int range");
@@ -473,32 +542,50 @@ void exchange_halo_2d_rows(std::vector<T>& local,
                                         inputCols,
                                         "[DACPP][MPI][OR] resident halo 2D halo offset overflow") +
                                     followupTargetColOffset);
-    MPI_Sendrecv(writerLocal.data() +
-                     static_cast<std::ptrdiff_t>((layout.owned_rows.count - 1) *
-                                                 outputCols),
-                 sendCount,
-                 mpiType,
-                 next,
-                 4203,
-                 local.data() + topRecvOffset,
-                 sendCount,
-                 mpiType,
-                 prev,
-                 4203,
-                 MPI_COMM_WORLD,
-                 MPI_STATUS_IGNORE);
-    MPI_Sendrecv(writerLocal.data(),
-                 sendCount,
-                 mpiType,
-                 prev,
-                 4204,
-                 local.data() + bottomRecvOffset,
-                 sendCount,
-                 mpiType,
-                 next,
-                 4204,
-                 MPI_COMM_WORLD,
-                 MPI_STATUS_IGNORE);
+    const std::ptrdiff_t bottomSendOffset =
+        static_cast<std::ptrdiff_t>((layout.owned_rows.count - 1) *
+                                    outputCols);
+    MPI_Request requests[4];
+    int requestCount = 0;
+    if (prev != MPI_PROC_NULL) {
+        MPI_Irecv(local.data() + topRecvOffset,
+                  sendCount,
+                  mpiType,
+                  prev,
+                  4203,
+                  MPI_COMM_WORLD,
+                  &requests[requestCount++]);
+    }
+    if (next != MPI_PROC_NULL) {
+        MPI_Irecv(local.data() + bottomRecvOffset,
+                  sendCount,
+                  mpiType,
+                  next,
+                  4204,
+                  MPI_COMM_WORLD,
+                  &requests[requestCount++]);
+    }
+    if (next != MPI_PROC_NULL) {
+        MPI_Isend(writerLocal.data() + bottomSendOffset,
+                  sendCount,
+                  mpiType,
+                  next,
+                  4203,
+                  MPI_COMM_WORLD,
+                  &requests[requestCount++]);
+    }
+    if (prev != MPI_PROC_NULL) {
+        MPI_Isend(writerLocal.data(),
+                  sendCount,
+                  mpiType,
+                  prev,
+                  4204,
+                  MPI_COMM_WORLD,
+                  &requests[requestCount++]);
+    }
+    if (requestCount > 0) {
+        MPI_Waitall(requestCount, requests, MPI_STATUSES_IGNORE);
+    }
 }
 
 template <typename T>
@@ -516,8 +603,11 @@ void exchange_halo_2d_rows_inplace(std::vector<T>& local,
         interiorRowOffset != 1 || interiorColOffset != 1 || local.empty()) {
         return;
     }
-    const int prev = nearest_nonempty_rank_1d(outputRows, rank, size, -1);
-    const int next = nearest_nonempty_rank_1d(outputRows, rank, size, 1);
+    (void)outputRows;
+    (void)rank;
+    (void)size;
+    const int prev = layout.prev_rank;
+    const int next = layout.next_rank;
     const int sendCount = narrow_mpi_count_or_abort(
         outputCols,
         "[DACPP][MPI][OR] resident halo 2D halo width exceeds MPI int range");
@@ -541,30 +631,47 @@ void exchange_halo_2d_rows_inplace(std::vector<T>& local,
             inputCols,
             "[DACPP][MPI][OR] resident halo 2D halo offset overflow") +
         interiorColOffset);
-    MPI_Sendrecv(local.data() + bottomSendOffset,
-                 sendCount,
-                 mpiType,
-                 next,
-                 4203,
-                 local.data() + topRecvOffset,
-                 sendCount,
-                 mpiType,
-                 prev,
-                 4203,
-                 MPI_COMM_WORLD,
-                 MPI_STATUS_IGNORE);
-    MPI_Sendrecv(local.data() + topSendOffset,
-                 sendCount,
-                 mpiType,
-                 prev,
-                 4204,
-                 local.data() + bottomRecvOffset,
-                 sendCount,
-                 mpiType,
-                 next,
-                 4204,
-                 MPI_COMM_WORLD,
-                 MPI_STATUS_IGNORE);
+    MPI_Request requests[4];
+    int requestCount = 0;
+    if (prev != MPI_PROC_NULL) {
+        MPI_Irecv(local.data() + topRecvOffset,
+                  sendCount,
+                  mpiType,
+                  prev,
+                  4203,
+                  MPI_COMM_WORLD,
+                  &requests[requestCount++]);
+    }
+    if (next != MPI_PROC_NULL) {
+        MPI_Irecv(local.data() + bottomRecvOffset,
+                  sendCount,
+                  mpiType,
+                  next,
+                  4204,
+                  MPI_COMM_WORLD,
+                  &requests[requestCount++]);
+    }
+    if (next != MPI_PROC_NULL) {
+        MPI_Isend(local.data() + bottomSendOffset,
+                  sendCount,
+                  mpiType,
+                  next,
+                  4203,
+                  MPI_COMM_WORLD,
+                  &requests[requestCount++]);
+    }
+    if (prev != MPI_PROC_NULL) {
+        MPI_Isend(local.data() + topSendOffset,
+                  sendCount,
+                  mpiType,
+                  prev,
+                  4204,
+                  MPI_COMM_WORLD,
+                  &requests[requestCount++]);
+    }
+    if (requestCount > 0) {
+        MPI_Waitall(requestCount, requests, MPI_STATUSES_IGNORE);
+    }
 }
 
 template <typename T>

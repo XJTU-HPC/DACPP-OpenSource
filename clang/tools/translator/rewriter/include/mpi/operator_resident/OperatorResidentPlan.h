@@ -142,6 +142,13 @@ struct TensorDimMapping {
     std::string splitName;
 };
 
+struct ConstantInitPlan {
+    bool supported = false;
+    std::string valueExpr;
+    std::string logValue;
+    std::string reason;
+};
+
 struct PartitionSignature {
     std::vector<int64_t> bindSizes;
     std::vector<int> bindOrder;
@@ -177,6 +184,7 @@ struct ParamAccessPlan {
     const clang::Stmt* postUseReductionLoopStmt = nullptr;
     std::string postUseReductionScalarName;
     PostUseSyncPlan postUseSync;
+    ConstantInitPlan constantInit;
 
     // Payload metadata for RowPartitionFullRow/ReplicatedFullTensor
     PayloadDirection payloadDirection = PayloadDirection::Unknown;
@@ -201,6 +209,8 @@ struct ShellPartitionPlan {
     std::string loopLowerRejectReason;
     const clang::Stmt* loopLowerOuterLoop = nullptr;
     bool loopLowerMaterializeEveryRun = false;
+    bool loopLowerReplicatedScalarLocalRefresh = false;
+    std::string loopLowerScalarRefreshReason;
     OrLoopLowerPlan orLoopLower;
 };
 

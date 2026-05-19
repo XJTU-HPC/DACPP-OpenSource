@@ -122,7 +122,9 @@ void emitInitFunction(std::string& code,
     code += "}\n";
 }
 
-void emitScalarRefreshes(std::string& code, const ShellPartitionPlan& plan) {
+void emitScalarRefreshes(std::string& code,
+                         const ShellPartitionPlan& plan,
+                         bool useLocalReplicatedScalar) {
     for (const auto& param : plan.params) {
         if (param.access != ParamAccessKind::ReplicatedScalar) {
             continue;
@@ -136,22 +138,30 @@ void emitScalarRefreshes(std::string& code, const ShellPartitionPlan& plan) {
         code += "        MPI_Abort(MPI_COMM_WORLD, 2);\n";
         code += "    }\n";
         code += "    " + scalar + " = " + type + "{};\n";
-        code += "    if (ctx.mpi_rank == 0) {\n";
-        code += "        std::vector<" + type + "> __or_scalar_vec_" +
+        if (useLocalReplicatedScalar) {
+            code += "    // P4.5 loop-lowered direct scalar reader: all ranks execute the host scalar update, so refresh from the local replicated tensor without per-iteration MPI_Bcast.\n";
+        } else {
+            code += "    if (ctx.mpi_rank == 0) {\n";
+        }
+        const std::string refreshIndent =
+            useLocalReplicatedScalar ? "    " : "        ";
+        code += refreshIndent + "std::vector<" + type + "> __or_scalar_vec_" +
                 param.calcParamName + ";\n";
-        code += "        " + paramVarName(param) + ".tensor2Array(__or_scalar_vec_" +
+        code += refreshIndent + paramVarName(param) + ".tensor2Array(__or_scalar_vec_" +
                 param.calcParamName + ");\n";
-        code += "        if (!__or_scalar_vec_" + param.calcParamName +
+        code += refreshIndent + "if (!__or_scalar_vec_" + param.calcParamName +
                 ".empty()) " + scalar + " = __or_scalar_vec_" +
                 param.calcParamName + "[0];\n";
-        code += "    }\n";
-        if (usesByte(plan, param)) {
-            code += "    MPI_Bcast(&" + scalar +
-                    ", static_cast<int>(sizeof(" + type +
-                    ")), MPI_BYTE, 0, MPI_COMM_WORLD);\n";
-        } else {
-            code += "    MPI_Bcast(&" + scalar + ", 1, " +
-                    mpiDatatypeFor(type) + ", 0, MPI_COMM_WORLD);\n";
+        if (!useLocalReplicatedScalar) {
+            code += "    }\n";
+            if (usesByte(plan, param)) {
+                code += "    MPI_Bcast(&" + scalar +
+                        ", static_cast<int>(sizeof(" + type +
+                        ")), MPI_BYTE, 0, MPI_COMM_WORLD);\n";
+            } else {
+                code += "    MPI_Bcast(&" + scalar + ", 1, " +
+                        mpiDatatypeFor(type) + ", 0, MPI_COMM_WORLD);\n";
+            }
         }
         code += "    " + local + ".assign(1, " + scalar + ");\n";
     }
@@ -296,6 +306,8 @@ void emitRunFunction(std::string& code,
                      const ShellPartitionPlan& plan) {
     code += "void " + runName + "(" + ctxName + "& ctx, " +
             wrapperSignature(plan) + ") {\n";
+    const bool useLocalReplicatedScalar =
+        plan.loopLowerReplicatedScalarLocalRefresh;
     const bool hasScalarRefresh = [&]() {
         for (const auto& param : plan.params) {
             if (param.access == ParamAccessKind::ReplicatedScalar) {
@@ -304,11 +316,11 @@ void emitRunFunction(std::string& code,
         }
         return false;
     }();
-    if (hasScalarRefresh) {
+    if (hasScalarRefresh && !useLocalReplicatedScalar) {
         code += "    auto dacpp_profile_bcast_start = dacpp::mpi::profileSegmentStart();\n";
     }
-    emitScalarRefreshes(code, plan);
-    if (hasScalarRefresh) {
+    emitScalarRefreshes(code, plan, useLocalReplicatedScalar);
+    if (hasScalarRefresh && !useLocalReplicatedScalar) {
         code += "    dacpp::mpi::recordProfileSegment(ctx.__or_profile, dacpp::mpi::ProfileSegment::Bcast, dacpp_profile_bcast_start);\n";
     }
     code += "    auto dacpp_profile_kernel_start = dacpp::mpi::profileSegmentStart();\n";

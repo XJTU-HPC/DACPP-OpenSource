@@ -64,6 +64,14 @@ void emitScatter(std::string& code,
 
     code += "    std::vector<" + type + "> " + local +
             "(static_cast<std::size_t>(__or_local_item_count));\n";
+    if (param.constantInit.supported) {
+        code += "    std::fill(" + local + ".begin(), " + local +
+                ".end(), static_cast<" + type + ">(" +
+                param.constantInit.valueExpr + "));\n";
+        code += "    // Constant-initialized input " + param.calcParamName +
+                " is filled locally; skip root pack/scatter.\n";
+        return;
+    }
     code += "    std::vector<" + type + "> " + global + ";\n";
     if (canUseDirectTensorScatter) {
         code += "    " + type + "* __or_scatter_src_" +
