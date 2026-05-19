@@ -77,6 +77,7 @@ public:
     bool HasReadOutsideRootRegion = false;
     bool HasReadInsideRootRegion = false;
     std::set<std::string> RootOnlyPropagationTargets;
+    bool IgnoreUpdateReads = false;
 
     TensorUseVisitor(std::string name,
                      const std::vector<const clang::BinaryOperator*>& dacExprs,
@@ -130,16 +131,31 @@ public:
     bool VisitDeclRefExpr(clang::DeclRefExpr* dre) {
         if (dre->getDecl() && dre->getDecl()->getNameAsString() == TargetName &&
             InsideDacExpr == 0 && SeenCurrentDacExpr) {
+            if (detail::isTensor2ArrayOutputArgument(dre, Context)) {
+                return true;
+            }
+            if (IgnoreUpdateReads && UpdateReadDepth > 0) {
+                return true;
+            }
             if (WriteDepth == 0 || UpdateReadDepth > 0) {
                 HasPostDacRead = true;
                 if (RootRegionDepth > 0) {
                     HasReadInsideRootRegion = true;
                 } else if (detail::isRootOnlyObservableCall(dre, Context)) {
                     // Observable print/cout is rewritten root-only in MPI codegen.
+                } else if (const std::string tensor2ArrayTarget =
+                               detail::tensor2ArrayTargetForObjectRead(dre, Context);
+                           !tensor2ArrayTarget.empty()) {
+                    RootOnlyPropagationTargets.insert(tensor2ArrayTarget);
                 } else if (const std::string assignedName =
                                detail::assignmentLhsBaseForRhsRead(dre, Context);
                            !assignedName.empty()) {
                     RootOnlyPropagationTargets.insert(assignedName);
+                } else if (const std::set<std::string> controlTargets =
+                               detail::controlWriteTargetsForRead(dre, Context);
+                           !controlTargets.empty()) {
+                    RootOnlyPropagationTargets.insert(controlTargets.begin(),
+                                                      controlTargets.end());
                 } else {
                     HasReadOutsideRootRegion = true;
                 }
@@ -275,6 +291,7 @@ bool isRootOnlyObservableAfterDac(
     TensorUseVisitor visitor(
         tensorName, dacppFile->dacExprs, currentDacExpr, dacppFile->getContext(),
         rootRegionStmts);
+    visitor.IgnoreUpdateReads = true;
     visitor.TraverseStmt(const_cast<clang::Stmt*>(dacppFile->getMainBody()));
 
     if (visitor.HasReadOutsideRootRegion) {
@@ -320,6 +337,20 @@ const char* outputSyncRequirementName(OutputSyncRequirement requirement) {
         return "root-centric-followup";
     case OutputSyncRequirement::DistributedFollowup:
         return "distributed-followup";
+    }
+    return "unknown";
+}
+
+const char* postUseSyncKindName(PostUseSyncKind kind) {
+    switch (kind) {
+    case PostUseSyncKind::None:
+        return "none";
+    case PostUseSyncKind::BoundedIndexedRootRead:
+        return "bounded-index";
+    case PostUseSyncKind::ScalarReductionCountEqOne:
+        return "scalar-reduction";
+    case PostUseSyncKind::FullTensor:
+        return "full";
     }
     return "unknown";
 }

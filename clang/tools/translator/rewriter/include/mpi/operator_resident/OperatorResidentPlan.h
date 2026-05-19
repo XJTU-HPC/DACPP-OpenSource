@@ -8,6 +8,7 @@
 
 #include "mpi/shared/LoweringContract.h"
 #include "mpi/shared/MpiPlanBase.h"
+#include "mpi/shared/PostUseSyncPlan.h"
 
 namespace clang {
 class Stmt;
@@ -171,6 +172,11 @@ struct ParamAccessPlan {
     bool retainResidentAfterWrite = false;
     bool materializeAfterWrite = false;
     bool broadcastMaterializedOutput = false;
+    bool postUseReductionCountEqOne = false;
+    const clang::Stmt* postUseReductionResetStmt = nullptr;
+    const clang::Stmt* postUseReductionLoopStmt = nullptr;
+    std::string postUseReductionScalarName;
+    PostUseSyncPlan postUseSync;
 
     // Payload metadata for RowPartitionFullRow/ReplicatedFullTensor
     PayloadDirection payloadDirection = PayloadDirection::Unknown;

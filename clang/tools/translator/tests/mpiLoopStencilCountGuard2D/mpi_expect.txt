@@ -7,12 +7,16 @@ LOG_CONTAINS:contract=StencilResidentHalo
 LOG_CONTAINS:contract-materialize=loop-exit guard-compile=fallback guard-runtime=count-or-shape
 LOG_CONTAINS:contract-check=pass reason=p4.6-contract-consistent
 LOG_CONTAINS:contract-removal-set=match
+LOG_CONTAINS:[DACPP][MPI][OR] output matIn post-use=none reason=no host-visible post-DAC use
+LOG_CONTAINS:[DACPP][MPI][OR] output matOut post-use=none reason=no host-visible post-DAC use
 SYCL_CONTAINS:checked_mul_int64_or_abort(
 SYCL_CONTAINS:narrow_mpi_count_or_abort(
 SYCL_CONTAINS:resident halo 2D gather count exceeds MPI int range
-SYCL_CONTAINS:resident halo 2D materialize sendcount exceeds MPI int range
 SYCL_CONTAINS:resident halo 2D local reader size exceeds MPI int range
 SYCL_CONTAINS:resident halo 2D initial reader size exceeds MPI int range
+SYCL_CONTAINS:// No host post-use for out; skip full resident halo writer materialization.
+SYCL_CONTAINS:// No host post-use for mat; skip full resident halo reader materialization.
+SYCL_NOT_CONTAINS:resident halo 2D materialize sendcount exceeds MPI int range
 SYCL_NOT_CONTAINS:static_cast<int>(ctx.__or_local_item_count)
 SYCL_NOT_CONTAINS:static_cast<int>(ctx.__or_row_counts[static_cast<std::size_t>(r)] * ctx.__or_output_cols)
 SYCL_NOT_CONTAINS:static_cast<int>(ctx.__or_row_displs[static_cast<std::size_t>(r)] * ctx.__or_output_cols)

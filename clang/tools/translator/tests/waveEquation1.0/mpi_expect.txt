@@ -3,6 +3,9 @@ LOG_CONTAINS:[DACPP][MPI][OR] chain=0 layout=StencilWindow2D length=1 chain=acce
 LOG_CONTAINS:[DACPP][MPI] output matNext sync=distributed-followup
 LOG_CONTAINS:[DACPP][MPI][PhaseC] read-cache transition detected matCur->matPrev offset=(-1,-1)
 LOG_CONTAINS:[DACPP][MPI][PhaseC] route detected matNext->matCur offset=(1,1)
+LOG_CONTAINS:[DACPP][MPI][OR] output matCur post-use=full fallback reason=member call on tensor
+LOG_CONTAINS:[DACPP][MPI][OR] output matPrev post-use=none reason=no host-visible post-DAC use
+LOG_CONTAINS:[DACPP][MPI][OR] output matNext post-use=none reason=no host-visible post-DAC use
 LOG_CONTAINS:[DACPP][MPI][OR][P4.6][Loop] expr=0 shell=waveEqShell
 LOG_CONTAINS:kind=StencilResidentHalo structure=ctx/init/run/materialize resident-halo=true window-shape=3x3 followup-offset=(1,1) direct-reader=true read-cache-offset=(-1,-1) materialize=final
 SYCL_CONTAINS:struct __dacpp_mpi_or_waveEqShell_waveEq_0_ctx
@@ -22,9 +25,8 @@ SYCL_CONTAINS:dacpp::mpi::operator_resident::exchange_halo_2d_rows_inplace(__or_
 SYCL_CONTAINS:ctx.__or_local_prev.swap(ctx.__or_local_cur);
 SYCL_CONTAINS:ctx.__or_local_cur.swap(ctx.__or_local_next);
 SYCL_CONTAINS:dacpp::mpi::operator_resident::owned_slice_2d_rows(ctx.__or_local_cur
-SYCL_CONTAINS:dacpp::mpi::operator_resident::owned_slice_2d_rows(ctx.__or_local_prev
 SYCL_CONTAINS:MPI_Gatherv(__or_owned_next.data()
-SYCL_CONTAINS:MPI_Gatherv(__or_owned_prev.data()
+SYCL_CONTAINS:// No host post-use for prev; skip full resident halo direct-reader materialization.
 SYCL_CONTAINS:dacpp::mpi::map_2d_global_with_offset(static_cast<int64_t>(__or_idx), ctx.__or_output_cols, __or_followup_reader_cols_cur, 1, 1)
 SYCL_CONTAINS:__or_local_next[static_cast<std::size_t>(__or_boundary_target_local)] = static_cast<double>(0)
 SYCL_CONTAINS:dacpp::mpi::ProfileSegment::Materialize
@@ -42,6 +44,8 @@ SYCL_NOT_CONTAINS:apply_followup_2d(__or_local_cur, __or_local_next
 SYCL_NOT_CONTAINS:exchange_halo_2d_rows(__or_local_cur, __or_local_next
 SYCL_NOT_CONTAINS:MPI_Gatherv(ctx.__or_local_next.data()
 SYCL_NOT_CONTAINS:MPI_Gatherv(ctx.__or_local_prev.data()
+SYCL_NOT_CONTAINS:dacpp::mpi::operator_resident::owned_slice_2d_rows(ctx.__or_local_prev
+SYCL_NOT_CONTAINS:MPI_Gatherv(__or_owned_prev.data()
 SYCL_NOT_CONTAINS:dacpp::mpi::ContiguousView2D<const double> view_cur
 SYCL_NOT_CONTAINS:MPI_Bcast(__or_materialized_next.data()
 SYCL_NOT_CONTAINS:void __dacpp_mpi_stencil_waveEqShell_waveEq_0

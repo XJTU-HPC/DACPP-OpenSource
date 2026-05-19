@@ -1,9 +1,12 @@
+#include <algorithm>
+#include <cctype>
 #include <string>
 #include <vector>
 
 #include "DacppStructure.h"
 #include "Rewriter_MPI_Common.h"
 #include "OperatorResidentCodegen_Internal.h"
+#include "ShellPartitionAnalysis_Internal.h"
 
 namespace dacppTranslator {
 namespace mpi_rewriter {
@@ -153,6 +156,248 @@ std::vector<DistributedFollowupMapping> followupsForWriter(
         }
     }
     return result;
+}
+
+bool hasFullPostUse(const ParamAccessPlan& param) {
+    return param.postUseSync.kind == PostUseSyncKind::FullTensor ||
+           param.broadcastMaterializedOutput;
+}
+
+bool hasBoundedPostUse(const ParamAccessPlan& param) {
+    return param.postUseSync.kind == PostUseSyncKind::BoundedIndexedRootRead &&
+           !param.postUseSync.boundedIndices.empty();
+}
+
+std::string compactExprText(std::string text) {
+    text.erase(std::remove_if(text.begin(), text.end(),
+                              [](unsigned char c) {
+                                  return std::isspace(c) != 0;
+                              }),
+               text.end());
+    return text;
+}
+
+bool exprIsStaticIndex(const std::string& exprText,
+                       int64_t value,
+                       int64_t extent) {
+    const std::string compact = compactExprText(exprText);
+    if (compact == std::to_string(value)) {
+        return true;
+    }
+    if (extent > 0 && value == extent - 1 &&
+        (compact == std::to_string(extent - 1) ||
+         (compact.size() >= 2 &&
+          compact.compare(compact.size() - 2, 2, "-1") == 0))) {
+        return true;
+    }
+    return false;
+}
+
+bool updateLoopCoversIndex(const BoundaryLocalUpdate& update,
+                           int64_t index,
+                           int64_t extent) {
+    const std::string lower = compactExprText(update.loopLowerExpr);
+    const std::string upper = compactExprText(update.loopUpperExpr);
+    if (lower != "0" || !update.loopUpperInclusive || index < 0) {
+        return false;
+    }
+    if (extent > 0 && index >= extent) {
+        return false;
+    }
+    return (extent > 0 &&
+            (upper == std::to_string(extent - 1) ||
+             (upper.size() >= 2 &&
+              upper.compare(upper.size() - 2, 2, "-1") == 0))) ||
+           (!upper.empty() &&
+            upper.compare(upper.size() >= 2 ? upper.size() - 2 : 0,
+                          upper.size() >= 2 ? 2 : upper.size(),
+                          "-1") == 0);
+}
+
+bool constantBoundaryValueForIndex(const ShellPartitionPlan& plan,
+                                   const ParamAccessPlan& param,
+                                   const std::vector<BoundaryLocalUpdate>& updates,
+                                   const PostUseBoundedIndex& bounded,
+                                   std::string& constantValue) {
+    if (bounded.indices.size() != 2) {
+        return false;
+    }
+    const int64_t targetRow = bounded.indices[0];
+    const int64_t targetCol = bounded.indices[1];
+    const int64_t rows = operator_resident::shapeValueFor(
+        plan.exprNode.shell, param.paramIndex, 0);
+    const int64_t cols = operator_resident::shapeValueFor(
+        plan.exprNode.shell, param.paramIndex, 1);
+    for (const auto& update : updates) {
+        if (update.rank != 2 || update.paramIndex != param.paramIndex ||
+            !update.constantRhs) {
+            continue;
+        }
+        const bool rowMatches =
+            update.targetRowUsesLoop
+                ? updateLoopCoversIndex(update, targetRow, rows)
+                : exprIsStaticIndex(update.targetRowExpr, targetRow, rows);
+        const bool colMatches =
+            update.targetColUsesLoop
+                ? updateLoopCoversIndex(update, targetCol, cols)
+                : exprIsStaticIndex(update.targetColExpr, targetCol, cols);
+        if (rowMatches && colMatches) {
+            constantValue = update.constantValue.empty() ? "0" : update.constantValue;
+            return true;
+        }
+    }
+    return false;
+}
+
+void emitBoundedReviseValues(std::string& code,
+                             const ParamAccessPlan& param,
+                             const std::string& valuesName,
+                             const std::string& indent) {
+    for (std::size_t idx = 0; idx < param.postUseSync.boundedIndices.size();
+         ++idx) {
+        const auto& bounded = param.postUseSync.boundedIndices[idx];
+        code += indent + paramVarName(param) + ".reviseValue(" + valuesName +
+                "[static_cast<std::size_t>(" + std::to_string(idx) +
+                ")], std::vector<int>{";
+        for (std::size_t dim = 0; dim < bounded.indices.size(); ++dim) {
+            if (dim != 0) {
+                code += ", ";
+            }
+            code += std::to_string(bounded.indices[dim]);
+        }
+        code += "});\n";
+    }
+}
+
+void emitResidentHaloBoundedIndexedRootRead2D(
+    std::string& code,
+    const ShellPartitionPlan& plan,
+    const ParamAccessPlan& param,
+    const std::string& localBufferName,
+    const std::string& rowCountExpr,
+    const std::string& logicalColsExpr,
+    const std::string& localStrideExpr,
+    const std::string& rowOffsetExpr,
+    const std::string& colOffsetExpr,
+    const std::string& mpiRankExpr,
+    const std::string& mpiSizeExpr,
+    const std::string& profileName,
+    const std::vector<BoundaryLocalUpdate>& boundaryUpdates,
+    int tagBase) {
+    if (!hasBoundedPostUse(param)) {
+        return;
+    }
+    const std::string type = elemType(plan, param);
+    const std::string mpiType = usesByteTransport(type) ? "MPI_BYTE"
+                                                        : mpiDatatypeFor(type);
+    const std::string valueMpiCount =
+        usesByteTransport(type) ? "static_cast<int>(sizeof(" + type + "))"
+                                : "1";
+    const bool hasProfile = !profileName.empty();
+    if (hasProfile) {
+        code += "    auto dacpp_profile_bounded_sync_start_" +
+                param.calcParamName + " = dacpp::mpi::profileSegmentStart();\n";
+    }
+    code += "    {\n";
+    code += "        std::vector<" + type + "> __or_bounded_values_" +
+            param.calcParamName + "(static_cast<std::size_t>(" +
+            std::to_string(param.postUseSync.boundedIndices.size()) + "), " +
+            type + "{});\n";
+    code += "        std::vector<int> __or_bounded_owners_" +
+            param.calcParamName + "(static_cast<std::size_t>(" +
+            std::to_string(param.postUseSync.boundedIndices.size()) + "), -1);\n";
+    std::vector<bool> directRootConstants(
+        param.postUseSync.boundedIndices.size(), false);
+    for (std::size_t idx = 0; idx < param.postUseSync.boundedIndices.size();
+         ++idx) {
+        const auto& bounded = param.postUseSync.boundedIndices[idx];
+        if (bounded.indices.size() != 2) {
+            continue;
+        }
+        std::string constantValue;
+        if (constantBoundaryValueForIndex(plan, param, boundaryUpdates, bounded,
+                                          constantValue)) {
+            directRootConstants[idx] = true;
+            code += "        if (" + mpiRankExpr + " == 0) {\n";
+            code += "            __or_bounded_values_" + param.calcParamName +
+                    "[static_cast<std::size_t>(" + std::to_string(idx) +
+                    ")] = static_cast<" + type + ">(" + constantValue + ");\n";
+            code += "        }\n";
+            continue;
+        }
+        code += "        {\n";
+        code += "            const int64_t __or_target_row = " +
+                std::to_string(bounded.indices[0]) + ";\n";
+        code += "            const int64_t __or_target_col = " +
+                std::to_string(bounded.indices[1]) + ";\n";
+        code += "            if (__or_target_row >= ctx.__or_halo_layout.global_row_begin && __or_target_row < ctx.__or_halo_layout.global_row_begin + " +
+                rowCountExpr + " && __or_target_col >= 0 && __or_target_col < " +
+                logicalColsExpr + ") {\n";
+        code += "                const int64_t __or_local_row = __or_target_row - ctx.__or_halo_layout.global_row_begin;\n";
+        code += "                const int64_t __or_local_linear = (__or_local_row + " +
+                rowOffsetExpr + ") * " + localStrideExpr +
+                " + __or_target_col + " +
+                colOffsetExpr + ";\n";
+        code += "                if (__or_local_linear < 0 || static_cast<std::size_t>(__or_local_linear) >= " +
+                localBufferName + ".size()) {\n";
+        code += "                    if (" + mpiRankExpr +
+                " == 0) std::fprintf(stderr, \"[DACPP][MPI][OR] resident halo bounded indexed read local index out of range\\n\");\n";
+        code += "                    MPI_Abort(MPI_COMM_WORLD, 6);\n";
+        code += "                }\n";
+        code += "                __or_bounded_values_" + param.calcParamName +
+                "[static_cast<std::size_t>(" + std::to_string(idx) +
+                ")] = " + localBufferName +
+                "[static_cast<std::size_t>(__or_local_linear)];\n";
+        code += "                __or_bounded_owners_" + param.calcParamName +
+                "[static_cast<std::size_t>(" + std::to_string(idx) +
+                ")] = " + mpiRankExpr + ";\n";
+        code += "            }\n";
+        code += "        }\n";
+    }
+    for (std::size_t idx = 0; idx < param.postUseSync.boundedIndices.size();
+         ++idx) {
+        if (directRootConstants[idx]) {
+            continue;
+        }
+        code += "        {\n";
+        code += "            int __or_owner_rank = __or_bounded_owners_" +
+                param.calcParamName + "[static_cast<std::size_t>(" +
+                std::to_string(idx) + ")];\n";
+        code += "            MPI_Allreduce(MPI_IN_PLACE, &__or_owner_rank, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);\n";
+        code += "            if (__or_owner_rank < 0) {\n";
+        code += "                if (" + mpiRankExpr +
+                " == 0) std::fprintf(stderr, \"[DACPP][MPI][OR] resident halo bounded indexed read has no owner\\n\");\n";
+        code += "                MPI_Abort(MPI_COMM_WORLD, 6);\n";
+        code += "            }\n";
+        code += "            if (" + mpiRankExpr +
+                " == __or_owner_rank && __or_owner_rank != 0) {\n";
+        code += "                MPI_Send(&__or_bounded_values_" + param.calcParamName +
+                "[static_cast<std::size_t>(" + std::to_string(idx) +
+                ")], " + valueMpiCount + ", " + mpiType + ", 0, " +
+                std::to_string(tagBase + static_cast<int>(idx)) +
+                ", MPI_COMM_WORLD);\n";
+        code += "            } else if (" + mpiRankExpr +
+                " == 0 && __or_owner_rank != 0) {\n";
+        code += "                MPI_Recv(&__or_bounded_values_" + param.calcParamName +
+                "[static_cast<std::size_t>(" + std::to_string(idx) +
+                ")], " + valueMpiCount + ", " + mpiType + ", __or_owner_rank, " +
+                std::to_string(tagBase + static_cast<int>(idx)) +
+                ", MPI_COMM_WORLD, MPI_STATUS_IGNORE);\n";
+        code += "            }\n";
+        code += "        }\n";
+    }
+    code += "        if (" + mpiRankExpr + " == 0) {\n";
+    emitBoundedReviseValues(code, param,
+                            "__or_bounded_values_" + param.calcParamName,
+                            "            ");
+    code += "        }\n";
+    code += "    }\n";
+    if (hasProfile) {
+        code += "    dacpp::mpi::recordProfileSegment(" + profileName +
+                ", dacpp::mpi::ProfileSegment::FinalSync, "
+                "dacpp_profile_bounded_sync_start_" +
+                param.calcParamName + ");\n";
+    }
 }
 
 void emitReadCacheTransitions2D(
@@ -1192,10 +1437,17 @@ void emitResidentHaloMaterializeFunction2D(
     const DistributedStencilSitePlan sitePlan =
         stencilSitePlanFor(dacppFile, plan);
     const auto& halo = plan.orLoopLower.stencilResidentHalo;
+    const bool writerFull = hasFullPostUse(writer);
+    const bool writerBounded = hasBoundedPostUse(writer);
+    const bool directReaderFull = directReader && hasFullPostUse(*directReader);
+    const bool directReaderBounded =
+        directReader && hasBoundedPostUse(*directReader);
+    const bool readerFull = hasFullPostUse(reader);
+    const bool readerBounded = hasBoundedPostUse(reader);
+    const bool needsWriterGlobal = writerFull || readerFull;
     code += "void " + materializeName + "(" + ctxName + "& ctx, " +
             wrapperSignature(plan) + ") {\n";
     code += "    int mpi_rank = ctx.mpi_rank;\n";
-    code += "    auto dacpp_profile_gather_start_writer = dacpp::mpi::profileSegmentStart();\n";
     code += "    std::vector<" + writerType + "> __or_materialized_" +
             writer.calcParamName + ";\n";
     code += "    const int64_t __or_materialized_writer_count = " +
@@ -1203,16 +1455,20 @@ void emitResidentHaloMaterializeFunction2D(
                 "ctx.__or_output_rows", "ctx.__or_output_cols",
                 "[DACPP][MPI][OR] resident halo 2D materialized output size overflow") +
             ";\n";
-    code += "    const auto __or_owned_" + writer.calcParamName +
-            " = dacpp::mpi::operator_resident::owned_slice_2d_rows(ctx." +
-            localName(reader) +
-            ", ctx.__or_halo_layout, ctx.__or_output_cols, ctx.__or_input_cols, " +
-            std::to_string(halo.followupTargetRowOffset) + ", " +
-            std::to_string(halo.followupTargetColOffset) + ");\n";
+    if (needsWriterGlobal) {
+        code += "    auto dacpp_profile_gather_start_writer = dacpp::mpi::profileSegmentStart();\n";
+        code += "    const auto __or_owned_" + writer.calcParamName +
+                " = dacpp::mpi::operator_resident::owned_slice_2d_rows(ctx." +
+                localName(reader) +
+                ", ctx.__or_halo_layout, ctx.__or_output_cols, ctx.__or_input_cols, " +
+                std::to_string(halo.followupTargetRowOffset) + ", " +
+                std::to_string(halo.followupTargetColOffset) + ");\n";
+    }
     code += "    " + checkedMpiCountExpr(
             "__or_materialized_writer_count",
             "[DACPP][MPI][OR] resident halo 2D materialized output size exceeds MPI int range") +
             ";\n";
+    if (needsWriterGlobal) {
     code += "    if (mpi_rank == 0) {\n";
     code += "        __or_materialized_" + writer.calcParamName +
             ".resize(static_cast<std::size_t>(__or_materialized_writer_count));\n";
@@ -1228,13 +1484,27 @@ void emitResidentHaloMaterializeFunction2D(
             ".data() : nullptr, mpi_rank == 0 ? ctx.__or_counts.data() : nullptr, mpi_rank == 0 ? ctx.__or_displs.data() : nullptr, " +
             writerMpiType + ", 0, MPI_COMM_WORLD);\n";
     code += "    dacpp::mpi::recordProfileSegment(ctx.__or_profile, dacpp::mpi::ProfileSegment::Gather, dacpp_profile_gather_start_writer);\n";
+    }
     code += "    auto dacpp_profile_materialize_start = dacpp::mpi::profileSegmentStart();\n";
-    code += "    if (mpi_rank == 0) {\n";
-    code += "        " + paramVarName(writer) + ".array2Tensor(__or_materialized_" +
-            writer.calcParamName + ");\n";
-    code += "    }\n";
+    if (writerFull) {
+        code += "    if (mpi_rank == 0) {\n";
+        code += "        " + paramVarName(writer) + ".array2Tensor(__or_materialized_" +
+                writer.calcParamName + ");\n";
+        code += "    }\n";
+    } else if (writerBounded) {
+        emitResidentHaloBoundedIndexedRootRead2D(
+            code, plan, writer, "ctx." + localName(reader),
+            "ctx.__or_output_row_range.count", "ctx.__or_output_cols",
+            "ctx.__or_input_cols",
+            std::to_string(halo.followupTargetRowOffset),
+            std::to_string(halo.followupTargetColOffset), "mpi_rank",
+            "ctx.mpi_size", "", sitePlan.boundaryLocalUpdates, 4710);
+    } else {
+        code += "    // No host post-use for " + writer.calcParamName +
+                "; skip full resident halo writer materialization.\n";
+    }
     code += "    dacpp::mpi::recordProfileSegment(ctx.__or_profile, dacpp::mpi::ProfileSegment::Materialize, dacpp_profile_materialize_start);\n";
-    if (directReader) {
+    if (directReader && directReaderFull) {
         code += "    auto dacpp_profile_gather_start_" +
                 directReader->calcParamName +
                 " = dacpp::mpi::profileSegmentStart();\n";
@@ -1268,9 +1538,22 @@ void emitResidentHaloMaterializeFunction2D(
                 directReader->calcParamName + ");\n";
         code += "    }\n";
         code += "    dacpp::mpi::recordProfileSegment(ctx.__or_profile, dacpp::mpi::ProfileSegment::Materialize, dacpp_profile_materialize_start);\n";
+    } else if (directReader && directReaderBounded) {
+        emitResidentHaloBoundedIndexedRootRead2D(
+            code, plan, *directReader, "ctx." + localName(*directReader),
+            "ctx.__or_output_row_range.count", "ctx.__or_output_cols",
+            "ctx.__or_input_cols",
+            std::to_string(halo.followupTargetRowOffset),
+            std::to_string(halo.followupTargetColOffset), "mpi_rank",
+            "ctx.mpi_size", "ctx.__or_profile",
+            sitePlan.boundaryLocalUpdates, 4810);
+    } else if (directReader) {
+        code += "    // No host post-use for " + directReader->calcParamName +
+                "; skip full resident halo direct-reader materialization.\n";
     }
     code += "    dacpp_profile_materialize_start = dacpp::mpi::profileSegmentStart();\n";
-    code += "    if (mpi_rank == 0) {\n";
+    if (readerFull) {
+        code += "    if (mpi_rank == 0) {\n";
     code += "        std::vector<" + readerType + "> __or_materialized_" +
             reader.calcParamName + ";\n";
     code += "        " + paramVarName(reader) + ".tensor2Array(__or_materialized_" +
@@ -1302,6 +1585,16 @@ void emitResidentHaloMaterializeFunction2D(
     code += "        " + paramVarName(reader) + ".array2Tensor(__or_materialized_" +
             reader.calcParamName + ");\n";
     code += "    }\n";
+    } else if (readerBounded) {
+        emitResidentHaloBoundedIndexedRootRead2D(
+            code, plan, reader, "ctx." + localName(reader),
+            "ctx.__or_halo_layout.local_row_count", "ctx.__or_input_cols",
+            "ctx.__or_input_cols", "0", "0", "mpi_rank", "ctx.mpi_size",
+            "", sitePlan.boundaryLocalUpdates, 4910);
+    } else {
+        code += "    // No host post-use for " + reader.calcParamName +
+                "; skip full resident halo reader materialization.\n";
+    }
     code += "    dacpp::mpi::recordProfileSegment(ctx.__or_profile, dacpp::mpi::ProfileSegment::Materialize, dacpp_profile_materialize_start);\n";
     for (const auto& param : plan.params) {
         if (param.paramIndex != reader.paramIndex &&

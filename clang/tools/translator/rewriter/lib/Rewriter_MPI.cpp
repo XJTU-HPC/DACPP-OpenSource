@@ -118,6 +118,27 @@ void removeContractStmts(clang::Rewriter* rewriter,
     }
 }
 
+void removePostUseReductionStmts(
+    clang::Rewriter* rewriter,
+    const mpi_rewriter::ShellPartitionPlan& exprPlan) {
+    if (!rewriter) {
+        return;
+    }
+    for (const auto& param : exprPlan.params) {
+        if (!param.postUseReductionCountEqOne) {
+            continue;
+        }
+        if (param.postUseReductionResetStmt) {
+            rewriter->ReplaceText(param.postUseReductionResetStmt->getSourceRange(),
+                                  "/* DACPP MPI post-use reduction scalar set in wrapper */");
+        }
+        if (param.postUseReductionLoopStmt) {
+            rewriter->ReplaceText(param.postUseReductionLoopStmt->getSourceRange(),
+                                  "/* DACPP MPI post-use reduction loop elided */");
+        }
+    }
+}
+
 bool isLoopLoweredOperatorResidentExpr(
     const mpi_rewriter::MpiLoweringPlan& plan,
     int exprIdx,
@@ -392,6 +413,9 @@ void Rewriter::rewriteMPI() {
                     exprPlan->signature.layout)) {
                 removeOperatorResidentLoweredPostStmts(
                     dacppFile, rewriter, shell, calc, dacExpr);
+            }
+            if (exprPlan) {
+                removePostUseReductionStmts(rewriter, *exprPlan);
             }
         }
         rewrittenDacExprs.insert(dacExpr);

@@ -467,25 +467,144 @@ void fillActualTensorNames(ShellPartitionPlan& plan, DacppFile* dacppFile) {
     }
 }
 
+bool paramMayNeedHostPostUseSync(const ParamAccessPlan& param) {
+    if (param.writes &&
+        (param.access == ParamAccessKind::OutputDirect ||
+         param.access == ParamAccessKind::FixedBlock)) {
+        return true;
+    }
+    if (param.access == ParamAccessKind::StencilWindow ||
+        param.access == ParamAccessKind::DirectMapped) {
+        return param.reads && !param.actualTensorName.empty();
+    }
+    return false;
+}
+
+bool layoutSupportsBoundedPostUseSync(const ShellPartitionPlan& plan,
+                                      const ParamAccessPlan& param) {
+    if (param.postUseSync.kind != PostUseSyncKind::BoundedIndexedRootRead) {
+        return true;
+    }
+    for (const auto& bounded : param.postUseSync.boundedIndices) {
+        if (bounded.indices.empty() || bounded.indices.size() > 2) {
+            return false;
+        }
+        if (param.access == ParamAccessKind::StencilWindow ||
+            plan.signature.layout == LocalLayoutKind::StencilWindow2D) {
+            if (bounded.indices.size() != 2) {
+                return false;
+            }
+            continue;
+        }
+        if (plan.signature.layout == LocalLayoutKind::Contiguous1D ||
+            plan.signature.layout == LocalLayoutKind::ReplicatedFullTensor) {
+            if (bounded.indices.size() != 1) {
+                return false;
+            }
+            continue;
+        }
+        if (plan.signature.layout == LocalLayoutKind::RowBlock2D ||
+            plan.signature.layout == LocalLayoutKind::RowPartitionFullRow) {
+            if (bounded.indices.size() != 2) {
+                return false;
+            }
+            if (plan.signature.layout == LocalLayoutKind::RowPartitionFullRow &&
+                (param.tensorDims.size() != 2 || param.tensorDims[0] != 0 ||
+                 param.tensorDims[1] != 1)) {
+                return false;
+            }
+            continue;
+        }
+        return false;
+    }
+    return true;
+}
+
+void downgradeUnsupportedBoundedPostUse(ShellPartitionPlan& plan,
+                                        ParamAccessPlan& param) {
+    if (param.postUseSync.kind != PostUseSyncKind::BoundedIndexedRootRead ||
+        layoutSupportsBoundedPostUseSync(plan, param)) {
+        return;
+    }
+    param.postUseSync.kind = PostUseSyncKind::FullTensor;
+    param.postUseSync.reason = "bounded indexed read unsupported for layout";
+    param.postUseSync.boundedIndices.clear();
+}
+
+void logPostUseSyncDecision(const ParamAccessPlan& param) {
+    llvm::outs() << "[DACPP][MPI][OR] output " << param.actualTensorName
+                 << " post-use="
+                 << postUseSyncKindName(param.postUseSync.kind);
+    if (param.postUseSync.kind == PostUseSyncKind::BoundedIndexedRootRead) {
+        llvm::outs() << " count=" << param.postUseSync.boundedIndices.size();
+    }
+    if (param.postUseSync.kind == PostUseSyncKind::FullTensor &&
+        !param.postUseSync.reason.empty()) {
+        llvm::outs() << " fallback reason=" << param.postUseSync.reason;
+    } else if (!param.postUseSync.reason.empty()) {
+        llvm::outs() << " reason=" << param.postUseSync.reason;
+    }
+    llvm::outs() << "\n";
+}
+
 void annotateOutputSync(ShellPartitionPlan& plan, DacppFile* dacppFile) {
     if (!dacppFile) {
         return;
     }
     for (auto& param : plan.params) {
-        if (!param.writes ||
-            (param.access != ParamAccessKind::OutputDirect &&
-             param.access != ParamAccessKind::FixedBlock)) {
+        if (!paramMayNeedHostPostUseSync(param)) {
             continue;
         }
+        param.postUseSync = analyzePostUseSync(
+            dacppFile, plan.exprNode.shell, plan.exprNode.calc,
+            plan.exprNode.dacExpr, param.actualTensorName);
+        downgradeUnsupportedBoundedPostUse(plan, param);
         const OutputSyncRequirement syncRequirement =
             classifyOutputSyncRequirement(dacppFile, param.actualTensorName,
                                           plan.exprNode.dacExpr);
         const bool orStencilDistributedFollowupLowered =
             syncRequirement == OutputSyncRequirement::DistributedFollowup &&
             isShellDerivedStencilLayout(plan.signature.layout);
-        param.broadcastMaterializedOutput =
-            syncRequirement != OutputSyncRequirement::RootOnly &&
-            !orStencilDistributedFollowupLowered;
+        if (param.writes &&
+            (param.access == ParamAccessKind::OutputDirect ||
+             param.access == ParamAccessKind::FixedBlock)) {
+            param.broadcastMaterializedOutput =
+                syncRequirement != OutputSyncRequirement::RootOnly &&
+                syncRequirement != OutputSyncRequirement::RootCentricFollowup &&
+                !orStencilDistributedFollowupLowered;
+        }
+        if ((syncRequirement == OutputSyncRequirement::RootOnly ||
+             syncRequirement == OutputSyncRequirement::RootCentricFollowup) &&
+            param.access == ParamAccessKind::OutputDirect &&
+            plan.signature.layout == LocalLayoutKind::Contiguous1D) {
+            const PostUseReductionPlan reduction =
+                analyzePostUseReduction(dacppFile, plan.exprNode.dacExpr,
+                                        param.actualTensorName);
+            if (reduction.supported) {
+                param.postUseReductionCountEqOne = true;
+                param.postUseReductionResetStmt = reduction.resetStmt;
+                param.postUseReductionLoopStmt = reduction.loopStmt;
+                param.postUseReductionScalarName = reduction.scalarName;
+                param.materializeAfterWrite = false;
+                param.broadcastMaterializedOutput = false;
+                llvm::outs() << "[DACPP][MPI][OR] output "
+                             << param.actualTensorName
+                             << " post-use-reduction=accepted kind=count-eq-one scalar="
+                             << reduction.scalarName << "\n";
+            } else if (!reduction.reason.empty()) {
+                llvm::outs() << "[DACPP][MPI][OR] output "
+                             << param.actualTensorName
+                             << " post-use-reduction=fallback reason="
+                             << reduction.reason << "\n";
+            }
+        }
+        if (!param.postUseReductionCountEqOne &&
+            (param.postUseSync.kind == PostUseSyncKind::None ||
+             param.postUseSync.kind == PostUseSyncKind::BoundedIndexedRootRead)) {
+            param.materializeAfterWrite = false;
+            param.broadcastMaterializedOutput = false;
+        }
+        logPostUseSyncDecision(param);
         llvm::outs() << "[DACPP][MPI] output " << param.actualTensorName
                      << " sync="
                      << outputSyncRequirementName(syncRequirement) << "\n";

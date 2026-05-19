@@ -1,6 +1,7 @@
 #ifndef DACPP_TRANSLATOR_REWRITER_MPI_OUTPUT_ANALYSIS_INTERNAL_H
 #define DACPP_TRANSLATOR_REWRITER_MPI_OUTPUT_ANALYSIS_INTERNAL_H
 
+#include <set>
 #include <string>
 
 #include "clang/AST/ASTTypeTraits.h"
@@ -259,6 +260,160 @@ inline bool isRootOnlyObservableCall(const clang::DeclRefExpr* dre,
         current = parent;
     }
     return false;
+}
+
+inline std::string tensor2ArrayTargetForObjectRead(const clang::DeclRefExpr* dre,
+                                                   clang::ASTContext* context) {
+    if (!dre || !context) {
+        return "";
+    }
+
+    clang::DynTypedNode current = clang::DynTypedNode::create(*dre);
+    for (int depth = 0; depth < kMaxParentTraversalDepth; ++depth) {
+        auto parents = context->getParents(current);
+        if (parents.empty()) {
+            break;
+        }
+        const clang::DynTypedNode& parent = parents[0];
+        if (const auto* memberCall = parent.get<clang::CXXMemberCallExpr>()) {
+            const clang::CXXMethodDecl* method = memberCall->getMethodDecl();
+            const std::string methodName =
+                method ? method->getNameAsString() : "";
+            if (methodName == "tensor2Array" &&
+                memberCall->getNumArgs() >= 1 &&
+                containsStmt(memberCall->getImplicitObjectArgument(), dre)) {
+                return extractBaseDeclName(memberCall->getArg(0));
+            }
+        }
+        if (parent.get<clang::CompoundStmt>() ||
+            parent.get<clang::ForStmt>() ||
+            parent.get<clang::WhileStmt>() ||
+            parent.get<clang::IfStmt>() ||
+            parent.get<clang::ReturnStmt>()) {
+            break;
+        }
+        current = parent;
+    }
+    return "";
+}
+
+inline bool isTensor2ArrayOutputArgument(const clang::DeclRefExpr* dre,
+                                         clang::ASTContext* context) {
+    if (!dre || !context) {
+        return false;
+    }
+
+    clang::DynTypedNode current = clang::DynTypedNode::create(*dre);
+    for (int depth = 0; depth < kMaxParentTraversalDepth; ++depth) {
+        auto parents = context->getParents(current);
+        if (parents.empty()) {
+            break;
+        }
+        const clang::DynTypedNode& parent = parents[0];
+        if (const auto* memberCall = parent.get<clang::CXXMemberCallExpr>()) {
+            const clang::CXXMethodDecl* method = memberCall->getMethodDecl();
+            const std::string methodName =
+                method ? method->getNameAsString() : "";
+            if (methodName == "tensor2Array") {
+                for (unsigned argIdx = 0; argIdx < memberCall->getNumArgs();
+                     ++argIdx) {
+                    if (containsStmt(memberCall->getArg(argIdx), dre)) {
+                        return true;
+                    }
+                }
+                return false;
+            }
+        }
+        if (parent.get<clang::CompoundStmt>() ||
+            parent.get<clang::ForStmt>() ||
+            parent.get<clang::WhileStmt>() ||
+            parent.get<clang::IfStmt>() ||
+            parent.get<clang::ReturnStmt>()) {
+            break;
+        }
+        current = parent;
+    }
+    return false;
+}
+
+inline void collectBaseWrites(const clang::Stmt* stmt,
+                              std::set<std::string>& writes) {
+    if (!stmt) {
+        return;
+    }
+    if (const auto* binary = llvm::dyn_cast<clang::BinaryOperator>(stmt)) {
+        if (binary->isAssignmentOp()) {
+            const std::string name = extractBaseDeclName(binary->getLHS());
+            if (!name.empty()) {
+                writes.insert(name);
+            }
+        }
+    } else if (const auto* compound =
+                   llvm::dyn_cast<clang::CompoundAssignOperator>(stmt)) {
+        const std::string name = extractBaseDeclName(compound->getLHS());
+        if (!name.empty()) {
+            writes.insert(name);
+        }
+    } else if (const auto* unary = llvm::dyn_cast<clang::UnaryOperator>(stmt)) {
+        if (unary->isIncrementDecrementOp()) {
+            const std::string name = extractBaseDeclName(unary->getSubExpr());
+            if (!name.empty()) {
+                writes.insert(name);
+            }
+        }
+    } else if (const auto* opCall =
+                   llvm::dyn_cast<clang::CXXOperatorCallExpr>(stmt)) {
+        if (opCall->isAssignmentOp() && opCall->getNumArgs() > 0) {
+            const std::string name = extractBaseDeclName(opCall->getArg(0));
+            if (!name.empty()) {
+                writes.insert(name);
+            }
+        } else if ((opCall->getOperator() == clang::OO_PlusPlus ||
+                    opCall->getOperator() == clang::OO_MinusMinus) &&
+                   opCall->getNumArgs() > 0) {
+            const std::string name = extractBaseDeclName(opCall->getArg(0));
+            if (!name.empty()) {
+                writes.insert(name);
+            }
+        }
+    }
+
+    for (const clang::Stmt* child : stmt->children()) {
+        collectBaseWrites(child, writes);
+    }
+}
+
+inline std::set<std::string> controlWriteTargetsForRead(
+    const clang::DeclRefExpr* dre,
+    clang::ASTContext* context) {
+    std::set<std::string> writes;
+    if (!dre || !context) {
+        return writes;
+    }
+
+    clang::DynTypedNode current = clang::DynTypedNode::create(*dre);
+    for (int depth = 0; depth < kMaxParentTraversalDepth; ++depth) {
+        auto parents = context->getParents(current);
+        if (parents.empty()) {
+            break;
+        }
+        const clang::DynTypedNode& parent = parents[0];
+        if (const auto* ifStmt = parent.get<clang::IfStmt>()) {
+            if (containsStmt(ifStmt->getCond(), dre)) {
+                collectBaseWrites(ifStmt->getThen(), writes);
+                collectBaseWrites(ifStmt->getElse(), writes);
+                return writes;
+            }
+        }
+        if (parent.get<clang::ForStmt>() ||
+            parent.get<clang::WhileStmt>() ||
+            parent.get<clang::CompoundStmt>() ||
+            parent.get<clang::ReturnStmt>()) {
+            break;
+        }
+        current = parent;
+    }
+    return writes;
 }
 
 inline std::string assignmentLhsBaseForRhsRead(const clang::DeclRefExpr* dre,

@@ -42,7 +42,7 @@ int main() {
     // for (auto &v : host_grads) v = dist(gen);
     for(int i=0;i<NUM_NEURONS;i++){
         for(int j=0;j<INPUT_SIZE;j++){
-            host_grads[i*INPUT_SIZE+j]=j;
+            host_grads[i*INPUT_SIZE+j]=i + j;
         }
     }
     // DAC Tensor 初始化

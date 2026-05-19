@@ -51,20 +51,233 @@ void emitScatter(std::string& code,
     const std::string mpiType = mpiDatatypeFor(type);
     const std::string local = localName(param);
     const std::string global = globalName(param);
+    const bool canUseDirectTensorScatter =
+        !usesByte(plan, param) &&
+        (plan.signature.layout == LocalLayoutKind::Contiguous1D ||
+         (plan.signature.layout == LocalLayoutKind::RowPartitionFullRow &&
+          plan.signature.bindOrder.size() == 1)) &&
+        param.tensorDims.size() == 1 && param.tensorDims[0] == 0;
+    const bool canUseRowBlockDirectScatter =
+        plan.signature.layout == LocalLayoutKind::RowBlock2D &&
+        param.tensorDims.size() == 2 && param.tensorDims[0] == 0 &&
+        param.tensorDims[1] == 1;
 
     code += "    std::vector<" + type + "> " + local +
             "(static_cast<std::size_t>(__or_local_item_count));\n";
     code += "    std::vector<" + type + "> " + global + ";\n";
+    if (canUseDirectTensorScatter) {
+        code += "    " + type + "* __or_scatter_src_" +
+                param.calcParamName + " = nullptr;\n";
+        code += "    bool __or_scatter_direct_" + param.calcParamName +
+                " = false;\n";
+        code += "    if (mpi_rank == 0) {\n";
+        code += "        const int64_t __or_direct_offset_" +
+                param.calcParamName + " = " + paramVarName(param) +
+                ".getOffset();\n";
+        code += "        const int64_t __or_direct_stride_" +
+                param.calcParamName + " = " + paramVarName(param) +
+                ".getStride(0);\n";
+        code += "        __or_scatter_direct_" + param.calcParamName +
+                " = (__or_direct_offset_" + param.calcParamName +
+                " >= 0 && __or_direct_stride_" + param.calcParamName +
+                " == 1 && " + paramVarName(param) +
+                ".getSize() >= __or_total_items && __or_direct_offset_" +
+                param.calcParamName + " + __or_total_items <= " +
+                paramVarName(param) + ".getSize());\n";
+        code += "        if (__or_scatter_direct_" + param.calcParamName +
+                ") {\n";
+        code += "            __or_scatter_src_" + param.calcParamName +
+                " = " + paramVarName(param) +
+                ".getDataPtr().get() + __or_direct_offset_" +
+                param.calcParamName + ";\n";
+        code += "        }\n";
+        code += "    }\n";
+    }
+    if (canUseRowBlockDirectScatter) {
+        code += "    " + type + "* __or_rowblock_scatter_src_" +
+                param.calcParamName + " = nullptr;\n";
+        code += "    int __or_rowblock_direct_" + param.calcParamName +
+                " = 0;\n";
+        code += "    if (mpi_rank == 0) {\n";
+        code += "        const int64_t __or_rb_offset_" +
+                param.calcParamName + " = " + paramVarName(param) +
+                ".getOffset();\n";
+        code += "        int64_t __or_rb_rows_" + param.calcParamName +
+                " = -1;\n";
+        code += "        int64_t __or_rb_cols_" + param.calcParamName +
+                " = -1;\n";
+        code += "        if (" + paramVarName(param) +
+                ".getDim() == 2) {\n";
+        code += "            __or_rb_rows_" + param.calcParamName +
+                " = " + paramVarName(param) + ".getShape(0);\n";
+        code += "            __or_rb_cols_" + param.calcParamName +
+                " = " + paramVarName(param) + ".getShape(1);\n";
+        code += "        }\n";
+        code += "        const int64_t __or_rb_size_" + param.calcParamName +
+                " = " + paramVarName(param) + ".getSize();\n";
+        code += "        const int64_t __or_rb_last_begin_" +
+                param.calcParamName +
+                " = mpi_size > 0 ? static_cast<int64_t>(__or_row_displs[mpi_size - 1]) : 0;\n";
+        code += "        const int64_t __or_rb_last_count_" +
+                param.calcParamName +
+                " = mpi_size > 0 ? static_cast<int64_t>(__or_row_counts[mpi_size - 1]) : 0;\n";
+        code += "        bool __or_rb_ranges_ok_" + param.calcParamName +
+                " = mpi_size >= 0;\n";
+        code += "        for (int __or_r = 0; __or_r < mpi_size; ++__or_r) {\n";
+        code += "            const int64_t __or_r_begin = static_cast<int64_t>(__or_row_displs[__or_r]);\n";
+        code += "            const int64_t __or_r_count = static_cast<int64_t>(__or_row_counts[__or_r]);\n";
+        code += "            if (__or_r_begin < 0 || __or_r_count < 0 || __or_r_begin > __or_rows || __or_r_count > __or_rows - __or_r_begin) {\n";
+        code += "                __or_rb_ranges_ok_" + param.calcParamName +
+                " = false;\n";
+        code += "                break;\n";
+        code += "            }\n";
+        code += "        }\n";
+        code += "        __or_rowblock_direct_" + param.calcParamName +
+                " = (" + paramVarName(param) + ".getDim() == 2 && "
+                "__or_rb_offset_" + param.calcParamName + " >= 0 && "
+                "__or_rb_rows_" + param.calcParamName + " == __or_rows && "
+                "__or_rb_cols_" + param.calcParamName + " == __or_cols && "
+                "__or_rb_rows_" + param.calcParamName + " >= 0 && "
+                "__or_rb_cols_" + param.calcParamName + " >= 0 && " +
+                paramVarName(param) + ".getStride(1) == 1 && " +
+                paramVarName(param) + ".getStride(0) == __or_cols && "
+                "__or_rb_size_" + param.calcParamName +
+                " >= 0 && __or_rb_offset_" + param.calcParamName +
+                " <= __or_rb_size_" + param.calcParamName +
+                " && __or_total_items <= __or_rb_size_" +
+                param.calcParamName + " - __or_rb_offset_" +
+                param.calcParamName + " && __or_rb_last_begin_" +
+                param.calcParamName + " >= 0 && __or_rb_last_count_" +
+                param.calcParamName + " >= 0 && __or_rb_last_begin_" +
+                param.calcParamName + " + __or_rb_last_count_" +
+                param.calcParamName + " <= __or_rows && "
+                "__or_rb_ranges_ok_" + param.calcParamName +
+                ") ? 1 : 0;\n";
+        code += "        if (__or_rowblock_direct_" +
+                param.calcParamName + ") {\n";
+        code += "            __or_rowblock_scatter_src_" + param.calcParamName +
+                " = " + paramVarName(param) +
+                ".getDataPtr().get() + __or_rb_offset_" +
+                param.calcParamName + ";\n";
+        code += "        }\n";
+        code += "    }\n";
+        code += "    MPI_Bcast(&__or_rowblock_direct_" +
+                param.calcParamName +
+                ", 1, MPI_INT, 0, MPI_COMM_WORLD);\n";
+    }
     code += "    if (mpi_rank == 0) {\n";
+    if (canUseDirectTensorScatter || canUseRowBlockDirectScatter) {
+        code += "        if (";
+        if (canUseDirectTensorScatter) {
+            code += "!__or_scatter_direct_" + param.calcParamName;
+        }
+        if (canUseDirectTensorScatter && canUseRowBlockDirectScatter) {
+            code += " && ";
+        }
+        if (canUseRowBlockDirectScatter) {
+            code += "!__or_rowblock_direct_" + param.calcParamName;
+        }
+        code += ") {\n";
+    }
     code += "        auto dacpp_profile_pack_start_" + param.calcParamName +
             " = dacpp::mpi::profileSegmentStart();\n";
     code += "        " + paramVarName(param) + ".tensor2Array(" + global +
             ");\n";
+    if (canUseDirectTensorScatter) {
+        code += "        __or_scatter_src_" + param.calcParamName +
+                " = " + global + ".data();\n";
+    }
     code += "        dacpp::mpi::recordProfileSegment(dacpp_profile, "
             "dacpp::mpi::ProfileSegment::Pack, "
             "dacpp_profile_pack_start_" +
             param.calcParamName + ");\n";
+    if (canUseDirectTensorScatter || canUseRowBlockDirectScatter) {
+        code += "        }\n";
+    }
     code += "    }\n";
+    if (canUseRowBlockDirectScatter) {
+        if (usesByte(plan, param)) {
+            emitByteCounts(code, param.calcParamName, type);
+        }
+        code += "    if (__or_rowblock_direct_" + param.calcParamName +
+                ") {\n";
+        code += "        auto dacpp_profile_scatter_start_" +
+                param.calcParamName +
+                " = dacpp::mpi::profileSegmentStart();\n";
+        if (usesByte(plan, param)) {
+            code += "        MPI_Scatterv(mpi_rank == 0 ? __or_rowblock_scatter_src_" +
+                    param.calcParamName +
+                    " : nullptr, mpi_rank == 0 ? __or_counts_bytes_" +
+                    param.calcParamName +
+                    ".data() : nullptr, mpi_rank == 0 ? __or_displs_bytes_" +
+                    param.calcParamName +
+                    ".data() : nullptr, MPI_BYTE, " + local +
+                    ".data(), dacpp::mpi::operator_resident::narrow_mpi_count_or_abort(dacpp::mpi::operator_resident::checked_mul_int64_or_abort(static_cast<int64_t>(__or_local_item_count), static_cast<int64_t>(sizeof(" +
+                    type + ")), \"[DACPP][MPI][OR] row-block direct scatter byte count exceeds MPI int range\"), \"[DACPP][MPI][OR] row-block direct scatter byte count exceeds MPI int range\"), MPI_BYTE, 0, MPI_COMM_WORLD);\n";
+        } else {
+            code += "        MPI_Scatterv(mpi_rank == 0 ? __or_rowblock_scatter_src_" +
+                    param.calcParamName +
+                    " : nullptr, mpi_rank == 0 ? __or_counts.data() : nullptr, mpi_rank == 0 ? __or_displs.data() : nullptr, " +
+                    mpiType + ", " + local +
+                    ".data(), dacpp::mpi::operator_resident::narrow_mpi_count_or_abort(static_cast<int64_t>(__or_local_item_count), \"[DACPP][MPI][OR] row-block direct scatter count exceeds MPI int range\"), " +
+                    mpiType + ", 0, MPI_COMM_WORLD);\n";
+        }
+        code += "        dacpp::mpi::recordProfileSegment(dacpp_profile, "
+                "dacpp::mpi::ProfileSegment::Scatter, "
+                "dacpp_profile_scatter_start_" +
+                param.calcParamName + ");\n";
+        code += "    } else {\n";
+        if (usesByte(plan, param)) {
+            code += "        auto dacpp_profile_scatter_start_" +
+                    param.calcParamName +
+                    " = dacpp::mpi::profileSegmentStart();\n";
+            code += "        MPI_Scatterv(mpi_rank == 0 ? " + global +
+                    ".data() : nullptr, mpi_rank == 0 ? __or_counts_bytes_" +
+                    param.calcParamName +
+                    ".data() : nullptr, mpi_rank == 0 ? __or_displs_bytes_" +
+                    param.calcParamName +
+                    ".data() : nullptr, MPI_BYTE, " + local +
+                    ".data(), dacpp::mpi::operator_resident::narrow_mpi_count_or_abort(dacpp::mpi::operator_resident::checked_mul_int64_or_abort(static_cast<int64_t>(__or_local_item_count), static_cast<int64_t>(sizeof(" +
+                    type + ")), \"[DACPP][MPI][OR] scatter byte count exceeds MPI int range\"), \"[DACPP][MPI][OR] scatter byte count exceeds MPI int range\"), MPI_BYTE, 0, MPI_COMM_WORLD);\n";
+            code += "        dacpp::mpi::recordProfileSegment(dacpp_profile, "
+                    "dacpp::mpi::ProfileSegment::Scatter, "
+                    "dacpp_profile_scatter_start_" +
+                    param.calcParamName + ");\n";
+        } else {
+            code += "        if (mpi_rank != 0) {\n";
+            code += "            " + global +
+                    ".resize(static_cast<std::size_t>(__or_total_items));\n";
+            code += "        }\n";
+            code += "        auto dacpp_profile_bcast_start_" +
+                    param.calcParamName +
+                    " = dacpp::mpi::profileSegmentStart();\n";
+            code += "        MPI_Bcast(" + global + ".data(), " +
+                    checkedMpiPayloadCountExpr(
+                        "__or_total_items", type,
+                        "[DACPP][MPI][OR] row-block broadcast count exceeds MPI int range") +
+                    ", " + mpiType + ", 0, MPI_COMM_WORLD);\n";
+            code += "        dacpp::mpi::recordProfileSegment(dacpp_profile, "
+                    "dacpp::mpi::ProfileSegment::Bcast, "
+                    "dacpp_profile_bcast_start_" +
+                    param.calcParamName + ");\n";
+            code += "        const int64_t __or_rowblock_offset_" +
+                    param.calcParamName +
+                    " = dacpp::mpi::operator_resident::checked_mul_int64_or_abort(__or_row_range.begin, __or_cols, \"[DACPP][MPI][OR] row-block local offset overflow\");\n";
+            code += "        const int64_t __or_rowblock_local_bytes_" +
+                    param.calcParamName +
+                    " = dacpp::mpi::operator_resident::checked_mul_int64_or_abort(static_cast<int64_t>(__or_local_item_count), static_cast<int64_t>(sizeof(" +
+                    type +
+                    ")), \"[DACPP][MPI][OR] row-block local byte copy size overflow\");\n";
+            code += "        std::memcpy(" + local +
+                    ".data(), " + global +
+                    ".data() + __or_rowblock_offset_" +
+                    param.calcParamName +
+                    ", static_cast<std::size_t>(__or_rowblock_local_bytes_" +
+                    param.calcParamName + "));\n";
+        }
+        code += "    }\n";
+        return;
+    }
     if (!usesByte(plan, param) &&
         plan.signature.layout == LocalLayoutKind::RowBlock2D) {
         code += "    if (mpi_rank != 0) {\n";
@@ -111,8 +324,12 @@ void emitScatter(std::string& code,
     } else {
         code += "    auto dacpp_profile_scatter_start_" + param.calcParamName +
                 " = dacpp::mpi::profileSegmentStart();\n";
-        code += "    MPI_Scatterv(mpi_rank == 0 ? " + global +
-                ".data() : nullptr, mpi_rank == 0 ? __or_counts.data() : nullptr, mpi_rank == 0 ? __or_displs.data() : nullptr, " +
+        const std::string sendData =
+            canUseDirectTensorScatter
+                ? "__or_scatter_src_" + param.calcParamName
+                : global + ".data()";
+        code += "    MPI_Scatterv(mpi_rank == 0 ? " + sendData +
+                " : nullptr, mpi_rank == 0 ? __or_counts.data() : nullptr, mpi_rank == 0 ? __or_displs.data() : nullptr, " +
                 mpiType + ", " + local +
                 ".data(), dacpp::mpi::operator_resident::narrow_mpi_count_or_abort(static_cast<int64_t>(__or_local_item_count), \"[DACPP][MPI][OR] scatter count exceeds MPI int range\"), " +
                 mpiType + ", 0, MPI_COMM_WORLD);\n";

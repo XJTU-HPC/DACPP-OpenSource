@@ -1,5 +1,6 @@
 #include "Rewriter_MPI_Common.h"
 #include "OperatorResidentCodegen_Internal.h"
+#include "llvm/ADT/StringSwitch.h"
 
 namespace dacppTranslator {
 namespace mpi_rewriter {
@@ -23,6 +24,182 @@ void emitAbortIfMpiCountTooLarge(std::string& code,
             "\\n\");\n";
     code += "        MPI_Abort(MPI_COMM_WORLD, 5);\n";
     code += "    }\n";
+}
+
+void emitAbortIfRuntimeCondition(std::string& code,
+                                 const std::string& conditionExpr,
+                                 const std::string& message,
+                                 int abortCode) {
+    code += "    if (" + conditionExpr + ") {\n";
+    code += "        if (mpi_rank == 0) std::fprintf(stderr, \"" + message +
+            "\\n\");\n";
+    code += "        MPI_Abort(MPI_COMM_WORLD, " + std::to_string(abortCode) +
+            ");\n";
+    code += "    }\n";
+}
+
+bool isBuiltinIntegerType(const std::string& type) {
+    return llvm::StringSwitch<bool>(type)
+        .Cases("bool", "char", "signed char", "unsigned char", true)
+        .Cases("short", "short int", "unsigned short", "unsigned short int", true)
+        .Cases("int", "unsigned", "unsigned int", true)
+        .Cases("long", "unsigned long", true)
+        .Cases("long long", "unsigned long long", true)
+        .Default(false);
+}
+
+std::string localLinearIndexExprForBoundedIndex(const ShellPartitionPlan& plan,
+                                                const PostUseBoundedIndex& index) {
+    if ((plan.signature.layout == LocalLayoutKind::Contiguous1D ||
+         plan.signature.layout == LocalLayoutKind::ReplicatedFullTensor) &&
+        index.indices.size() == 1) {
+        return "(" + std::to_string(index.indices[0]) + " - __or_range.begin)";
+    }
+    if (plan.signature.layout == LocalLayoutKind::RowBlock2D &&
+        index.indices.size() == 2) {
+        return "((" + std::to_string(index.indices[0]) +
+               " - __or_row_range.begin) * __or_cols + " +
+               std::to_string(index.indices[1]) + ")";
+    }
+    if (plan.signature.layout == LocalLayoutKind::RowPartitionFullRow &&
+        plan.signature.bindOrder.size() == 2 && index.indices.size() == 2) {
+        return "((" + std::to_string(index.indices[0]) +
+               " - __or_row_range.begin) * __or_cols + " +
+               std::to_string(index.indices[1]) + ")";
+    }
+    return "";
+}
+
+std::string ownerPredicateForBoundedIndex(const ShellPartitionPlan& plan,
+                                          const PostUseBoundedIndex& index) {
+    if ((plan.signature.layout == LocalLayoutKind::Contiguous1D ||
+         plan.signature.layout == LocalLayoutKind::ReplicatedFullTensor) &&
+        index.indices.size() == 1) {
+        return "(__or_target_index >= __or_range.begin && __or_target_index < __or_range.begin + __or_range.count)";
+    }
+    if (plan.signature.layout == LocalLayoutKind::RowBlock2D &&
+        index.indices.size() == 2) {
+        return "(__or_target_row >= __or_row_range.begin && __or_target_row < __or_row_range.begin + __or_row_range.count && __or_target_col >= 0 && __or_target_col < __or_cols)";
+    }
+    if (plan.signature.layout == LocalLayoutKind::RowPartitionFullRow &&
+        plan.signature.bindOrder.size() == 2 && index.indices.size() == 2) {
+        return "(__or_target_row >= __or_row_range.begin && __or_target_row < __or_row_range.begin + __or_row_range.count && __or_target_col >= 0 && __or_target_col < __or_cols)";
+    }
+    return "";
+}
+
+void emitBoundedIndexedRootReadSync(std::string& code,
+                                    const ShellPartitionPlan& plan,
+                                    const ParamAccessPlan& param,
+                                    const std::string& localBufferName,
+                                    const std::string& profileName) {
+    if (param.postUseSync.boundedIndices.empty()) {
+        return;
+    }
+    const std::string type = elemType(plan, param);
+    const std::string mpiType = usesByteTransport(type) ? "MPI_BYTE"
+                                                        : mpiDatatypeFor(type);
+    const std::string valueMpiCount =
+        usesByteTransport(type) ? "static_cast<int>(sizeof(" + type + "))"
+                                : "1";
+    const bool hasProfile = !profileName.empty();
+    if (hasProfile) {
+        code += "    auto dacpp_profile_bounded_sync_start_" +
+                param.calcParamName + " = dacpp::mpi::profileSegmentStart();\n";
+    }
+    code += "    {\n";
+    code += "        std::vector<" + type + "> __or_bounded_values_" +
+            param.calcParamName + "(static_cast<std::size_t>(" +
+            std::to_string(param.postUseSync.boundedIndices.size()) + "), " +
+            type + "{});\n";
+    code += "        std::vector<int> __or_bounded_owners_" +
+            param.calcParamName + "(static_cast<std::size_t>(" +
+            std::to_string(param.postUseSync.boundedIndices.size()) + "), -1);\n";
+    for (std::size_t idx = 0; idx < param.postUseSync.boundedIndices.size();
+         ++idx) {
+        const auto& bounded = param.postUseSync.boundedIndices[idx];
+        const std::string localIndex =
+            localLinearIndexExprForBoundedIndex(plan, bounded);
+        const std::string ownerPredicate =
+            ownerPredicateForBoundedIndex(plan, bounded);
+        if (localIndex.empty() || ownerPredicate.empty()) {
+            continue;
+        }
+        code += "        {\n";
+        if (bounded.indices.size() == 1) {
+            code += "            const int64_t __or_target_index = " +
+                    std::to_string(bounded.indices[0]) + ";\n";
+        } else {
+            code += "            const int64_t __or_target_row = " +
+                    std::to_string(bounded.indices[0]) + ";\n";
+            code += "            const int64_t __or_target_col = " +
+                    std::to_string(bounded.indices[1]) + ";\n";
+        }
+        code += "            if (" + ownerPredicate + ") {\n";
+        code += "                const int64_t __or_local_linear = " +
+                localIndex + ";\n";
+        code += "                if (__or_local_linear < 0 || static_cast<std::size_t>(__or_local_linear) >= " +
+                localBufferName + ".size()) {\n";
+        code += "                    if (mpi_rank == 0) std::fprintf(stderr, \"[DACPP][MPI][OR] bounded indexed read local index out of range\\n\");\n";
+        code += "                    MPI_Abort(MPI_COMM_WORLD, 6);\n";
+        code += "                }\n";
+        code += "                __or_bounded_values_" + param.calcParamName +
+                "[static_cast<std::size_t>(" + std::to_string(idx) +
+                ")] = " + localBufferName +
+                "[static_cast<std::size_t>(__or_local_linear)];\n";
+        code += "                __or_bounded_owners_" + param.calcParamName +
+                "[static_cast<std::size_t>(" + std::to_string(idx) +
+                ")] = mpi_rank;\n";
+        code += "            }\n";
+        code += "        }\n";
+    }
+    for (std::size_t idx = 0; idx < param.postUseSync.boundedIndices.size();
+         ++idx) {
+        code += "        {\n";
+        code += "            int __or_owner_rank = __or_bounded_owners_" +
+                param.calcParamName + "[static_cast<std::size_t>(" +
+                std::to_string(idx) + ")];\n";
+        code += "            MPI_Allreduce(MPI_IN_PLACE, &__or_owner_rank, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);\n";
+        code += "            if (__or_owner_rank < 0) {\n";
+        code += "                if (mpi_rank == 0) std::fprintf(stderr, \"[DACPP][MPI][OR] bounded indexed read has no owner\\n\");\n";
+        code += "                MPI_Abort(MPI_COMM_WORLD, 6);\n";
+        code += "            }\n";
+        code += "            if (mpi_rank == __or_owner_rank && __or_owner_rank != 0) {\n";
+        code += "                MPI_Send(&__or_bounded_values_" + param.calcParamName +
+                "[static_cast<std::size_t>(" + std::to_string(idx) +
+                ")], " + valueMpiCount + ", " + mpiType +
+                ", 0, 4701, MPI_COMM_WORLD);\n";
+        code += "            } else if (mpi_rank == 0 && __or_owner_rank != 0) {\n";
+        code += "                MPI_Recv(&__or_bounded_values_" + param.calcParamName +
+                "[static_cast<std::size_t>(" + std::to_string(idx) +
+                ")], " + valueMpiCount + ", " + mpiType +
+                ", __or_owner_rank, 4701, MPI_COMM_WORLD, MPI_STATUS_IGNORE);\n";
+        code += "            }\n";
+        code += "        }\n";
+    }
+    code += "        if (mpi_rank == 0) {\n";
+    for (std::size_t idx = 0; idx < param.postUseSync.boundedIndices.size();
+         ++idx) {
+        const auto& bounded = param.postUseSync.boundedIndices[idx];
+        code += "            " + paramVarName(param) + ".reviseValue(__or_bounded_values_" +
+                param.calcParamName + "[static_cast<std::size_t>(" +
+                std::to_string(idx) + ")], std::vector<int>{";
+        for (std::size_t dim = 0; dim < bounded.indices.size(); ++dim) {
+            if (dim != 0) {
+                code += ", ";
+            }
+            code += std::to_string(bounded.indices[dim]);
+        }
+        code += "});\n";
+    }
+    code += "        }\n";
+    code += "    }\n";
+    if (hasProfile) {
+        code += "    dacpp::mpi::recordProfileSegment(" + profileName +
+                ", dacpp::mpi::ProfileSegment::FinalSync, "
+                "dacpp_profile_bounded_sync_start_" +
+                param.calcParamName + ");\n";
+    }
 }
 
 } // namespace
@@ -103,6 +280,14 @@ void emitRowPartitionFullRowScatter(std::string& code,
 
     const int voidDim = param.voidDims.empty() ? 0 : param.voidDims[0];
     const int indexDim = param.indexDim;
+    const bool effectiveIndexedRowFullCols =
+        param.payloadDirection == PayloadDirection::IndexedRowFullCols;
+    const bool effectiveIndexedColFullRows =
+        param.payloadDirection == PayloadDirection::IndexedColFullRows;
+    const int effectiveIndexDim =
+        effectiveIndexedRowFullCols ? 0 : (effectiveIndexedColFullRows ? 1 : indexDim);
+    const int effectivePayloadDim =
+        effectiveIndexedRowFullCols ? 1 : (effectiveIndexedColFullRows ? 0 : voidDim);
     int indexedBindPos = 0;
     if (!param.bindOrder.empty()) {
         for (std::size_t idx = 0; idx < plan.signature.bindOrder.size(); ++idx) {
@@ -114,14 +299,15 @@ void emitRowPartitionFullRowScatter(std::string& code,
     }
     const bool broadcastIndexedPayload =
         plan.signature.bindOrder.size() == 2 && indexedBindPos != 0;
-    // TODO(qc): Re-enable strided fast path after proper layout analysis.
-    // The RowPartitionFullRow payload layout is complex and depends on
-    // indexedBindPos, voidDim, and the kernel's view semantics.
-    // const bool useStridedBroadcastFastPath =
-    //     indexDim != 0 && !broadcastIndexedPayload && !usesByte(plan, param);
+    const bool canUseDirectRowMajorFullRowPayload =
+        !usesByte(plan, param) && !broadcastIndexedPayload &&
+        effectiveIndexedRowFullCols;
 
     code += "    const int64_t " + payloadLen + " = " + paramVarName(param) +
-            ".getShape(" + std::to_string(voidDim) + ");\n";
+            ".getShape(" + std::to_string(effectivePayloadDim) + ");\n";
+    code += "    const int64_t __or_payload_index_extent_" +
+            param.calcParamName + " = " + paramVarName(param) +
+            ".getShape(" + std::to_string(effectiveIndexDim) + ");\n";
     std::string uniqueCount;
     std::string uniqueBegin;
     std::string countVar;
@@ -149,6 +335,17 @@ void emitRowPartitionFullRowScatter(std::string& code,
             param.calcParamName + " = " + uniqueCount + ";\n";
     code += "    const int64_t __or_payload_index_begin_" +
             param.calcParamName + " = " + uniqueBegin + ";\n";
+    emitAbortIfRuntimeCondition(
+        code,
+        paramVarName(param) + ".getDim() != 2 || " + payloadLen +
+            " < 0 || __or_payload_unique_count_" + param.calcParamName +
+            " < 0 || __or_payload_index_begin_" + param.calcParamName +
+            " < 0 || (__or_payload_unique_count_" + param.calcParamName +
+            " > 0 && __or_payload_index_begin_" + param.calcParamName +
+            " + __or_payload_unique_count_" + param.calcParamName +
+            " > __or_payload_index_extent_" + param.calcParamName + ")",
+        "[DACPP][MPI][OR] RowPartitionFullRow input payload/index range out of bounds",
+        5);
     emitAbortIfMpiCountTooLarge(
         code,
         "__or_payload_unique_count_" + param.calcParamName + " * " + payloadLen,
@@ -171,7 +368,41 @@ void emitRowPartitionFullRowScatter(std::string& code,
     code += "    }\n";
     code += "    std::vector<" + type + "> __or_sendbuf_" +
             param.calcParamName + ";\n";
+    if (canUseDirectRowMajorFullRowPayload) {
+        code += "    " + type + "* __or_payload_send_ptr_" +
+                param.calcParamName + " = nullptr;\n";
+        code += "    bool __or_payload_direct_" + param.calcParamName +
+                " = false;\n";
+        code += "    if (mpi_rank == 0) {\n";
+        code += "        const int64_t __or_input_rows_" +
+                param.calcParamName + " = " + paramVarName(param) +
+                ".getShape(0);\n";
+        code += "        const int64_t __or_input_cols_" +
+                param.calcParamName + " = " + paramVarName(param) +
+                ".getShape(1);\n";
+        code += "        __or_payload_direct_" + param.calcParamName +
+                " = (" + paramVarName(param) + ".getDim() == 2 && " +
+                paramVarName(param) + ".getOffset() >= 0 && " +
+                paramVarName(param) + ".getStride(1) == 1 && " +
+                paramVarName(param) + ".getStride(0) == __or_input_cols_" +
+                param.calcParamName + " && " + payloadLen +
+                " == __or_input_cols_" + param.calcParamName +
+                " && __or_input_rows_" + param.calcParamName +
+                " >= " + displVar + "[mpi_size - 1] + " + countVar +
+                "[mpi_size - 1]);\n";
+        code += "        if (__or_payload_direct_" + param.calcParamName +
+                ") {\n";
+        code += "            __or_payload_send_ptr_" + param.calcParamName +
+                " = " + paramVarName(param) + ".getDataPtr().get() + " +
+                paramVarName(param) + ".getOffset();\n";
+        code += "        }\n";
+        code += "    }\n";
+    }
     code += "    if (mpi_rank == 0) {\n";
+    if (canUseDirectRowMajorFullRowPayload) {
+        code += "        if (!__or_payload_direct_" + param.calcParamName +
+                ") {\n";
+    }
     code += "        auto dacpp_profile_pack_start_" + param.calcParamName +
             " = dacpp::mpi::profileSegmentStart();\n";
     code += "        std::vector<" + type + "> " + global + ";\n";
@@ -190,6 +421,17 @@ void emitRowPartitionFullRowScatter(std::string& code,
             payloadLen + "));\n";
     code += "        const int64_t __or_input_cols_" + param.calcParamName +
             " = " + paramVarName(param) + ".getShape(1);\n";
+    code += "        const int64_t __or_input_rows_" + param.calcParamName +
+            " = " + paramVarName(param) + ".getShape(0);\n";
+    code += "        if ((" + std::string(effectiveIndexedRowFullCols ? "true" : "false") +
+            " && " + payloadLen + " > __or_input_cols_" +
+            param.calcParamName + ") || (" +
+            std::string(effectiveIndexedColFullRows ? "true" : "false") + " && " +
+            payloadLen + " > __or_input_rows_" + param.calcParamName +
+            ")) {\n";
+    code += "            std::fprintf(stderr, \"[DACPP][MPI][OR] RowPartitionFullRow payload length exceeds input dimension\\n\");\n";
+    code += "            MPI_Abort(MPI_COMM_WORLD, 5);\n";
+    code += "        }\n";
     code += "        for (int r = 0; r < mpi_size; ++r) {\n";
     code += "            for (int64_t local_i = 0; local_i < " + countVar +
             "[r]; ++local_i) {\n";
@@ -200,7 +442,7 @@ void emitRowPartitionFullRowScatter(std::string& code,
             payloadLen + ");\n";
     code += "                for (int64_t payload_i = 0; payload_i < " +
             payloadLen + "; ++payload_i) {\n";
-    if (indexDim == 0 && voidDim == 1) {
+    if (effectiveIndexedRowFullCols) {
         code += "                    const int64_t src_linear = indexed_value * __or_input_cols_" +
                 param.calcParamName + " + payload_i;\n";
     } else {
@@ -213,10 +455,17 @@ void emitRowPartitionFullRowScatter(std::string& code,
     code += "                }\n";
     code += "            }\n";
     code += "        }\n";
+    if (canUseDirectRowMajorFullRowPayload) {
+        code += "        __or_payload_send_ptr_" + param.calcParamName +
+                " = __or_sendbuf_" + param.calcParamName + ".data();\n";
+    }
     code += "        dacpp::mpi::recordProfileSegment(dacpp_profile, "
             "dacpp::mpi::ProfileSegment::Pack, "
             "dacpp_profile_pack_start_" +
             param.calcParamName + ");\n";
+    if (canUseDirectRowMajorFullRowPayload) {
+        code += "        }\n";
+    }
     code += "    }\n";
     if (broadcastIndexedPayload) {
         code += "    if (mpi_rank == 0) {\n";
@@ -275,9 +524,12 @@ void emitRowPartitionFullRowScatter(std::string& code,
     } else {
         code += "    auto dacpp_profile_scatter_start_" + param.calcParamName +
                 " = dacpp::mpi::profileSegmentStart();\n";
-        code += "    MPI_Scatterv(mpi_rank == 0 ? __or_sendbuf_" +
-                param.calcParamName +
-                ".data() : nullptr, mpi_rank == 0 ? __or_payload_counts_" +
+        const std::string sendData =
+            canUseDirectRowMajorFullRowPayload
+                ? "__or_payload_send_ptr_" + param.calcParamName
+                : "__or_sendbuf_" + param.calcParamName + ".data()";
+        code += "    MPI_Scatterv(mpi_rank == 0 ? " + sendData +
+                " : nullptr, mpi_rank == 0 ? __or_payload_counts_" +
                 param.calcParamName +
                 ".data() : nullptr, mpi_rank == 0 ? __or_payload_displs_" +
                 param.calcParamName + ".data() : nullptr, " + mpiType +
@@ -318,6 +570,53 @@ void emitResidencyAndMaterialization(std::string& code,
             continue;
         }
         const std::string type = elemType(plan, param);
+        if (param.postUseReductionCountEqOne && isBuiltinIntegerType(type)) {
+            code += "    int64_t __or_local_reduction_count_" +
+                    param.calcParamName + " = 0;\n";
+            code += "    for (const auto& __or_value : " + localName(param) +
+                    ") {\n";
+            code += "        if (__or_value == static_cast<" + type +
+                    ">(1)) {\n";
+            code += "            ++__or_local_reduction_count_" +
+                    param.calcParamName + ";\n";
+            code += "        }\n";
+            code += "    }\n";
+            code += "    int64_t __or_global_reduction_count_" +
+                    param.calcParamName + " = 0;\n";
+            code += "    auto dacpp_profile_reduce_start_" +
+                    param.calcParamName +
+                    " = dacpp::mpi::profileSegmentStart();\n";
+            code += "    MPI_Reduce(&__or_local_reduction_count_" +
+                    param.calcParamName + ", &__or_global_reduction_count_" +
+                    param.calcParamName +
+                    ", 1, MPI_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);\n";
+            code += "    dacpp::mpi::recordProfileSegment(dacpp_profile, dacpp::mpi::ProfileSegment::FinalSync, dacpp_profile_reduce_start_" +
+                    param.calcParamName + ");\n";
+            code += "    if (mpi_rank == 0) {\n";
+            code += "        " + param.postUseReductionScalarName +
+                    " = static_cast<decltype(" +
+                    param.postUseReductionScalarName +
+                    ")>(__or_global_reduction_count_" +
+                    param.calcParamName + ");\n";
+            code += "    }\n";
+            code += "    // Post-use reduction for " + param.calcParamName +
+                    " replaces full output materialization.\n";
+            if (!param.retainResidentAfterWrite) {
+                continue;
+            }
+        }
+        if (param.postUseSync.kind == PostUseSyncKind::BoundedIndexedRootRead) {
+            emitBoundedIndexedRootReadSync(code, plan, param, localName(param),
+                                           "dacpp_profile");
+            if (!param.retainResidentAfterWrite) {
+                continue;
+            }
+        } else if (param.postUseSync.kind == PostUseSyncKind::None &&
+                   !param.retainResidentAfterWrite) {
+            code += "    // No host post-use for " + param.calcParamName +
+                    "; skip full output materialization.\n";
+            continue;
+        }
         if (param.materializeAfterWrite) {
             emitGatherMaterialize(code, plan, param, "dacpp_profile");
         }

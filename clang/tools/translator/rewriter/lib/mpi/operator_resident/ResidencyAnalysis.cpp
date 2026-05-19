@@ -117,7 +117,11 @@ void analyzeResidency(OperatorResidentChainPlan& chain) {
                                      ? "downstream-resident-reader"
                                      : "no-downstream-resident-reader")
                              << "\n";
-                if (isLast || finalOutputs.count(param.actualTensorName) != 0) {
+                if (!param.postUseReductionCountEqOne &&
+                    param.postUseSync.kind != PostUseSyncKind::None &&
+                    param.postUseSync.kind !=
+                        PostUseSyncKind::BoundedIndexedRootRead &&
+                    (isLast || finalOutputs.count(param.actualTensorName) != 0)) {
                     param.materializeAfterWrite = true;
                 }
             }
@@ -125,11 +129,28 @@ void analyzeResidency(OperatorResidentChainPlan& chain) {
     }
 
     for (const std::string& output : finalOutputs) {
-        chain.materializeTensors.push_back(output);
+        bool materialized = false;
+        for (const auto& exprPlan : chain.exprPlans) {
+            for (const auto& param : exprPlan.params) {
+                if (param.actualTensorName == output &&
+                    param.materializeAfterWrite) {
+                    materialized = true;
+                    break;
+                }
+            }
+            if (materialized) {
+                break;
+            }
+        }
+        if (materialized) {
+            chain.materializeTensors.push_back(output);
+        }
         auto it = chain.residency.find(output);
         if (it != chain.residency.end()) {
-            it->second.kind = ResidencyKind::MaterializedRoot;
-            it->second.rootValid = true;
+            if (materialized) {
+                it->second.kind = ResidencyKind::MaterializedRoot;
+                it->second.rootValid = true;
+            }
             it->second.localValid = true;
         }
     }

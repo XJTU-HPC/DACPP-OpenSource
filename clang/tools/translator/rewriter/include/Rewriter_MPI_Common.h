@@ -11,6 +11,7 @@
 #include "clang/AST/Stmt.h"
 
 #include "Rewriter.h"
+#include "mpi/shared/PostUseSyncPlan.h"
 
 namespace dacppTranslator {
 namespace mpi_rewriter {
@@ -35,6 +36,16 @@ enum class OutputSyncRequirement {
 struct RootCentricPostRegion {
     const clang::Stmt* stmt = nullptr;
     std::string helperName;
+};
+
+struct PostUseReductionPlan {
+    bool supported = false;
+    const clang::Stmt* resetStmt = nullptr;
+    const clang::Stmt* loopStmt = nullptr;
+    std::string tensorName;
+    std::string scalarName;
+    std::string compareValue = "1";
+    std::string reason;
 };
 
 struct DistributedFollowupRegion {
@@ -141,6 +152,7 @@ OutputSyncRequirement classifyOutputSyncRequirement(
     const clang::BinaryOperator* currentDacExpr = nullptr);
 bool requiresBroadcast(OutputSyncRequirement requirement);
 const char* outputSyncRequirementName(OutputSyncRequirement requirement);
+const char* postUseSyncKindName(PostUseSyncKind kind);
 bool tensorNeedsBroadcast(DacppFile* dacppFile,
                           const std::string& tensorName,
                           const clang::BinaryOperator* currentDacExpr = nullptr);
@@ -201,6 +213,16 @@ std::vector<RootCentricPostRegion> collectRootCentricPostRegions(
     Calc* calc,
     int exprIdx,
     const clang::BinaryOperator* dacExpr);
+PostUseReductionPlan analyzePostUseReduction(
+    DacppFile* dacppFile,
+    const clang::BinaryOperator* dacExpr,
+    const std::string& tensorName);
+PostUseSyncPlan analyzePostUseSync(
+    DacppFile* dacppFile,
+    Shell* shell,
+    Calc* calc,
+    const clang::BinaryOperator* dacExpr,
+    const std::string& tensorName);
 std::vector<DistributedFollowupRegion> collectDistributedFollowupRegions(
     DacppFile* dacppFile,
     Shell* shell,

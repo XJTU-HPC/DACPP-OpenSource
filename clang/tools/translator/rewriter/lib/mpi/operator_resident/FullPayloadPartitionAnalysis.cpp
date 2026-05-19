@@ -37,6 +37,29 @@ bool bindOrderIsSubsetOf(const std::vector<int>& subset,
     return true;
 }
 
+int bindPositionInSignature(const ParamAccessPlan& param,
+                            const PartitionSignature& signature) {
+    if (param.bindOrder.empty()) {
+        return -1;
+    }
+    for (std::size_t idx = 0; idx < signature.bindOrder.size(); ++idx) {
+        if (signature.bindOrder[idx] == param.bindOrder[0]) {
+            return static_cast<int>(idx);
+        }
+    }
+    return -1;
+}
+
+bool isIndexedRowFullCols(const ParamAccessPlan& param) {
+    return param.indexDim == 0 && param.voidDims.size() == 1 &&
+           param.voidDims[0] == 1;
+}
+
+bool isIndexedColFullRows(const ParamAccessPlan& param) {
+    return param.indexDim == 1 && param.voidDims.size() == 1 &&
+           param.voidDims[0] == 0;
+}
+
 } // namespace
 
 bool assignRowPartitionFullRowLayout(ShellPartitionPlan& plan,
@@ -62,7 +85,7 @@ bool assignRowPartitionFullRowLayout(ShellPartitionPlan& plan,
         return false;
     }
 
-    for (const auto& param : plan.params) {
+    for (auto& param : plan.params) {
         if (param.access == ParamAccessKind::DirectMapped ||
             param.access == ParamAccessKind::OutputDirect) {
             if (param.bindOrder != plan.signature.bindOrder) {
@@ -94,13 +117,30 @@ bool assignRowPartitionFullRowLayout(ShellPartitionPlan& plan,
                 rejectReason = "RowPartitionFullRow currently supports 2D full payload";
                 return false;
             }
-            if (param.payloadDirection == PayloadDirection::Unknown) {
-                rejectReason = "RowPartitionFullRow payload direction unknown";
-                return false;
-            }
             if (!bindOrderIsPrefixOf(param.bindOrder, plan.signature.bindOrder) &&
                 !bindOrderIsSubsetOf(param.bindOrder, plan.signature.bindOrder)) {
                 rejectReason = "RowPartitionFullRow indexed bind not in output ownership";
+                return false;
+            }
+            const int indexedBindPos =
+                bindPositionInSignature(param, plan.signature);
+            if (indexedBindPos < 0) {
+                rejectReason = "RowPartitionFullRow indexed bind not in output ownership";
+                return false;
+            }
+            if (plan.signature.bindOrder.size() == 2 &&
+                indexedBindPos == 0 && isIndexedColFullRows(param)) {
+                // Some shells spell a full-row payload as tensor[{}][idx]
+                // while binding idx to the output row owner.  The bind domain,
+                // not the split variable name or textual dimension order, is
+                // the ownership proof.  Classify it as an owned input row with
+                // full columns so codegen scatters row-contiguous payloads and
+                // never uses the output row domain to index input columns.
+                param.payloadDirection = PayloadDirection::IndexedRowFullCols;
+            }
+            if (plan.signature.bindOrder.size() == 2 &&
+                !isIndexedRowFullCols(param) && !isIndexedColFullRows(param)) {
+                rejectReason = "RowPartitionFullRow payload direction unknown";
                 return false;
             }
             if (param.voidDimSizes.empty() || param.voidDimSizes[0] == 0) {
