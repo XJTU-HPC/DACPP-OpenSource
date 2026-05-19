@@ -66,8 +66,7 @@ void emitScatter(std::string& code,
             "(static_cast<std::size_t>(__or_local_item_count));\n";
     if (param.constantInit.supported) {
         code += "    std::fill(" + local + ".begin(), " + local +
-                ".end(), static_cast<" + type + ">(" +
-                param.constantInit.valueExpr + "));\n";
+                ".end(), " + param.constantInit.valueExpr + ");\n";
         code += "    // Constant-initialized input " + param.calcParamName +
                 " is filled locally; skip root pack/scatter.\n";
         return;

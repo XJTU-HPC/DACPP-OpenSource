@@ -88,6 +88,24 @@ std::string ownerPredicateForBoundedIndex(const ShellPartitionPlan& plan,
     return "";
 }
 
+std::string ownerTotalExprForBoundedIndex(const ShellPartitionPlan& plan,
+                                          const PostUseBoundedIndex& index) {
+    if ((plan.signature.layout == LocalLayoutKind::Contiguous1D ||
+         plan.signature.layout == LocalLayoutKind::ReplicatedFullTensor) &&
+        index.indices.size() == 1) {
+        return "__or_total_items";
+    }
+    if (plan.signature.layout == LocalLayoutKind::RowBlock2D &&
+        index.indices.size() == 2) {
+        return "__or_rows";
+    }
+    if (plan.signature.layout == LocalLayoutKind::RowPartitionFullRow &&
+        plan.signature.bindOrder.size() == 2 && index.indices.size() == 2) {
+        return "__or_rows";
+    }
+    return "";
+}
+
 void emitBoundedIndexedRootReadSync(std::string& code,
                                     const ShellPartitionPlan& plan,
                                     const ParamAccessPlan& param,
@@ -112,9 +130,6 @@ void emitBoundedIndexedRootReadSync(std::string& code,
             param.calcParamName + "(static_cast<std::size_t>(" +
             std::to_string(param.postUseSync.boundedIndices.size()) + "), " +
             type + "{});\n";
-    code += "        std::vector<int> __or_bounded_owners_" +
-            param.calcParamName + "(static_cast<std::size_t>(" +
-            std::to_string(param.postUseSync.boundedIndices.size()) + "), -1);\n";
     for (std::size_t idx = 0; idx < param.postUseSync.boundedIndices.size();
          ++idx) {
         const auto& bounded = param.postUseSync.boundedIndices[idx];
@@ -147,19 +162,47 @@ void emitBoundedIndexedRootReadSync(std::string& code,
                 "[static_cast<std::size_t>(" + std::to_string(idx) +
                 ")] = " + localBufferName +
                 "[static_cast<std::size_t>(__or_local_linear)];\n";
-        code += "                __or_bounded_owners_" + param.calcParamName +
-                "[static_cast<std::size_t>(" + std::to_string(idx) +
-                ")] = mpi_rank;\n";
         code += "            }\n";
         code += "        }\n";
     }
     for (std::size_t idx = 0; idx < param.postUseSync.boundedIndices.size();
          ++idx) {
+        const auto& bounded = param.postUseSync.boundedIndices[idx];
+        const std::string ownerTotal =
+            ownerTotalExprForBoundedIndex(plan, bounded);
+        if (ownerTotal.empty()) {
+            continue;
+        }
         code += "        {\n";
-        code += "            int __or_owner_rank = __or_bounded_owners_" +
-                param.calcParamName + "[static_cast<std::size_t>(" +
-                std::to_string(idx) + ")];\n";
-        code += "            MPI_Allreduce(MPI_IN_PLACE, &__or_owner_rank, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);\n";
+        if (bounded.indices.size() == 1) {
+            code += "            const int64_t __or_target_index = " +
+                    std::to_string(bounded.indices[0]) + ";\n";
+            code += "            int __or_owner_rank = -1;\n";
+            code += "            for (int __or_owner_candidate = 0; __or_owner_candidate < mpi_size; ++__or_owner_candidate) {\n";
+            code += "                const auto __or_owner_range = dacpp::mpi::operator_resident::rank_range_1d(" +
+                    ownerTotal + ", __or_owner_candidate, mpi_size);\n";
+            code += "                if (__or_target_index >= __or_owner_range.begin && __or_target_index < __or_owner_range.begin + __or_owner_range.count) {\n";
+            code += "                    __or_owner_rank = __or_owner_candidate;\n";
+            code += "                    break;\n";
+            code += "                }\n";
+            code += "            }\n";
+        } else {
+            code += "            const int64_t __or_target_row = " +
+                    std::to_string(bounded.indices[0]) + ";\n";
+            code += "            const int64_t __or_target_col = " +
+                    std::to_string(bounded.indices[1]) + ";\n";
+            code += "            int __or_owner_rank = -1;\n";
+            code += "            if (__or_target_col >= 0 && __or_target_col < __or_cols) {\n";
+            code += "                for (int __or_owner_candidate = 0; __or_owner_candidate < mpi_size; ++__or_owner_candidate) {\n";
+            code += "                    const auto __or_owner_range = dacpp::mpi::operator_resident::rank_range_1d(" +
+                    ownerTotal + ", __or_owner_candidate, mpi_size);\n";
+            code += "                    if (__or_target_row >= __or_owner_range.begin && __or_target_row < __or_owner_range.begin + __or_owner_range.count) {\n";
+            code += "                        __or_owner_rank = __or_owner_candidate;\n";
+            code += "                        break;\n";
+            code += "                    }\n";
+            code += "                }\n";
+            code += "            }\n";
+        }
         code += "            if (__or_owner_rank < 0) {\n";
         code += "                if (mpi_rank == 0) std::fprintf(stderr, \"[DACPP][MPI][OR] bounded indexed read has no owner\\n\");\n";
         code += "                MPI_Abort(MPI_COMM_WORLD, 6);\n";
@@ -356,8 +399,7 @@ void emitRowPartitionFullRowScatter(std::string& code,
             payloadLen + "));\n";
     if (param.constantInit.supported) {
         code += "    std::fill(" + local + ".begin(), " + local +
-                ".end(), static_cast<" + type + ">(" +
-                param.constantInit.valueExpr + "));\n";
+                ".end(), " + param.constantInit.valueExpr + ");\n";
         code += "    // Constant-initialized RowPartitionFullRow input " +
                 param.calcParamName +
                 " is filled locally; skip root pack/scatter.\n";

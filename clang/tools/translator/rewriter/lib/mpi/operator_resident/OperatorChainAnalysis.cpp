@@ -592,6 +592,8 @@ void downgradeUnsupportedBoundedPostUse(ShellPartitionPlan& plan,
     param.postUseSync.kind = PostUseSyncKind::FullTensor;
     param.postUseSync.reason = "bounded indexed read unsupported for layout";
     param.postUseSync.boundedIndices.clear();
+    param.postUseSync.tensor2ArrayStmt = nullptr;
+    param.postUseSync.tensor2ArrayTargetName.clear();
 }
 
 void logPostUseSyncDecision(const ParamAccessPlan& param) {
@@ -2747,6 +2749,14 @@ bool isArithmeticLikeType(clang::QualType type) {
     return raw && raw->isArithmeticType();
 }
 
+bool isConstantFillElementType(clang::QualType type,
+                               clang::ASTContext* context) {
+    if (isArithmeticLikeType(type)) {
+        return true;
+    }
+    return context && !type.isNull() && type.isTriviallyCopyableType(*context);
+}
+
 clang::QualType vectorElementType(const clang::VarDecl* vectorVar) {
     if (!vectorVar) {
         return {};
@@ -2783,6 +2793,7 @@ clang::QualType vectorElementType(const clang::VarDecl* vectorVar) {
 bool constantInitValueExpr(const clang::Expr* expr,
                            clang::ASTContext* context,
                            const std::string& targetType,
+                           bool allowAggregate,
                            std::string& valueExpr,
                            std::string& logValue) {
     expr = unwrapExprFully(expr);
@@ -2798,7 +2809,8 @@ bool constantInitValueExpr(const clang::Expr* expr,
         }
         if (construct->getNumArgs() == 1) {
             return constantInitValueExpr(construct->getArg(0), context,
-                                         targetType, valueExpr, logValue);
+                                         targetType, allowAggregate,
+                                         valueExpr, logValue);
         }
         return false;
     }
@@ -2816,7 +2828,26 @@ bool constantInitValueExpr(const clang::Expr* expr,
         }
         if (initList->getNumInits() == 1) {
             return constantInitValueExpr(initList->getInit(0), context,
-                                         targetType, valueExpr, logValue);
+                                         targetType, allowAggregate,
+                                         valueExpr, logValue);
+        }
+        if (allowAggregate) {
+            for (unsigned idx = 0; idx < initList->getNumInits(); ++idx) {
+                std::string ignoredValue;
+                std::string ignoredLog;
+                if (!constantInitValueExpr(initList->getInit(idx), context,
+                                           targetType, false, ignoredValue,
+                                           ignoredLog)) {
+                    return false;
+                }
+            }
+            const std::string source = exprSource(initList, context);
+            if (source.empty()) {
+                return false;
+            }
+            valueExpr = targetType + source;
+            logValue = source;
+            return true;
         }
         return false;
     }
@@ -2830,6 +2861,30 @@ bool constantInitValueExpr(const clang::Expr* expr,
         valueExpr = exprSource(expr, context);
         logValue = floatLit->getValue().isZero() ? "0" : valueExpr;
         return true;
+    }
+    if (const auto* boolLit = llvm::dyn_cast<clang::CXXBoolLiteralExpr>(expr)) {
+        valueExpr = boolLit->getValue() ? "true" : "false";
+        logValue = valueExpr;
+        return true;
+    }
+    if (llvm::isa<clang::CharacterLiteral>(expr)) {
+        valueExpr = exprSource(expr, context);
+        logValue = valueExpr;
+        return !valueExpr.empty();
+    }
+    if (const auto* unary = llvm::dyn_cast<clang::UnaryOperator>(expr)) {
+        if (unary->getOpcode() == clang::UO_Minus ||
+            unary->getOpcode() == clang::UO_Plus) {
+            std::string subValue;
+            std::string subLog;
+            if (constantInitValueExpr(unary->getSubExpr(), context,
+                                      targetType, false, subValue, subLog)) {
+                valueExpr = (unary->getOpcode() == clang::UO_Minus ? "-" : "+") +
+                            subValue;
+                logValue = valueExpr;
+                return true;
+            }
+        }
     }
     return false;
 }
@@ -2859,10 +2914,11 @@ VectorConstantInit analyzeVectorConstantConstructor(
         result.reason = "vector element type unavailable";
         return result;
     }
-    if (!isArithmeticLikeType(elemType)) {
-        result.reason = "vector element type is not arithmetic";
+    if (!isConstantFillElementType(elemType, context)) {
+        result.reason = "vector element type is not trivially-copyable";
         return result;
     }
+    const bool allowAggregate = !isArithmeticLikeType(elemType);
     const clang::Expr* init = unwrapExprFully(vectorVar->getInit());
     const auto* construct = llvm::dyn_cast_or_null<clang::CXXConstructExpr>(init);
     if (!construct) {
@@ -2877,7 +2933,8 @@ VectorConstantInit analyzeVectorConstantConstructor(
     }
     if (construct->getNumArgs() >= 2) {
         if (constantInitValueExpr(construct->getArg(1), context, targetType,
-                                  result.valueExpr, result.logValue)) {
+                                  allowAggregate, result.valueExpr,
+                                  result.logValue)) {
             result.supported = true;
             return result;
         }

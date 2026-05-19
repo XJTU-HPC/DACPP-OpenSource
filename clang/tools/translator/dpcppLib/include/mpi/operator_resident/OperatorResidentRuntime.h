@@ -14,10 +14,16 @@
 #include <vector>
 
 #include <mpi.h>
+#include <sycl/sycl.hpp>
 
 namespace dacpp {
 namespace mpi {
 namespace operator_resident {
+
+inline sycl::queue& default_queue() {
+    static sycl::queue queue{sycl::default_selector_v};
+    return queue;
+}
 
 struct RankRange1D {
     int64_t begin = 0;

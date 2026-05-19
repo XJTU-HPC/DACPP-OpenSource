@@ -139,6 +139,51 @@ void removePostUseReductionStmts(
     }
 }
 
+void removePartialTensor2ArrayPostUseStmts(
+    clang::Rewriter* rewriter,
+    const mpi_rewriter::ShellPartitionPlan& exprPlan) {
+    if (!rewriter) {
+        return;
+    }
+    for (const auto& param : exprPlan.params) {
+        if (!param.postUseSync.tensor2ArrayStmt ||
+            param.postUseSync.tensor2ArrayTargetName.empty() ||
+            param.postUseSync.boundedIndices.empty()) {
+            continue;
+        }
+        int64_t maxIndex = 0;
+        for (const auto& bounded : param.postUseSync.boundedIndices) {
+            if (bounded.indices.size() == 1) {
+                maxIndex = std::max(maxIndex, bounded.indices[0]);
+            }
+        }
+        std::string replacement;
+        replacement += param.postUseSync.tensor2ArrayTargetName + ".assign(" +
+                       std::to_string(maxIndex + 1) + ", {});\n";
+        replacement += "if (__dacpp_mpi_is_root_rank()) {\n";
+        for (const auto& bounded : param.postUseSync.boundedIndices) {
+            if (bounded.indices.empty()) {
+                continue;
+            }
+            replacement += "    " + param.postUseSync.tensor2ArrayTargetName +
+                           "[static_cast<std::size_t>(" +
+                           std::to_string(bounded.indices[0]) + ")] = " +
+                           param.actualTensorName + ".getElement({";
+            for (std::size_t dim = 0; dim < bounded.indices.size(); ++dim) {
+                if (dim != 0) {
+                    replacement += ", ";
+                }
+                replacement += std::to_string(bounded.indices[dim]);
+            }
+            replacement += "});\n";
+        }
+        replacement += "}";
+        rewriter->ReplaceText(
+            param.postUseSync.tensor2ArrayStmt->getSourceRange(),
+            replacement);
+    }
+}
+
 bool isLoopLoweredOperatorResidentExpr(
     const mpi_rewriter::MpiLoweringPlan& plan,
     int exprIdx,
@@ -416,6 +461,7 @@ void Rewriter::rewriteMPI() {
             }
             if (exprPlan) {
                 removePostUseReductionStmts(rewriter, *exprPlan);
+                removePartialTensor2ArrayPostUseStmts(rewriter, *exprPlan);
             }
         }
         rewrittenDacExprs.insert(dacExpr);

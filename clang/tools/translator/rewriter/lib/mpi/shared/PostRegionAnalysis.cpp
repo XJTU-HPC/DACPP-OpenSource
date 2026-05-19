@@ -1,6 +1,9 @@
 #include <algorithm>
+#include <cstdint>
+#include <limits>
 #include <set>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -255,6 +258,24 @@ bool extractConstTensorIndexRead(const clang::Expr* expr,
     return true;
 }
 
+bool extractConstVectorIndexRead(const clang::Expr* expr,
+                                 const std::string& vectorName,
+                                 clang::ASTContext* context,
+                                 PostUseBoundedIndex& index) {
+    std::string baseName;
+    const std::vector<const clang::Expr*> indexExprs =
+        collectSubscriptIndices(expr, baseName);
+    if (baseName != vectorName || indexExprs.size() != 1) {
+        return false;
+    }
+    int64_t value = 0;
+    if (!evaluateIntegerConstant(indexExprs[0], context, value) || value < 0) {
+        return false;
+    }
+    index.indices = {value};
+    return true;
+}
+
 bool sameIndex(const PostUseBoundedIndex& lhs,
                const PostUseBoundedIndex& rhs) {
     return lhs.indices == rhs.indices;
@@ -310,6 +331,432 @@ bool isIgnoredLoweredPostStmt(const clang::Stmt* stmt,
     }
     return false;
 }
+
+const clang::CXXMemberCallExpr* tensor2ArrayCallForStmt(
+    const clang::Stmt* stmt,
+    const std::string& tensorName,
+    std::string& targetName) {
+    targetName.clear();
+    const auto* exprStmt = llvm::dyn_cast_or_null<clang::Expr>(stmt);
+    exprStmt = unwrapConstExpr(exprStmt);
+    const auto* call =
+        llvm::dyn_cast_or_null<clang::CXXMemberCallExpr>(exprStmt);
+    if (!call || call->getNumArgs() != 1) {
+        return nullptr;
+    }
+    const clang::CXXMethodDecl* method = call->getMethodDecl();
+    if (!method || method->getNameAsString() != "tensor2Array") {
+        return nullptr;
+    }
+    if (declRefName(call->getImplicitObjectArgument()) != tensorName) {
+        return nullptr;
+    }
+    targetName = declRefName(call->getArg(0));
+    if (targetName.empty()) {
+        return nullptr;
+    }
+    return call;
+}
+
+constexpr int64_t kMaxTensor2ArrayBoundedIndices = 4096;
+
+bool extractSimplePrefixLoop(const clang::ForStmt* loop,
+                             clang::ASTContext* context,
+                             std::string& loopVarName,
+                             int64_t& endExclusive) {
+    loopVarName.clear();
+    endExclusive = 0;
+    if (!loop || !context) {
+        return false;
+    }
+
+    const clang::Stmt* init = loop->getInit();
+    if (const auto* declStmt = llvm::dyn_cast_or_null<clang::DeclStmt>(init)) {
+        if (!declStmt->isSingleDecl()) {
+            return false;
+        }
+        const auto* varDecl =
+            llvm::dyn_cast_or_null<clang::VarDecl>(declStmt->getSingleDecl());
+        int64_t initValue = 0;
+        if (!varDecl || !varDecl->hasInit() ||
+            !evaluateIntegerConstant(varDecl->getInit(), context, initValue) ||
+            initValue != 0) {
+            return false;
+        }
+        loopVarName = varDecl->getNameAsString();
+    } else if (const auto* binary =
+                   llvm::dyn_cast_or_null<clang::BinaryOperator>(init)) {
+        int64_t initValue = 0;
+        if (binary->getOpcode() != clang::BO_Assign ||
+            !evaluateIntegerConstant(binary->getRHS(), context, initValue) ||
+            initValue != 0) {
+            return false;
+        }
+        loopVarName = declRefName(binary->getLHS());
+    }
+    if (loopVarName.empty()) {
+        return false;
+    }
+
+    const auto* cond =
+        llvm::dyn_cast_or_null<clang::BinaryOperator>(ignoreParenCasts(loop->getCond()));
+    if (!cond || declRefName(cond->getLHS()) != loopVarName) {
+        return false;
+    }
+    int64_t bound = 0;
+    if (!evaluateIntegerConstant(cond->getRHS(), context, bound) ||
+        bound < 0) {
+        return false;
+    }
+    if (cond->getOpcode() == clang::BO_LT) {
+        endExclusive = bound;
+    } else if (cond->getOpcode() == clang::BO_LE) {
+        if (bound == std::numeric_limits<int64_t>::max()) {
+            return false;
+        }
+        endExclusive = bound + 1;
+    } else {
+        return false;
+    }
+    if (endExclusive < 0 ||
+        endExclusive > kMaxTensor2ArrayBoundedIndices) {
+        return false;
+    }
+
+    const clang::Stmt* inc = loop->getInc();
+    if (const auto* unary = llvm::dyn_cast_or_null<clang::UnaryOperator>(inc)) {
+        return unary->isIncrementOp() &&
+               declRefName(unary->getSubExpr()) == loopVarName;
+    }
+    if (const auto* opCall =
+            llvm::dyn_cast_or_null<clang::CXXOperatorCallExpr>(inc)) {
+        return opCall->getOperator() == clang::OO_PlusPlus &&
+               opCall->getNumArgs() > 0 &&
+               declRefName(opCall->getArg(0)) == loopVarName;
+    }
+    if (const auto* compound =
+            llvm::dyn_cast_or_null<clang::CompoundAssignOperator>(inc)) {
+        return compound->getOpcode() == clang::BO_AddAssign &&
+               declRefName(compound->getLHS()) == loopVarName &&
+               isIntegerLiteralValue(compound->getRHS(), 1);
+    }
+    return false;
+}
+
+class VectorFixedUseVisitor
+    : public clang::RecursiveASTVisitor<VectorFixedUseVisitor> {
+public:
+    std::string VectorName;
+    clang::ASTContext* Context = nullptr;
+    int WriteDepth = 0;
+    bool FullUse = false;
+    std::string Reason;
+    std::vector<PostUseBoundedIndex> Indices;
+    std::unordered_map<std::string, std::vector<int64_t>> LoopPrefixes;
+
+    VectorFixedUseVisitor(std::string vectorName,
+                          clang::ASTContext* context)
+        : VectorName(std::move(vectorName)), Context(context) {}
+
+    bool TraverseBinaryOperator(clang::BinaryOperator* binary) {
+        if (!binary) {
+            return true;
+        }
+        if (binary->isAssignmentOp()) {
+            ++WriteDepth;
+            TraverseStmt(binary->getLHS());
+            --WriteDepth;
+            if (exprContainsVectorName(binary->getLHS())) {
+                recordFull("tensor2Array target vector is written");
+            }
+            TraverseStmt(binary->getRHS());
+            return true;
+        }
+        return clang::RecursiveASTVisitor<
+            VectorFixedUseVisitor>::TraverseBinaryOperator(binary);
+    }
+
+    bool TraverseCompoundAssignOperator(clang::CompoundAssignOperator* binary) {
+        if (!binary) {
+            return true;
+        }
+        ++WriteDepth;
+        TraverseStmt(binary->getLHS());
+        --WriteDepth;
+        if (exprContainsVectorName(binary->getLHS())) {
+            recordFull("tensor2Array target vector compound write");
+        }
+        TraverseStmt(binary->getRHS());
+        return true;
+    }
+
+    bool TraverseUnaryOperator(clang::UnaryOperator* unary) {
+        if (!unary) {
+            return true;
+        }
+        if (unary->isIncrementDecrementOp()) {
+            ++WriteDepth;
+            TraverseStmt(unary->getSubExpr());
+            --WriteDepth;
+            if (exprContainsVectorName(unary->getSubExpr())) {
+                recordFull("tensor2Array target vector increment/decrement");
+            }
+            return true;
+        }
+        if (unary->getOpcode() == clang::UO_AddrOf &&
+            exprContainsVectorName(unary->getSubExpr())) {
+            recordFull("address-of tensor2Array target vector");
+            return true;
+        }
+        return clang::RecursiveASTVisitor<
+            VectorFixedUseVisitor>::TraverseUnaryOperator(unary);
+    }
+
+    bool TraverseForStmt(clang::ForStmt* loop) {
+        if (!loop) {
+            return true;
+        }
+        std::string loopVarName;
+        int64_t endExclusive = 0;
+        if (!extractSimplePrefixLoop(loop, Context, loopVarName,
+                                     endExclusive)) {
+            return clang::RecursiveASTVisitor<
+                VectorFixedUseVisitor>::TraverseForStmt(loop);
+        }
+        LoopPrefixes[loopVarName].push_back(endExclusive);
+        TraverseStmt(loop->getBody());
+        LoopPrefixes[loopVarName].pop_back();
+        if (LoopPrefixes[loopVarName].empty()) {
+            LoopPrefixes.erase(loopVarName);
+        }
+        return true;
+    }
+
+    bool TraverseCXXOperatorCallExpr(clang::CXXOperatorCallExpr* opCall) {
+        if (!opCall) {
+            return true;
+        }
+        if (opCall->getOperator() == clang::OO_Subscript) {
+            if (WriteDepth == 0) {
+                std::string baseName;
+                (void)collectSubscriptIndices(opCall, baseName);
+                if (baseName == VectorName) {
+                    recordVectorRead(opCall);
+                    return true;
+                }
+            }
+        }
+        if (opCall->isAssignmentOp()) {
+            if (opCall->getNumArgs() > 0) {
+                ++WriteDepth;
+                TraverseStmt(opCall->getArg(0));
+                --WriteDepth;
+                if (exprContainsVectorName(opCall->getArg(0))) {
+                    recordFull("tensor2Array target vector operator write");
+                }
+            }
+            for (unsigned argIdx = 1; argIdx < opCall->getNumArgs(); ++argIdx) {
+                TraverseStmt(opCall->getArg(argIdx));
+            }
+            return true;
+        }
+        if (opCall->getOperator() == clang::OO_PlusPlus ||
+            opCall->getOperator() == clang::OO_MinusMinus) {
+            if (opCall->getNumArgs() > 0) {
+                ++WriteDepth;
+                TraverseStmt(opCall->getArg(0));
+                --WriteDepth;
+                if (exprContainsVectorName(opCall->getArg(0))) {
+                    recordFull("tensor2Array target vector operator increment");
+                }
+            }
+            return true;
+        }
+        return clang::RecursiveASTVisitor<
+            VectorFixedUseVisitor>::TraverseCXXOperatorCallExpr(opCall);
+    }
+
+    bool TraverseArraySubscriptExpr(clang::ArraySubscriptExpr* array) {
+        if (!array) {
+            return true;
+        }
+        if (WriteDepth == 0) {
+            std::string baseName;
+            (void)collectSubscriptIndices(array, baseName);
+            if (baseName == VectorName) {
+                recordVectorRead(array);
+                return true;
+            }
+        }
+        return clang::RecursiveASTVisitor<
+            VectorFixedUseVisitor>::TraverseArraySubscriptExpr(array);
+    }
+
+    bool VisitDeclRefExpr(clang::DeclRefExpr* dre) {
+        if (!dre || !dre->getDecl() ||
+            dre->getDecl()->getNameAsString() != VectorName ||
+            WriteDepth > 0) {
+            return true;
+        }
+        PostUseBoundedIndex ignored;
+        if (isPartOfFixedVectorIndexRead(dre, ignored)) {
+            return true;
+        }
+        recordFull("tensor2Array target vector read is not fixed-index");
+        return true;
+    }
+
+    bool VisitCXXMemberCallExpr(clang::CXXMemberCallExpr* call) {
+        if (!call) {
+            return true;
+        }
+        if (declRefName(call->getImplicitObjectArgument()) == VectorName) {
+            recordFull("member call on tensor2Array target vector");
+        }
+        return true;
+    }
+
+    bool VisitCallExpr(clang::CallExpr* call) {
+        if (!call) {
+            return true;
+        }
+        for (const clang::Expr* arg : call->arguments()) {
+            if (exprContainsVectorName(arg) &&
+                !exprContainsOnlyConstVectorIndexReads(arg)) {
+                recordFull("tensor2Array target vector passed to function");
+                break;
+            }
+        }
+        return true;
+    }
+
+private:
+    bool vectorReadExprIsFixed(const clang::Expr* expr) const {
+        std::string baseName;
+        const std::vector<const clang::Expr*> indexExprs =
+            collectSubscriptIndices(expr, baseName);
+        if (baseName != VectorName || indexExprs.size() != 1) {
+            return false;
+        }
+        int64_t value = 0;
+        if (evaluateIntegerConstant(indexExprs[0], Context, value) &&
+            value >= 0) {
+            return true;
+        }
+        const std::string loopVar = declRefName(indexExprs[0]);
+        const auto it = LoopPrefixes.find(loopVar);
+        return it != LoopPrefixes.end() && !it->second.empty();
+    }
+
+    void recordVectorRead(const clang::Expr* expr) {
+        std::string baseName;
+        const std::vector<const clang::Expr*> indexExprs =
+            collectSubscriptIndices(expr, baseName);
+        if (baseName != VectorName || indexExprs.size() != 1) {
+            recordFull("unsupported tensor2Array target indexing");
+            return;
+        }
+        int64_t value = 0;
+        if (evaluateIntegerConstant(indexExprs[0], Context, value) &&
+            value >= 0) {
+            PostUseBoundedIndex index;
+            index.indices = {value};
+            addUniqueIndex(Indices, index);
+            return;
+        }
+        const std::string loopVar = declRefName(indexExprs[0]);
+        const auto it = LoopPrefixes.find(loopVar);
+        if (it == LoopPrefixes.end() || it->second.empty()) {
+            recordFull("non-constant tensor2Array target index");
+            return;
+        }
+        const int64_t endExclusive = it->second.back();
+        for (int64_t idx = 0; idx < endExclusive; ++idx) {
+            PostUseBoundedIndex index;
+            index.indices = {idx};
+            addUniqueIndex(Indices, index);
+        }
+    }
+
+    void recordFull(const std::string& reason) {
+        if (!FullUse) {
+            Reason = reason;
+        }
+        FullUse = true;
+    }
+
+    bool exprContainsVectorName(const clang::Expr* expr) const {
+        if (!expr) {
+            return false;
+        }
+        std::string baseName;
+        (void)collectSubscriptIndices(expr, baseName);
+        if (baseName == VectorName || declRefName(expr) == VectorName) {
+            return true;
+        }
+        for (const clang::Stmt* child : expr->children()) {
+            if (const auto* childExpr =
+                    llvm::dyn_cast_or_null<clang::Expr>(child)) {
+                if (exprContainsVectorName(childExpr)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    bool exprContainsOnlyConstVectorIndexReads(const clang::Expr* expr) const {
+        if (!expr) {
+            return true;
+        }
+        std::string baseName;
+        (void)collectSubscriptIndices(expr, baseName);
+        if (baseName == VectorName) {
+            return vectorReadExprIsFixed(expr);
+        }
+        if (const auto* dre = llvm::dyn_cast<clang::DeclRefExpr>(
+                ignoreParenCasts(expr))) {
+            if (dre->getDecl() &&
+                dre->getDecl()->getNameAsString() == VectorName) {
+                PostUseBoundedIndex ignored;
+                return isPartOfFixedVectorIndexRead(dre, ignored);
+            }
+        }
+        for (const clang::Stmt* child : expr->children()) {
+            if (const auto* childExpr =
+                    llvm::dyn_cast_or_null<clang::Expr>(child)) {
+                if (!exprContainsOnlyConstVectorIndexReads(childExpr)) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    bool isPartOfFixedVectorIndexRead(const clang::DeclRefExpr* dre,
+                                      PostUseBoundedIndex& index) const {
+        if (!dre || !Context) {
+            return false;
+        }
+        clang::DynTypedNode current = clang::DynTypedNode::create(*dre);
+        for (int depth = 0; depth < 8; ++depth) {
+            auto parents = Context->getParents(current);
+            if (parents.empty()) {
+                return false;
+            }
+            const clang::DynTypedNode& parent = parents[0];
+            if (const auto* expr = parent.get<clang::Expr>()) {
+                if (vectorReadExprIsFixed(expr)) {
+                    return true;
+                }
+                current = parent;
+                continue;
+            }
+            return false;
+        }
+        return false;
+    }
+};
 
 class PostUseIndexedReadVisitor
     : public clang::RecursiveASTVisitor<PostUseIndexedReadVisitor> {
@@ -1025,6 +1472,8 @@ PostUseSyncPlan analyzePostUseSync(
 
     bool sawDac = false;
     bool sawHostUse = false;
+    const clang::Stmt* tensor2ArrayStmt = nullptr;
+    std::string tensor2ArrayTarget;
     for (const clang::Stmt* stmt : compound->body()) {
         if (!stmt) {
             continue;
@@ -1040,6 +1489,41 @@ PostUseSyncPlan analyzePostUseSync(
         if (isIgnoredLoweredPostStmt(stmt, ignoredPostStmts,
                                      dacppFile->getContext())) {
             continue;
+        }
+
+        if (!tensor2ArrayStmt) {
+            std::string targetName;
+            if (tensor2ArrayCallForStmt(stmt, tensorName, targetName)) {
+                tensor2ArrayStmt = stmt;
+                tensor2ArrayTarget = targetName;
+                sawHostUse = true;
+                continue;
+            }
+        }
+
+        if (tensor2ArrayStmt && !tensor2ArrayTarget.empty()) {
+            VectorFixedUseVisitor vectorVisitor(tensor2ArrayTarget,
+                                                dacppFile->getContext());
+            vectorVisitor.TraverseStmt(const_cast<clang::Stmt*>(stmt));
+            if (vectorVisitor.FullUse) {
+                result.kind = PostUseSyncKind::FullTensor;
+                result.reason = vectorVisitor.Reason.empty()
+                                    ? "unknown tensor2Array target use"
+                                    : vectorVisitor.Reason;
+                return result;
+            }
+            if (!vectorVisitor.Indices.empty()) {
+                if (!stmtContainsCoutExpr(stmt)) {
+                    result.kind = PostUseSyncKind::FullTensor;
+                    result.reason =
+                        "tensor2Array target read is not root-observable cout";
+                    return result;
+                }
+                for (const auto& index : vectorVisitor.Indices) {
+                    addUniqueIndex(result.boundedIndices, index);
+                }
+                continue;
+            }
         }
 
         PostUseIndexedReadVisitor visitor(tensorName, dacppFile->getContext());
@@ -1069,7 +1553,10 @@ PostUseSyncPlan analyzePostUseSync(
         return result;
     }
     result.kind = PostUseSyncKind::BoundedIndexedRootRead;
-    result.reason = "root-only bounded indexed read";
+    result.reason = tensor2ArrayStmt ? "root-only tensor2Array bounded target read"
+                                     : "root-only bounded indexed read";
+    result.tensor2ArrayStmt = tensor2ArrayStmt;
+    result.tensor2ArrayTargetName = tensor2ArrayTarget;
     return result;
 }
 

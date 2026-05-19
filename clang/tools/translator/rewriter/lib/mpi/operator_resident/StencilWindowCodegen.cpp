@@ -252,7 +252,9 @@ bool constantBoundaryValueForIndex(const ShellPartitionPlan& plan,
 void emitBoundedReviseValues(std::string& code,
                              const ParamAccessPlan& param,
                              const std::string& valuesName,
+                             const std::string& type,
                              const std::string& indent) {
+    (void)type;
     for (std::size_t idx = 0; idx < param.postUseSync.boundedIndices.size();
          ++idx) {
         const auto& bounded = param.postUseSync.boundedIndices[idx];
@@ -275,6 +277,8 @@ void emitResidentHaloBoundedIndexedRootRead2D(
     const ParamAccessPlan& param,
     const std::string& localBufferName,
     const std::string& rowCountExpr,
+    const std::string& ownerRowTotalExpr,
+    const std::string& ownerWindowRowsExpr,
     const std::string& logicalColsExpr,
     const std::string& localStrideExpr,
     const std::string& rowOffsetExpr,
@@ -303,9 +307,6 @@ void emitResidentHaloBoundedIndexedRootRead2D(
             param.calcParamName + "(static_cast<std::size_t>(" +
             std::to_string(param.postUseSync.boundedIndices.size()) + "), " +
             type + "{});\n";
-    code += "        std::vector<int> __or_bounded_owners_" +
-            param.calcParamName + "(static_cast<std::size_t>(" +
-            std::to_string(param.postUseSync.boundedIndices.size()) + "), -1);\n";
     std::vector<bool> directRootConstants(
         param.postUseSync.boundedIndices.size(), false);
     for (std::size_t idx = 0; idx < param.postUseSync.boundedIndices.size();
@@ -348,9 +349,6 @@ void emitResidentHaloBoundedIndexedRootRead2D(
                 "[static_cast<std::size_t>(" + std::to_string(idx) +
                 ")] = " + localBufferName +
                 "[static_cast<std::size_t>(__or_local_linear)];\n";
-        code += "                __or_bounded_owners_" + param.calcParamName +
-                "[static_cast<std::size_t>(" + std::to_string(idx) +
-                ")] = " + mpiRankExpr + ";\n";
         code += "            }\n";
         code += "        }\n";
     }
@@ -360,10 +358,35 @@ void emitResidentHaloBoundedIndexedRootRead2D(
             continue;
         }
         code += "        {\n";
-        code += "            int __or_owner_rank = __or_bounded_owners_" +
-                param.calcParamName + "[static_cast<std::size_t>(" +
-                std::to_string(idx) + ")];\n";
-        code += "            MPI_Allreduce(MPI_IN_PLACE, &__or_owner_rank, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);\n";
+        const auto& bounded = param.postUseSync.boundedIndices[idx];
+        code += "            const int64_t __or_target_row = " +
+                std::to_string(bounded.indices[0]) + ";\n";
+        code += "            const int64_t __or_target_col = " +
+                std::to_string(bounded.indices[1]) + ";\n";
+        code += "            int __or_owner_rank = -1;\n";
+        code += "            if (__or_target_col >= 0 && __or_target_col < " +
+                logicalColsExpr + ") {\n";
+        code += "                for (int __or_owner_candidate = 0; __or_owner_candidate < " +
+                mpiSizeExpr + "; ++__or_owner_candidate) {\n";
+        if (ownerWindowRowsExpr.empty()) {
+            code += "                    const auto __or_owner_range = dacpp::mpi::operator_resident::rank_range_1d(" +
+                    ownerRowTotalExpr + ", __or_owner_candidate, " +
+                    mpiSizeExpr + ");\n";
+            code += "                    if (__or_target_row >= __or_owner_range.begin && __or_target_row < __or_owner_range.begin + __or_owner_range.count) {\n";
+            code += "                        __or_owner_rank = __or_owner_candidate;\n";
+            code += "                        break;\n";
+            code += "                    }\n";
+        } else {
+            code += "                    const auto __or_owner_layout = dacpp::mpi::operator_resident::resident_halo_2d_row_layout(" +
+                    ownerRowTotalExpr + ", " + logicalColsExpr +
+                    ", __or_owner_candidate, " + mpiSizeExpr + ", " +
+                    ownerWindowRowsExpr + ");\n";
+            code += "                    if (__or_target_row >= __or_owner_layout.global_row_begin && __or_target_row < __or_owner_layout.global_row_begin + __or_owner_layout.local_row_count) {\n";
+            code += "                        __or_owner_rank = __or_owner_candidate;\n";
+            code += "                    }\n";
+        }
+        code += "                }\n";
+        code += "            }\n";
         code += "            if (__or_owner_rank < 0) {\n";
         code += "                if (" + mpiRankExpr +
                 " == 0) std::fprintf(stderr, \"[DACPP][MPI][OR] resident halo bounded indexed read has no owner\\n\");\n";
@@ -389,6 +412,7 @@ void emitResidentHaloBoundedIndexedRootRead2D(
     code += "        if (" + mpiRankExpr + " == 0) {\n";
     emitBoundedReviseValues(code, param,
                             "__or_bounded_values_" + param.calcParamName,
+                            type,
                             "            ");
     code += "        }\n";
     code += "    }\n";
@@ -1241,8 +1265,8 @@ void emitResidentHaloInitFunction2D(std::string& code,
     code += "    auto dacpp_profile_scatter_start = dacpp::mpi::profileSegmentStart();\n";
     if (reader.constantInit.supported) {
         code += "    std::fill(ctx." + localName(reader) + ".begin(), ctx." +
-                localName(reader) + ".end(), static_cast<" + readerType +
-                ">(" + reader.constantInit.valueExpr + "));\n";
+                localName(reader) + ".end(), " +
+                reader.constantInit.valueExpr + ");\n";
         code += "    // Constant-initialized resident halo reader " +
                 reader.calcParamName +
                 " is filled locally; skip root tensor2Array/scatter_window_2d_rows.\n";
@@ -1278,9 +1302,8 @@ void emitResidentHaloInitFunction2D(std::string& code,
                     ".end(), " + directReaderType + "{});\n";
             code += "    std::vector<" + directReaderType +
                     "> __or_initial_owned_" + directReader->calcParamName +
-                    "(static_cast<std::size_t>(ctx.__or_local_item_count), static_cast<" +
-                    directReaderType + ">(" +
-                    directReader->constantInit.valueExpr + "));\n";
+                    "(static_cast<std::size_t>(ctx.__or_local_item_count), " +
+                    directReader->constantInit.valueExpr + ");\n";
             code += "    dacpp::mpi::operator_resident::write_owned_slice_2d_rows(ctx." +
                     localName(*directReader) + ", __or_initial_owned_" +
                     directReader->calcParamName +
@@ -1521,8 +1544,8 @@ void emitResidentHaloMaterializeFunction2D(
     } else if (writerBounded) {
         emitResidentHaloBoundedIndexedRootRead2D(
             code, plan, writer, "ctx." + localName(reader),
-            "ctx.__or_output_row_range.count", "ctx.__or_output_cols",
-            "ctx.__or_input_cols",
+            "ctx.__or_output_row_range.count", "ctx.__or_output_rows", "",
+            "ctx.__or_output_cols", "ctx.__or_input_cols",
             std::to_string(halo.followupTargetRowOffset),
             std::to_string(halo.followupTargetColOffset), "mpi_rank",
             "ctx.mpi_size", "", sitePlan.boundaryLocalUpdates, 4710);
@@ -1568,8 +1591,8 @@ void emitResidentHaloMaterializeFunction2D(
     } else if (directReader && directReaderBounded) {
         emitResidentHaloBoundedIndexedRootRead2D(
             code, plan, *directReader, "ctx." + localName(*directReader),
-            "ctx.__or_output_row_range.count", "ctx.__or_output_cols",
-            "ctx.__or_input_cols",
+            "ctx.__or_output_row_range.count", "ctx.__or_output_rows", "",
+            "ctx.__or_output_cols", "ctx.__or_input_cols",
             std::to_string(halo.followupTargetRowOffset),
             std::to_string(halo.followupTargetColOffset), "mpi_rank",
             "ctx.mpi_size", "ctx.__or_profile",
@@ -1615,7 +1638,8 @@ void emitResidentHaloMaterializeFunction2D(
     } else if (readerBounded) {
         emitResidentHaloBoundedIndexedRootRead2D(
             code, plan, reader, "ctx." + localName(reader),
-            "ctx.__or_halo_layout.local_row_count", "ctx.__or_input_cols",
+            "ctx.__or_halo_layout.local_row_count", "ctx.__or_output_rows",
+            "ctx.__or_window_rows", "ctx.__or_input_cols",
             "ctx.__or_input_cols", "0", "0", "mpi_rank", "ctx.mpi_size",
             "", sitePlan.boundaryLocalUpdates, 4910);
     } else {

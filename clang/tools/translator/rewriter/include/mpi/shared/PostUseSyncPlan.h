@@ -5,6 +5,10 @@
 #include <string>
 #include <vector>
 
+namespace clang {
+class Stmt;
+} // namespace clang
+
 namespace dacppTranslator {
 namespace mpi_rewriter {
 
@@ -24,6 +28,8 @@ struct PostUseSyncPlan {
     std::string tensorName;
     std::string reason;
     std::vector<PostUseBoundedIndex> boundedIndices;
+    const clang::Stmt* tensor2ArrayStmt = nullptr;
+    std::string tensor2ArrayTargetName;
 };
 
 }  // namespace mpi_rewriter

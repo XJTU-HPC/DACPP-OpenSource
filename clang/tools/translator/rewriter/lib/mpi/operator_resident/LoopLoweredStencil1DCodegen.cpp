@@ -547,8 +547,8 @@ void emitResidentHaloInitFunction(std::string& code,
     code += "    auto dacpp_profile_scatter_start = dacpp::mpi::profileSegmentStart();\n";
     if (reader.constantInit.supported) {
         code += "    std::fill(ctx." + localName(reader) + ".begin(), ctx." +
-                localName(reader) + ".end(), static_cast<" + readerType +
-                ">(" + reader.constantInit.valueExpr + "));\n";
+                localName(reader) + ".end(), " +
+                reader.constantInit.valueExpr + ");\n";
         code += "    // Constant-initialized resident halo reader " +
                 reader.calcParamName +
                 " is filled locally; skip root tensor2Array/scatter_window_1d.\n";
