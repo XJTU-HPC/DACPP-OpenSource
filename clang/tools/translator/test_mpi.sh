@@ -311,6 +311,9 @@ for test_name in "${MPI_TESTS[@]}"; do
     TOTAL=$((TOTAL + 1))
 
     expect_file="$TESTS_DIR/$test_name/mpi_expect.txt"
+    if [[ "$USE_LARGE_CASES" == "1" && -f "$TESTS_DIR/$test_name/mpi_expect_large.txt" ]]; then
+        expect_file="$TESTS_DIR/$test_name/mpi_expect_large.txt"
+    fi
     structure_only=0
     if is_structure_only_test "$expect_file"; then
         structure_only=1

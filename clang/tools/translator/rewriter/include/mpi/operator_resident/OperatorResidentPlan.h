@@ -147,6 +147,19 @@ struct ConstantInitPlan {
     std::string valueExpr;
     std::string logValue;
     std::string reason;
+    bool indexExpr = false;
+    std::string globalIndexName;
+    const clang::Stmt* indexFillLoopStmt = nullptr;
+    const clang::Stmt* indexFillAssignmentStmt = nullptr;
+};
+
+struct LoopLoweredSelectiveMaterializePlan {
+    bool enabled = false;
+    std::string outputTensorName;
+    std::string hostTensorName;
+    std::string rowIndexExpr;
+    int64_t targetRow = -1;
+    std::string reason;
 };
 
 struct PartitionSignature {
@@ -211,6 +224,7 @@ struct ShellPartitionPlan {
     bool loopLowerMaterializeEveryRun = false;
     bool loopLowerReplicatedScalarLocalRefresh = false;
     std::string loopLowerScalarRefreshReason;
+    LoopLoweredSelectiveMaterializePlan loopLowerSelectiveMaterialize;
     OrLoopLowerPlan orLoopLower;
 };
 

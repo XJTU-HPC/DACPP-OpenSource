@@ -65,10 +65,26 @@ void emitScatter(std::string& code,
     code += "    std::vector<" + type + "> " + local +
             "(static_cast<std::size_t>(__or_local_item_count));\n";
     if (param.constantInit.supported) {
-        code += "    std::fill(" + local + ".begin(), " + local +
-                ".end(), " + param.constantInit.valueExpr + ");\n";
-        code += "    // Constant-initialized input " + param.calcParamName +
-                " is filled locally; skip root pack/scatter.\n";
+        if (param.constantInit.indexExpr) {
+            const std::string indexName =
+                param.constantInit.globalIndexName.empty()
+                    ? "__or_global_index"
+                    : param.constantInit.globalIndexName;
+            code += "    for (int64_t __or_local_i = 0; __or_local_i < __or_local_item_count; ++__or_local_i) {\n";
+            code += "        const int64_t " + indexName +
+                    " = __or_range.begin + __or_local_i;\n";
+            code += "        " + local +
+                    "[static_cast<std::size_t>(__or_local_i)] = " +
+                    param.constantInit.valueExpr + ";\n";
+            code += "    }\n";
+            code += "    // Index-generated input " + param.calcParamName +
+                    " is filled locally; skip root pack/scatter.\n";
+        } else {
+            code += "    std::fill(" + local + ".begin(), " + local +
+                    ".end(), " + param.constantInit.valueExpr + ");\n";
+            code += "    // Constant-initialized input " + param.calcParamName +
+                    " is filled locally; skip root pack/scatter.\n";
+        }
         return;
     }
     code += "    std::vector<" + type + "> " + global + ";\n";

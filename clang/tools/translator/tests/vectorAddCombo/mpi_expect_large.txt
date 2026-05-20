@@ -1,0 +1,22 @@
+LOG_CONTAINS:[DACPP][MPI][OR] chain=0 layout=Contiguous1D length=3 chain=accepted codegen=enabled
+LOG_CONTAINS:[DACPP][MPI][OR] input a_tensor init-sync=index-local expr=static_cast<float>(i)
+LOG_CONTAINS:[DACPP][MPI][OR] input b_tensor init-sync=index-local expr=static_cast<float>(i * 2)
+LOG_CONTAINS:[DACPP][MPI][OR] input c_tensor init-sync=index-local expr=static_cast<float>(1000 + i)
+LOG_CONTAINS:[DACPP][MPI][OR]   resident-write tensor=tmp_tensor retain=yes reason=downstream-resident-reader
+LOG_CONTAINS:[DACPP][MPI][OR]   resident-write tensor=shifted_tensor retain=yes reason=downstream-resident-reader
+LOG_CONTAINS:[DACPP][MPI][OR] output out_tensor post-use=bounded-index count=16 reason=root-only tensor2Array bounded target read
+SYCL_CONTAINS:Index-generated input lhs is filled locally; skip root pack/scatter.
+SYCL_CONTAINS:Index-generated input rhs is filled locally; skip root pack/scatter.
+SYCL_CONTAINS:DACPP MPI index-local vector initialization elided
+SYCL_CONTAINS:std::vector<float> __or_bounded_values_out(static_cast<std::size_t>(16), float{});
+SYCL_CONTAINS:host_out.assign(16, {});
+SYCL_CONTAINS:host_out[static_cast<std::size_t>(15)] = out_tensor.getElement({15});
+SYCL_CONTAINS:dacpp::mpi::operator_resident::replace_resident<float>(__or_arg2, std::move(__or_local_out));
+SYCL_NOT_CONTAINS:a[i] = static_cast<float>(i);
+SYCL_NOT_CONTAINS:b[i] = static_cast<float>(i * 2);
+SYCL_NOT_CONTAINS:c[i] = static_cast<float>(1000 + i);
+SYCL_NOT_CONTAINS:MPI_Gatherv(__or_local_out.data()
+SYCL_NOT_CONTAINS:MPI_Bcast(__or_materialized_out.data()
+SYCL_NOT_CONTAINS:__or_arg2.array2Tensor(__or_materialized_out);
+SYCL_NOT_CONTAINS:AccessPattern
+SYCL_NOT_CONTAINS:PackPlan

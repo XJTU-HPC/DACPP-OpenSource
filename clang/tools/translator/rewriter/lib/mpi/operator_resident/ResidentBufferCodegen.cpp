@@ -398,11 +398,34 @@ void emitRowPartitionFullRowScatter(std::string& code,
             param.calcParamName + " * " +
             payloadLen + "));\n";
     if (param.constantInit.supported) {
-        code += "    std::fill(" + local + ".begin(), " + local +
-                ".end(), " + param.constantInit.valueExpr + ");\n";
-        code += "    // Constant-initialized RowPartitionFullRow input " +
-                param.calcParamName +
-                " is filled locally; skip root pack/scatter.\n";
+        if (param.constantInit.indexExpr) {
+            const std::string indexName =
+                param.constantInit.globalIndexName.empty()
+                    ? "__or_global_index"
+                    : param.constantInit.globalIndexName;
+            code += "    for (int64_t __or_payload_i = 0; __or_payload_i < __or_payload_unique_count_" +
+                    param.calcParamName + "; ++__or_payload_i) {\n";
+            code += "        const int64_t " + indexName +
+                    " = __or_payload_index_begin_" + param.calcParamName +
+                    " + __or_payload_i;\n";
+            code += "        for (int64_t __or_payload_j = 0; __or_payload_j < " +
+                    payloadLen + "; ++__or_payload_j) {\n";
+            code += "            " + local +
+                    "[static_cast<std::size_t>(__or_payload_i * " +
+                    payloadLen + " + __or_payload_j)] = " +
+                    param.constantInit.valueExpr + ";\n";
+            code += "        }\n";
+            code += "    }\n";
+            code += "    // Index-generated RowPartitionFullRow input " +
+                    param.calcParamName +
+                    " is filled locally; skip root pack/scatter.\n";
+        } else {
+            code += "    std::fill(" + local + ".begin(), " + local +
+                    ".end(), " + param.constantInit.valueExpr + ");\n";
+            code += "    // Constant-initialized RowPartitionFullRow input " +
+                    param.calcParamName +
+                    " is filled locally; skip root pack/scatter.\n";
+        }
         return;
     }
     code += "    std::vector<int> __or_payload_counts_" + param.calcParamName +

@@ -209,7 +209,7 @@ void emitContextType(std::string& code,
     code += "    std::vector<int> __or_counts;\n";
     code += "    std::vector<int> __or_displs;\n";
     code += "    dacpp::mpi::SegmentedProfile __or_profile;\n";
-    code += "    sycl::queue q{sycl::default_selector_v};\n";
+    code += "    sycl::queue& q = dacpp::mpi::operator_resident::default_queue();\n";
     code += "    std::vector<" + elemType(plan, reader) + "> " +
             globalName(reader) + ";\n";
     code += "    std::vector<" + elemType(plan, writer) + "> " +
@@ -495,7 +495,7 @@ void emitResidentHaloContextType(std::string& code,
     code += "    std::vector<int> __or_counts;\n";
     code += "    std::vector<int> __or_displs;\n";
     code += "    dacpp::mpi::SegmentedProfile __or_profile;\n";
-    code += "    sycl::queue q{sycl::default_selector_v};\n";
+    code += "    sycl::queue& q = dacpp::mpi::operator_resident::default_queue();\n";
     code += "    std::vector<" + elemType(plan, reader) + "> " +
             localName(reader) + ";\n";
     code += "    std::vector<" + elemType(plan, writer) + "> " +

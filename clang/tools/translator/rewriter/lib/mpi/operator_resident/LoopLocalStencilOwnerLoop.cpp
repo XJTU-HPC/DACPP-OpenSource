@@ -1,5 +1,6 @@
 #include "mpi/operator_resident/LoopLocalStencilOwnerLoop.h"
 
+#include <algorithm>
 #include <regex>
 #include <set>
 #include <string>
@@ -12,6 +13,7 @@
 #include "clang/AST/ParentMapContext.h"
 #include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/AST/Stmt.h"
+#include "clang/Basic/SourceManager.h"
 #include "clang/Lex/Lexer.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -59,6 +61,29 @@ const clang::Expr* stripExpr(const clang::Expr* expr) {
         return expr;
     }
     return nullptr;
+}
+
+bool evaluateInt64Constant(const clang::Expr* expr,
+                           clang::ASTContext* context,
+                           int64_t* value) {
+    expr = stripExpr(expr);
+    if (!expr || !context || !value) {
+        return false;
+    }
+    if (const auto* literal = llvm::dyn_cast<clang::IntegerLiteral>(expr)) {
+        *value = literal->getValue().getSExtValue();
+        return true;
+    }
+    if (!expr->getType()->isIntegerType()) {
+        return false;
+    }
+    clang::Expr::EvalResult evalResult;
+    if (!expr->EvaluateAsInt(evalResult, *context) ||
+        !evalResult.Val.isInt()) {
+        return false;
+    }
+    *value = evalResult.Val.getInt().getSExtValue();
+    return true;
 }
 
 bool isDeclRefToName(const clang::Expr* expr, const std::string& name) {
@@ -140,6 +165,44 @@ bool exprReferencesVar(const clang::Expr* expr, const std::string& name) {
     DeclRefNameVisitor visitor(name);
     visitor.TraverseStmt(const_cast<clang::Expr*>(expr));
     return visitor.found();
+}
+
+bool stmtContainsCoutExpr(const clang::Stmt* stmt) {
+    if (!stmt) {
+        return false;
+    }
+    if (const auto* dre = llvm::dyn_cast<clang::DeclRefExpr>(stmt)) {
+        return dre->getDecl() && dre->getDecl()->getNameAsString() == "cout";
+    }
+    for (const clang::Stmt* child : stmt->children()) {
+        if (stmtContainsCoutExpr(child)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool stmtContainsPrintCall(const clang::Stmt* stmt) {
+    if (!stmt) {
+        return false;
+    }
+    if (const auto* call =
+            llvm::dyn_cast<clang::CXXMemberCallExpr>(stmt)) {
+        const clang::CXXMethodDecl* method = call->getMethodDecl();
+        if (method && method->getNameAsString() == "print") {
+            return true;
+        }
+    }
+    for (const clang::Stmt* child : stmt->children()) {
+        if (stmtContainsPrintCall(child)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool stmtContainsRootObservableOutput(const clang::Stmt* stmt) {
+    return stmtContainsCoutExpr(stmt) || stmtContainsPrintCall(stmt);
 }
 
 const clang::Stmt* topLevelStmtForExpr(DacppFile* dacppFile,
@@ -307,6 +370,37 @@ bool extractTwoDimTensorSlice(const clang::Expr* expr,
     slice->baseDecl = baseRef->getDecl();
     slice->firstIndex = firstSubscript->getArg(1);
     slice->secondIndex = secondSubscript->getArg(1);
+    return true;
+}
+
+bool firstIndexForTensorUse(const clang::Expr* expr,
+                            const std::string& tensorName,
+                            clang::ASTContext* context,
+                            int64_t* row) {
+    TensorSliceExpr slice;
+    const clang::Expr* firstIndex = nullptr;
+    if (extractTwoDimTensorSlice(expr, &slice) &&
+        slice.baseName == tensorName) {
+        firstIndex = slice.firstIndex;
+    } else {
+        expr = stripExpr(expr);
+        const auto* opCall =
+            llvm::dyn_cast_or_null<clang::CXXOperatorCallExpr>(expr);
+        if (!opCall || opCall->getOperator() != clang::OO_Subscript ||
+            opCall->getNumArgs() < 2 ||
+            !isDeclRefToName(opCall->getArg(0), tensorName)) {
+            return false;
+        }
+        firstIndex = opCall->getArg(1);
+    }
+    int64_t candidate = -1;
+    if (!evaluateInt64Constant(firstIndex, context, &candidate) ||
+        candidate < 0) {
+        return false;
+    }
+    if (row) {
+        *row = candidate;
+    }
     return true;
 }
 
@@ -769,6 +863,301 @@ int countOwnerNextStepAssignments(const clang::Stmt* stmt,
     return visitor.nextStepAssignments();
 }
 
+bool stmtRangeContains(const clang::SourceManager& sourceManager,
+                       const clang::Stmt* outer,
+                       const clang::Stmt* inner) {
+    if (!outer || !inner || outer->getSourceRange().isInvalid() ||
+        inner->getSourceRange().isInvalid()) {
+        return false;
+    }
+    const auto beforeOrEqual = [&](clang::SourceLocation lhs,
+                                   clang::SourceLocation rhs) {
+        return lhs == rhs || sourceManager.isBeforeInTranslationUnit(lhs, rhs);
+    };
+    return beforeOrEqual(outer->getBeginLoc(), inner->getBeginLoc()) &&
+           beforeOrEqual(inner->getEndLoc(), outer->getEndLoc());
+}
+
+class FixedOwnerRowPostUseVisitor
+    : public clang::RecursiveASTVisitor<FixedOwnerRowPostUseVisitor> {
+public:
+    FixedOwnerRowPostUseVisitor(std::string ownerName,
+                                clang::ASTContext* context)
+        : OwnerName(std::move(ownerName)), Context(context) {}
+
+    bool FullUse = false;
+    std::string Reason;
+    std::set<int64_t> Rows;
+
+    bool TraverseBinaryOperator(clang::BinaryOperator* binary) {
+        if (!binary) {
+            return true;
+        }
+        if (binary->isAssignmentOp()) {
+            ++WriteDepth;
+            TraverseStmt(binary->getLHS());
+            --WriteDepth;
+            if (exprMentionsOwner(binary->getLHS())) {
+                recordFull("owner tensor written after owner loop");
+            }
+            TraverseStmt(binary->getRHS());
+            return true;
+        }
+        return clang::RecursiveASTVisitor<
+            FixedOwnerRowPostUseVisitor>::TraverseBinaryOperator(binary);
+    }
+
+    bool TraverseCompoundAssignOperator(clang::CompoundAssignOperator* binary) {
+        if (!binary) {
+            return true;
+        }
+        ++WriteDepth;
+        TraverseStmt(binary->getLHS());
+        --WriteDepth;
+        if (exprMentionsOwner(binary->getLHS())) {
+            recordFull("owner tensor compound-written after owner loop");
+        }
+        TraverseStmt(binary->getRHS());
+        return true;
+    }
+
+    bool TraverseUnaryOperator(clang::UnaryOperator* unary) {
+        if (!unary) {
+            return true;
+        }
+        if (unary->isIncrementDecrementOp()) {
+            ++WriteDepth;
+            TraverseStmt(unary->getSubExpr());
+            --WriteDepth;
+            if (exprMentionsOwner(unary->getSubExpr())) {
+                recordFull("owner tensor increment/decrement after owner loop");
+            }
+            return true;
+        }
+        if (unary->getOpcode() == clang::UO_AddrOf &&
+            exprMentionsOwner(unary->getSubExpr())) {
+            recordFull("owner tensor address escapes after owner loop");
+            return true;
+        }
+        return clang::RecursiveASTVisitor<
+            FixedOwnerRowPostUseVisitor>::TraverseUnaryOperator(unary);
+    }
+
+    bool VisitCXXMemberCallExpr(clang::CXXMemberCallExpr* call) {
+        if (!call) {
+            return true;
+        }
+        const clang::CXXMethodDecl* method = call->getMethodDecl();
+        if (method && method->getNameAsString() == "print") {
+            int64_t row = -1;
+            if (firstIndexForTensorUse(call->getImplicitObjectArgument(),
+                                       OwnerName, Context, &row)) {
+                Rows.insert(row);
+            } else if (exprMentionsOwner(call->getImplicitObjectArgument())) {
+                recordFull("owner tensor print is not fixed-row");
+            }
+            return true;
+        }
+        if (exprMentionsOwner(call->getImplicitObjectArgument())) {
+            recordFull("member call on owner tensor after owner loop");
+        }
+        return true;
+    }
+
+    bool VisitCXXOperatorCallExpr(clang::CXXOperatorCallExpr* call) {
+        if (!call) {
+            return true;
+        }
+        if (call->getOperator() == clang::OO_Subscript && WriteDepth == 0) {
+            int64_t row = -1;
+            if (firstIndexForTensorUse(call, OwnerName, Context, &row)) {
+                Rows.insert(row);
+                return true;
+            }
+        }
+        if (call->getOperator() == clang::OO_LessLess) {
+            return true;
+        }
+        if (call->isAssignmentOp()) {
+            return true;
+        }
+        if (exprMentionsOwner(call)) {
+            recordFull("owner tensor used in unsupported operator call");
+        }
+        return true;
+    }
+
+    bool VisitDeclRefExpr(clang::DeclRefExpr* dre) {
+        if (!dre || !dre->getDecl() ||
+            dre->getDecl()->getNameAsString() != OwnerName ||
+            WriteDepth > 0) {
+            return true;
+        }
+        int64_t row = -1;
+        if (isInsideFixedOwnerRow(dre, &row)) {
+            Rows.insert(row);
+            return true;
+        }
+        recordFull("owner tensor use is not fixed-row");
+        return true;
+    }
+
+    bool VisitCallExpr(clang::CallExpr* call) {
+        if (!call) {
+            return true;
+        }
+        if (llvm::isa<clang::CXXMemberCallExpr>(call) ||
+            llvm::isa<clang::CXXOperatorCallExpr>(call)) {
+            return true;
+        }
+        for (const clang::Expr* arg : call->arguments()) {
+            if (exprMentionsOwner(arg)) {
+                recordFull("owner tensor passed to function after owner loop");
+                break;
+            }
+        }
+        return true;
+    }
+
+private:
+    std::string OwnerName;
+    clang::ASTContext* Context = nullptr;
+    int WriteDepth = 0;
+
+    void recordFull(const std::string& reason) {
+        if (!FullUse) {
+            Reason = reason;
+        }
+        FullUse = true;
+    }
+
+    bool exprIsFixedOwnerRow(const clang::Expr* expr) const {
+        int64_t row = -1;
+        return firstIndexForTensorUse(expr, OwnerName, Context, &row);
+    }
+
+    bool exprMentionsOwner(const clang::Expr* expr) const {
+        if (!expr) {
+            return false;
+        }
+        TensorSliceExpr slice;
+        if (extractTwoDimTensorSlice(expr, &slice) &&
+            slice.baseName == OwnerName) {
+            return true;
+        }
+        if (isDeclRefToName(expr, OwnerName)) {
+            return true;
+        }
+        for (const clang::Stmt* child : expr->children()) {
+            if (const auto* childExpr =
+                    llvm::dyn_cast_or_null<clang::Expr>(child)) {
+                if (exprMentionsOwner(childExpr)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    bool isInsideFixedOwnerRow(const clang::DeclRefExpr* dre,
+                               int64_t* row) const {
+        if (!dre || !Context) {
+            return false;
+        }
+        clang::DynTypedNode current = clang::DynTypedNode::create(*dre);
+        for (int depth = 0; depth < 10; ++depth) {
+            auto parents = Context->getParents(current);
+            if (parents.empty()) {
+                return false;
+            }
+            const clang::DynTypedNode& parent = parents[0];
+            if (const auto* expr = parent.get<clang::Expr>()) {
+                if (firstIndexForTensorUse(expr, OwnerName, Context, row)) {
+                    return true;
+                }
+                current = parent;
+                continue;
+            }
+            return false;
+        }
+        return false;
+    }
+};
+
+struct FixedOwnerRowPostUsePlan {
+    bool supported = false;
+    int64_t row = -1;
+    std::string reason;
+};
+
+FixedOwnerRowPostUsePlan analyzeFixedOwnerRowPostUse(
+    DacppFile* dacppFile,
+    const clang::ForStmt* outerLoop,
+    const std::string& ownerName) {
+    FixedOwnerRowPostUsePlan result;
+    if (!dacppFile || !dacppFile->getContext() || !outerLoop ||
+        ownerName.empty()) {
+        result.reason = "post-use analysis context unavailable";
+        return result;
+    }
+    auto parents = dacppFile->getContext()->getParents(*outerLoop);
+    if (parents.empty()) {
+        result.reason = "owner loop parent unavailable";
+        return result;
+    }
+    const auto* parentCompound = parents[0].get<clang::CompoundStmt>();
+    if (!parentCompound) {
+        parentCompound = llvm::dyn_cast_or_null<clang::CompoundStmt>(
+            parents[0].get<clang::Stmt>());
+    }
+    if (!parentCompound) {
+        result.reason = "owner loop parent compound unavailable";
+        return result;
+    }
+
+    bool sawLoop = false;
+    std::set<int64_t> rows;
+    for (const clang::Stmt* child : parentCompound->body()) {
+        if (!child) {
+            continue;
+        }
+        if (child == outerLoop ||
+            stmtRangeContains(dacppFile->getContext()->getSourceManager(),
+                              child, outerLoop)) {
+            sawLoop = true;
+            continue;
+        }
+        if (!sawLoop) {
+            continue;
+        }
+        FixedOwnerRowPostUseVisitor visitor(ownerName,
+                                            dacppFile->getContext());
+        visitor.TraverseStmt(const_cast<clang::Stmt*>(child));
+        if (visitor.FullUse) {
+            result.reason = visitor.Reason.empty()
+                                ? "unknown owner tensor post-loop use"
+                                : visitor.Reason;
+            return result;
+        }
+        if (!visitor.Rows.empty() &&
+            !stmtContainsRootObservableOutput(child)) {
+            result.reason =
+                "fixed owner row read is not root-observable output";
+            return result;
+        }
+        rows.insert(visitor.Rows.begin(), visitor.Rows.end());
+    }
+    if (rows.size() != 1) {
+        result.reason = rows.empty() ? "no fixed owner row post-loop use"
+                                     : "multiple fixed owner rows post-loop";
+        return result;
+    }
+    result.supported = true;
+    result.row = *rows.begin();
+    result.reason = "fixed owner row post-loop use";
+    return result;
+}
+
 struct OwnerLoopBodyShape {
     const clang::Stmt* writerSliceStmt = nullptr;
     const clang::Stmt* scalarStorageStmt = nullptr;
@@ -1154,6 +1543,12 @@ LoopLocalStencilOwnerLoopContract detectLoopLocalStencilOwnerLoop(
         "_owner_loop";
     contract.elementType = elemType;
     contract.mpiType = mpiDatatypeFor(elemType);
+    const FixedOwnerRowPostUsePlan fixedPostUse =
+        analyzeFixedOwnerRowPostUse(dacppFile, outerLoop,
+                                    contract.ownerTensorName);
+    contract.fixedPostUseRow = fixedPostUse.supported;
+    contract.postUseRow = fixedPostUse.row;
+    contract.postUseReason = fixedPostUse.reason;
     contract.lowering = buildOwnerLoopLoweringContract(
         exprPlan, outerLoop, loopBody, shape.ownerName, *reader, *writer);
     const OwnerLoopContractCheck consistency =
@@ -1191,7 +1586,7 @@ std::string buildLoopLocalStencilOwnerLoopCode(
     code += "    dacpp::mpi::SegmentedProfile dacpp_profile;\n";
     code +=
         "    auto dacpp_profile_init_start = dacpp::mpi::profileSegmentStart();\n";
-    code += "    sycl::queue q(sycl::default_selector_v);\n";
+    code += "    auto& q = dacpp::mpi::operator_resident::default_queue();\n";
     code += "    const int64_t __or_rows = __or_owner.getShape(0);\n";
     code += "    const int64_t __or_cols = __or_owner.getShape(1);\n";
     code += "    if (__or_rows < 3 || __or_cols < 2) {\n";
@@ -1200,6 +1595,11 @@ std::string buildLoopLocalStencilOwnerLoopCode(
     code += "    const int64_t __or_output_size = __or_rows - 2;\n";
     code += "    const int64_t __or_steps = __or_cols - 1;\n";
     code += "    const int __or_window_size = 3;\n";
+    if (contract.fixedPostUseRow) {
+        code += "    const int64_t __or_fixed_postuse_row = " +
+                std::to_string(contract.postUseRow) + ";\n";
+        code += "    const int64_t __or_fixed_postuse_out = __or_fixed_postuse_row - 1;\n";
+    }
     code +=
         "    const auto __or_range = dacpp::mpi::operator_resident::rank_range_1d(__or_output_size, mpi_rank, mpi_size);\n";
     code += "    const int64_t __or_local_item_count = __or_range.count;\n";
@@ -1230,15 +1630,42 @@ std::string buildLoopLocalStencilOwnerLoopCode(
     code +=
         "    std::vector<" + type +
         "> __or_scalar_vec(1, __or_scalar_value);\n";
-    code +=
-        "    std::vector<" + type +
-        "> __or_local_history(static_cast<std::size_t>(__or_local_item_count * __or_cols), " +
-        type + "{});\n";
-    code +=
-        "    for (int64_t __or_i = 0; __or_i < __or_local_item_count; ++__or_i) {\n";
-    code +=
-        "        __or_local_history[static_cast<std::size_t>(__or_i * __or_cols)] = __or_curr[static_cast<std::size_t>(__or_i + 1)];\n";
+    code += "    std::vector<" + type + "> __or_left_boundary_values;\n";
+    code += "    std::vector<" + type + "> __or_right_boundary_values;\n";
+    code += "    auto dacpp_profile_bcast_start_boundaries = dacpp::mpi::profileSegmentStart();\n";
+    code += "    __or_left_boundary_values.resize(static_cast<std::size_t>(__or_cols));\n";
+    code += "    __or_right_boundary_values.resize(static_cast<std::size_t>(__or_cols));\n";
+    code += "    if (mpi_rank == 0) {\n";
+    code += "        for (int64_t __or_col = 0; __or_col < __or_cols; ++__or_col) {\n";
+    code += "            __or_left_boundary_values[static_cast<std::size_t>(__or_col)] = __or_owner.getElement({0, static_cast<int>(__or_col)});\n";
+    code += "            __or_right_boundary_values[static_cast<std::size_t>(__or_col)] = __or_owner.getElement({static_cast<int>(__or_rows - 1), static_cast<int>(__or_col)});\n";
+    code += "        }\n";
     code += "    }\n";
+    code += "    MPI_Bcast(__or_left_boundary_values.data(), dacpp::mpi::operator_resident::narrow_mpi_count_or_abort(__or_cols, \"[DACPP][MPI][OR][FOuLa] left boundary bcast count exceeds MPI int range\"), " +
+            mpiType + ", 0, MPI_COMM_WORLD);\n";
+    code += "    MPI_Bcast(__or_right_boundary_values.data(), dacpp::mpi::operator_resident::narrow_mpi_count_or_abort(__or_cols, \"[DACPP][MPI][OR][FOuLa] right boundary bcast count exceeds MPI int range\"), " +
+            mpiType + ", 0, MPI_COMM_WORLD);\n";
+    code += "    dacpp::mpi::recordProfileSegment(dacpp_profile, dacpp::mpi::ProfileSegment::Bcast, dacpp_profile_bcast_start_boundaries);\n";
+    if (contract.fixedPostUseRow) {
+        code += "    const bool __or_fixed_row_valid = __or_fixed_postuse_row > 0 && __or_fixed_postuse_row < __or_rows;\n";
+        code += "    const bool __or_owns_fixed_row = __or_fixed_row_valid && __or_fixed_postuse_out >= __or_range.begin && __or_fixed_postuse_out < __or_range.begin + __or_range.count;\n";
+        code += "    const int64_t __or_local_fixed_out = __or_owns_fixed_row ? (__or_fixed_postuse_out - __or_range.begin) : -1;\n";
+        code += "    std::vector<" + type + "> __or_selected_history;\n";
+        code += "    if (__or_owns_fixed_row) {\n";
+        code += "        __or_selected_history.assign(static_cast<std::size_t>(__or_cols), " + type + "{});\n";
+        code += "        __or_selected_history[0] = __or_curr[static_cast<std::size_t>(__or_local_fixed_out + 1)];\n";
+        code += "    }\n";
+    } else {
+        code +=
+            "    std::vector<" + type +
+            "> __or_local_history(static_cast<std::size_t>(__or_local_item_count * __or_cols), " +
+            type + "{});\n";
+        code +=
+            "    for (int64_t __or_i = 0; __or_i < __or_local_item_count; ++__or_i) {\n";
+        code +=
+            "        __or_local_history[static_cast<std::size_t>(__or_i * __or_cols)] = __or_curr[static_cast<std::size_t>(__or_i + 1)];\n";
+        code += "    }\n";
+    }
     code +=
         "    const int __or_last_owner_rank = dacpp::mpi::operator_resident::nearest_nonempty_rank_1d(__or_output_size, mpi_size, mpi_size, -1);\n";
     code +=
@@ -1305,20 +1732,8 @@ std::string buildLoopLocalStencilOwnerLoopCode(
         "        dacpp::mpi::recordProfileSegment(dacpp_profile, dacpp::mpi::ProfileSegment::Kernel, dacpp_profile_kernel_start);\n";
     code += "        " + type + " __or_left_boundary{};\n";
     code += "        " + type + " __or_right_boundary{};\n";
-    code += "        if (mpi_rank == 0) {\n";
-    code +=
-        "            __or_left_boundary = __or_owner.getElement({0, static_cast<int>(__or_step + 1)});\n";
-    code +=
-        "            __or_right_boundary = __or_owner.getElement({static_cast<int>(__or_rows - 1), static_cast<int>(__or_step + 1)});\n";
-    code += "        }\n";
-    code +=
-        "        auto dacpp_profile_bcast_start = dacpp::mpi::profileSegmentStart();\n";
-    code += "        MPI_Bcast(&__or_left_boundary, 1, " + mpiType +
-            ", 0, MPI_COMM_WORLD);\n";
-    code += "        MPI_Bcast(&__or_right_boundary, 1, " + mpiType +
-            ", 0, MPI_COMM_WORLD);\n";
-    code +=
-        "        dacpp::mpi::recordProfileSegment(dacpp_profile, dacpp::mpi::ProfileSegment::Bcast, dacpp_profile_bcast_start);\n";
+    code += "        __or_left_boundary = __or_left_boundary_values[static_cast<std::size_t>(__or_step + 1)];\n";
+    code += "        __or_right_boundary = __or_right_boundary_values[static_cast<std::size_t>(__or_step + 1)];\n";
     code += "        if (mpi_rank == 0 && !__or_next.empty()) {\n";
     code += "            __or_next[0] = __or_left_boundary;\n";
     code += "        }\n";
@@ -1335,50 +1750,99 @@ std::string buildLoopLocalStencilOwnerLoopCode(
     code +=
         "        dacpp::mpi::recordProfileSegment(dacpp_profile, dacpp::mpi::ProfileSegment::Halo, dacpp_profile_halo_start);\n";
     code += "        __or_curr.swap(__or_next);\n";
-    code +=
-        "        for (int64_t __or_i = 0; __or_i < __or_local_item_count; ++__or_i) {\n";
-    code +=
-        "            __or_local_history[static_cast<std::size_t>(__or_i * __or_cols + (__or_step + 1))] = __or_curr[static_cast<std::size_t>(__or_i + 1)];\n";
-    code += "        }\n";
+    if (contract.fixedPostUseRow) {
+        code += "        if (__or_owns_fixed_row) {\n";
+        code += "            __or_selected_history[static_cast<std::size_t>(__or_step + 1)] = __or_curr[static_cast<std::size_t>(__or_local_fixed_out + 1)];\n";
+        code += "        }\n";
+    } else {
+        code +=
+            "        for (int64_t __or_i = 0; __or_i < __or_local_item_count; ++__or_i) {\n";
+        code +=
+            "            __or_local_history[static_cast<std::size_t>(__or_i * __or_cols + (__or_step + 1))] = __or_curr[static_cast<std::size_t>(__or_i + 1)];\n";
+        code += "        }\n";
+    }
     code += "    }\n";
-    code += "    std::vector<int> __or_hist_counts(mpi_size, 0);\n";
-    code += "    std::vector<int> __or_hist_displs(mpi_size, 0);\n";
-    code += "    for (int __or_r = 0; __or_r < mpi_size; ++__or_r) {\n";
-    code +=
-        "        const auto __or_r_range = dacpp::mpi::operator_resident::rank_range_1d(__or_output_size, __or_r, mpi_size);\n";
-    code +=
-        "        __or_hist_counts[__or_r] = dacpp::mpi::operator_resident::narrow_mpi_count_or_abort(__or_r_range.count * __or_cols, \"[DACPP][MPI][OR][FOuLa] history gather count exceeds MPI int range\");\n";
-    code +=
-        "        __or_hist_displs[__or_r] = dacpp::mpi::operator_resident::narrow_mpi_count_or_abort(__or_r_range.begin * __or_cols, \"[DACPP][MPI][OR][FOuLa] history gather displacement exceeds MPI int range\");\n";
-    code += "    }\n";
-    code += "    std::vector<" + type + "> __or_global_history;\n";
-    code += "    if (mpi_rank == 0) {\n";
-    code +=
-        "        __or_global_history.resize(static_cast<std::size_t>(__or_output_size * __or_cols));\n";
-    code += "    }\n";
-    code +=
-        "    auto dacpp_profile_gather_start = dacpp::mpi::profileSegmentStart();\n";
-    code +=
-        "    MPI_Gatherv(__or_local_history.data(), dacpp::mpi::operator_resident::narrow_mpi_count_or_abort(__or_local_item_count * __or_cols, \"[DACPP][MPI][OR][FOuLa] local history gather count exceeds MPI int range\"), " +
-        mpiType +
-        ", mpi_rank == 0 ? __or_global_history.data() : nullptr, mpi_rank == 0 ? __or_hist_counts.data() : nullptr, mpi_rank == 0 ? __or_hist_displs.data() : nullptr, " +
-        mpiType + ", 0, MPI_COMM_WORLD);\n";
-    code +=
-        "    dacpp::mpi::recordProfileSegment(dacpp_profile, dacpp::mpi::ProfileSegment::Gather, dacpp_profile_gather_start);\n";
-    code +=
-        "    auto dacpp_profile_materialize_start = dacpp::mpi::profileSegmentStart();\n";
-    code += "    if (mpi_rank == 0) {\n";
-    code +=
-        "        for (int64_t __or_out = 0; __or_out < __or_output_size; ++__or_out) {\n";
-    code +=
-        "            for (int64_t __or_col = 0; __or_col < __or_cols; ++__or_col) {\n";
-    code +=
-        "                __or_owner.reviseValue(__or_global_history[static_cast<std::size_t>(__or_out * __or_cols + __or_col)], {static_cast<int>(__or_out + 1), static_cast<int>(__or_col)});\n";
-    code += "            }\n";
-    code += "        }\n";
-    code += "    }\n";
-    code +=
-        "    dacpp::mpi::recordProfileSegment(dacpp_profile, dacpp::mpi::ProfileSegment::Materialize, dacpp_profile_materialize_start);\n";
+    if (contract.fixedPostUseRow) {
+        code += "    int __or_fixed_owner_rank = 0;\n";
+        code += "    if (__or_fixed_row_valid) {\n";
+        code += "        __or_fixed_owner_rank = MPI_PROC_NULL;\n";
+        code += "        for (int __or_r = 0; __or_r < mpi_size; ++__or_r) {\n";
+        code += "            const auto __or_r_range = dacpp::mpi::operator_resident::rank_range_1d(__or_output_size, __or_r, mpi_size);\n";
+        code += "            if (__or_fixed_postuse_out >= __or_r_range.begin && __or_fixed_postuse_out < __or_r_range.begin + __or_r_range.count) {\n";
+        code += "                __or_fixed_owner_rank = __or_r;\n";
+        code += "                break;\n";
+        code += "            }\n";
+        code += "        }\n";
+        code += "    }\n";
+        code += "    std::vector<" + type + "> __or_selected_global_history;\n";
+        code += "    if (mpi_rank == 0 && __or_fixed_row_valid) {\n";
+        code += "        __or_selected_global_history.resize(static_cast<std::size_t>(__or_cols));\n";
+        code += "    }\n";
+        code += "    auto dacpp_profile_gather_start = dacpp::mpi::profileSegmentStart();\n";
+        code += "    const int __or_selected_history_count = __or_fixed_row_valid ? dacpp::mpi::operator_resident::narrow_mpi_count_or_abort(__or_cols, \"[DACPP][MPI][OR][FOuLa] selected row history count exceeds MPI int range\") : 0;\n";
+        code += "    if (__or_fixed_row_valid) {\n";
+        code += "        if (__or_fixed_owner_rank == MPI_PROC_NULL) {\n";
+        code += "            if (mpi_rank == 0) std::fprintf(stderr, \"[DACPP][MPI][OR][FOuLa] fixed owner row has no rank owner\\n\");\n";
+        code += "            MPI_Abort(MPI_COMM_WORLD, 4);\n";
+        code += "        }\n";
+        code += "        if (mpi_rank == __or_fixed_owner_rank) {\n";
+        code += "            if (mpi_rank == 0) {\n";
+        code += "                __or_selected_global_history = __or_selected_history;\n";
+        code += "            } else {\n";
+        code += "                MPI_Send(__or_selected_history.data(), __or_selected_history_count, " + mpiType + ", 0, 4511, MPI_COMM_WORLD);\n";
+        code += "            }\n";
+        code += "        } else if (mpi_rank == 0) {\n";
+        code += "            MPI_Recv(__or_selected_global_history.data(), __or_selected_history_count, " + mpiType + ", __or_fixed_owner_rank, 4511, MPI_COMM_WORLD, MPI_STATUS_IGNORE);\n";
+        code += "        }\n";
+        code += "    }\n";
+        code += "    dacpp::mpi::recordProfileSegment(dacpp_profile, dacpp::mpi::ProfileSegment::Gather, dacpp_profile_gather_start);\n";
+        code += "    auto dacpp_profile_materialize_start = dacpp::mpi::profileSegmentStart();\n";
+        code += "    if (mpi_rank == 0 && __or_fixed_row_valid) {\n";
+        code += "        for (int64_t __or_col = 0; __or_col < __or_cols; ++__or_col) {\n";
+        code += "            __or_owner.reviseValue(__or_selected_global_history[static_cast<std::size_t>(__or_col)], {static_cast<int>(__or_fixed_postuse_row), static_cast<int>(__or_col)});\n";
+        code += "        }\n";
+        code += "    }\n";
+        code += "    dacpp::mpi::recordProfileSegment(dacpp_profile, dacpp::mpi::ProfileSegment::Materialize, dacpp_profile_materialize_start);\n";
+    } else {
+        code += "    std::vector<int> __or_hist_counts(mpi_size, 0);\n";
+        code += "    std::vector<int> __or_hist_displs(mpi_size, 0);\n";
+        code += "    for (int __or_r = 0; __or_r < mpi_size; ++__or_r) {\n";
+        code +=
+            "        const auto __or_r_range = dacpp::mpi::operator_resident::rank_range_1d(__or_output_size, __or_r, mpi_size);\n";
+        code +=
+            "        __or_hist_counts[__or_r] = dacpp::mpi::operator_resident::narrow_mpi_count_or_abort(__or_r_range.count * __or_cols, \"[DACPP][MPI][OR][FOuLa] history gather count exceeds MPI int range\");\n";
+        code +=
+            "        __or_hist_displs[__or_r] = dacpp::mpi::operator_resident::narrow_mpi_count_or_abort(__or_r_range.begin * __or_cols, \"[DACPP][MPI][OR][FOuLa] history gather displacement exceeds MPI int range\");\n";
+        code += "    }\n";
+        code += "    std::vector<" + type + "> __or_global_history;\n";
+        code += "    if (mpi_rank == 0) {\n";
+        code +=
+            "        __or_global_history.resize(static_cast<std::size_t>(__or_output_size * __or_cols));\n";
+        code += "    }\n";
+        code +=
+            "    auto dacpp_profile_gather_start = dacpp::mpi::profileSegmentStart();\n";
+        code +=
+            "    MPI_Gatherv(__or_local_history.data(), dacpp::mpi::operator_resident::narrow_mpi_count_or_abort(__or_local_item_count * __or_cols, \"[DACPP][MPI][OR][FOuLa] local history gather count exceeds MPI int range\"), " +
+            mpiType +
+            ", mpi_rank == 0 ? __or_global_history.data() : nullptr, mpi_rank == 0 ? __or_hist_counts.data() : nullptr, mpi_rank == 0 ? __or_hist_displs.data() : nullptr, " +
+            mpiType + ", 0, MPI_COMM_WORLD);\n";
+        code +=
+            "    dacpp::mpi::recordProfileSegment(dacpp_profile, dacpp::mpi::ProfileSegment::Gather, dacpp_profile_gather_start);\n";
+        code +=
+            "    auto dacpp_profile_materialize_start = dacpp::mpi::profileSegmentStart();\n";
+        code += "    if (mpi_rank == 0) {\n";
+        code +=
+            "        for (int64_t __or_out = 0; __or_out < __or_output_size; ++__or_out) {\n";
+        code +=
+            "            for (int64_t __or_col = 0; __or_col < __or_cols; ++__or_col) {\n";
+        code +=
+            "                __or_owner.reviseValue(__or_global_history[static_cast<std::size_t>(__or_out * __or_cols + __or_col)], {static_cast<int>(__or_out + 1), static_cast<int>(__or_col)});\n";
+        code += "            }\n";
+        code += "        }\n";
+        code += "    }\n";
+        code +=
+            "    dacpp::mpi::recordProfileSegment(dacpp_profile, dacpp::mpi::ProfileSegment::Materialize, dacpp_profile_materialize_start);\n";
+    }
     code += "    dacpp::mpi::reportSegmentedProfile(\"" +
             contract.functionName + "\", dacpp_profile, MPI_COMM_WORLD);\n";
     code += "}\n";
@@ -1399,6 +1863,15 @@ void logLoopLocalStencilOwnerLoopAccepted(
                  << " contract-resident="
                  << contract.lowering.residentTensors.size()
                  << " contract-materialize=loop-exit"
+                 << " materialize="
+                 << (contract.fixedPostUseRow ? "fixed-row" : "full-history");
+    if (contract.fixedPostUseRow) {
+        llvm::outs() << " row=" << contract.postUseRow;
+    } else if (!contract.postUseReason.empty()) {
+        llvm::outs() << " fixed-row=fallback reason="
+                     << contract.postUseReason;
+    }
+    llvm::outs()
                  << " guard-compile=fallback guard-runtime=count-or-shape"
                  << " owner=" << contract.ownerTensorName
                  << " contract-check="

@@ -105,7 +105,7 @@ std::string buildFixedBlockWrapperCode(const std::string& wrapperName,
     code += "    int ctx_mpi_size = 1;\n";
     code += "    MPI_Comm_rank(MPI_COMM_WORLD, &ctx_mpi_rank);\n";
     code += "    MPI_Comm_size(MPI_COMM_WORLD, &ctx_mpi_size);\n";
-    code += "    sycl::queue q(sycl::default_selector_v);\n";
+    code += "    auto& q = dacpp::mpi::operator_resident::default_queue();\n";
     code += "    const int64_t __or_fixed_block_size = " +
             std::to_string(blockSize) + ";\n";
     code += "    const int64_t __or_fixed_block_stride = " +

@@ -1,3 +1,6 @@
+#include <algorithm>
+#include <cctype>
+
 #include "DacppStructure.h"
 #include "Rewriter_MPI_Common.h"
 #include "OperatorResidentCodegen_Internal.h"
@@ -21,6 +24,71 @@ std::string ctxScalarName(const ParamAccessPlan& param) {
     return "ctx." + scalarName(param);
 }
 
+bool isIdentifierChar(char c) {
+    return std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_';
+}
+
+std::string stripExprWhitespace(std::string text) {
+    text.erase(std::remove_if(text.begin(), text.end(),
+                              [](unsigned char c) {
+                                  return std::isspace(c) != 0;
+                              }),
+               text.end());
+    return text;
+}
+
+std::string replaceIdentifier(std::string text,
+                              const std::string& from,
+                              const std::string& to) {
+    if (from.empty() || from == to) {
+        return text;
+    }
+    std::size_t pos = 0;
+    while ((pos = text.find(from, pos)) != std::string::npos) {
+        const bool leftOk =
+            pos == 0 || !isIdentifierChar(text[static_cast<std::size_t>(pos - 1)]);
+        const std::size_t right = pos + from.size();
+        const bool rightOk =
+            right >= text.size() || !isIdentifierChar(text[right]);
+        if (leftOk && rightOk) {
+            text.replace(pos, from.size(), to);
+            pos += to.size();
+        } else {
+            pos += from.size();
+        }
+    }
+    return text;
+}
+
+std::string loopLowerRowIndexExprForCodegen(
+    const ShellPartitionPlan& plan) {
+    std::string expr =
+        stripExprWhitespace(plan.loopLowerSelectiveMaterialize.rowIndexExpr);
+    for (const auto& param : plan.params) {
+        if (param.access == ParamAccessKind::ReplicatedScalar &&
+            !param.actualTensorName.empty()) {
+            expr = replaceIdentifier(expr, param.actualTensorName + "[0]",
+                                     ctxScalarName(param));
+        }
+    }
+    for (const auto& param : plan.params) {
+        if (!param.actualTensorName.empty()) {
+            expr = replaceIdentifier(expr, param.actualTensorName,
+                                     paramVarName(param));
+        }
+    }
+    return expr;
+}
+
+bool selectiveMaterializeAppliesTo(const ShellPartitionPlan& plan,
+                                   const ParamAccessPlan& param) {
+    return plan.loopLowerSelectiveMaterialize.enabled &&
+           plan.loopLowerSelectiveMaterialize.outputTensorName ==
+               param.actualTensorName &&
+           !plan.loopLowerSelectiveMaterialize.rowIndexExpr.empty() &&
+           plan.loopLowerSelectiveMaterialize.targetRow >= 0;
+}
+
 void emitContextType(std::string& code,
                      const std::string& ctxName,
                      const ShellPartitionPlan& plan) {
@@ -33,7 +101,7 @@ void emitContextType(std::string& code,
     code += "    std::vector<int> __or_counts;\n";
     code += "    std::vector<int> __or_displs;\n";
     code += "    dacpp::mpi::SegmentedProfile __or_profile;\n";
-    code += "    sycl::queue q{sycl::default_selector_v};\n";
+    code += "    sycl::queue& q = dacpp::mpi::operator_resident::default_queue();\n";
     for (const auto& param : plan.params) {
         const std::string type = elemType(plan, param);
         if (param.access == ParamAccessKind::ReplicatedScalar) {
@@ -344,7 +412,21 @@ void emitRunFunction(std::string& code,
                     "; host materialization below preserves visibility.\n";
         }
         if (plan.loopLowerMaterializeEveryRun || param.materializeAfterWrite) {
-            emitMaterializeOutput(code, plan, param, ctxLocalName(param));
+            if (selectiveMaterializeAppliesTo(plan, param)) {
+                const std::string rowExpr = loopLowerRowIndexExprForCodegen(plan);
+                code += "    const int64_t __or_selective_materialize_row_" +
+                        param.calcParamName + " = static_cast<int64_t>(" +
+                        rowExpr + ");\n";
+                code += "    if (__or_selective_materialize_row_" +
+                        param.calcParamName + " == " +
+                        std::to_string(
+                            plan.loopLowerSelectiveMaterialize.targetRow) +
+                        ") {\n";
+                emitMaterializeOutput(code, plan, param, ctxLocalName(param));
+                code += "    }\n";
+            } else {
+                emitMaterializeOutput(code, plan, param, ctxLocalName(param));
+            }
         }
     }
     code += "}\n";

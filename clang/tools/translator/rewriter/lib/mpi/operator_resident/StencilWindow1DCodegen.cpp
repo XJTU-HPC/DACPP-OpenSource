@@ -223,7 +223,7 @@ std::string buildStencilWindow1DWrapperCode(
     code += "    int mpi_size = 1;\n";
     code += "    MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);\n";
     code += "    MPI_Comm_size(MPI_COMM_WORLD, &mpi_size);\n";
-    code += "    sycl::queue q(sycl::default_selector_v);\n";
+    code += "    auto& q = dacpp::mpi::operator_resident::default_queue();\n";
     code += "    const int64_t __or_input_size = " + readerArg + ".getShape(0);\n";
     code += "    const int64_t __or_output_size = " + writerArg + ".getShape(0);\n";
     code += "    const auto __or_range = dacpp::mpi::operator_resident::rank_range_1d(__or_output_size, mpi_rank, mpi_size);\n";

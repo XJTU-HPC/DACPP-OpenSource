@@ -1,5 +1,5 @@
 LOG_CONTAINS:[DACPP][MPI][OR] expr=0 shell=DECAY layout=Contiguous1D partition=accepted
-LOG_CONTAINS:[DACPP][MPI][OR][P4.5] expr=0 shell=DECAY layout=Contiguous1D loop-lower=candidate loop=while structure=init/run/materialize materialize=per-run scalar-refresh=local-replicated
+LOG_CONTAINS:[DACPP][MPI][OR][P4.5] expr=0 shell=DECAY layout=Contiguous1D loop-lower=candidate loop=while structure=init/run/materialize materialize=selective-row host=A_tensor row=1 output=local_A_tensor scalar-refresh=local-replicated
 LOG_CONTAINS:[DACPP][MPI][OR]   resident-write tensor=local_A_tensor retain=no reason=no-downstream-resident-reader
 SYCL_CONTAINS:__dacpp_mpi_or_DECAY_decay_0
 SYCL_CONTAINS:struct __dacpp_mpi_or_DECAY_decay_0_ctx
@@ -13,6 +13,9 @@ SYCL_CONTAINS:__dacpp_mpi_or_DECAY_decay_0_materialize(__dacpp_mpi_or_ctx_0
 SYCL_CONTAINS:dacpp::mpi::ProfileSegment::Materialize
 SYCL_CONTAINS:dacpp::mpi::reportSegmentedProfile("__dacpp_mpi_or_DECAY_decay_0_materialize"
 SYCL_CONTAINS:__or_resident_out_local_A
+SYCL_CONTAINS:__or_selective_materialize_row_local_A
+SYCL_CONTAINS:static_cast<int64_t>(10*ctx.__or_scalar_t)
+SYCL_CONTAINS:if (__or_selective_materialize_row_local_A == 1)
 SYCL_CONTAINS:MPI_Gatherv(ctx.__or_local_local_A.data()
 SYCL_CONTAINS:__or_arg2.array2Tensor(__or_materialized_local_A);
 SYCL_CONTAINS:P4.5 loop-lowered direct scalar reader

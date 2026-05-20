@@ -134,7 +134,7 @@ std::string buildOperatorResidentWrapperCode(
     code += "    MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);\n";
     code += "    MPI_Comm_size(MPI_COMM_WORLD, &mpi_size);\n";
     code += "    dacpp::mpi::SegmentedProfile dacpp_profile;\n";
-    code += "    sycl::queue q(sycl::default_selector_v);\n";
+    code += "    auto& q = dacpp::mpi::operator_resident::default_queue();\n";
     code += mpi_rewriter::profileSegmentStartCode("dacpp_profile_init_start");
     operator_resident::emitPartitionCode(code, exprPlan);
     code += mpi_rewriter::profileRecordCode("dacpp_profile", "Init",

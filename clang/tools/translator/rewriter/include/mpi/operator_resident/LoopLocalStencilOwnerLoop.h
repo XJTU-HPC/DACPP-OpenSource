@@ -1,6 +1,7 @@
 #ifndef DACPP_MPI_OPERATOR_RESIDENT_LOOP_LOCAL_STENCIL_OWNER_LOOP_H
 #define DACPP_MPI_OPERATOR_RESIDENT_LOOP_LOCAL_STENCIL_OWNER_LOOP_H
 
+#include <cstdint>
 #include <string>
 
 #include "mpi/operator_resident/OperatorResidentPlan.h"
@@ -27,6 +28,9 @@ struct LoopLocalStencilOwnerLoopContract {
     std::string functionName;
     std::string elementType;
     std::string mpiType;
+    bool fixedPostUseRow = false;
+    int64_t postUseRow = -1;
+    std::string postUseReason;
     bool contractConsistencyCheckPassed = false;
     std::string contractConsistencyCheckReason;
     std::string rejectedReason;

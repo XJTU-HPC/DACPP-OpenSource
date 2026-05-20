@@ -686,7 +686,7 @@ void emitLoopLoweredContextType2D(
     code += "    std::vector<int> __or_counts;\n";
     code += "    std::vector<int> __or_displs;\n";
     code += "    dacpp::mpi::SegmentedProfile __or_profile;\n";
-    code += "    sycl::queue q{sycl::default_selector_v};\n";
+    code += "    sycl::queue& q = dacpp::mpi::operator_resident::default_queue();\n";
     code += "    std::vector<" + elemType(plan, reader) + "> " +
             globalName(reader) + ";\n";
     for (const auto* directReader : directReaders) {
@@ -1167,7 +1167,7 @@ void emitResidentHaloContextType2D(std::string& code,
     code += "    std::vector<int> __or_counts;\n";
     code += "    std::vector<int> __or_displs;\n";
     code += "    dacpp::mpi::SegmentedProfile __or_profile;\n";
-    code += "    sycl::queue q{sycl::default_selector_v};\n";
+    code += "    sycl::queue& q = dacpp::mpi::operator_resident::default_queue();\n";
     code += "    std::vector<" + elemType(plan, reader) + "> " +
             localName(reader) + ";\n";
     if (directReader) {
@@ -1689,7 +1689,7 @@ std::string buildStencilWindow2DWrapperCode(
     code += "    int mpi_size = 1;\n";
     code += "    MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);\n";
     code += "    MPI_Comm_size(MPI_COMM_WORLD, &mpi_size);\n";
-    code += "    sycl::queue q(sycl::default_selector_v);\n";
+    code += "    auto& q = dacpp::mpi::operator_resident::default_queue();\n";
     code += "    const int64_t __or_input_rows = " + readerArg + ".getShape(0);\n";
     code += "    const int64_t __or_input_cols = " + readerArg + ".getShape(1);\n";
     code += "    const int64_t __or_output_rows = " + writerArg + ".getShape(0);\n";

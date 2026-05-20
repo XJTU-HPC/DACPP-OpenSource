@@ -184,6 +184,64 @@ void removePartialTensor2ArrayPostUseStmts(
     }
 }
 
+void removeIndexLocalVectorInitStmts(
+    clang::Rewriter* rewriter,
+    const mpi_rewriter::MpiLoweringPlan& plan) {
+    if (!rewriter) {
+        return;
+    }
+    std::unordered_map<const clang::Stmt*, std::set<const clang::Stmt*>>
+        absorbedAssignmentsByLoop;
+    for (const auto& chain : plan.residentChains) {
+        if (!chain.supported) {
+            continue;
+        }
+        for (const auto& exprPlan : chain.exprPlans) {
+            for (const auto& param : exprPlan.params) {
+                if (!param.constantInit.supported ||
+                    !param.constantInit.indexExpr ||
+                    !param.constantInit.indexFillLoopStmt ||
+                    !param.constantInit.indexFillAssignmentStmt) {
+                    continue;
+                }
+                absorbedAssignmentsByLoop
+                    [param.constantInit.indexFillLoopStmt]
+                        .insert(param.constantInit.indexFillAssignmentStmt);
+            }
+        }
+    }
+    for (const auto& entry : absorbedAssignmentsByLoop) {
+        const clang::Stmt* loopStmt = entry.first;
+        const auto* forStmt = llvm::dyn_cast_or_null<clang::ForStmt>(loopStmt);
+        const auto* compound =
+            llvm::dyn_cast_or_null<clang::CompoundStmt>(
+                forStmt ? forStmt->getBody() : nullptr);
+        bool allBodyStatementsAbsorbed = false;
+        if (compound && compound->size() > 0) {
+            allBodyStatementsAbsorbed = true;
+            for (const clang::Stmt* child : compound->body()) {
+                if (entry.second.count(child) == 0) {
+                    allBodyStatementsAbsorbed = false;
+                    break;
+                }
+            }
+        }
+        if (allBodyStatementsAbsorbed) {
+            rewriter->ReplaceText(
+                loopStmt->getSourceRange(),
+                "/* DACPP MPI index-local vector initialization elided */");
+            continue;
+        }
+        for (const clang::Stmt* assignment : entry.second) {
+            if (assignment) {
+                rewriter->ReplaceText(
+                    assignment->getSourceRange(),
+                    "/* DACPP MPI index-local vector assignment elided */");
+            }
+        }
+    }
+}
+
 bool isLoopLoweredOperatorResidentExpr(
     const mpi_rewriter::MpiLoweringPlan& plan,
     int exprIdx,
@@ -480,6 +538,8 @@ void Rewriter::rewriteMPI() {
             mpi_rewriter::buildWrapperCallForDacExpr(wrapperName, dacExpr,
                                                      dacppFile));
     }
+
+    removeIndexLocalVectorInitStmts(rewriter, plan);
 
     const FunctionDecl* mainFunc = dacppFile->getMainFunction();
     if (!mainFunc) {

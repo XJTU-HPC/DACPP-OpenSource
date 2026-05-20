@@ -21,8 +21,8 @@ namespace mpi {
 namespace operator_resident {
 
 inline sycl::queue& default_queue() {
-    static sycl::queue queue{sycl::default_selector_v};
-    return queue;
+    static sycl::queue* queue = new sycl::queue{sycl::default_selector_v};
+    return *queue;
 }
 
 struct RankRange1D {

@@ -7,10 +7,12 @@
 #include <vector>
 
 #include "clang/AST/ASTContext.h"
+#include "clang/AST/ASTTypeTraits.h"
 #include "clang/AST/Decl.h"
 #include "clang/AST/Stmt.h"
 #include "clang/AST/Expr.h"
 #include "clang/AST/ExprCXX.h"
+#include "clang/AST/ParentMapContext.h"
 #include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/Basic/SourceManager.h"
 #include "clang/Lex/Lexer.h"
@@ -478,6 +480,13 @@ bool paramMayUseConstantInit(const ParamAccessPlan& param) {
            param.access == ParamAccessKind::ReplicatedFullTensor;
 }
 
+bool paramMayUseGeneratedIndexInit(const ShellPartitionPlan& plan,
+                                   const ParamAccessPlan& param) {
+    return param.access == ParamAccessKind::DirectMapped &&
+           plan.signature.layout == LocalLayoutKind::Contiguous1D &&
+           param.tensorDims.size() == 1 && param.tensorDims[0] == 0;
+}
+
 ConstantInitPlan analyzeConstantInitForShellArg(
     DacppFile* dacppFile,
     const clang::Expr* shellArg,
@@ -511,11 +520,20 @@ void annotateConstantInputInit(ShellPartitionPlan& plan, DacppFile* dacppFile) {
             param.constantInit = analyzeConstantInitForShellArg(
                 dacppFile, shellCall->getArg(param.paramIndex),
                 analysisElemType(plan, param));
+            if (param.constantInit.supported &&
+                param.constantInit.indexExpr &&
+                !paramMayUseGeneratedIndexInit(plan, param)) {
+                param.constantInit.supported = false;
+                param.constantInit.reason =
+                    "index initializer requires 1D direct-mapped layout";
+            }
         }
         llvm::outs() << "[DACPP][MPI][OR] input " << param.actualTensorName
                      << " init-sync=";
         if (param.constantInit.supported) {
-            llvm::outs() << "constant-local value="
+            llvm::outs() << (param.constantInit.indexExpr
+                                 ? "index-local expr="
+                                 : "constant-local value=")
                          << (param.constantInit.logValue.empty()
                                  ? param.constantInit.valueExpr
                                  : param.constantInit.logValue);
@@ -1019,6 +1037,499 @@ bool loopBodyHasOnlyUnguardedTopLevelScalarWrites(
     }
     reason = "all ranks update replicated scalar in loop";
     return true;
+}
+
+const clang::CompoundStmt* compoundBodyForLoop(const clang::Stmt* loop) {
+    if (const auto* forStmt = llvm::dyn_cast_or_null<clang::ForStmt>(loop)) {
+        return llvm::dyn_cast_or_null<clang::CompoundStmt>(forStmt->getBody());
+    }
+    if (const auto* whileStmt =
+            llvm::dyn_cast_or_null<clang::WhileStmt>(loop)) {
+        return llvm::dyn_cast_or_null<clang::CompoundStmt>(whileStmt->getBody());
+    }
+    return llvm::dyn_cast_or_null<clang::CompoundStmt>(loop);
+}
+
+const ParamAccessPlan* loopLowerOutputDirectParam(
+    const ShellPartitionPlan& plan) {
+    const ParamAccessPlan* result = nullptr;
+    for (const auto& param : plan.params) {
+        if (!param.writes || param.access != ParamAccessKind::OutputDirect ||
+            param.actualTensorName.empty()) {
+            continue;
+        }
+        if (result) {
+            return nullptr;
+        }
+        result = &param;
+    }
+    return result;
+}
+
+bool decomposeTopLevelSubscript(const clang::Expr* expr,
+                                std::string& baseName,
+                                const clang::Expr*& indexExpr) {
+    baseName.clear();
+    indexExpr = nullptr;
+    expr = unwrapExtentExpr(expr);
+    const auto* opCall = llvm::dyn_cast_or_null<clang::CXXOperatorCallExpr>(expr);
+    if (!opCall || opCall->getOperator() != clang::OO_Subscript ||
+        opCall->getNumArgs() < 2) {
+        return false;
+    }
+    baseName = actualTensorNameForArg(opCall->getArg(0), nullptr);
+    if (baseName.empty()) {
+        baseName = baseNameFromExpr(opCall->getArg(0));
+    }
+    indexExpr = opCall->getArg(1);
+    return !baseName.empty() && indexExpr;
+}
+
+bool firstSubscriptIndexForBase(const clang::Expr* expr,
+                                std::string& baseName,
+                                const clang::Expr*& firstIndexExpr) {
+    baseName.clear();
+    firstIndexExpr = nullptr;
+    std::vector<const clang::Expr*> reversedIndices;
+    const clang::Expr* current = unwrapExtentExpr(expr);
+    while (current) {
+        const auto* opCall =
+            llvm::dyn_cast_or_null<clang::CXXOperatorCallExpr>(current);
+        if (!opCall || opCall->getOperator() != clang::OO_Subscript ||
+            opCall->getNumArgs() < 2) {
+            baseName = actualTensorNameForArg(current, nullptr);
+            if (baseName.empty()) {
+                baseName = baseNameFromExpr(current);
+            }
+            break;
+        }
+        reversedIndices.push_back(opCall->getArg(1));
+        current = unwrapExtentExpr(opCall->getArg(0));
+    }
+    if (baseName.empty() || reversedIndices.empty()) {
+        return false;
+    }
+    firstIndexExpr = reversedIndices.back();
+    return firstIndexExpr != nullptr;
+}
+
+const ParamAccessPlan* findParamByActualTensorName(
+    const ShellPartitionPlan& plan,
+    const std::string& tensorName) {
+    if (tensorName.empty()) {
+        return nullptr;
+    }
+    for (const auto& param : plan.params) {
+        if (param.actualTensorName == tensorName) {
+            return &param;
+        }
+    }
+    return nullptr;
+}
+
+bool findLoopOutputWriteback(const ShellPartitionPlan& plan,
+                             const clang::CompoundStmt* loopBody,
+                             clang::ASTContext* context,
+                             std::string& hostTensorName,
+                             std::string& rowIndexExpr,
+                             std::string& reason) {
+    hostTensorName.clear();
+    rowIndexExpr.clear();
+    const ParamAccessPlan* output = loopLowerOutputDirectParam(plan);
+    if (!output) {
+        reason = "requires exactly one output direct tensor";
+        return false;
+    }
+    if (!loopBody || !context || !plan.exprNode.dacExpr) {
+        reason = "loop body unavailable";
+        return false;
+    }
+    const auto& sourceManager = context->getSourceManager();
+    bool sawDac = false;
+    for (const clang::Stmt* child : loopBody->body()) {
+        if (!child) {
+            continue;
+        }
+        if (sourceRangeContains(sourceManager, child->getSourceRange(),
+                                plan.exprNode.dacExpr->getSourceRange())) {
+            sawDac = true;
+            continue;
+        }
+        if (!sawDac) {
+            continue;
+        }
+
+        const clang::Stmt* candidateStmt = child;
+        if (const auto* exprStmt = llvm::dyn_cast<clang::Expr>(candidateStmt)) {
+            if (const clang::Expr* unwrapped = unwrapExtentExpr(exprStmt)) {
+                candidateStmt = unwrapped;
+            }
+        }
+        const clang::Expr* lhs = nullptr;
+        const clang::Expr* rhs = nullptr;
+        if (const auto* binary =
+                llvm::dyn_cast<clang::BinaryOperator>(candidateStmt)) {
+            if (!binary->isAssignmentOp()) {
+                continue;
+            }
+            lhs = binary->getLHS();
+            rhs = binary->getRHS();
+        } else if (const auto* opCall =
+                       llvm::dyn_cast<clang::CXXOperatorCallExpr>(
+                           candidateStmt)) {
+            if (!opCall->isAssignmentOp() || opCall->getNumArgs() < 2) {
+                continue;
+            }
+            lhs = opCall->getArg(0);
+            rhs = opCall->getArg(1);
+        } else {
+            continue;
+        }
+
+        if (actualTensorKeyForArg(rhs, context).name !=
+            output->actualTensorName) {
+            continue;
+        }
+        const clang::Expr* indexExpr = nullptr;
+        std::string candidateHost;
+        if (!decomposeTopLevelSubscript(lhs, candidateHost, indexExpr)) {
+            reason = "writeback lhs is not a tensor row subscript";
+            return false;
+        }
+        if (candidateHost == output->actualTensorName) {
+            reason = "writeback host aliases output tensor";
+            return false;
+        }
+        const std::string indexText = exprSource(indexExpr, context);
+        if (candidateHost.empty() || indexText.empty()) {
+            reason = "writeback row expression unavailable";
+            return false;
+        }
+        class RowExprDeclVisitor
+            : public clang::RecursiveASTVisitor<RowExprDeclVisitor> {
+        public:
+            RowExprDeclVisitor(const ShellPartitionPlan& plan,
+                               clang::ASTContext* context)
+                : Plan(plan), Context(context) {}
+
+            std::set<std::string> AllowedNames;
+            bool Valid = true;
+            std::string RejectReason;
+
+            bool VisitCXXOperatorCallExpr(clang::CXXOperatorCallExpr* call) {
+                if (!call || call->getOperator() != clang::OO_Subscript ||
+                    call->getNumArgs() < 2) {
+                    return true;
+                }
+                const std::string base = actualTensorNameForArg(call->getArg(0),
+                                                                nullptr);
+                if (base.empty()) {
+                    return true;
+                }
+                const ParamAccessPlan* param =
+                    findParamByActualTensorName(Plan, base);
+                if (!param) {
+                    return true;
+                }
+                int64_t index = -1;
+                if (param->access == ParamAccessKind::ReplicatedScalar &&
+                    evaluateInt64Expr(call->getArg(1), Context, index) &&
+                    index == 0) {
+                    return true;
+                }
+                Valid = false;
+                RejectReason =
+                    "writeback row uses non-replicated tensor subscript";
+                return true;
+            }
+
+            bool VisitDeclRefExpr(clang::DeclRefExpr* dre) {
+                if (!dre || !dre->getDecl()) {
+                    return true;
+                }
+                const std::string name = dre->getDecl()->getNameAsString();
+                if (AllowedNames.count(name) != 0) {
+                    return true;
+                }
+                if (const auto* varDecl =
+                        llvm::dyn_cast<clang::VarDecl>(dre->getDecl())) {
+                    if (varDecl->isFileVarDecl()) {
+                        return true;
+                    }
+                }
+                if (llvm::isa<clang::FunctionDecl>(dre->getDecl())) {
+                    return true;
+                }
+                Valid = false;
+                RejectReason = "writeback row references non-shell local " + name;
+                return true;
+            }
+
+            bool VisitCallExpr(clang::CallExpr* call) {
+                if (!call) {
+                    return true;
+                }
+                if (const auto* opCall =
+                        llvm::dyn_cast<clang::CXXOperatorCallExpr>(call)) {
+                    if (opCall->getOperator() == clang::OO_Subscript) {
+                        return true;
+                    }
+                }
+                Valid = false;
+                RejectReason = "writeback row uses function call";
+                return true;
+            }
+
+            const ShellPartitionPlan& Plan;
+            clang::ASTContext* Context = nullptr;
+        };
+        RowExprDeclVisitor declVisitor(plan, context);
+        for (const auto& param : plan.params) {
+            if (!param.actualTensorName.empty()) {
+                declVisitor.AllowedNames.insert(param.actualTensorName);
+            }
+        }
+        declVisitor.TraverseStmt(const_cast<clang::Expr*>(indexExpr));
+        if (!declVisitor.Valid) {
+            reason = declVisitor.RejectReason;
+            return false;
+        }
+        hostTensorName = candidateHost;
+        rowIndexExpr = indexText;
+        reason = "matched loop row writeback";
+        return true;
+    }
+    reason = "loop output row writeback not found";
+    return false;
+}
+
+class FixedHostTensorRowUseVisitor
+    : public clang::RecursiveASTVisitor<FixedHostTensorRowUseVisitor> {
+public:
+    FixedHostTensorRowUseVisitor(std::string hostTensorName,
+                                 clang::ASTContext* context)
+        : HostTensorName(std::move(hostTensorName)), Context(context) {}
+
+    bool FullUse = false;
+    std::string Reason;
+    std::set<int64_t> Rows;
+
+    bool VisitCXXMemberCallExpr(clang::CXXMemberCallExpr* call) {
+        if (!call) {
+            return true;
+        }
+        const clang::CXXMethodDecl* method = call->getMethodDecl();
+        if (!method || method->getNameAsString() != "print") {
+            return true;
+        }
+        int64_t row = -1;
+        if (extractFixedRow(call->getImplicitObjectArgument(), row)) {
+            Rows.insert(row);
+        } else if (exprMentionsHostTensor(call->getImplicitObjectArgument())) {
+            recordFull("host tensor print is not fixed-row");
+        }
+        return true;
+    }
+
+    bool VisitDeclRefExpr(clang::DeclRefExpr* dre) {
+        if (!dre || !dre->getDecl() ||
+            dre->getDecl()->getNameAsString() != HostTensorName) {
+            return true;
+        }
+        int64_t row = -1;
+        if (isInsideAcceptedFixedRow(dre, row)) {
+            Rows.insert(row);
+            return true;
+        }
+        recordFull("host tensor use is not fixed-row");
+        return true;
+    }
+
+    bool VisitCallExpr(clang::CallExpr* call) {
+        if (!call) {
+            return true;
+        }
+        if (const auto* opCall =
+                llvm::dyn_cast<clang::CXXOperatorCallExpr>(call)) {
+            if (opCall->getOperator() == clang::OO_Subscript ||
+                opCall->getOperator() == clang::OO_LessLess) {
+                return true;
+            }
+        }
+        if (const auto* member =
+                llvm::dyn_cast<clang::CXXMemberCallExpr>(call)) {
+            const clang::CXXMethodDecl* method = member->getMethodDecl();
+            if (method && method->getNameAsString() == "print") {
+                return true;
+            }
+        }
+        for (const clang::Expr* arg : call->arguments()) {
+            if (exprMentionsHostTensor(arg)) {
+                recordFull("host tensor passed to function");
+                break;
+            }
+        }
+        return true;
+    }
+
+private:
+    std::string HostTensorName;
+    clang::ASTContext* Context = nullptr;
+
+    void recordFull(const std::string& reason) {
+        if (!FullUse) {
+            Reason = reason;
+        }
+        FullUse = true;
+    }
+
+    bool extractFixedRow(const clang::Expr* expr, int64_t& row) const {
+        row = -1;
+        const clang::Expr* firstIndex = nullptr;
+        std::string base;
+        if (!firstSubscriptIndexForBase(expr, base, firstIndex) ||
+            base != HostTensorName) {
+            return false;
+        }
+        int64_t value = -1;
+        if (!evaluateInt64Expr(firstIndex, Context, value) || value < 0) {
+            return false;
+        }
+        row = value;
+        return true;
+    }
+
+    bool exprIsAcceptedFixedRow(const clang::Expr* expr) const {
+        int64_t row = -1;
+        if (extractFixedRow(expr, row)) {
+            return true;
+        }
+        return false;
+    }
+
+    bool exprMentionsHostTensor(const clang::Expr* expr) const {
+        if (!expr) {
+            return false;
+        }
+        if (actualTensorNameForArg(expr, Context) == HostTensorName ||
+            baseNameFromExpr(expr) == HostTensorName) {
+            return true;
+        }
+        for (const clang::Stmt* child : expr->children()) {
+            if (const auto* childExpr =
+                    llvm::dyn_cast_or_null<clang::Expr>(child)) {
+                if (exprMentionsHostTensor(childExpr)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    bool isInsideAcceptedFixedRow(const clang::DeclRefExpr* dre,
+                                  int64_t& row) const {
+        if (!dre || !Context) {
+            return false;
+        }
+        clang::DynTypedNode current = clang::DynTypedNode::create(*dre);
+        for (int depth = 0; depth < 10; ++depth) {
+            auto parents = Context->getParents(current);
+            if (parents.empty()) {
+                return false;
+            }
+            const clang::DynTypedNode& parent = parents[0];
+            if (const auto* expr = parent.get<clang::Expr>()) {
+                if (extractFixedRow(expr, row)) {
+                    return true;
+                }
+                current = parent;
+                continue;
+            }
+            return false;
+        }
+        return false;
+    }
+};
+
+LoopLoweredSelectiveMaterializePlan analyzeLoopLowerSelectiveMaterialize(
+    DacppFile* dacppFile,
+    const ShellPartitionPlan& plan,
+    const clang::Stmt* outerLoop) {
+    LoopLoweredSelectiveMaterializePlan result;
+    if (!dacppFile || !dacppFile->getContext() || !outerLoop ||
+        !plan.exprNode.dacExpr) {
+        result.reason = "analysis context unavailable";
+        return result;
+    }
+    const ParamAccessPlan* output = loopLowerOutputDirectParam(plan);
+    if (!output) {
+        result.reason = "requires exactly one output direct tensor";
+        return result;
+    }
+    const clang::CompoundStmt* loopBody = compoundBodyForLoop(outerLoop);
+    std::string hostTensorName;
+    std::string rowIndexExpr;
+    std::string writebackReason;
+    if (!findLoopOutputWriteback(plan, loopBody, dacppFile->getContext(),
+                                 hostTensorName, rowIndexExpr,
+                                 writebackReason)) {
+        result.reason = writebackReason;
+        return result;
+    }
+
+    const auto parents = dacppFile->getContext()->getParents(*outerLoop);
+    if (parents.empty()) {
+        result.reason = "loop parent unavailable";
+        return result;
+    }
+    const auto* parentCompound = parents[0].get<clang::CompoundStmt>();
+    if (!parentCompound) {
+        parentCompound =
+            llvm::dyn_cast_or_null<clang::CompoundStmt>(
+                parents[0].get<clang::Stmt>());
+    }
+    if (!parentCompound) {
+        result.reason = "loop parent compound unavailable";
+        return result;
+    }
+    bool sawLoop = false;
+    std::set<int64_t> rows;
+    for (const clang::Stmt* child : parentCompound->body()) {
+        if (!child) {
+            continue;
+        }
+        if (child == outerLoop ||
+            stmtSourceRangeContains(dacppFile->getContext()->getSourceManager(),
+                                    child, outerLoop)) {
+            sawLoop = true;
+            continue;
+        }
+        if (!sawLoop) {
+            continue;
+        }
+        FixedHostTensorRowUseVisitor visitor(hostTensorName,
+                                             dacppFile->getContext());
+        visitor.TraverseStmt(const_cast<clang::Stmt*>(child));
+        if (visitor.FullUse) {
+            result.reason = visitor.Reason.empty()
+                                ? "unknown host tensor post-loop use"
+                                : visitor.Reason;
+            return result;
+        }
+        rows.insert(visitor.Rows.begin(), visitor.Rows.end());
+    }
+    if (rows.size() != 1) {
+        result.reason = rows.empty() ? "no fixed host row post-loop use"
+                                     : "multiple fixed host rows post-loop";
+        return result;
+    }
+    result.enabled = true;
+    result.outputTensorName = output->actualTensorName;
+    result.hostTensorName = hostTensorName;
+    result.rowIndexExpr = rowIndexExpr;
+    result.targetRow = *rows.begin();
+    result.reason = "loop row writeback and fixed post-loop row use";
+    return result;
 }
 
 bool loopContainsMultipleDacExprs(DacppFile* dacppFile,
@@ -2723,6 +3234,9 @@ const clang::ValueDecl* declRefTarget(const clang::Expr* expr) {
 }
 
 const clang::Expr* unwrapExprFully(const clang::Expr* expr);
+const clang::Expr* unwrapVectorInitExpr(const clang::Expr* init);
+bool stmtReferencesDecl(const clang::Stmt* stmt,
+                        const clang::ValueDecl* decl);
 
 const clang::VarDecl* declRefVarTarget(const clang::Expr* expr) {
     return llvm::dyn_cast_or_null<clang::VarDecl>(declRefTarget(expr));
@@ -2896,6 +3410,16 @@ struct VectorConstantInit {
     std::string reason;
 };
 
+struct VectorIndexFillInit {
+    bool supported = false;
+    std::string valueExpr;
+    std::string logValue;
+    std::string loopVarName;
+    std::string reason;
+    const clang::Stmt* loopStmt = nullptr;
+    const clang::Stmt* assignmentStmt = nullptr;
+};
+
 VectorConstantInit analyzeVectorConstantConstructor(
     const clang::VarDecl* vectorVar,
     clang::ASTContext* context,
@@ -2919,13 +3443,45 @@ VectorConstantInit analyzeVectorConstantConstructor(
         return result;
     }
     const bool allowAggregate = !isArithmeticLikeType(elemType);
-    const clang::Expr* init = unwrapExprFully(vectorVar->getInit());
+    const clang::Expr* init = unwrapVectorInitExpr(vectorVar->getInit());
     const auto* construct = llvm::dyn_cast_or_null<clang::CXXConstructExpr>(init);
+    if (const auto* parenInit =
+            llvm::dyn_cast_or_null<clang::CXXParenListInitExpr>(init)) {
+        const auto args = parenInit->getInitExprs();
+        if (args.size() == 1) {
+            const clang::Expr* sizeArg = unwrapExprFully(args[0]);
+            if (!sizeArg || !sizeArg->getType()->isIntegerType()) {
+                result.reason = "single-argument vector initializer is not a size constructor";
+                return result;
+            }
+            result.supported = true;
+            result.valueExpr = targetType + "{}";
+            result.logValue = "0";
+            return result;
+        }
+        if (args.size() >= 2) {
+            if (constantInitValueExpr(args[1], context, targetType,
+                                      allowAggregate, result.valueExpr,
+                                      result.logValue)) {
+                result.supported = true;
+                return result;
+            }
+            result.reason = "vector fill value is not a supported constant";
+            return result;
+        }
+        result.reason = "unsupported vector constructor arity";
+        return result;
+    }
     if (!construct) {
         result.reason = "vector initializer is not a constructor";
         return result;
     }
     if (construct->getNumArgs() == 1) {
+        const clang::Expr* sizeArg = unwrapExprFully(construct->getArg(0));
+        if (!sizeArg || !sizeArg->getType()->isIntegerType()) {
+            result.reason = "single-argument vector initializer is not a size constructor";
+            return result;
+        }
         result.supported = true;
         result.valueExpr = targetType + "{}";
         result.logValue = "0";
@@ -2942,6 +3498,269 @@ VectorConstantInit analyzeVectorConstantConstructor(
         return result;
     }
     result.reason = "unsupported vector constructor arity";
+    return result;
+}
+
+const clang::Expr* vectorSizeConstructorArg(const clang::VarDecl* vectorVar) {
+    if (!vectorVar || !vectorVar->hasInit()) {
+        return nullptr;
+    }
+    const clang::Expr* init = unwrapVectorInitExpr(vectorVar->getInit());
+    const auto* construct = llvm::dyn_cast_or_null<clang::CXXConstructExpr>(init);
+    if (!construct || construct->getNumArgs() < 1) {
+        if (const auto* parenInit =
+                llvm::dyn_cast_or_null<clang::CXXParenListInitExpr>(init)) {
+            const auto args = parenInit->getInitExprs();
+            const clang::Expr* firstArg =
+                args.empty() ? nullptr : unwrapExprFully(args[0]);
+            if (firstArg && firstArg->getType()->isIntegerType()) {
+                return args[0];
+            }
+        }
+        return nullptr;
+    }
+    const clang::Expr* firstArg = unwrapExprFully(construct->getArg(0));
+    if (!firstArg || !firstArg->getType()->isIntegerType()) {
+        return nullptr;
+    }
+    return construct->getArg(0);
+}
+
+const clang::Expr* unwrapVectorInitExpr(const clang::Expr* init) {
+    while (init) {
+        init = init->IgnoreParenImpCasts();
+        if (const auto* cleanups =
+                llvm::dyn_cast<clang::ExprWithCleanups>(init)) {
+            init = cleanups->getSubExpr();
+            continue;
+        }
+        if (const auto* materialized =
+                llvm::dyn_cast<clang::MaterializeTemporaryExpr>(init)) {
+            init = materialized->getSubExpr();
+            continue;
+        }
+        if (const auto* temporary =
+                llvm::dyn_cast<clang::CXXBindTemporaryExpr>(init)) {
+            init = temporary->getSubExpr();
+            continue;
+        }
+        return init;
+    }
+    return nullptr;
+}
+
+bool isDeclRefToDecl(const clang::Expr* expr, const clang::ValueDecl* decl) {
+    expr = unwrapExprFully(expr);
+    const auto* declRef = llvm::dyn_cast_or_null<clang::DeclRefExpr>(expr);
+    return declRef && declRef->getDecl() == decl;
+}
+
+const clang::VarDecl* canonicalZeroBasedLoopVar(const clang::ForStmt* forStmt) {
+    const auto* declStmt =
+        llvm::dyn_cast_or_null<clang::DeclStmt>(forStmt ? forStmt->getInit()
+                                                        : nullptr);
+    if (!declStmt || !declStmt->isSingleDecl()) {
+        return nullptr;
+    }
+    const auto* loopVar =
+        llvm::dyn_cast_or_null<clang::VarDecl>(declStmt->getSingleDecl());
+    int64_t initValue = -1;
+    if (!loopVar || !evaluateInt64Expr(loopVar->getInit(),
+                                       &loopVar->getASTContext(), initValue) ||
+        initValue != 0) {
+        return nullptr;
+    }
+    const clang::Expr* inc = unwrapExprFully(forStmt->getInc());
+    const auto* unary = llvm::dyn_cast_or_null<clang::UnaryOperator>(inc);
+    if (!unary || (unary->getOpcode() != clang::UO_PostInc &&
+                   unary->getOpcode() != clang::UO_PreInc) ||
+        !isDeclRefToDecl(unary->getSubExpr(), loopVar)) {
+        return nullptr;
+    }
+    return loopVar;
+}
+
+bool loopBoundMatchesVectorSize(const clang::ForStmt* forStmt,
+                                const clang::VarDecl* loopVar,
+                                const clang::Expr* vectorSize,
+                                clang::ASTContext* context) {
+    const auto* cond =
+        llvm::dyn_cast_or_null<clang::BinaryOperator>(forStmt
+                                                          ? forStmt->getCond()
+                                                          : nullptr);
+    if (!cond || cond->getOpcode() != clang::BO_LT ||
+        !isDeclRefToDecl(cond->getLHS(), loopVar) || !vectorSize || !context) {
+        return false;
+    }
+    return compactExprText(exprSource(cond->getRHS(), context)) ==
+           compactExprText(exprSource(vectorSize, context));
+}
+
+bool lhsIsVectorAtLoopIndex(const clang::Expr* lhs,
+                            const clang::VarDecl* vectorVar,
+                            const clang::VarDecl* loopVar) {
+    lhs = unwrapExprFully(lhs);
+    const auto* subscript =
+        llvm::dyn_cast_or_null<clang::CXXOperatorCallExpr>(lhs);
+    if (!subscript || subscript->getOperator() != clang::OO_Subscript ||
+        subscript->getNumArgs() < 2 ||
+        !isDeclRefToDecl(subscript->getArg(1), loopVar)) {
+        return false;
+    }
+    const clang::VarDecl* baseVar = declRefVarTarget(subscript->getArg(0));
+    if (!baseVar) {
+        return false;
+    }
+    if (vectorVar) {
+        return baseVar == vectorVar;
+    }
+    return isStdVectorLikeType(baseVar->getType());
+}
+
+class GeneratedIndexExprSafetyVisitor
+    : public clang::RecursiveASTVisitor<GeneratedIndexExprSafetyVisitor> {
+public:
+    explicit GeneratedIndexExprSafetyVisitor(const clang::VarDecl* loopVar)
+        : LoopVar(loopVar) {}
+
+    bool Safe = true;
+    std::string Reason;
+
+    bool VisitDeclRefExpr(clang::DeclRefExpr* expr) {
+        if (!expr || !expr->getDecl()) {
+            return true;
+        }
+        const clang::ValueDecl* decl = expr->getDecl();
+        if (decl == LoopVar || llvm::isa<clang::FunctionDecl>(decl) ||
+            llvm::isa<clang::EnumConstantDecl>(decl)) {
+            return true;
+        }
+        if (const auto* varDecl = llvm::dyn_cast<clang::VarDecl>(decl)) {
+            if (varDecl->hasGlobalStorage()) {
+                return true;
+            }
+        }
+        Safe = false;
+        if (Reason.empty()) {
+            Reason = "index initializer references local value not visible in wrapper";
+        }
+        return true;
+    }
+
+private:
+    const clang::VarDecl* LoopVar = nullptr;
+};
+
+bool exprIsSafeGeneratedIndexValue(const clang::Expr* expr,
+                                   const clang::VarDecl* loopVar,
+                                   std::string& reason) {
+    if (!expr || !loopVar) {
+        reason = "index initializer expression unavailable";
+        return false;
+    }
+    GeneratedIndexExprSafetyVisitor visitor(loopVar);
+    visitor.TraverseStmt(const_cast<clang::Expr*>(expr));
+    if (!visitor.Safe) {
+        reason = visitor.Reason;
+        return false;
+    }
+    return true;
+}
+
+bool stmtIsVectorIndexAssignment(const clang::Stmt* stmt,
+                                 const clang::VarDecl* vectorVar,
+                                 const clang::VarDecl* loopVar,
+                                 clang::ASTContext* context,
+                                 std::string& valueExpr,
+                                 std::string& reason) {
+    const auto* expr = llvm::dyn_cast_or_null<clang::Expr>(stmt);
+    expr = unwrapExprFully(expr);
+    const auto* binary = llvm::dyn_cast_or_null<clang::BinaryOperator>(expr);
+    if (!binary || binary->getOpcode() != clang::BO_Assign ||
+        !lhsIsVectorAtLoopIndex(binary->getLHS(), vectorVar, loopVar)) {
+        return false;
+    }
+    if (stmtReferencesDecl(binary->getRHS(), vectorVar)) {
+        reason = "index initializer reads the vector being initialized";
+        return true;
+    }
+    if (!exprIsSafeGeneratedIndexValue(binary->getRHS(), loopVar, reason)) {
+        return true;
+    }
+    valueExpr = exprSource(binary->getRHS(), context);
+    if (valueExpr.empty()) {
+        reason = "index initializer source unavailable";
+    }
+    return true;
+}
+
+std::vector<const clang::Stmt*> loopBodyStatements(const clang::Stmt* body) {
+    std::vector<const clang::Stmt*> result;
+    if (!body) {
+        return result;
+    }
+    if (const auto* compound = llvm::dyn_cast<clang::CompoundStmt>(body)) {
+        for (const clang::Stmt* child : compound->body()) {
+            result.push_back(child);
+        }
+    } else {
+        result.push_back(body);
+    }
+    return result;
+}
+
+VectorIndexFillInit analyzeVectorIndexFillLoop(
+    const clang::Stmt* stmt,
+    const clang::VarDecl* vectorVar,
+    const clang::Expr* vectorSize,
+    clang::ASTContext* context) {
+    VectorIndexFillInit result;
+    const auto* forStmt = llvm::dyn_cast_or_null<clang::ForStmt>(stmt);
+    const clang::VarDecl* loopVar = canonicalZeroBasedLoopVar(forStmt);
+    if (!forStmt || !loopVar ||
+        !loopBoundMatchesVectorSize(forStmt, loopVar, vectorSize, context)) {
+        result.reason = "not a full zero-based vector fill loop";
+        return result;
+    }
+    int assignmentCount = 0;
+    std::string valueExpr;
+    const clang::Stmt* assignmentStmt = nullptr;
+    for (const clang::Stmt* child : loopBodyStatements(forStmt->getBody())) {
+        std::string childValue;
+        std::string childReason;
+        if (stmtIsVectorIndexAssignment(child, vectorVar, loopVar, context,
+                                        childValue, childReason)) {
+            if (!childReason.empty()) {
+                result.reason = childReason;
+                return result;
+            }
+            ++assignmentCount;
+            valueExpr = childValue;
+            assignmentStmt = child;
+            continue;
+        }
+        std::string ignoredValue;
+        std::string ignoredReason;
+        if (stmtIsVectorIndexAssignment(child, nullptr, loopVar, context,
+                                        ignoredValue, ignoredReason) &&
+            !stmtReferencesDecl(child, vectorVar)) {
+            continue;
+        }
+        if (stmtReferencesDecl(child, vectorVar)) {
+            result.reason = "unsupported vector use inside index fill loop";
+            return result;
+        }
+    }
+    if (assignmentCount != 1 || valueExpr.empty()) {
+        result.reason = "index fill loop does not assign the vector exactly once";
+        return result;
+    }
+    result.supported = true;
+    result.valueExpr = valueExpr;
+    result.logValue = valueExpr;
+    result.loopVarName = loopVar->getNameAsString();
+    result.loopStmt = stmt;
+    result.assignmentStmt = assignmentStmt;
     return result;
 }
 
@@ -3262,12 +4081,7 @@ ConstantInitPlan analyzeConstantInitForShellArg(
     const VectorConstantInit vectorInit =
         analyzeVectorConstantConstructor(vectorVar, dacppFile->getContext(),
                                          targetType);
-    if (!vectorInit.supported) {
-        plan.reason = vectorInit.reason.empty()
-                          ? "vector constant initializer unsupported"
-                          : vectorInit.reason;
-        return plan;
-    }
+    const clang::Expr* vectorSize = vectorSizeConstructorArg(vectorVar);
 
     const auto& sourceManager = dacppFile->getContext()->getSourceManager();
     if (!sourceBefore(sourceManager, vectorVar->getBeginLoc(),
@@ -3290,6 +4104,8 @@ ConstantInitPlan analyzeConstantInitForShellArg(
     bool sawTensorDecl = false;
     bool checkedVectorWindow = false;
     bool checkedTensorWindow = false;
+    bool sawIndexFill = false;
+    VectorIndexFillInit indexFill;
     const auto* compound = llvm::dyn_cast<clang::CompoundStmt>(body);
     if (!compound) {
         plan.reason = "main body is not compound";
@@ -3310,6 +4126,14 @@ ConstantInitPlan analyzeConstantInitForShellArg(
                 sawTensorDecl = true;
                 checkedVectorWindow = true;
                 continue;
+            }
+            if (!sawIndexFill) {
+                indexFill = analyzeVectorIndexFillLoop(
+                    child, vectorVar, vectorSize, dacppFile->getContext());
+                if (indexFill.supported) {
+                    sawIndexFill = true;
+                    continue;
+                }
             }
             VectorUseSafetyVisitor visitor(vectorVar);
             visitor.TraverseStmt(const_cast<clang::Stmt*>(child));
@@ -3346,10 +4170,29 @@ ConstantInitPlan analyzeConstantInitForShellArg(
         return plan;
     }
     (void)checkedTensorWindow;
-    plan.supported = true;
-    plan.valueExpr = vectorInit.valueExpr;
-    plan.logValue = vectorInit.logValue.empty() ? vectorInit.valueExpr
-                                                : vectorInit.logValue;
+    if (sawIndexFill && indexFill.supported) {
+        plan.supported = true;
+        plan.indexExpr = true;
+        plan.valueExpr = indexFill.valueExpr;
+        plan.logValue = indexFill.logValue.empty() ? indexFill.valueExpr
+                                                   : indexFill.logValue;
+        plan.globalIndexName = indexFill.loopVarName.empty()
+                                   ? "__or_global_index"
+                                   : indexFill.loopVarName;
+        plan.indexFillLoopStmt = indexFill.loopStmt;
+        plan.indexFillAssignmentStmt = indexFill.assignmentStmt;
+        return plan;
+    }
+    if (vectorInit.supported) {
+        plan.supported = true;
+        plan.valueExpr = vectorInit.valueExpr;
+        plan.logValue = vectorInit.logValue.empty() ? vectorInit.valueExpr
+                                                    : vectorInit.logValue;
+        return plan;
+    }
+    plan.reason = vectorInit.reason.empty()
+                      ? "vector constant initializer unsupported"
+                      : vectorInit.reason;
     return plan;
 }
 
@@ -4401,11 +5244,16 @@ void annotateLoopLowerCandidates(DacppFile* dacppFile,
             plan.loopLowerCandidate && hasReplicatedScalarParam(plan);
         plan.loopLowerReplicatedScalarLocalRefresh = false;
         plan.loopLowerScalarRefreshReason.clear();
+        plan.loopLowerSelectiveMaterialize =
+            LoopLoweredSelectiveMaterializePlan{};
         if (plan.loopLowerMaterializeEveryRun) {
             plan.loopLowerReplicatedScalarLocalRefresh =
                 loopBodyHasOnlyUnguardedTopLevelScalarWrites(
                     dacppFile, outerLoop, plan,
                     plan.loopLowerScalarRefreshReason);
+            plan.loopLowerSelectiveMaterialize =
+                analyzeLoopLowerSelectiveMaterialize(dacppFile, plan,
+                                                     outerLoop);
         }
 
         const std::string shellName =
@@ -4421,7 +5269,21 @@ void annotateLoopLowerCandidates(DacppFile* dacppFile,
         if (plan.loopLowerCandidate) {
             llvm::outs() << " structure=init/run/materialize";
             if (plan.loopLowerMaterializeEveryRun) {
-                llvm::outs() << " materialize=per-run";
+                if (plan.loopLowerSelectiveMaterialize.enabled) {
+                    llvm::outs()
+                        << " materialize=selective-row host="
+                        << plan.loopLowerSelectiveMaterialize.hostTensorName
+                        << " row="
+                        << plan.loopLowerSelectiveMaterialize.targetRow
+                        << " output="
+                        << plan.loopLowerSelectiveMaterialize.outputTensorName;
+                } else {
+                    llvm::outs() << " materialize=per-run";
+                    if (!plan.loopLowerSelectiveMaterialize.reason.empty()) {
+                        llvm::outs() << " selective-row=fallback reason="
+                                     << plan.loopLowerSelectiveMaterialize.reason;
+                    }
+                }
                 if (plan.loopLowerReplicatedScalarLocalRefresh) {
                     llvm::outs() << " scalar-refresh=local-replicated";
                 } else if (!plan.loopLowerScalarRefreshReason.empty()) {
