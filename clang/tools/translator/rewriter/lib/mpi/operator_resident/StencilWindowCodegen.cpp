@@ -1315,17 +1315,24 @@ void emitResidentHaloInitFunction2D(std::string& code,
         code += "        MPI_Abort(MPI_COMM_WORLD, 4);\n";
         code += "    }\n";
         if (directReader->constantInit.supported) {
-            code += "    std::fill(ctx." + localName(*directReader) +
-                    ".begin(), ctx." + localName(*directReader) +
-                    ".end(), " + directReaderType + "{});\n";
-            code += "    std::vector<" + directReaderType +
-                    "> __or_initial_owned_" + directReader->calcParamName +
-                    "(static_cast<std::size_t>(ctx.__or_local_item_count), " +
-                    directReader->constantInit.valueExpr + ");\n";
-            code += "    dacpp::mpi::operator_resident::write_owned_slice_2d_rows(ctx." +
-                    localName(*directReader) + ", __or_initial_owned_" +
-                    directReader->calcParamName +
-                    ", ctx.__or_halo_layout, ctx.__or_output_cols, ctx.__or_input_cols, ctx.__or_followup_row_offset, ctx.__or_followup_col_offset);\n";
+            if (plan.orLoopLower.stencilResidentHalo.temporalBlockSize > 1) {
+                code += "    std::fill(ctx." + localName(*directReader) +
+                        ".begin(), ctx." + localName(*directReader) +
+                        ".end(), " + directReader->constantInit.valueExpr +
+                        ");\n";
+            } else {
+                code += "    std::fill(ctx." + localName(*directReader) +
+                        ".begin(), ctx." + localName(*directReader) +
+                        ".end(), " + directReaderType + "{});\n";
+                code += "    std::vector<" + directReaderType +
+                        "> __or_initial_owned_" + directReader->calcParamName +
+                        "(static_cast<std::size_t>(ctx.__or_local_item_count), " +
+                        directReader->constantInit.valueExpr + ");\n";
+                code += "    dacpp::mpi::operator_resident::write_owned_slice_2d_rows(ctx." +
+                        localName(*directReader) + ", __or_initial_owned_" +
+                        directReader->calcParamName +
+                        ", ctx.__or_halo_layout, ctx.__or_output_cols, ctx.__or_input_cols, ctx.__or_followup_row_offset, ctx.__or_followup_col_offset);\n";
+            }
             code += "    // Constant-initialized resident direct reader " +
                     directReader->calcParamName +
                     " is filled locally; skip root tensor2Array/MPI_Scatterv.\n";
@@ -1337,6 +1344,41 @@ void emitResidentHaloInitFunction2D(std::string& code,
                     ".tensor2Array(__or_initial_global_" +
                     directReader->calcParamName + ");\n";
             code += "    }\n";
+            if (plan.orLoopLower.stencilResidentHalo.temporalBlockSize > 1) {
+                code += "    std::vector<" + directReaderType +
+                        "> __or_initial_global_window_" +
+                        directReader->calcParamName + ";\n";
+                code += "    if (ctx.mpi_rank == 0) {\n";
+                code += "        __or_initial_global_window_" +
+                        directReader->calcParamName +
+                        ".assign(static_cast<std::size_t>(__or_initial_reader_dense_count), " +
+                        directReaderType + "{});\n";
+                code += "        for (int64_t __or_direct_row = 0; __or_direct_row < ctx.__or_output_rows; ++__or_direct_row) {\n";
+                code += "            for (int64_t __or_direct_col = 0; __or_direct_col < ctx.__or_output_cols; ++__or_direct_col) {\n";
+                code += "                const int64_t __or_direct_src = __or_direct_row * ctx.__or_output_cols + __or_direct_col;\n";
+                code += "                const int64_t __or_direct_dst = (__or_direct_row + ctx.__or_followup_row_offset) * ctx.__or_input_cols + __or_direct_col + ctx.__or_followup_col_offset;\n";
+                code += "                if (__or_direct_src >= 0 && __or_direct_dst >= 0 && static_cast<std::size_t>(__or_direct_src) < __or_initial_global_" +
+                        directReader->calcParamName +
+                        ".size() && static_cast<std::size_t>(__or_direct_dst) < __or_initial_global_window_" +
+                        directReader->calcParamName + ".size()) {\n";
+                code += "                    __or_initial_global_window_" +
+                        directReader->calcParamName +
+                        "[static_cast<std::size_t>(__or_direct_dst)] = __or_initial_global_" +
+                        directReader->calcParamName +
+                        "[static_cast<std::size_t>(__or_direct_src)];\n";
+                code += "                }\n";
+                code += "            }\n";
+                code += "        }\n";
+                code += "    }\n";
+                code += "    dacpp::mpi::operator_resident::scatter_window_2d_rows_temporal(__or_initial_global_window_" +
+                        directReader->calcParamName + ", ctx." +
+                        localName(*directReader) +
+                        ", ctx.__or_output_rows, ctx.__or_input_cols, ctx.__or_temporal_block_size, ctx.__or_halo_layout, ctx.mpi_rank, ctx.mpi_size, " +
+                        directReaderMpiType + ");\n";
+                code += "    // Direct-reader recurrence state " +
+                        directReader->calcParamName +
+                        " is embedded in the widened resident halo layout for k=2 replay.\n";
+            } else {
             code += "    std::vector<" + directReaderType + "> __or_initial_owned_" +
                     directReader->calcParamName +
                     "(static_cast<std::size_t>(ctx.__or_local_item_count), " +
@@ -1355,6 +1397,7 @@ void emitResidentHaloInitFunction2D(std::string& code,
                     localName(*directReader) + ", __or_initial_owned_" +
                     directReader->calcParamName +
                     ", ctx.__or_halo_layout, ctx.__or_output_cols, ctx.__or_input_cols, ctx.__or_followup_row_offset, ctx.__or_followup_col_offset);\n";
+            }
         }
     }
     code += "    dacpp::mpi::recordProfileSegment(ctx.__or_profile, dacpp::mpi::ProfileSegment::Scatter, dacpp_profile_scatter_start);\n";
@@ -1379,7 +1422,7 @@ void emitResidentHaloRunFunction2D(std::string& code,
         stencilSitePlanFor(dacppFile, plan);
     const int temporalBlockSize =
         plan.orLoopLower.stencilResidentHalo.temporalBlockSize;
-    const bool temporalBlocked = temporalBlockSize > 1 && directReader == nullptr;
+    const bool temporalBlocked = temporalBlockSize > 1;
     code += "void " + runName + "(" + ctxName + "& ctx, " +
             wrapperSignature(plan) + ") {\n";
     code += "    int mpi_rank = ctx.mpi_rank;\n";
@@ -1431,6 +1474,7 @@ void emitResidentHaloRunFunction2D(std::string& code,
     auto emitOneKernel = [&](const std::string& indent,
                              const std::string& readerBufferName,
                              const std::string& writerBufferName,
+                             const std::string& directReaderBufferName,
                              const std::string& readerRowOffsetExpr,
                              const std::string& writerRowOffsetExpr,
                              bool recordKernelProfile) {
@@ -1446,8 +1490,8 @@ void emitResidentHaloRunFunction2D(std::string& code,
     if (directReader) {
             code += indent + "    sycl::buffer<" + directReaderType +
                     ", 1> __or_direct_reader_buf(" +
-                    localName(*directReader) + ".data(), sycl::range<1>(" +
-                    localName(*directReader) + ".size()));\n";
+                    directReaderBufferName + ".data(), sycl::range<1>(" +
+                    directReaderBufferName + ".size()));\n";
     }
         code += indent + "    sycl::buffer<" + writerType +
                 ", 1> __or_writer_buf(" + writerBufferName +
@@ -1482,7 +1526,9 @@ void emitResidentHaloRunFunction2D(std::string& code,
             param.paramIndex == directReader->paramIndex) {
                 code += indent + "            dacpp::mpi::ContiguousView1D<const " +
                     paramType + "> view_" + param.calcParamName +
-                    "{__or_direct_reader_data, static_cast<int>((local_row + __or_writer_row_offset) * static_cast<int>(__or_input_cols) + local_col + __or_writer_col_offset)};\n";
+                    "{__or_direct_reader_data, static_cast<int>((local_row + " +
+                    writerRowOffsetExpr +
+                    ") * static_cast<int>(__or_input_cols) + local_col + __or_writer_col_offset)};\n";
             continue;
         }
         if (param.access == ParamAccessKind::OutputDirect &&
@@ -1522,9 +1568,14 @@ void emitResidentHaloRunFunction2D(std::string& code,
         code += "        const int64_t __or_compute_rows = std::max<int64_t>(0, __or_compute_row_end - __or_compute_row_begin);\n";
         code += "        __or_kernel_item_count = dacpp::mpi::operator_resident::checked_mul_int64_or_abort(__or_compute_rows, __or_output_cols, \"[DACPP][MPI][OR] temporal resident halo 2D kernel item count overflow\");\n";
         emitOneKernel("        ", localName(reader), localName(writer),
+                      directReader ? localName(*directReader) : "",
                       "__or_compute_row_begin - 1",
                       "__or_compute_row_begin",
                       false);
+        if (directReader) {
+            code += "        std::swap(" + localName(*directReader) + ", " +
+                    localName(reader) + ");\n";
+        }
         code += "        std::swap(" + localName(reader) + ", " +
                 localName(writer) + ");\n";
         emitResidentHaloBoundaryRefresh2D(
@@ -1540,7 +1591,8 @@ void emitResidentHaloRunFunction2D(std::string& code,
         return;
     }
     code += "    __or_kernel_item_count = __or_local_item_count;\n";
-    emitOneKernel("    ", localName(reader), localName(writer), "0",
+    emitOneKernel("    ", localName(reader), localName(writer),
+                  directReader ? localName(*directReader) : "", "0",
                   "__or_writer_row_offset", true);
     code += "    auto dacpp_profile_halo_start = dacpp::mpi::profileSegmentStart();\n";
     code += "    dacpp::mpi::operator_resident::exchange_halo_2d_rows_inplace(" +
@@ -1589,7 +1641,7 @@ void emitResidentHaloMaterializeFunction2D(
     const bool readerFull = hasFullPostUse(reader);
     const bool readerBounded = hasBoundedPostUse(reader);
     const bool needsWriterGlobal = writerFull || readerFull;
-    const bool temporalBlocked = halo.temporalBlockSize > 1 && !directReader;
+    const bool temporalBlocked = halo.temporalBlockSize > 1;
     const std::string ownedSliceFn =
         temporalBlocked
             ? "owned_slice_2d_rows_temporal"
@@ -1600,6 +1652,9 @@ void emitResidentHaloMaterializeFunction2D(
             : std::to_string(halo.followupTargetRowOffset);
     const std::string writerColOffset =
         std::to_string(halo.followupTargetColOffset);
+    const std::string ownedRowCountExpr =
+        temporalBlocked ? "ctx.__or_halo_layout.local_row_count"
+                        : "ctx.__or_output_row_range.count";
     const std::string readerBoundedWindowRows =
         temporalBlocked ? "ctx.__or_temporal_block_size"
                         : "ctx.__or_window_rows";
@@ -1651,7 +1706,7 @@ void emitResidentHaloMaterializeFunction2D(
     } else if (writerBounded) {
         emitResidentHaloBoundedIndexedRootRead2D(
             code, plan, writer, "ctx." + localName(reader),
-            "ctx.__or_output_row_range.count", "ctx.__or_output_rows", "",
+            ownedRowCountExpr, "ctx.__or_output_rows", "",
             "ctx.__or_output_cols", "ctx.__or_input_cols",
             writerRowOffset,
             writerColOffset, "mpi_rank",
@@ -1666,11 +1721,10 @@ void emitResidentHaloMaterializeFunction2D(
                 directReader->calcParamName +
                 " = dacpp::mpi::profileSegmentStart();\n";
         code += "    const auto __or_owned_" + directReader->calcParamName +
-                " = dacpp::mpi::operator_resident::owned_slice_2d_rows(ctx." +
+                " = dacpp::mpi::operator_resident::" + ownedSliceFn + "(ctx." +
                 localName(*directReader) +
                 ", ctx.__or_halo_layout, ctx.__or_output_cols, ctx.__or_input_cols, " +
-                std::to_string(halo.followupTargetRowOffset) + ", " +
-                std::to_string(halo.followupTargetColOffset) + ");\n";
+                writerRowOffset + ", " + writerColOffset + ");\n";
         code += "    std::vector<" + directReaderType + "> __or_materialized_" +
                 directReader->calcParamName + ";\n";
         code += "    if (mpi_rank == 0) {\n";
@@ -1698,7 +1752,7 @@ void emitResidentHaloMaterializeFunction2D(
     } else if (directReader && directReaderBounded) {
         emitResidentHaloBoundedIndexedRootRead2D(
             code, plan, *directReader, "ctx." + localName(*directReader),
-            "ctx.__or_output_row_range.count", "ctx.__or_output_rows", "",
+            ownedRowCountExpr, "ctx.__or_output_rows", "",
             "ctx.__or_output_cols", "ctx.__or_input_cols",
             writerRowOffset,
             writerColOffset, "mpi_rank",

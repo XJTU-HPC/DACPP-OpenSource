@@ -3829,10 +3829,6 @@ void annotateResidentHaloTemporalBlocking(
         reject("requires StencilWindow1D or StencilWindow2D resident halo");
         return;
     }
-    if (metadata.hasDirectReader) {
-        reject("direct-reader recurrence not enabled for k=2");
-        return;
-    }
     if (metadata.windowRows != 3 || metadata.windowCols != 3 ||
         metadata.followupTargetRowOffset != 1 ||
         metadata.followupTargetColOffset != 1) {
@@ -3849,8 +3845,55 @@ void annotateResidentHaloTemporalBlocking(
     const DistributedStencilSitePlan sitePlan = analyzeDistributedStencilSite(
         dacppFile, plan.exprNode.shell, plan.exprNode.calc,
         plan.exprNode.dacExpr);
-    if (!sitePlan.supported || sitePlan.boundaryLocalUpdates.size() != 4 ||
-        !sitePlan.readCacheTransitions.empty()) {
+    if (metadata.hasDirectReader) {
+        const ParamAccessPlan* directReader =
+            singleStencilDirectReaderParam(plan);
+        if (!directReader) {
+            reject("requires exactly one direct reader for direct-reader recurrence");
+            return;
+        }
+        for (const auto& param : plan.params) {
+            if (isSupportedStencilScalarReader(param)) {
+                reject("scalar readers are not enabled for direct-reader k=2 replay");
+                return;
+            }
+        }
+        if (metadata.readCacheTargetRowOffset != -1 ||
+            metadata.readCacheTargetColOffset != -1) {
+            reject("requires direct-reader read-cache offset (-1,-1)");
+            return;
+        }
+        if (!sitePlan.supported ||
+            sitePlan.readCacheTransitions.size() != 1 ||
+            sitePlan.followupMappings.size() != 1 ||
+            sitePlan.boundaryLocalUpdates.size() != 4) {
+            reject("requires canonical B3 read-cache, followup, and boundary-local updates");
+            return;
+        }
+        const auto& transition = sitePlan.readCacheTransitions.front();
+        const auto& mapping = sitePlan.followupMappings.front();
+        const ParamAccessPlan* reader = stencilWindowReaderParam(plan);
+        const ParamAccessPlan* writer = stencilOutputDirectWriterParam(plan);
+        if (!reader || !writer ||
+            transition.writerParamIndex != reader->paramIndex ||
+            transition.readerParamIndex != directReader->paramIndex ||
+            mapping.writerParamIndex != writer->paramIndex ||
+            mapping.readerParamIndex != reader->paramIndex ||
+            transition.targetRowOffset != -1 ||
+            transition.targetColOffset != -1 ||
+            mapping.targetRowOffset != 1 ||
+            mapping.targetColOffset != 1) {
+            reject("requires canonical B3 direct-reader recurrence edges");
+            return;
+        }
+        if (!hasCurrentResidentHaloB3StmtOrder(loop, dacppFile, plan,
+                                               sitePlan)) {
+            reject("requires DAC -> read-cache -> followup -> boundary order for direct-reader recurrence");
+            return;
+        }
+    } else if (!sitePlan.supported ||
+               sitePlan.boundaryLocalUpdates.size() != 4 ||
+               !sitePlan.readCacheTransitions.empty()) {
         reject("requires canonical B2 followup and boundary-local updates");
         return;
     }
@@ -6501,6 +6544,9 @@ void annotateLoopLowerCandidates(DacppFile* dacppFile,
                         << plan.orLoopLower.stencilResidentHalo
                                .temporalBlockSize
                         << " accepted";
+                    if (plan.orLoopLower.stencilResidentHalo.hasDirectReader) {
+                        llvm::outs() << " direct-reader recurrence";
+                    }
                 } else if (!plan.orLoopLower.stencilResidentHalo
                                 .temporalBlockRejectReason.empty()) {
                     llvm::outs()

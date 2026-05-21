@@ -11,7 +11,7 @@ LOG_CONTAINS:[DACPP][MPI][OR] input matPrev init-sync=scatter fallback reason=te
 LOG_CONTAINS:[DACPP][MPI][OR][P4.6][Loop] expr=0 shell=waveEqShell
 LOG_CONTAINS:kind=StencilResidentHalo structure=ctx/init/run/materialize resident-halo=true window-shape=3x3 followup-offset=(1,1) direct-reader=true read-cache-offset=(-1,-1)
 LOG_CONTAINS:role-rotation=buffer-swap materialize=final
-LOG_CONTAINS:temporal-block=2 rejected reason=direct-reader recurrence not enabled for k=2
+LOG_CONTAINS:temporal-block=2 accepted direct-reader recurrence
 SYCL_CONTAINS:struct __dacpp_mpi_or_waveEqShell_waveEq_0_ctx
 SYCL_CONTAINS:dacpp::mpi::SegmentedProfile __or_profile
 SYCL_CONTAINS:void __dacpp_mpi_or_waveEqShell_waveEq_0_init(__dacpp_mpi_or_waveEqShell_waveEq_0_ctx& ctx
@@ -19,20 +19,28 @@ SYCL_CONTAINS:void __dacpp_mpi_or_waveEqShell_waveEq_0_run(__dacpp_mpi_or_waveEq
 SYCL_CONTAINS:void __dacpp_mpi_or_waveEqShell_waveEq_0_materialize(__dacpp_mpi_or_waveEqShell_waveEq_0_ctx& ctx
 SYCL_CONTAINS:void __dacpp_mpi_or_waveEqShell_waveEq_0
 SYCL_CONTAINS:dacpp::mpi::operator_resident::ResidentHalo2DRowLayout __or_halo_layout
+SYCL_CONTAINS:int __or_temporal_block_size = 2
+SYCL_CONTAINS:dacpp::mpi::operator_resident::resident_halo_2d_row_layout_temporal
 SYCL_CONTAINS:Constant-initialized resident halo reader cur is filled locally
-SYCL_CONTAINS:MPI_Scatterv(ctx.mpi_rank == 0 ? __or_initial_global_prev.data()
-SYCL_CONTAINS:dacpp::mpi::operator_resident::write_owned_slice_2d_rows(ctx.__or_local_prev, __or_initial_owned_prev
-SYCL_CONTAINS:dacpp::mpi::ResidentHaloView2D<const double> view_cur{__or_reader_data, static_cast<int>((local_row + 0) * static_cast<int>(__or_input_cols) + local_col)
-SYCL_CONTAINS:dacpp::mpi::ContiguousView1D<const double> view_prev{__or_direct_reader_data, static_cast<int>((local_row + __or_writer_row_offset) * static_cast<int>(__or_input_cols) + local_col + __or_writer_col_offset)}
-SYCL_CONTAINS:dacpp::mpi::ContiguousView1D<double> view_next{__or_writer_data, static_cast<int>((local_row + __or_writer_row_offset) * static_cast<int>(__or_input_cols) + local_col + __or_writer_col_offset)}
-SYCL_CONTAINS:dacpp::mpi::operator_resident::exchange_halo_2d_rows_inplace(__or_local_next
-SYCL_CONTAINS:ctx.__or_local_prev.swap(ctx.__or_local_cur);
-SYCL_CONTAINS:ctx.__or_local_cur.swap(ctx.__or_local_next);
-SYCL_CONTAINS:dacpp::mpi::operator_resident::owned_slice_2d_rows(ctx.__or_local_cur
+SYCL_CONTAINS:__or_initial_global_window_prev.assign(static_cast<std::size_t>(__or_initial_reader_dense_count), double{})
+SYCL_CONTAINS:dacpp::mpi::operator_resident::scatter_window_2d_rows_temporal(__or_initial_global_window_prev, ctx.__or_local_prev
+SYCL_CONTAINS:Direct-reader recurrence state prev is embedded in the widened resident halo layout for k=2 replay.
+SYCL_CONTAINS:const bool __or_temporal_block_safe = __or_output_rows >= static_cast<int64_t>(ctx.mpi_size) * static_cast<int64_t>(__or_temporal_block_size)
+SYCL_CONTAINS:const int __or_runtime_temporal_block_size = __or_temporal_block_safe ? __or_temporal_block_size : 1
+SYCL_CONTAINS:while (__or_time_step < __or_time_end)
+SYCL_CONTAINS:const int __or_inner_steps = static_cast<int>(std::min<int64_t>(__or_runtime_temporal_block_size
+SYCL_CONTAINS:dacpp::mpi::operator_resident::exchange_halo_2d_rows_temporal_inplace(__or_local_cur
+SYCL_CONTAINS:for (int __or_block_step = 0; __or_block_step < __or_inner_steps; ++__or_block_step)
+SYCL_CONTAINS:dacpp::mpi::ResidentHaloView2D<const double> view_cur{__or_reader_data, static_cast<int>((local_row + __or_compute_row_begin - 1) * static_cast<int>(__or_input_cols) + local_col)
+SYCL_CONTAINS:dacpp::mpi::ContiguousView1D<const double> view_prev{__or_direct_reader_data, static_cast<int>((local_row + __or_compute_row_begin) * static_cast<int>(__or_input_cols) + local_col + __or_writer_col_offset)}
+SYCL_CONTAINS:dacpp::mpi::ContiguousView1D<double> view_next{__or_writer_data, static_cast<int>((local_row + __or_compute_row_begin) * static_cast<int>(__or_input_cols) + local_col + __or_writer_col_offset)}
+SYCL_CONTAINS:std::swap(__or_local_prev, __or_local_cur);
+SYCL_CONTAINS:std::swap(__or_local_cur, __or_local_next);
+SYCL_CONTAINS:dacpp::mpi::operator_resident::owned_slice_2d_rows_temporal(ctx.__or_local_cur
 SYCL_CONTAINS:MPI_Gatherv(__or_owned_next.data()
 SYCL_CONTAINS:// No host post-use for prev; skip full resident halo direct-reader materialization.
 SYCL_CONTAINS:dacpp::mpi::map_2d_global_with_offset(static_cast<int64_t>(__or_idx), ctx.__or_output_cols, __or_followup_reader_cols_cur, 1, 1)
-SYCL_CONTAINS:__or_local_next[static_cast<std::size_t>(__or_boundary_target_local)] = static_cast<double>(0)
+SYCL_CONTAINS:__or_local_cur[static_cast<std::size_t>(__or_boundary_target_local)] = static_cast<double>(0)
 SYCL_CONTAINS:dacpp::mpi::ProfileSegment::Materialize
 SYCL_CONTAINS:dacpp::mpi::reportSegmentedProfile("__dacpp_mpi_or_waveEqShell_waveEq_0_materialize"
 SYCL_NOT_CONTAINS:matCur[i][NY-1]=0
@@ -48,14 +56,14 @@ SYCL_NOT_CONTAINS:dacpp::mpi::ContiguousView1D<const double> view_prev{__or_dire
 SYCL_NOT_CONTAINS:apply_read_cache_transition_2d(__or_local_prev, __or_local_cur
 SYCL_NOT_CONTAINS:apply_followup_2d(__or_local_cur, __or_local_next
 SYCL_NOT_CONTAINS:exchange_halo_2d_rows(__or_local_cur, __or_local_next
+SYCL_NOT_CONTAINS:exchange_halo_2d_rows_inplace(__or_local_next
 SYCL_NOT_CONTAINS:MPI_Gatherv(ctx.__or_local_next.data()
 SYCL_NOT_CONTAINS:MPI_Gatherv(ctx.__or_local_prev.data()
 SYCL_NOT_CONTAINS:dacpp::mpi::operator_resident::owned_slice_2d_rows(ctx.__or_local_prev
 SYCL_NOT_CONTAINS:MPI_Gatherv(__or_owned_prev.data()
 SYCL_NOT_CONTAINS:dacpp::mpi::ContiguousView2D<const double> view_cur
-SYCL_NOT_CONTAINS:exchange_halo_2d_rows_temporal_inplace
-SYCL_NOT_CONTAINS:resident_halo_2d_row_layout_temporal
-SYCL_NOT_CONTAINS:scatter_window_2d_rows_temporal
+SYCL_NOT_CONTAINS:MPI_Scatterv(ctx.mpi_rank == 0 ? __or_initial_global_prev.data()
+SYCL_NOT_CONTAINS:dacpp::mpi::operator_resident::write_owned_slice_2d_rows(ctx.__or_local_prev, __or_initial_owned_prev
 SYCL_NOT_CONTAINS:MPI_Bcast(__or_materialized_next.data()
 SYCL_NOT_CONTAINS:void __dacpp_mpi_stencil_waveEqShell_waveEq_0
 SYCL_NOT_CONTAINS:AccessPattern

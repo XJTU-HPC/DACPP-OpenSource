@@ -472,42 +472,56 @@ Fallback:
 - If the direct-reader recurrence cannot be proven for multi-step execution,
   retain one-step resident halo and only apply role-rotation cleanup.
 
-Implementation Status (2026-05-21):
+Implementation Status (2026-05-22):
 
-- Changed files: `rewriter/lib/mpi/operator_resident/OperatorChainAnalysis.cpp`
+- Changed files: `rewriter/lib/mpi/operator_resident/OperatorChainAnalysis.cpp`,
+  `rewriter/lib/mpi/operator_resident/StencilWindowCodegen.cpp`,
   and `tests/waveEquation1.0/mpi_expect.txt`.
-- Accepted pattern: the existing P4.6 `StencilWindow2D` direct-reader resident
-  halo path remains accepted with `direct-reader=true`, read-cache offset
-  `(-1,-1)`, followup offset `(1,1)`, constant-local `cur`, scattered `prev`,
-  and pure resident buffer role rotation. Direct-reader temporal blocking is
-  not accepted yet.
-- Fallback conditions: `temporal-block=2` remains rejected for direct-reader
-  recurrence because the multi-step `prev/cur/next` recurrence proof is not yet
-  implemented. The one-step resident halo path is also retained for unproven
-  role rotation, mismatched window/followup/read-cache offsets, unreplayable
-  boundaries, host-visible state between steps, unsupported direct readers, or
-  uncertain final post-use.
-- Generated-code evidence: `waveEquation1.0` translation logs
-  `direct-reader=true`, `role-rotation=buffer-swap`, and
-  `temporal-block=2 rejected reason=direct-reader recurrence not enabled for
-  k=2`. Generated code keeps local resident vectors
-  `__or_local_prev`, `__or_local_cur`, and `__or_local_next`, rotates with
-  `ctx.__or_local_prev.swap(ctx.__or_local_cur)` and
-  `ctx.__or_local_cur.swap(ctx.__or_local_next)`, keeps the constant-local
-  `cur` initialization, and does not emit 2D temporal helpers. The 4-rank,
-  3-trial profile probe reports 2400 halo calls and 2400 kernel calls for 600
-  steps. The fixture still materializes `matCur` with a full post-use sync
-  because the source has a tensor member call; `matPrev` and `matNext` remain
-  post-use `none`.
+- Accepted pattern: P4.6 `StencilWindow2D` direct-reader resident halo temporal
+  blocking with static `k=2`, resident halo accepted, canonical 3x3 window,
+  followup offset `(1,1)`, direct-reader read-cache offset `(-1,-1)`,
+  `prev/cur/next` role rotation represented as pure resident buffer swaps,
+  canonical zero boundary-local replay after each inner substep, canonical
+  zero-based loop bound, no scalar readers, exactly one supported direct reader,
+  no unsupported writes outside the lowered OR path, and the current
+  DAC -> read-cache -> followup -> boundary statement order.
+- Fallback conditions: reject or retain the one-step path for noncanonical
+  window/followup/read-cache offsets, missing or extra direct readers, scalar
+  readers, unsupported direct-reader recurrence edges, unreplayable boundaries,
+  noncanonical loop bounds, host-visible state between substeps, unsupported
+  writes or aliasing outside the OR path, or runtime row partitions too narrow
+  for `k=2`. Narrow row partitions keep the runtime block size at 1.
+- Generated-code/log evidence: `waveEquation1.0` translation logs
+  `direct-reader=true read-cache-offset=(-1,-1) role-rotation=buffer-swap` and
+  `temporal-block=2 accepted direct-reader recurrence`. Generated code emits
+  `resident_halo_2d_row_layout_temporal`,
+  `scatter_window_2d_rows_temporal` for the widened direct-reader `prev`
+  state, `exchange_halo_2d_rows_temporal_inplace`, an inner
+  `for (__or_block_step...)` loop, current-substep `view_prev` and `view_cur`
+  offsets based on `__or_compute_row_begin`, and
+  `std::swap(__or_local_prev, __or_local_cur)` followed by
+  `std::swap(__or_local_cur, __or_local_next)` after each substep. Boundary
+  zero updates are replayed locally into the rotated current buffer. The fixture
+  still uses full `matCur` materialization because the source has
+  `matCur.print()`; no claim is made that full gather is removed for this
+  fixture.
 - Tests run: `cmake --build build --target translator -j8`;
   `bash clang/tools/translator/test_mpi.sh waveEquation1.0 MDP1.0`;
   `bash clang/tools/translator/test_mpi.sh stencil1.0 liuliang1.0 FOuLa1.0`;
   `bash clang/tools/translator/test_mpi.sh mpiLoopStencilResidentHalo1D mpiLoopStencilResidentHaloEmptyRank1D mpiLoopStencilRightBoundaryFullSync1D mpiLoopStencilCountGuard2D mpiLoopStencilOrderReject2D mpiLoopStencilScalarReject2D`;
-  and a 4-rank, 3-trial profile probe for `waveEquation1.0`, `MDP1.0`,
-  `stencil1.0`, `liuliang1.0`, and `FOuLa1.0`.
-- Remaining risk: the direct-reader temporal block is still deferred. Halo calls
-  therefore remain at one exchange per step for `waveEquation1.0` until the
-  multi-step recurrence and final post-use proof are implemented.
+  and a 4-rank, 3-trial profile probe in
+  `/Volumes/QUQ/working/mpi_tmp/profile_segments_next6_wave_done_probe` for
+  `waveEquation1.0`, `MDP1.0`, `stencil1.0`, `liuliang1.0`, and `FOuLa1.0`.
+- Profile result: `waveEquation1.0` status `ok`, wall median `0.968383 s`,
+  profile median `0.968777 s`, and halo median calls `1200` for 600 steps on
+  four ranks. Nearby retained paths stayed on contract: `stencil1.0` halo calls
+  `1200`, `MDP1.0` halo calls `1200`, `liuliang1.0` halo calls `4000`, and
+  `FOuLa1.0` halo calls `2400`.
+- Remaining risk: the proof is intentionally narrow and only covers the current
+  row-block direct-reader recurrence. It does not implement the future 2D
+  spatial block partition, does not generalize to arbitrary recurrence graphs,
+  and still performs full `matCur` materialization when host post-use is a tensor
+  member call such as `print()`.
 
 ### 7. `MDP1.0`
 
