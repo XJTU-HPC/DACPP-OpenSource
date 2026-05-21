@@ -24,6 +24,10 @@ std::string ctxScalarName(const ParamAccessPlan& param) {
     return "ctx." + scalarName(param);
 }
 
+std::string timeScalarName(const ParamAccessPlan& param) {
+    return "__or_time_scalar_" + param.calcParamName;
+}
+
 bool isIdentifierChar(char c) {
     return std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_';
 }
@@ -80,6 +84,26 @@ std::string loopLowerRowIndexExprForCodegen(
     return expr;
 }
 
+std::string loopLowerRowIndexExprForTimeLoopCodegen(
+    const ShellPartitionPlan& plan) {
+    std::string expr =
+        stripExprWhitespace(plan.loopLowerSelectiveMaterialize.rowIndexExpr);
+    for (const auto& param : plan.params) {
+        if (param.access == ParamAccessKind::ReplicatedScalar &&
+            !param.actualTensorName.empty()) {
+            expr = replaceIdentifier(expr, param.actualTensorName + "[0]",
+                                     timeScalarName(param));
+        }
+    }
+    for (const auto& param : plan.params) {
+        if (!param.actualTensorName.empty()) {
+            expr = replaceIdentifier(expr, param.actualTensorName,
+                                     paramVarName(param));
+        }
+    }
+    return expr;
+}
+
 bool selectiveMaterializeAppliesTo(const ShellPartitionPlan& plan,
                                    const ParamAccessPlan& param) {
     return plan.loopLowerSelectiveMaterialize.enabled &&
@@ -88,6 +112,11 @@ bool selectiveMaterializeAppliesTo(const ShellPartitionPlan& plan,
            !plan.loopLowerSelectiveMaterialize.rowIndexExpr.empty() &&
            plan.loopLowerSelectiveMaterialize.targetRow >= 0;
 }
+
+void emitMaterializeOutput(std::string& code,
+                           const ShellPartitionPlan& plan,
+                           const ParamAccessPlan& param,
+                           const std::string& localBufferName);
 
 void emitContextType(std::string& code,
                      const std::string& ctxName,
@@ -287,6 +316,154 @@ void emitRunKernel(std::string& code, const ShellPartitionPlan& plan) {
     code += "    }\n";
 }
 
+void emitDeviceTimeLoopRunFunction(std::string& code,
+                                   const std::string& ctxName,
+                                   const std::string& runLoopName,
+                                   const ShellPartitionPlan& plan) {
+    if (!plan.loopLowerDeviceTimeLoop.enabled) {
+        return;
+    }
+    const ParamAccessPlan* output = nullptr;
+    const ParamAccessPlan* scalar = nullptr;
+    for (const auto& param : plan.params) {
+        if (param.writes && param.access == ParamAccessKind::OutputDirect) {
+            output = &param;
+        }
+        if (param.access == ParamAccessKind::ReplicatedScalar) {
+            scalar = &param;
+        }
+    }
+    if (!output || !scalar) {
+        return;
+    }
+    code += "bool " + runLoopName + "(" + ctxName + "& ctx, " +
+            wrapperSignature(plan) + ") {\n";
+    emitScalarRefreshes(code, plan, true);
+    code += "    // P4.5 device time loop: each work-item replays scalar evolution locally and materializes only the selected host row.\n";
+    code += "    const auto __or_selective_target_row = static_cast<int64_t>(" +
+            std::to_string(plan.loopLowerSelectiveMaterialize.targetRow) +
+            ");\n";
+    code += "    bool __or_selected_row_reached = false;\n";
+    code += "    {\n";
+    code += "        " + elemType(plan, *scalar) + " " +
+            timeScalarName(*scalar) + " = " + ctxScalarName(*scalar) +
+            ";\n";
+    code += "        while (" +
+            plan.loopLowerDeviceTimeLoop.conditionExpr + ") {\n";
+    code += "            const int64_t __or_selective_row = static_cast<int64_t>(" +
+            loopLowerRowIndexExprForTimeLoopCodegen(plan) + ");\n";
+    code += "            if (__or_selective_row == __or_selective_target_row) {\n";
+    code += "                __or_selected_row_reached = true;\n";
+    code += "                break;\n";
+    code += "            }\n";
+    code += "            " + plan.loopLowerDeviceTimeLoop.updateStmt + "\n";
+    code += "        }\n";
+    code += "    }\n";
+    code += "    auto dacpp_profile_kernel_start = dacpp::mpi::profileSegmentStart();\n";
+    code += "    if (ctx.__or_local_item_count > 0) {\n";
+    code += "        {\n";
+    for (const auto& param : plan.params) {
+        if (param.access == ParamAccessKind::ReplicatedScalar) {
+            continue;
+        }
+        const std::string type = elemType(plan, param);
+        const std::string name = param.calcParamName;
+        code += "            sycl::buffer<" + type + ", 1> __or_buffer_" +
+                name + "(" + ctxLocalName(param) +
+                ".data(), sycl::range<1>(" + ctxLocalName(param) +
+                ".size()));\n";
+    }
+    code += "            ctx.q.submit([&](sycl::handler& h) {\n";
+    for (const auto& param : plan.params) {
+        if (param.access == ParamAccessKind::ReplicatedScalar) {
+            continue;
+        }
+        const std::string mode =
+            param.reads && !param.writes ? "sycl::access::mode::read"
+                                         : "sycl::access::mode::read_write";
+        code += "                auto __or_acc_" + param.calcParamName +
+                " = __or_buffer_" + param.calcParamName +
+                ".get_access<" + mode + ">(h);\n";
+    }
+    code += "                h.parallel_for(sycl::range<1>(static_cast<std::size_t>(ctx.__or_local_item_count)), [=](sycl::id<1> idx) {\n";
+    code += "                    const int item_linear = static_cast<int>(idx[0]);\n";
+    code += "                    const int64_t __or_selective_target = __or_selective_target_row;\n";
+    code += "                    " + elemType(plan, *scalar) + " " +
+            timeScalarName(*scalar) + " = " + ctxScalarName(*scalar) +
+            ";\n";
+    code += "                    " + elemType(plan, *output) +
+            " __or_selected_value = " + elemType(plan, *output) + "{};\n";
+    code += "                    while (" +
+            plan.loopLowerDeviceTimeLoop.conditionExpr + ") {\n";
+    code += "                        const int64_t __or_selective_row = static_cast<int64_t>(" +
+            loopLowerRowIndexExprForTimeLoopCodegen(plan) + ");\n";
+    for (const auto& param : plan.params) {
+        if (param.access == ParamAccessKind::ReplicatedScalar) {
+            code += "                        " + elemType(plan, param) +
+                    " __or_scalar_storage_" + param.calcParamName + "[1] = {" +
+                    timeScalarName(param) + "};\n";
+            code += "                        dacpp::mpi::ContiguousView1D<" +
+                    elemType(plan, param) + "> view_" + param.calcParamName +
+                    "{__or_scalar_storage_" + param.calcParamName +
+                    ", 0};\n";
+            continue;
+        }
+        code += "                        auto* __or_data_" +
+                param.calcParamName + " = __or_acc_" + param.calcParamName +
+                ".template get_multi_ptr<sycl::access::decorated::no>().get();\n";
+        std::string offset = "item_linear";
+        if (param.access == ParamAccessKind::ReplicatedScalar ||
+            param.access == ParamAccessKind::ReplicatedFullTensor) {
+            offset = "0";
+        }
+        code += "                        " + viewType(plan, param) +
+                " view_" + param.calcParamName + "{__or_data_" +
+                param.calcParamName + ", " + offset + "};\n";
+    }
+    code += "                        " + plan.exprNode.calc->getName() +
+            "_mpi_local(";
+    for (int paramIdx = 0; paramIdx < plan.exprNode.calc->getNumParams();
+         ++paramIdx) {
+        if (paramIdx != 0) {
+            code += ", ";
+        }
+        code += "view_" + plan.exprNode.calc->getParam(paramIdx)->getName();
+    }
+    code += ");\n";
+    code += "                        if (__or_selective_row == __or_selective_target) {\n";
+    code += "                            auto* __or_output_data = __or_acc_" +
+            output->calcParamName +
+            ".template get_multi_ptr<sycl::access::decorated::no>().get();\n";
+    code += "                            __or_selected_value = __or_output_data[item_linear];\n";
+    code += "                        }\n";
+    code += "                        " + plan.loopLowerDeviceTimeLoop.updateStmt +
+            "\n";
+    code += "                    }\n";
+    code += "                    if (__or_selected_row_reached) {\n";
+    code += "                        auto* __or_output_data = __or_acc_" +
+            output->calcParamName +
+            ".template get_multi_ptr<sycl::access::decorated::no>().get();\n";
+    code += "                        __or_output_data[item_linear] = __or_selected_value;\n";
+    code += "                    }\n";
+    code += "                });\n";
+    code += "            });\n";
+    code += "            ctx.q.wait();\n";
+    code += "        }\n";
+    code += "    }\n";
+    code += "    dacpp::mpi::recordProfileSegment(ctx.__or_profile, dacpp::mpi::ProfileSegment::Kernel, dacpp_profile_kernel_start);\n";
+    code += "    auto& __or_resident_out_" + output->calcParamName +
+            " = dacpp::mpi::operator_resident::ensure_resident<" +
+            elemType(plan, *output) + ">(" + paramVarName(*output) + ", " +
+            ctxLocalName(*output) + ".size());\n";
+    code += "    __or_resident_out_" + output->calcParamName + " = " +
+            ctxLocalName(*output) + ";\n";
+    code += "    if (__or_selected_row_reached) {\n";
+    emitMaterializeOutput(code, plan, *output, ctxLocalName(*output));
+    code += "    }\n";
+    code += "    return __or_selected_row_reached;\n";
+    code += "}\n";
+}
+
 void emitMaterializeOutput(std::string& code,
                            const ShellPartitionPlan& plan,
                            const ParamAccessPlan& param,
@@ -473,12 +650,15 @@ std::string buildLoopLoweredDirect1DFamilyCode(
         operatorResidentInitFunctionName(shell, calc, exprIndex);
     const std::string runName =
         operatorResidentRunFunctionName(shell, calc, exprIndex);
+    const std::string runLoopName =
+        operatorResidentRunLoopFunctionName(shell, calc, exprIndex);
     const std::string materializeName =
         operatorResidentMaterializeFunctionName(shell, calc, exprIndex);
     std::string code;
     emitContextType(code, ctxName, plan);
     emitInitFunction(code, ctxName, initName, plan);
     emitRunFunction(code, ctxName, runName, plan);
+    emitDeviceTimeLoopRunFunction(code, ctxName, runLoopName, plan);
     emitMaterializeFunction(code, ctxName, materializeName, plan);
     code += "void " + baseName + "(" + wrapperSignature(plan) + ") {\n";
     code += "    " + ctxName + " ctx;\n";

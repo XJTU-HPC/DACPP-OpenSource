@@ -314,6 +314,41 @@ Fallback:
   dynamic state, unsupported functions, cross-item dependencies, output
   writeback for many host-visible rows, or any uncertain post-loop use.
 
+Implementation Status (2026-05-21):
+
+- Changed files: `rewriter/include/mpi/operator_resident/OperatorResidentPlan.h`,
+  `rewriter/include/mpi/shared/LoopLoweredRewrite.h`,
+  `rewriter/lib/Rewriter_MPI.cpp`,
+  `rewriter/lib/mpi/operator_resident/LoopLoweredDirectCodegen.cpp`,
+  `rewriter/lib/mpi/operator_resident/OperatorChainAnalysis.cpp`,
+  `rewriter/lib/mpi/shared/LoopLoweredRewrite.cpp`, and
+  `tests/decay1.0/mpi_expect.txt`.
+- Accepted pattern: generic P4.5 loop-lowered `Contiguous1D`
+  scalar-refresh shape where each local item can replay the time loop from
+  local input plus replicated scalar evolution, with one selective-row
+  host materialization target after the loop.
+- Fallback conditions: scalar refresh depending on host dynamic state,
+  unsupported scalar update/function shape, cross-item dependency, nonlocal
+  output writeback, many host-visible output rows, unsafe tensor use in the row
+  expression, or uncertain post-loop host use keeps the existing host-side
+  loop-lowered path.
+- Generated-code evidence: profile probe translation log contains
+  `scalar-refresh=local-replicated device-time-loop=accepted reason=scalar-refresh independent items with selective-row materialization`;
+  generated code contains `__dacpp_mpi_or_DECAY_decay_0_run_loop(...)`, the
+  comment `P4.5 device time loop`, and a guarded selected-row materialization
+  call instead of one SYCL launch per source time step.
+- Tests run: `cmake --build build --target translator -j8`;
+  `bash clang/tools/translator/test_mpi.sh decay1.0 stencil1.0`;
+  nearby regressions through
+  `bash clang/tools/translator/test_mpi.sh waveEquation1.0 MDP1.0 FOuLa1.0 liuliang1.0`;
+  additional loop/stencil fixtures through
+  `bash clang/tools/translator/test_mpi.sh mpiLoopStencilCountGuard2D mpiLoopStencilResidentHalo1D mpiLoopStencilResidentHaloEmptyRank1D mpiLoopStencilOrderReject2D mpiLoopStencilScalarReject2D`;
+  and the 4-rank one-trial profile probe with `decay1.0` status `ok`.
+- Remaining risk: the device-time-loop recognizer is intentionally narrow and
+  currently covers the proven single replicated-scalar refresh shape. More
+  general scalar recurrences, function-heavy updates, or multiple host-visible
+  rows retain the existing per-step host loop.
+
 ### 5. `stencil1.0`
 
 Current shape:
@@ -355,6 +390,47 @@ Fallback:
   window/followup offsets differ from the proven contract, a direct reader is
   present but unsupported by the block, or the loop has host-visible state
   between steps.
+
+Implementation Status (2026-05-21):
+
+- Changed files: `dpcppLib/include/mpi/operator_resident/OperatorResidentRuntime.h`,
+  `rewriter/include/Rewriter_MPI_OperatorResident.h`,
+  `rewriter/include/mpi/operator_resident/OperatorResidentPlan.h`,
+  `rewriter/lib/mpi/legacy_access_pattern/PatternInit.cpp`,
+  `rewriter/lib/mpi/operator_resident/OperatorChainAnalysis.cpp`,
+  `rewriter/lib/mpi/operator_resident/OperatorResidentCodegen.cpp`,
+  `rewriter/lib/mpi/operator_resident/StencilWindowCodegen.cpp`,
+  `tests/stencil1.0/mpi_expect.txt`, and
+  `tests/waveEquation1.0/mpi_expect.txt`.
+- Accepted pattern: conservative `StencilWindow2D` resident-halo temporal
+  blocking with static `k=2`, canonical 3x3 window, matching followup offset
+  `(1,1)`, boundary-local replayable updates, no unsupported direct reader,
+  and the proven resident-halo loop structure.
+- Fallback conditions: unsupported or noncanonical window/followup offset,
+  boundary conditions that cannot be locally replayed for two steps,
+  direct-reader recurrence, loop-visible host state, unsupported reader access,
+  or too-narrow runtime row ownership for a two-row halo uses the existing
+  one-step resident-halo path.
+- Generated-code evidence: `stencil1.0` profile probe translation log reports
+  `temporal-block=2 accepted`; generated code contains
+  `__or_runtime_temporal_block_size`,
+  `exchange_halo_2d_rows_temporal_inplace`, an inner
+  `for (__or_block_step...)` loop, and `owned_slice_2d_rows_temporal`. The
+  same probe reports 1200 halo calls for 600 steps on four ranks, while
+  `waveEquation1.0` logs `temporal-block=2 rejected reason=direct-reader
+  recurrence not enabled for k=2` and keeps 2400 halo calls.
+- Tests run: `cmake --build build --target translator -j8`;
+  `bash clang/tools/translator/test_mpi.sh decay1.0 stencil1.0`;
+  nearby regressions through
+  `bash clang/tools/translator/test_mpi.sh waveEquation1.0 MDP1.0 FOuLa1.0 liuliang1.0`;
+  additional loop/stencil fixtures through
+  `bash clang/tools/translator/test_mpi.sh mpiLoopStencilCountGuard2D mpiLoopStencilResidentHalo1D mpiLoopStencilResidentHaloEmptyRank1D mpiLoopStencilOrderReject2D mpiLoopStencilScalarReject2D`;
+  and the 4-rank one-trial profile probe with `stencil1.0`,
+  `waveEquation1.0`, and `MDP1.0` status `ok`.
+- Remaining risk: temporal blocking is limited to canonical no-direct-reader
+  2D row-halo stencils. Small or highly partitioned grids can dynamically use
+  block size 1 to preserve correctness, and wave-style direct-reader temporal
+  blocking is left for a separate proof.
 
 ### 6. `waveEquation1.0`
 

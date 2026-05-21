@@ -47,6 +47,12 @@ std::string operatorResidentRunFunctionName(Shell* shell,
     return operatorResidentWrapperName(shell, calc, exprIndex) + "_run";
 }
 
+std::string operatorResidentRunLoopFunctionName(Shell* shell,
+                                                Calc* calc,
+                                                int exprIndex) {
+    return operatorResidentWrapperName(shell, calc, exprIndex) + "_run_loop";
+}
+
 std::string operatorResidentMaterializeFunctionName(Shell* shell,
                                                     Calc* calc,
                                                     int exprIndex) {

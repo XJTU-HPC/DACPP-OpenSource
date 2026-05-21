@@ -107,6 +107,10 @@ struct OrLoopLowerPlan {
         std::string boundaryConstantValue;
         int leftHalo = 0;
         int rightHalo = 0;
+        int temporalBlockSize = 0;
+        std::string temporalLoopLimitExpr;
+        bool temporalLoopLimitInclusive = false;
+        std::string temporalBlockRejectReason;
         std::string rejectReason;
     } stencilResidentHalo;
     struct FixedBlockPhaseExchangeMetadata {
@@ -164,8 +168,17 @@ struct LoopLoweredSelectiveMaterializePlan {
     bool enabled = false;
     std::string outputTensorName;
     std::string hostTensorName;
+    std::string hostTensorType;
     std::string rowIndexExpr;
     int64_t targetRow = -1;
+    std::string reason;
+};
+
+struct LoopLoweredDeviceTimeLoopPlan {
+    bool enabled = false;
+    std::string scalarTensorName;
+    std::string conditionExpr;
+    std::string updateStmt;
     std::string reason;
 };
 
@@ -233,6 +246,7 @@ struct ShellPartitionPlan {
     bool loopLowerReplicatedScalarLocalRefresh = false;
     std::string loopLowerScalarRefreshReason;
     LoopLoweredSelectiveMaterializePlan loopLowerSelectiveMaterialize;
+    LoopLoweredDeviceTimeLoopPlan loopLowerDeviceTimeLoop;
     OrLoopLowerPlan orLoopLower;
 };
 

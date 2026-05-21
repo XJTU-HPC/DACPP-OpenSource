@@ -218,6 +218,9 @@ std::string buildPrelude(DacppFile* dacppFile) {
     if (seenHeaders.insert("<cstdio>").second) {
         code += "#include <cstdio>\n";
     }
+    if (seenHeaders.insert("<utility>").second) {
+        code += "#include <utility>\n";
+    }
     code += "\n";
     code += R"(static inline bool __dacpp_mpi_is_root_rank() {
     int __dacpp_mpi_initialized = 0;

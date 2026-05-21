@@ -51,6 +51,9 @@ std::string operatorResidentInitFunctionName(Shell* shell,
 std::string operatorResidentRunFunctionName(Shell* shell,
                                             Calc* calc,
                                             int exprIndex);
+std::string operatorResidentRunLoopFunctionName(Shell* shell,
+                                                Calc* calc,
+                                                int exprIndex);
 std::string operatorResidentMaterializeFunctionName(Shell* shell,
                                                     Calc* calc,
                                                     int exprIndex);

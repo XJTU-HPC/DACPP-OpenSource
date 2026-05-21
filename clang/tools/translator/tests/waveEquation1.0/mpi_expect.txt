@@ -20,7 +20,7 @@ SYCL_CONTAINS:dacpp::mpi::operator_resident::ResidentHalo2DRowLayout __or_halo_l
 SYCL_CONTAINS:Constant-initialized resident halo reader cur is filled locally
 SYCL_CONTAINS:MPI_Scatterv(ctx.mpi_rank == 0 ? __or_initial_global_prev.data()
 SYCL_CONTAINS:dacpp::mpi::operator_resident::write_owned_slice_2d_rows(ctx.__or_local_prev, __or_initial_owned_prev
-SYCL_CONTAINS:dacpp::mpi::ResidentHaloView2D<const double> view_cur{__or_reader_data, local_row * static_cast<int>(__or_input_cols) + local_col
+SYCL_CONTAINS:dacpp::mpi::ResidentHaloView2D<const double> view_cur{__or_reader_data, static_cast<int>((local_row + 0) * static_cast<int>(__or_input_cols) + local_col)
 SYCL_CONTAINS:dacpp::mpi::ContiguousView1D<const double> view_prev{__or_direct_reader_data, static_cast<int>((local_row + __or_writer_row_offset) * static_cast<int>(__or_input_cols) + local_col + __or_writer_col_offset)}
 SYCL_CONTAINS:dacpp::mpi::ContiguousView1D<double> view_next{__or_writer_data, static_cast<int>((local_row + __or_writer_row_offset) * static_cast<int>(__or_input_cols) + local_col + __or_writer_col_offset)}
 SYCL_CONTAINS:dacpp::mpi::operator_resident::exchange_halo_2d_rows_inplace(__or_local_next

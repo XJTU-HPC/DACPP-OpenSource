@@ -1216,6 +1216,21 @@ bool loopBodyHasOnlyUnguardedTopLevelScalarWrites(
     return true;
 }
 
+const ParamAccessPlan* singleReplicatedScalarParam(
+    const ShellPartitionPlan& plan) {
+    const ParamAccessPlan* result = nullptr;
+    for (const auto& param : plan.params) {
+        if (param.access != ParamAccessKind::ReplicatedScalar) {
+            continue;
+        }
+        if (result) {
+            return nullptr;
+        }
+        result = &param;
+    }
+    return result;
+}
+
 const clang::CompoundStmt* compoundBodyForLoop(const clang::Stmt* loop) {
     if (const auto* forStmt = llvm::dyn_cast_or_null<clang::ForStmt>(loop)) {
         return llvm::dyn_cast_or_null<clang::CompoundStmt>(forStmt->getBody());
@@ -1225,6 +1240,68 @@ const clang::CompoundStmt* compoundBodyForLoop(const clang::Stmt* loop) {
         return llvm::dyn_cast_or_null<clang::CompoundStmt>(whileStmt->getBody());
     }
     return llvm::dyn_cast_or_null<clang::CompoundStmt>(loop);
+}
+
+const clang::Expr* loopConditionExpr(const clang::Stmt* loop) {
+    if (const auto* forStmt = llvm::dyn_cast_or_null<clang::ForStmt>(loop)) {
+        return forStmt->getCond();
+    }
+    if (const auto* whileStmt =
+            llvm::dyn_cast_or_null<clang::WhileStmt>(loop)) {
+        return whileStmt->getCond();
+    }
+    return nullptr;
+}
+
+std::string rewriteScalarTensorExprForLocal(std::string text,
+                                            const std::string& tensorName,
+                                            const std::string& localName) {
+    if (tensorName.empty() || localName.empty()) {
+        return text;
+    }
+    text = compactExprText(text);
+    auto replaceAll = [](std::string& target,
+                         const std::string& from,
+                         const std::string& to) {
+        if (from.empty()) {
+            return;
+        }
+        std::size_t pos = 0;
+        while ((pos = target.find(from, pos)) != std::string::npos) {
+            target.replace(pos, from.size(), to);
+            pos += to.size();
+        }
+    };
+    replaceAll(text, tensorName + "[0]", localName);
+    replaceAll(text, tensorName, localName);
+    return text;
+}
+
+bool isTopLevelScalarWriteStmt(const clang::Stmt* stmt,
+                               const std::string& scalarTensorName,
+                               std::string& sourceText,
+                               clang::ASTContext* context) {
+    sourceText.clear();
+    if (!stmt || scalarTensorName.empty() || !context) {
+        return false;
+    }
+    std::set<std::string> names{scalarTensorName};
+    if (!stmtWritesAnyNamedTensorAtTopLevel(stmt, names)) {
+        return false;
+    }
+    sourceText = clang::Lexer::getSourceText(
+                     clang::CharSourceRange::getTokenRange(
+                         stmt->getSourceRange()),
+                     context->getSourceManager(), context->getLangOpts())
+                     .str();
+    sourceText = trim(sourceText);
+    if (sourceText.empty()) {
+        return false;
+    }
+    if (!sourceText.empty() && sourceText.back() != ';') {
+        sourceText += ";";
+    }
+    return true;
 }
 
 const ParamAccessPlan* loopLowerOutputDirectParam(
@@ -1308,9 +1385,11 @@ bool findLoopOutputWriteback(const ShellPartitionPlan& plan,
                              const clang::CompoundStmt* loopBody,
                              clang::ASTContext* context,
                              std::string& hostTensorName,
+                             std::string& hostTensorType,
                              std::string& rowIndexExpr,
                              std::string& reason) {
     hostTensorName.clear();
+    hostTensorType.clear();
     rowIndexExpr.clear();
     const ParamAccessPlan* output = loopLowerOutputDirectParam(plan);
     if (!output) {
@@ -1382,6 +1461,8 @@ bool findLoopOutputWriteback(const ShellPartitionPlan& plan,
             reason = "writeback row expression unavailable";
             return false;
         }
+        hostTensorType =
+            lhs ? lhs->IgnoreParenImpCasts()->getType().getAsString() : "";
         class RowExprDeclVisitor
             : public clang::RecursiveASTVisitor<RowExprDeclVisitor> {
         public:
@@ -1478,6 +1559,173 @@ bool findLoopOutputWriteback(const ShellPartitionPlan& plan,
     }
     reason = "loop output row writeback not found";
     return false;
+}
+
+bool matchLoopOutputWritebackStmt(const ShellPartitionPlan& plan,
+                                  const clang::Stmt* child,
+                                  clang::ASTContext* context,
+                                  std::string& hostTensorName,
+                                  std::string& hostTensorType,
+                                  std::string& rowIndexExpr,
+                                  std::string& reason) {
+    hostTensorName.clear();
+    hostTensorType.clear();
+    rowIndexExpr.clear();
+    const ParamAccessPlan* output = loopLowerOutputDirectParam(plan);
+    if (!output) {
+        reason = "requires exactly one output direct tensor";
+        return false;
+    }
+    if (!child || !context) {
+        reason = "loop body statement unavailable";
+        return false;
+    }
+
+    const clang::Stmt* candidateStmt = child;
+    if (const auto* exprStmt = llvm::dyn_cast<clang::Expr>(candidateStmt)) {
+        if (const clang::Expr* unwrapped = unwrapExtentExpr(exprStmt)) {
+            candidateStmt = unwrapped;
+        }
+    }
+    const clang::Expr* lhs = nullptr;
+    const clang::Expr* rhs = nullptr;
+    if (const auto* binary =
+            llvm::dyn_cast<clang::BinaryOperator>(candidateStmt)) {
+        if (!binary->isAssignmentOp()) {
+            reason = "statement is not assignment";
+            return false;
+        }
+        lhs = binary->getLHS();
+        rhs = binary->getRHS();
+    } else if (const auto* opCall =
+                   llvm::dyn_cast<clang::CXXOperatorCallExpr>(
+                       candidateStmt)) {
+        if (!opCall->isAssignmentOp() || opCall->getNumArgs() < 2) {
+            reason = "statement is not assignment";
+            return false;
+        }
+        lhs = opCall->getArg(0);
+        rhs = opCall->getArg(1);
+    } else {
+        reason = "statement is not assignment";
+        return false;
+    }
+
+    if (actualTensorKeyForArg(rhs, context).name !=
+        output->actualTensorName) {
+        reason = "assignment rhs is not output tensor";
+        return false;
+    }
+    const clang::Expr* indexExpr = nullptr;
+    std::string candidateHost;
+    if (!decomposeTopLevelSubscript(lhs, candidateHost, indexExpr)) {
+        reason = "writeback lhs is not a tensor row subscript";
+        return false;
+    }
+    if (candidateHost == output->actualTensorName) {
+        reason = "writeback host aliases output tensor";
+        return false;
+    }
+    const std::string indexText = exprSource(indexExpr, context);
+    if (candidateHost.empty() || indexText.empty()) {
+        reason = "writeback row expression unavailable";
+        return false;
+    }
+    hostTensorType =
+        lhs ? lhs->IgnoreParenImpCasts()->getType().getAsString() : "";
+    class RowExprDeclVisitor
+        : public clang::RecursiveASTVisitor<RowExprDeclVisitor> {
+    public:
+        RowExprDeclVisitor(const ShellPartitionPlan& plan,
+                           clang::ASTContext* context)
+            : Plan(plan), Context(context) {}
+
+        std::set<std::string> AllowedNames;
+        bool Valid = true;
+        std::string RejectReason;
+
+        bool VisitCXXOperatorCallExpr(clang::CXXOperatorCallExpr* call) {
+            if (!call || call->getOperator() != clang::OO_Subscript ||
+                call->getNumArgs() < 2) {
+                return true;
+            }
+            const std::string base =
+                actualTensorNameForArg(call->getArg(0), nullptr);
+            if (base.empty()) {
+                return true;
+            }
+            const ParamAccessPlan* param =
+                findParamByActualTensorName(Plan, base);
+            if (!param) {
+                return true;
+            }
+            int64_t index = -1;
+            if (param->access == ParamAccessKind::ReplicatedScalar &&
+                evaluateInt64Expr(call->getArg(1), Context, index) &&
+                index == 0) {
+                return true;
+            }
+            Valid = false;
+            RejectReason =
+                "writeback row uses non-replicated tensor subscript";
+            return true;
+        }
+
+        bool VisitDeclRefExpr(clang::DeclRefExpr* dre) {
+            if (!dre || !dre->getDecl()) {
+                return true;
+            }
+            const std::string name = dre->getDecl()->getNameAsString();
+            if (AllowedNames.count(name) != 0) {
+                return true;
+            }
+            if (const auto* varDecl =
+                    llvm::dyn_cast<clang::VarDecl>(dre->getDecl())) {
+                if (varDecl->isFileVarDecl()) {
+                    return true;
+                }
+            }
+            if (llvm::isa<clang::FunctionDecl>(dre->getDecl())) {
+                return true;
+            }
+            Valid = false;
+            RejectReason = "writeback row references non-shell local " + name;
+            return true;
+        }
+
+        bool VisitCallExpr(clang::CallExpr* call) {
+            if (!call) {
+                return true;
+            }
+            if (const auto* opCall =
+                    llvm::dyn_cast<clang::CXXOperatorCallExpr>(call)) {
+                if (opCall->getOperator() == clang::OO_Subscript) {
+                    return true;
+                }
+            }
+            Valid = false;
+            RejectReason = "writeback row uses function call";
+            return true;
+        }
+
+        const ShellPartitionPlan& Plan;
+        clang::ASTContext* Context = nullptr;
+    };
+    RowExprDeclVisitor declVisitor(plan, context);
+    for (const auto& param : plan.params) {
+        if (!param.actualTensorName.empty()) {
+            declVisitor.AllowedNames.insert(param.actualTensorName);
+        }
+    }
+    declVisitor.TraverseStmt(const_cast<clang::Expr*>(indexExpr));
+    if (!declVisitor.Valid) {
+        reason = declVisitor.RejectReason;
+        return false;
+    }
+    hostTensorName = candidateHost;
+    rowIndexExpr = indexText;
+    reason = "matched loop row writeback";
+    return true;
 }
 
 class FixedHostTensorRowUseVisitor
@@ -1645,10 +1893,11 @@ LoopLoweredSelectiveMaterializePlan analyzeLoopLowerSelectiveMaterialize(
     }
     const clang::CompoundStmt* loopBody = compoundBodyForLoop(outerLoop);
     std::string hostTensorName;
+    std::string hostTensorType;
     std::string rowIndexExpr;
     std::string writebackReason;
     if (!findLoopOutputWriteback(plan, loopBody, dacppFile->getContext(),
-                                 hostTensorName, rowIndexExpr,
+                                 hostTensorName, hostTensorType, rowIndexExpr,
                                  writebackReason)) {
         result.reason = writebackReason;
         return result;
@@ -1703,9 +1952,131 @@ LoopLoweredSelectiveMaterializePlan analyzeLoopLowerSelectiveMaterialize(
     result.enabled = true;
     result.outputTensorName = output->actualTensorName;
     result.hostTensorName = hostTensorName;
+    result.hostTensorType = hostTensorType;
     result.rowIndexExpr = rowIndexExpr;
     result.targetRow = *rows.begin();
     result.reason = "loop row writeback and fixed post-loop row use";
+    return result;
+}
+
+LoopLoweredDeviceTimeLoopPlan analyzeLoopLowerDeviceTimeLoop(
+    DacppFile* dacppFile,
+    const ShellPartitionPlan& plan,
+    const clang::Stmt* outerLoop) {
+    LoopLoweredDeviceTimeLoopPlan result;
+    if (!dacppFile || !dacppFile->getContext() || !outerLoop ||
+        !plan.exprNode.dacExpr) {
+        result.reason = "analysis context unavailable";
+        return result;
+    }
+    if (!plan.loopLowerCandidate) {
+        result.reason = "loop-lowered direct candidate required";
+        return result;
+    }
+    if (plan.signature.layout != LocalLayoutKind::Contiguous1D) {
+        result.reason = "requires Contiguous1D layout";
+        return result;
+    }
+    if (!plan.loopLowerReplicatedScalarLocalRefresh) {
+        result.reason = plan.loopLowerScalarRefreshReason.empty()
+                            ? "requires local replicated scalar refresh"
+                            : plan.loopLowerScalarRefreshReason;
+        return result;
+    }
+    if (!plan.loopLowerSelectiveMaterialize.enabled) {
+        result.reason =
+            plan.loopLowerSelectiveMaterialize.reason.empty()
+                ? "requires selective-row materialization proof"
+                : plan.loopLowerSelectiveMaterialize.reason;
+        return result;
+    }
+    const ParamAccessPlan* scalar = singleReplicatedScalarParam(plan);
+    if (!scalar || scalar->actualTensorName.empty()) {
+        result.reason = "requires exactly one replicated scalar";
+        return result;
+    }
+    const clang::CompoundStmt* loopBody = compoundBodyForLoop(outerLoop);
+    if (!loopBody) {
+        result.reason = "loop body is not compound";
+        return result;
+    }
+    const clang::Expr* cond = loopConditionExpr(outerLoop);
+    const std::string condText = exprSource(cond, dacppFile->getContext());
+    if (condText.empty()) {
+        result.reason = "loop condition unavailable";
+        return result;
+    }
+
+    const auto& sourceManager = dacppFile->getContext()->getSourceManager();
+    bool sawDac = false;
+    bool sawWriteback = false;
+    bool sawScalarUpdate = false;
+    std::string scalarUpdate;
+    for (const clang::Stmt* child : loopBody->body()) {
+        if (!child) {
+            continue;
+        }
+        if (sourceRangeContains(sourceManager, child->getSourceRange(),
+                                plan.exprNode.dacExpr->getSourceRange())) {
+            if (sawDac) {
+                result.reason = "multiple DAC statements in loop body";
+                return result;
+            }
+            sawDac = true;
+            continue;
+        }
+        std::string hostTensorName;
+        std::string hostTensorType;
+        std::string rowIndexExpr;
+        std::string writebackReason;
+        if (sawDac &&
+            matchLoopOutputWritebackStmt(plan, child, dacppFile->getContext(),
+                                         hostTensorName, hostTensorType,
+                                         rowIndexExpr,
+                                         writebackReason) &&
+            hostTensorName ==
+                plan.loopLowerSelectiveMaterialize.hostTensorName &&
+            compactExprText(rowIndexExpr) ==
+                compactExprText(
+                    plan.loopLowerSelectiveMaterialize.rowIndexExpr)) {
+            if (sawWriteback) {
+                result.reason = "multiple output writebacks in loop body";
+                return result;
+            }
+            sawWriteback = true;
+            continue;
+        }
+        std::string updateText;
+        if (isTopLevelScalarWriteStmt(child, scalar->actualTensorName,
+                                      updateText, dacppFile->getContext())) {
+            if (!sawWriteback) {
+                result.reason = "scalar update appears before writeback";
+                return result;
+            }
+            if (sawScalarUpdate) {
+                result.reason = "multiple replicated scalar updates";
+                return result;
+            }
+            scalarUpdate = updateText;
+            sawScalarUpdate = true;
+            continue;
+        }
+        result.reason = "unsupported statement inside scalar-refresh loop";
+        return result;
+    }
+    if (!sawDac || !sawWriteback || !sawScalarUpdate) {
+        result.reason = "requires DAC, output writeback, and scalar update";
+        return result;
+    }
+    const std::string scalarLocal = "__or_time_scalar_" + scalar->calcParamName;
+    result.enabled = true;
+    result.scalarTensorName = scalar->actualTensorName;
+    result.conditionExpr = rewriteScalarTensorExprForLocal(
+        condText, scalar->actualTensorName, scalarLocal);
+    result.updateStmt = rewriteScalarTensorExprForLocal(
+        scalarUpdate, scalar->actualTensorName, scalarLocal);
+    result.reason =
+        "scalar-refresh independent items with selective-row materialization";
     return result;
 }
 
@@ -2471,6 +2842,11 @@ void populateStencilLoopLoweringContract(
         contract.guards.push_back(
             {LoweringContractGuardDisposition::RuntimeAbort,
              "resident-halo runtime MPI count narrowing and overflow guards"});
+        if (plan.orLoopLower.stencilResidentHalo.temporalBlockSize > 1) {
+            contract.guards.push_back(
+                {LoweringContractGuardDisposition::RuntimeAbort,
+                 "temporal-blocked resident halo runtime block tail and widened halo guards"});
+        }
         if (directReader) {
             contract.guards.push_back(
                 {LoweringContractGuardDisposition::RuntimeAbort,
@@ -3331,6 +3707,100 @@ std::string stencilResidentHaloRejectReason(
 
     metadata.enabled = true;
     return "";
+}
+
+std::string loopIterationLimitExpr(const clang::Stmt* loop,
+                                   clang::ASTContext* context,
+                                   bool& inclusive) {
+    inclusive = false;
+    const clang::ForStmt* forStmt =
+        llvm::dyn_cast_or_null<clang::ForStmt>(loop);
+    if (!forStmt || !context) {
+        return "";
+    }
+    const auto* cond =
+        llvm::dyn_cast_or_null<clang::BinaryOperator>(forStmt->getCond());
+    if (!cond || (cond->getOpcode() != clang::BO_LT &&
+                  cond->getOpcode() != clang::BO_LE)) {
+        return "";
+    }
+    const auto* declStmt =
+        llvm::dyn_cast_or_null<clang::DeclStmt>(forStmt->getInit());
+    if (!declStmt || !declStmt->isSingleDecl()) {
+        return "";
+    }
+    const auto* loopVarDecl =
+        llvm::dyn_cast_or_null<clang::VarDecl>(declStmt->getSingleDecl());
+    if (!loopVarDecl) {
+        return "";
+    }
+    const auto* lhsRef = llvm::dyn_cast_or_null<clang::DeclRefExpr>(
+        cond->getLHS()->IgnoreParenImpCasts());
+    if (!lhsRef || lhsRef->getDecl() != loopVarDecl) {
+        return "";
+    }
+    int64_t lower = -1;
+    if (!evaluateInt64Expr(loopVarDecl->getInit(), context, lower) ||
+        lower != 0) {
+        return "";
+    }
+    inclusive = cond->getOpcode() == clang::BO_LE;
+    return exprSource(cond->getRHS(), context);
+}
+
+void annotateResidentHaloTemporalBlocking(
+    DacppFile* dacppFile,
+    ShellPartitionPlan& plan,
+    const clang::Stmt* loop,
+    const OrLoopLowerPlan::StencilResidentHaloMetadata& metadata) {
+    plan.orLoopLower.stencilResidentHalo.temporalBlockSize = 0;
+    plan.orLoopLower.stencilResidentHalo.temporalLoopLimitExpr.clear();
+    plan.orLoopLower.stencilResidentHalo.temporalLoopLimitInclusive = false;
+    plan.orLoopLower.stencilResidentHalo.temporalBlockRejectReason.clear();
+    auto reject = [&](const std::string& reason) {
+        plan.orLoopLower.stencilResidentHalo.temporalBlockRejectReason = reason;
+    };
+    if (!dacppFile || !dacppFile->getContext() || !loop) {
+        reject("analysis context unavailable");
+        return;
+    }
+    if (plan.signature.layout != LocalLayoutKind::StencilWindow2D) {
+        reject("requires StencilWindow2D resident halo");
+        return;
+    }
+    if (!metadata.enabled) {
+        reject(metadata.rejectReason.empty() ? "resident halo not accepted"
+                                             : metadata.rejectReason);
+        return;
+    }
+    if (metadata.hasDirectReader) {
+        reject("direct-reader recurrence not enabled for k=2");
+        return;
+    }
+    if (metadata.windowRows != 3 || metadata.windowCols != 3 ||
+        metadata.followupTargetRowOffset != 1 ||
+        metadata.followupTargetColOffset != 1) {
+        reject("requires canonical 3x3 window and followup offset (1,1)");
+        return;
+    }
+    bool inclusive = false;
+    const std::string limitExpr =
+        loopIterationLimitExpr(loop, dacppFile->getContext(), inclusive);
+    if (limitExpr.empty()) {
+        reject("requires canonical zero-based for-loop bound");
+        return;
+    }
+    const DistributedStencilSitePlan sitePlan = analyzeDistributedStencilSite(
+        dacppFile, plan.exprNode.shell, plan.exprNode.calc,
+        plan.exprNode.dacExpr);
+    if (!sitePlan.supported || sitePlan.boundaryLocalUpdates.size() != 4 ||
+        !sitePlan.readCacheTransitions.empty()) {
+        reject("requires canonical B2 followup and boundary-local updates");
+        return;
+    }
+    plan.orLoopLower.stencilResidentHalo.temporalBlockSize = 2;
+    plan.orLoopLower.stencilResidentHalo.temporalLoopLimitExpr = limitExpr;
+    plan.orLoopLower.stencilResidentHalo.temporalLoopLimitInclusive = inclusive;
 }
 
 struct PhaseExchangeDetection {
@@ -4302,28 +4772,26 @@ bool sourceBefore(const clang::SourceManager& sourceManager,
     return sourceManager.isBeforeInTranslationUnit(lhs, rhs);
 }
 
-const clang::CompoundStmt* enclosingCompoundForExpr(clang::ASTContext* context,
-                                                    const clang::Expr* expr) {
+const clang::CompoundStmt* enclosingFunctionBodyForExpr(
+    clang::ASTContext* context,
+    const clang::Expr* expr) {
     if (!context || !expr) {
         return nullptr;
     }
     clang::DynTypedNode current = clang::DynTypedNode::create(*expr);
-    for (int depth = 0; depth < 32; ++depth) {
+    for (int depth = 0; depth < 64; ++depth) {
         auto parents = context->getParents(current);
         if (parents.empty()) {
             return nullptr;
         }
         const clang::DynTypedNode& parent = parents[0];
-        if (const auto* compound = parent.get<clang::CompoundStmt>()) {
-            return compound;
+        if (const auto* functionDecl = parent.get<clang::FunctionDecl>()) {
+            return llvm::dyn_cast_or_null<clang::CompoundStmt>(
+                functionDecl->getBody());
         }
         if (const auto* stmt = parent.get<clang::Stmt>()) {
             current = clang::DynTypedNode::create(*stmt);
             continue;
-        }
-        if (const auto* functionDecl = parent.get<clang::FunctionDecl>()) {
-            return llvm::dyn_cast_or_null<clang::CompoundStmt>(
-                functionDecl->getBody());
         }
         return nullptr;
     }
@@ -4378,7 +4846,7 @@ ConstantInitPlan analyzeConstantInitForShellArg(
     bool sawIndexFill = false;
     VectorIndexFillInit indexFill;
     const auto* compound =
-        enclosingCompoundForExpr(dacppFile->getContext(), shellArg);
+        enclosingFunctionBodyForExpr(dacppFile->getContext(), shellArg);
     if (!compound && dacppFile->getMainBody()) {
         compound = llvm::dyn_cast<clang::CompoundStmt>(
             dacppFile->getMainBody());
@@ -4531,7 +4999,7 @@ DefaultInitAnalysis analyzeDefaultOutputInitForShellArg(
         return result;
     }
     const auto* compound =
-        enclosingCompoundForExpr(dacppFile->getContext(), shellArg);
+        enclosingFunctionBodyForExpr(dacppFile->getContext(), shellArg);
     if (!compound && dacppFile->getMainBody()) {
         compound = llvm::dyn_cast<clang::CompoundStmt>(
             dacppFile->getMainBody());
@@ -5823,6 +6291,7 @@ void annotateLoopLowerCandidates(DacppFile* dacppFile,
         plan.loopLowerScalarRefreshReason.clear();
         plan.loopLowerSelectiveMaterialize =
             LoopLoweredSelectiveMaterializePlan{};
+        plan.loopLowerDeviceTimeLoop = LoopLoweredDeviceTimeLoopPlan{};
         if (plan.loopLowerMaterializeEveryRun) {
             plan.loopLowerReplicatedScalarLocalRefresh =
                 loopBodyHasOnlyUnguardedTopLevelScalarWrites(
@@ -5831,6 +6300,8 @@ void annotateLoopLowerCandidates(DacppFile* dacppFile,
             plan.loopLowerSelectiveMaterialize =
                 analyzeLoopLowerSelectiveMaterialize(dacppFile, plan,
                                                      outerLoop);
+            plan.loopLowerDeviceTimeLoop =
+                analyzeLoopLowerDeviceTimeLoop(dacppFile, plan, outerLoop);
         }
 
         const std::string shellName =
@@ -5867,6 +6338,15 @@ void annotateLoopLowerCandidates(DacppFile* dacppFile,
                     llvm::outs() << " scalar-refresh=bcast reason="
                                  << plan.loopLowerScalarRefreshReason;
                 }
+                if (plan.loopLowerDeviceTimeLoop.enabled) {
+                    llvm::outs()
+                        << " device-time-loop=accepted reason="
+                        << plan.loopLowerDeviceTimeLoop.reason;
+                } else if (!plan.loopLowerDeviceTimeLoop.reason.empty()) {
+                    llvm::outs()
+                        << " device-time-loop=rejected reason="
+                        << plan.loopLowerDeviceTimeLoop.reason;
+                }
             }
         } else if (!reason.empty()) {
             llvm::outs() << " reason=" << reason;
@@ -5900,6 +6380,11 @@ void annotateLoopLowerCandidates(DacppFile* dacppFile,
         plan.orLoopLower.stencilResidentHalo = haloMetadata;
         if (!haloCandidate) {
             plan.orLoopLower.stencilResidentHalo.rejectReason = haloReason;
+            plan.orLoopLower.stencilResidentHalo.temporalBlockRejectReason =
+                haloReason.empty() ? "resident halo not accepted" : haloReason;
+        } else {
+            annotateResidentHaloTemporalBlocking(dacppFile, plan,
+                                                 p46OuterLoop, haloMetadata);
         }
         if (p46Candidate) {
             populateStencilLoopLoweringContract(dacppFile, plan, haloReason);
@@ -5953,6 +6438,20 @@ void annotateLoopLowerCandidates(DacppFile* dacppFile,
                                .followupTargetOffset;
                 }
                 llvm::outs() << " materialize=final";
+                if (plan.orLoopLower.stencilResidentHalo.temporalBlockSize >
+                    1) {
+                    llvm::outs()
+                        << " temporal-block="
+                        << plan.orLoopLower.stencilResidentHalo
+                               .temporalBlockSize
+                        << " accepted";
+                } else if (!plan.orLoopLower.stencilResidentHalo
+                                .temporalBlockRejectReason.empty()) {
+                    llvm::outs()
+                        << " temporal-block=2 rejected reason="
+                        << plan.orLoopLower.stencilResidentHalo
+                               .temporalBlockRejectReason;
+                }
             } else {
                 llvm::outs()
                     << " hoist-reader-sync="

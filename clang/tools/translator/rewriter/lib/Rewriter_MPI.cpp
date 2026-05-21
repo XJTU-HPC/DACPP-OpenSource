@@ -3,6 +3,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "clang/AST/Expr.h"
 #include "clang/AST/Stmt.h"
 #include "clang/Rewrite/Core/Rewriter.h"
 #include "llvm/Support/raw_ostream.h"
@@ -301,10 +302,31 @@ void rewriteLoopLoweredOperatorResidentSite(
         mpi_rewriter::operatorResidentInitFunctionName(shell, calc, exprIdx);
     rewriteSpec.runFunctionName =
         mpi_rewriter::operatorResidentRunFunctionName(shell, calc, exprIdx);
+    rewriteSpec.runLoopFunctionName =
+        mpi_rewriter::operatorResidentRunLoopFunctionName(shell, calc, exprIdx);
     rewriteSpec.materializeFunctionName =
         mpi_rewriter::operatorResidentMaterializeFunctionName(shell, calc,
                                                               exprIdx);
     rewriteSpec.argumentText = argText;
+    const bool replaceOuterLoopWithRunLoop =
+        exprPlan.loopLowerDeviceTimeLoop.enabled ||
+        exprPlan.orLoopLower.stencilResidentHalo.temporalBlockSize > 1;
+    rewriteSpec.replaceOuterLoopWithRunLoop = replaceOuterLoopWithRunLoop;
+    if (exprPlan.orLoopLower.stencilResidentHalo.temporalBlockSize > 1) {
+        rewriteSpec.runLoopFunctionName = rewriteSpec.runFunctionName;
+    }
+    if (exprPlan.loopLowerDeviceTimeLoop.enabled &&
+        exprPlan.loopLowerSelectiveMaterialize.enabled) {
+        rewriteSpec.writeBackSelectedHostRow = true;
+        rewriteSpec.selectedHostTensorName =
+            exprPlan.loopLowerSelectiveMaterialize.hostTensorName;
+        rewriteSpec.selectedOutputTensorName =
+            exprPlan.loopLowerSelectiveMaterialize.outputTensorName;
+        rewriteSpec.selectedHostRow =
+            exprPlan.loopLowerSelectiveMaterialize.targetRow;
+        rewriteSpec.selectedHostRowCondition =
+            "__dacpp_mpi_or_selected_row_" + std::to_string(exprIdx);
+    }
     mpi_rewriter::rewriteLoopLoweredDacExpr(rewriter, rewriteSpec);
 
     if (exprPlan.orLoopLower.kind ==
