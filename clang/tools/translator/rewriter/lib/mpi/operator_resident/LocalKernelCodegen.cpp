@@ -78,6 +78,129 @@ void emitKernel(std::string& code, const ShellPartitionPlan& plan) {
     code += "    }\n";
 }
 
+const ParamAccessPlan* fusedDirectReader(const ShellPartitionPlan& plan) {
+    for (const auto& param : plan.params) {
+        if (param.access == ParamAccessKind::DirectMapped && param.reads &&
+            !param.writes) {
+            return &param;
+        }
+    }
+    return nullptr;
+}
+
+const ParamAccessPlan* fusedOutputWriter(const ShellPartitionPlan& plan) {
+    for (const auto& param : plan.params) {
+        if (param.access == ParamAccessKind::OutputDirect && param.writes &&
+            !param.reads) {
+            return &param;
+        }
+    }
+    return nullptr;
+}
+
+void emitFusedPointwiseRowBlock2DKernel(std::string& code,
+                                        const OperatorResidentChainPlan& chain) {
+    if (!chain.fusePointwiseRowBlock2D || chain.exprPlans.size() < 2) {
+        return;
+    }
+    const ShellPartitionPlan& first = chain.exprPlans[0];
+    const ShellPartitionPlan& last = chain.exprPlans.back();
+    const ParamAccessPlan* firstReader = fusedDirectReader(first);
+    const ParamAccessPlan* firstWriter = fusedOutputWriter(first);
+    const ParamAccessPlan* lastWriter = fusedOutputWriter(last);
+    if (!firstReader || !firstWriter || !lastWriter) {
+        return;
+    }
+    const std::string firstReaderType = elemType(first, *firstReader);
+    const std::string intermediateType = elemType(first, *firstWriter);
+    const std::string finalType = elemType(last, *lastWriter);
+    emitResidentOrScatter(code, first, *firstReader);
+    if (firstReader->constantInit.supported) {
+        code += "    // Fused RowBlock2D input " + firstReader->calcParamName +
+                " is generated locally; skip root pack/scatter.\n";
+    }
+    code += "    std::vector<" + finalType + "> " + localName(*lastWriter) +
+            "(static_cast<std::size_t>(__or_local_item_count));\n";
+    code += "    auto dacpp_profile_kernel_start = dacpp::mpi::profileSegmentStart();\n";
+    code += "    if (__or_local_item_count > 0) {\n";
+    code += "        {\n";
+    code += "            sycl::buffer<" + firstReaderType + ", 1> __or_buffer_" +
+            firstReader->calcParamName + "(" + localName(*firstReader) +
+            ".data(), sycl::range<1>(" + localName(*firstReader) +
+            ".size()));\n";
+    code += "            sycl::buffer<" + finalType + ", 1> __or_buffer_" +
+            lastWriter->calcParamName + "(" + localName(*lastWriter) +
+            ".data(), sycl::range<1>(" + localName(*lastWriter) +
+            ".size()));\n";
+    code += "            q.submit([&](sycl::handler& h) {\n";
+    code += "                auto __or_acc_" + firstReader->calcParamName +
+            " = __or_buffer_" + firstReader->calcParamName +
+            ".get_access<sycl::access::mode::read>(h);\n";
+    code += "                auto __or_acc_" + lastWriter->calcParamName +
+            " = __or_buffer_" + lastWriter->calcParamName +
+            ".get_access<sycl::access::mode::read_write>(h);\n";
+    code += "                h.parallel_for(sycl::range<1>(static_cast<std::size_t>(__or_local_item_count)), [=](sycl::id<1> idx) {\n";
+    code += "                    const int item_linear = static_cast<int>(idx[0]);\n";
+    code += "                    auto* __or_data_" + firstReader->calcParamName +
+            " = __or_acc_" + firstReader->calcParamName +
+            ".template get_multi_ptr<sycl::access::decorated::no>().get();\n";
+    code += "                    dacpp::mpi::ContiguousView1D<const " +
+            firstReaderType + "> view_" + firstReader->calcParamName +
+            "{__or_data_" + firstReader->calcParamName + ", item_linear};\n";
+    for (std::size_t planIdx = 0; planIdx < chain.exprPlans.size(); ++planIdx) {
+        const ShellPartitionPlan& stage = chain.exprPlans[planIdx];
+        const ParamAccessPlan* stageReader = fusedDirectReader(stage);
+        const ParamAccessPlan* stageWriter = fusedOutputWriter(stage);
+        if (!stageReader || !stageWriter) {
+            return;
+        }
+        const std::string stageOutType = elemType(stage, *stageWriter);
+        if (planIdx + 1 == chain.exprPlans.size()) {
+            code += "                    auto* __or_data_" +
+                    lastWriter->calcParamName + " = __or_acc_" +
+                    lastWriter->calcParamName +
+                    ".template get_multi_ptr<sycl::access::decorated::no>().get();\n";
+            code += "                    dacpp::mpi::ContiguousView1D<" +
+                    stageOutType + "> view_" + stageWriter->calcParamName +
+                    "{__or_data_" + lastWriter->calcParamName +
+                    ", item_linear};\n";
+        } else {
+            code += "                    " + stageOutType + " __or_private_" +
+                    stageWriter->calcParamName + "{};\n";
+            code += "                    dacpp::mpi::ContiguousView1D<" +
+                    stageOutType + "> view_" + stageWriter->calcParamName +
+                    "{&__or_private_" + stageWriter->calcParamName +
+                    ", 0};\n";
+        }
+        std::string inputView;
+        if (planIdx == 0) {
+            inputView = "view_" + firstReader->calcParamName;
+        } else {
+            const ParamAccessPlan* previousWriter =
+                fusedOutputWriter(chain.exprPlans[planIdx - 1]);
+            if (!previousWriter) {
+                return;
+            }
+            inputView = "view_" + stageReader->calcParamName + "_read";
+            code += "                    dacpp::mpi::ContiguousView1D<const " +
+                    elemType(chain.exprPlans[planIdx - 1],
+                             *previousWriter) +
+                    "> " + inputView + "{&__or_private_" +
+                    previousWriter->calcParamName + ", 0};\n";
+        }
+        code += "                    " + stage.exprNode.calc->getName() +
+                "_mpi_local(" + inputView + ", view_" +
+                stageWriter->calcParamName + ");\n";
+    }
+    code += "                });\n";
+    code += "            });\n";
+    code += "            q.wait();\n";
+    code += "        }\n";
+    code += "    }\n";
+    code += "    dacpp::mpi::recordProfileSegment(dacpp_profile, dacpp::mpi::ProfileSegment::Kernel, dacpp_profile_kernel_start);\n";
+    code += "    // Fused RowBlock2D pointwise chain stores only the final output buffer; intermediate stays private.\n";
+}
+
 } // namespace operator_resident
 } // namespace mpi_rewriter
 } // namespace dacppTranslator

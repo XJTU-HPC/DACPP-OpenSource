@@ -69,6 +69,16 @@ std::string joinShellCallArgs(const clang::BinaryOperator* dacExpr,
 std::string buildWrapperCallForDacExpr(const std::string& wrapperName,
                                        const clang::BinaryOperator* dacExpr,
                                        DacppFile* dacppFile);
+std::string fusedRowBlock2DWrapperName(const OperatorResidentChainPlan& chain);
+bool isFusedRowBlock2DLeader(const OperatorResidentChainPlan& chain,
+                             int exprIndex);
+bool isFusedRowBlock2DFollower(const OperatorResidentChainPlan& chain,
+                               int exprIndex);
+bool isFusedRowBlock2DInterior(const OperatorResidentChainPlan& chain,
+                               int exprIndex);
+std::string buildFusedRowBlock2DWrapperCall(
+    const OperatorResidentChainPlan& chain,
+    DacppFile* dacppFile);
 
 } // namespace mpi_rewriter
 } // namespace dacppTranslator

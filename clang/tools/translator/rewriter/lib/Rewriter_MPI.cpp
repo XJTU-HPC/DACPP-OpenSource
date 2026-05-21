@@ -404,16 +404,44 @@ void Rewriter::rewriteMPI() {
         } else {
             wrapperName = shell->getName() + "_" + calc->getName();
         }
+        const std::string localCalcKey = calc->getName();
+        if (generatedLocalCalcs.insert(localCalcKey).second) {
+            generated += mpi_rewriter::buildLocalCalcCode(shell, calc);
+            generated += "\n";
+        }
         if (generatedWrappers.insert(wrapperName).second) {
-            const std::string localCalcKey = calc->getName();
-            if (generatedLocalCalcs.insert(localCalcKey).second) {
-                generated += mpi_rewriter::buildLocalCalcCode(shell, calc);
-                generated += "\n";
-            }
             if (isOperatorResident) {
                 const int chainId =
                     plan.exprResults[exprIdx].operatorResidentChainId;
                 const auto& chain = plan.residentChains[chainId];
+                if (mpi_rewriter::isFusedRowBlock2DLeader(chain, exprIdx)) {
+                    for (const auto& chainExprPlan : chain.exprPlans) {
+                        Calc* chainCalc = chainExprPlan.exprNode.calc;
+                        Shell* chainShell = chainExprPlan.exprNode.shell;
+                        if (chainCalc && chainShell &&
+                            generatedLocalCalcs
+                                .insert(chainCalc->getName()).second) {
+                            generated += mpi_rewriter::buildLocalCalcCode(
+                                chainShell, chainCalc);
+                            generated += "\n";
+                        }
+                    }
+                }
+                if (mpi_rewriter::isFusedRowBlock2DFollower(
+                        chain, exprIdx) ||
+                    mpi_rewriter::isFusedRowBlock2DInterior(
+                        chain, exprIdx)) {
+                    if (removedDecls.insert(shell->getShellLoc()).second) {
+                        rewriter->RemoveText(
+                            shell->getShellLoc()->getSourceRange());
+                    }
+                    if (removedDecls.insert(calc->getCalcLoc()).second) {
+                        rewriter->RemoveText(
+                            calc->getCalcLoc()->getSourceRange());
+                    }
+                    generated += "\n";
+                    continue;
+                }
                 const mpi_rewriter::ShellPartitionPlan* exprPlan = nullptr;
                 for (const auto& candidate : chain.exprPlans) {
                     if (candidate.exprIndex == exprIdx) {
@@ -499,6 +527,38 @@ void Rewriter::rewriteMPI() {
                                                    *loopLowerPlan);
             rewrittenDacExprs.insert(dacExpr);
             continue;
+        }
+        if (planKind == mpi_rewriter::MpiPlanKind::OperatorResident) {
+            const int chainId = plan.exprResults[exprIdx].operatorResidentChainId;
+            if (chainId >= 0 &&
+                chainId < static_cast<int>(plan.residentChains.size())) {
+                const auto& chain = plan.residentChains[chainId];
+                if (mpi_rewriter::isFusedRowBlock2DLeader(chain, exprIdx)) {
+                    rewriter->ReplaceText(
+                        dacExpr->getSourceRange(),
+                        "/* DACPP MPI fused RowBlock2D leader elided */");
+                    rewrittenDacExprs.insert(dacExpr);
+                    continue;
+                }
+                if (mpi_rewriter::isFusedRowBlock2DFollower(chain, exprIdx)) {
+                    const std::string fusedCall =
+                        mpi_rewriter::buildFusedRowBlock2DWrapperCall(
+                            chain, dacppFile);
+                    if (!fusedCall.empty()) {
+                        rewriter->ReplaceText(dacExpr->getSourceRange(),
+                                              fusedCall);
+                        rewrittenDacExprs.insert(dacExpr);
+                        continue;
+                    }
+                }
+                if (mpi_rewriter::isFusedRowBlock2DInterior(chain, exprIdx)) {
+                    rewriter->ReplaceText(
+                        dacExpr->getSourceRange(),
+                        "/* DACPP MPI fused RowBlock2D interior elided */");
+                    rewrittenDacExprs.insert(dacExpr);
+                    continue;
+                }
+            }
         }
 
         const std::string wrapperName =

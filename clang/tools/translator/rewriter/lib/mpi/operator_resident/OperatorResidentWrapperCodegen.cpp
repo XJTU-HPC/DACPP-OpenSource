@@ -27,6 +27,57 @@ std::string wrapperSignature(const ShellPartitionPlan& plan) {
     return signature;
 }
 
+std::string fusedParamVarName(const ParamAccessPlan& param,
+                              int planOrdinal) {
+    return "__or_fused_arg" + std::to_string(planOrdinal) + "_" +
+           std::to_string(param.paramIndex);
+}
+
+std::string fusedWrapperSignature(const OperatorResidentChainPlan& chain) {
+    if (chain.exprPlans.size() < 2) {
+        return "";
+    }
+    auto directReader = [](const ShellPartitionPlan& plan)
+        -> const ParamAccessPlan* {
+        for (const auto& param : plan.params) {
+            if (param.access == ParamAccessKind::DirectMapped &&
+                param.reads && !param.writes) {
+                return &param;
+            }
+        }
+        return nullptr;
+    };
+    auto outputWriter = [](const ShellPartitionPlan& plan)
+        -> const ParamAccessPlan* {
+        for (const auto& param : plan.params) {
+            if (param.access == ParamAccessKind::OutputDirect &&
+                param.writes && !param.reads) {
+                return &param;
+            }
+        }
+        return nullptr;
+    };
+    const ShellPartitionPlan& first = chain.exprPlans[0];
+    const ShellPartitionPlan& last = chain.exprPlans.back();
+    const ParamAccessPlan* firstReader = directReader(first);
+    const ParamAccessPlan* lastWriter = outputWriter(last);
+    if (!firstReader || !lastWriter || !first.exprNode.shell ||
+        !last.exprNode.shell) {
+        return "";
+    }
+    auto paramDecl = [](Shell* shell, const ParamAccessPlan& param) {
+        Param* shellParam = shell->getParam(param.paramIndex);
+        std::string paramType = shellParam->getType();
+        if (!paramType.empty() && paramType.back() != '&' &&
+            paramType.back() != '*') {
+            paramType += "&";
+        }
+        return paramType + " " + paramVarName(param);
+    };
+    return paramDecl(first.exprNode.shell, *firstReader) + ", " +
+           paramDecl(last.exprNode.shell, *lastWriter);
+}
+
 std::string elemType(const ShellPartitionPlan& plan,
                      const ParamAccessPlan& param) {
     return plan.exprNode.calc->getParam(param.paramIndex)->getBasicType();

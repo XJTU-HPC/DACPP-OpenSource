@@ -56,10 +56,39 @@ std::string operatorResidentMaterializeFunctionName(Shell* shell,
 
 std::string buildOperatorResidentWrapperCode(
     DacppFile* dacppFile,
-    const OperatorResidentChainPlan&,
+    const OperatorResidentChainPlan& chain,
     const ShellPartitionPlan& exprPlan) {
     Shell* shell = exprPlan.exprNode.shell;
     Calc* calc = exprPlan.exprNode.calc;
+    if (chain.fusePointwiseRowBlock2D &&
+        isFusedRowBlock2DFollower(chain, exprPlan.exprIndex)) {
+        return "";
+    }
+    if (chain.fusePointwiseRowBlock2D &&
+        isFusedRowBlock2DLeader(chain, exprPlan.exprIndex)) {
+        const std::string fusedWrapper = fusedRowBlock2DWrapperName(chain);
+        std::string code;
+        code += "void " + fusedWrapper + "(" +
+                operator_resident::fusedWrapperSignature(chain) + ") {\n";
+        code += "    int mpi_rank = 0;\n";
+        code += "    int mpi_size = 1;\n";
+        code += "    MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);\n";
+        code += "    MPI_Comm_size(MPI_COMM_WORLD, &mpi_size);\n";
+        code += "    dacpp::mpi::SegmentedProfile dacpp_profile;\n";
+        code += "    auto& q = dacpp::mpi::operator_resident::default_queue();\n";
+        code += mpi_rewriter::profileSegmentStartCode(
+            "dacpp_profile_init_start");
+        operator_resident::emitPartitionCode(code, exprPlan);
+        code += mpi_rewriter::profileRecordCode("dacpp_profile", "Init",
+                                                "dacpp_profile_init_start");
+        operator_resident::emitFusedPointwiseRowBlock2DKernel(code, chain);
+        operator_resident::emitResidencyAndMaterialization(
+            code, chain.exprPlans.back());
+        code += "    dacpp::mpi::reportSegmentedProfile(\"" + fusedWrapper +
+                "\", dacpp_profile, MPI_COMM_WORLD);\n";
+        code += "}\n";
+        return code;
+    }
     const std::string wrapper =
         operatorResidentWrapperName(shell, calc, exprPlan.exprIndex);
 

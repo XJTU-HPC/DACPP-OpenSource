@@ -34,7 +34,7 @@ int main() {
     std::vector<int> dataB{1, 5, 9, 13, 17, 2, 6, 10, 14, 18, 3, 7, 11, 15, 19, 4, 8, 12, 16, 20};
     dacpp::Matrix<int> matB({5, 4}, dataB);
 
-    std::vector<int> dataC{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16};
+    std::vector<int> dataC{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
     dacpp::Matrix<int> matC({4, 4}, dataC);
     // for(int i=0;i<1;i++){
     matrixMultiply_shell(matA, matB, matC) <-> matrixMultiply_calc;

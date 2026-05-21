@@ -14,6 +14,16 @@ void emitOutputBuffer(std::string& code,
     const std::string type = elemType(plan, param);
     code += "    std::vector<" + type + "> " + localName(param) +
             "(static_cast<std::size_t>(__or_local_item_count));\n";
+    if (param.outputInit.skipInitialSync) {
+        code += "    std::fill(" + localName(param) + ".begin(), " +
+                localName(param) + ".end(), " +
+                (param.outputInit.valueExpr.empty() ? type + "{}"
+                                                    : param.outputInit.valueExpr) +
+                ");\n";
+        code += "    // Output-direct no-read fast path for " +
+                param.calcParamName +
+                " initializes local output and skips root pack/scatter.\n";
+    }
 }
 
 void emitAbortIfMpiCountTooLarge(std::string& code,
@@ -627,7 +637,8 @@ void emitParamLocalStorage(std::string& code,
             emitReplicatedFullTensorBroadcast(code, plan, param);
         } else if (param.access == ParamAccessKind::RowPartitionFullRow) {
             emitRowPartitionFullRowScatter(code, plan, param);
-        } else if (param.writes && param.reads) {
+        } else if (param.writes && param.reads &&
+                   !param.outputInit.skipInitialSync) {
             emitResidentOrScatter(code, plan, param);
         } else if (param.writes) {
             emitOutputBuffer(code, plan, param);

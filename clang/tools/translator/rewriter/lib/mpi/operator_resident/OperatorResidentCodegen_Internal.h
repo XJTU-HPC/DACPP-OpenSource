@@ -42,6 +42,11 @@ void emitParamLocalStorage(std::string& code,
                            const ShellPartitionPlan& plan);
 void emitPartitionCode(std::string& code, const ShellPartitionPlan& plan);
 void emitKernel(std::string& code, const ShellPartitionPlan& plan);
+void emitFusedPointwiseRowBlock2DKernel(std::string& code,
+                                        const OperatorResidentChainPlan& chain);
+std::string fusedParamVarName(const ParamAccessPlan& param,
+                              int planOrdinal);
+std::string fusedWrapperSignature(const OperatorResidentChainPlan& chain);
 void emitGatherMaterialize(std::string& code,
                            const ShellPartitionPlan& plan,
                            const ParamAccessPlan& param,

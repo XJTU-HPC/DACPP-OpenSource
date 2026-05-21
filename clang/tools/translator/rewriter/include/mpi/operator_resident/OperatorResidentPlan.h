@@ -153,6 +153,13 @@ struct ConstantInitPlan {
     const clang::Stmt* indexFillAssignmentStmt = nullptr;
 };
 
+struct OutputInitPlan {
+    bool skipInitialSync = false;
+    std::string valueExpr;
+    std::string logValue;
+    std::string reason;
+};
+
 struct LoopLoweredSelectiveMaterializePlan {
     bool enabled = false;
     std::string outputTensorName;
@@ -198,6 +205,7 @@ struct ParamAccessPlan {
     std::string postUseReductionScalarName;
     PostUseSyncPlan postUseSync;
     ConstantInitPlan constantInit;
+    OutputInitPlan outputInit;
 
     // Payload metadata for RowPartitionFullRow/ReplicatedFullTensor
     PayloadDirection payloadDirection = PayloadDirection::Unknown;
@@ -246,6 +254,8 @@ struct OperatorResidentChainPlan {
     PartitionSignature signature;
     std::unordered_map<std::string, TensorResidencyState> residency;
     std::vector<std::string> materializeTensors;
+    bool fusePointwiseRowBlock2D = false;
+    std::string fuseRejectReason;
 };
 
 } // namespace mpi_rewriter

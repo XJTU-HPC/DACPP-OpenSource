@@ -1,0 +1,16 @@
+LOG_CONTAINS:[DACPP][MPI][OR] chain=0 rowblock-pointwise-fusion=accepted
+LOG_CONTAINS:[DACPP][MPI][OR] chain=0 layout=RowBlock2D length=2 chain=accepted codegen=enabled
+LOG_CONTAINS:[DACPP][MPI][OR] output image_tensor2 init-sync=local-default reason=write-only output
+SYCL_CONTAINS:void __dacpp_mpi_or_fused_rowblock_imageAdjustment_image_1_image_2_0
+SYCL_CONTAINS:Fused RowBlock2D pointwise chain stores only the final output buffer; intermediate stays private.
+SYCL_CONTAINS:Pixel __or_private_image_tensor2{};
+SYCL_CONTAINS:image_1_mpi_local(view_image_tensor, view_image_tensor2);
+SYCL_CONTAINS:image_2_mpi_local(view_image_tensor2_read, view_image_tensor3);
+SYCL_CONTAINS:__dacpp_mpi_or_fused_rowblock_imageAdjustment_image_1_image_2_0(image_tensor, image_tensor3);
+SYCL_CONTAINS:MPI_Gatherv(__or_local_image_tensor3.data()
+SYCL_NOT_CONTAINS:void __dacpp_mpi_or_imageAdjustment_image_1_0
+SYCL_NOT_CONTAINS:void __dacpp_mpi_or_imageAdjustment_image_2_1
+SYCL_NOT_CONTAINS:__or_local_image_tensor2.data()
+SYCL_NOT_CONTAINS:replace_resident<Pixel>(__or_arg1
+SYCL_NOT_CONTAINS:AccessPattern
+SYCL_NOT_CONTAINS:PackPlan

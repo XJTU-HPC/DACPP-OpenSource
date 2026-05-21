@@ -1,0 +1,11 @@
+LOG_CONTAINS:[DACPP][MPI][OR] expr=0 shell=DFT layout=ReplicatedFullTensor partition=accepted
+LOG_CONTAINS:[DACPP][MPI][OR] input vec_tensor init-sync=index-local expr=i
+LOG_CONTAINS:[DACPP][MPI][OR] chain=0 layout=ReplicatedFullTensor length=1 chain=accepted codegen=enabled
+SYCL_CONTAINS:std::vector<int> __or_local_vec(static_cast<std::size_t>(__or_local_item_count));
+SYCL_CONTAINS:const int64_t i = __or_range.begin + __or_local_i;
+SYCL_CONTAINS:Index-generated input vec is filled locally; skip root pack/scatter.
+SYCL_CONTAINS:DACPP MPI index-local vector initialization elided
+SYCL_NOT_CONTAINS:MPI_Scatterv(mpi_rank == 0 ? __or_global_vec.data()
+SYCL_NOT_CONTAINS:__or_arg2.tensor2Array(__or_global_vec);
+SYCL_NOT_CONTAINS:AccessPattern
+SYCL_NOT_CONTAINS:PackPlan
