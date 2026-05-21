@@ -145,6 +145,39 @@ inline ResidentHalo1DLayout resident_halo_1d_layout(
     return layout;
 }
 
+inline ResidentHalo1DLayout resident_halo_1d_layout_temporal(
+    int64_t outputTotal,
+    int rank,
+    int size,
+    int temporalBlockSize,
+    int windowSize) {
+    ResidentHalo1DLayout layout;
+    layout.owned = rank_range_1d(outputTotal, rank, size);
+    const int64_t halo = std::max<int64_t>(0, temporalBlockSize - 1);
+    const int64_t readerTotal =
+        outputTotal + std::max<int64_t>(0, windowSize - 1);
+    if (layout.owned.count > 0) {
+        const int64_t begin =
+            std::max<int64_t>(0, layout.owned.begin - halo);
+        const int64_t end =
+            std::min<int64_t>(readerTotal,
+                              layout.owned.begin + layout.owned.count +
+                                  halo + std::max<int64_t>(0, windowSize - 1));
+        layout.global_begin = begin;
+        layout.local_size = std::max<int64_t>(0, end - begin);
+        layout.owned_offset = layout.owned.begin - begin;
+        layout.left_halo = static_cast<int>(std::min<int64_t>(
+            layout.owned_offset, std::numeric_limits<int>::max()));
+        const int64_t rightHalo =
+            layout.local_size - layout.owned_offset - layout.owned.count;
+        layout.right_halo = static_cast<int>(std::min<int64_t>(
+            std::max<int64_t>(0, rightHalo), std::numeric_limits<int>::max()));
+    }
+    layout.prev_rank = nearest_nonempty_rank_1d(outputTotal, rank, size, -1);
+    layout.next_rank = nearest_nonempty_rank_1d(outputTotal, rank, size, 1);
+    return layout;
+}
+
 struct ResidentHalo2DRowLayout {
     RankRange1D owned_rows{};
     int64_t input_cols = 0;
@@ -316,6 +349,66 @@ void scatter_window_1d(const std::vector<T>& global,
                  mpiType,
                  0,
                  4201,
+                 MPI_COMM_WORLD,
+                 MPI_STATUS_IGNORE);
+    }
+}
+
+template <typename T>
+void scatter_window_1d_temporal(const std::vector<T>& global,
+                                std::vector<T>& local,
+                                int64_t outputTotal,
+                                int64_t inputTotal,
+                                int temporalBlockSize,
+                                int windowSize,
+                                const ResidentHalo1DLayout& layout,
+                                int rank,
+                                int size,
+                                MPI_Datatype mpiType) {
+    local.assign(static_cast<std::size_t>(layout.local_size), T{});
+    if (rank == 0) {
+        for (int r = 0; r < size; ++r) {
+            const ResidentHalo1DLayout target =
+                resident_halo_1d_layout_temporal(
+                    outputTotal, r, size, temporalBlockSize, windowSize);
+            if (target.local_size <= 0) {
+                continue;
+            }
+            const std::size_t begin =
+                static_cast<std::size_t>(target.global_begin);
+            const std::size_t count =
+                static_cast<std::size_t>(target.local_size);
+            if (static_cast<int64_t>(begin + count) > inputTotal ||
+                begin + count > global.size()) {
+                std::fprintf(stderr,
+                             "[DACPP][MPI][OR] temporal resident halo 1D scatter window exceeds reader size\n");
+                MPI_Abort(MPI_COMM_WORLD, 4);
+            }
+            if (r == 0) {
+                std::copy(global.begin() + begin,
+                          global.begin() + begin + count,
+                          local.begin());
+            } else {
+                const int sendCount = narrow_mpi_count_or_abort(
+                    target.local_size,
+                    "[DACPP][MPI][OR] temporal resident halo 1D scatter count exceeds MPI int range");
+                MPI_Send(global.data() + begin,
+                         sendCount,
+                         mpiType,
+                         r,
+                         4202,
+                         MPI_COMM_WORLD);
+            }
+        }
+    } else if (layout.local_size > 0) {
+        const int recvCount = narrow_mpi_count_or_abort(
+            layout.local_size,
+            "[DACPP][MPI][OR] temporal resident halo 1D recv count exceeds MPI int range");
+        MPI_Recv(local.data(),
+                 recvCount,
+                 mpiType,
+                 0,
+                 4202,
                  MPI_COMM_WORLD,
                  MPI_STATUS_IGNORE);
     }
@@ -597,6 +690,193 @@ void exchange_halo_1d_inplace(std::vector<T>& local,
     if (windowSize > 2 && next != MPI_PROC_NULL && rightIdx >= 0 &&
         rightIdx < static_cast<int64_t>(local.size())) {
         local[static_cast<std::size_t>(rightIdx)] = recvRight;
+    }
+}
+
+template <typename T>
+void exchange_halo_1d_temporal_inplace(std::vector<T>& local,
+                                       const ResidentHalo1DLayout& layout,
+                                       int64_t outputTotal,
+                                       int windowSize,
+                                       int interiorOffset,
+                                       int temporalBlockSize,
+                                       int rank,
+                                       int size,
+                                       MPI_Datatype mpiType) {
+    if (interiorOffset != 1 || temporalBlockSize <= 0 || windowSize != 3) {
+        return;
+    }
+    (void)rank;
+    bool hasNarrowTemporalPartition = false;
+    for (int r = 0; r < size; ++r) {
+        const RankRange1D range = rank_range_1d(outputTotal, r, size);
+        if (range.count > 0 &&
+            range.count < static_cast<int64_t>(temporalBlockSize)) {
+            hasNarrowTemporalPartition = true;
+            break;
+        }
+    }
+    const int64_t firstInterior =
+        layout.owned_offset + static_cast<int64_t>(interiorOffset);
+    if (hasNarrowTemporalPartition) {
+        std::vector<int> counts(static_cast<std::size_t>(size), 0);
+        std::vector<int> displs(static_cast<std::size_t>(size), 0);
+        int64_t gatheredCount = 0;
+        for (int r = 0; r < size; ++r) {
+            const RankRange1D range = rank_range_1d(outputTotal, r, size);
+            counts[static_cast<std::size_t>(r)] =
+                narrow_mpi_count_or_abort(
+                    range.count,
+                    "[DACPP][MPI][OR] temporal resident halo 1D fallback count exceeds MPI int range");
+            displs[static_cast<std::size_t>(r)] =
+                narrow_mpi_count_or_abort(
+                    gatheredCount,
+                    "[DACPP][MPI][OR] temporal resident halo 1D fallback displacement exceeds MPI int range");
+            gatheredCount += range.count;
+        }
+        std::vector<T> ownedSend(
+            static_cast<std::size_t>(layout.owned.count), T{});
+        for (int64_t idx = 0; idx < layout.owned.count; ++idx) {
+            const int64_t sourceIdx = firstInterior + idx;
+            if (sourceIdx >= 0 &&
+                sourceIdx < static_cast<int64_t>(local.size())) {
+                ownedSend[static_cast<std::size_t>(idx)] =
+                    local[static_cast<std::size_t>(sourceIdx)];
+            }
+        }
+        std::vector<T> gathered(static_cast<std::size_t>(gatheredCount), T{});
+        const int sendCount = narrow_mpi_count_or_abort(
+            layout.owned.count,
+            "[DACPP][MPI][OR] temporal resident halo 1D fallback send count exceeds MPI int range");
+        MPI_Allgatherv(ownedSend.empty() ? nullptr : ownedSend.data(),
+                       sendCount,
+                       mpiType,
+                       gathered.empty() ? nullptr : gathered.data(),
+                       counts.data(),
+                       displs.data(),
+                       mpiType,
+                       MPI_COMM_WORLD);
+        for (int64_t localIdx = 0;
+             localIdx < static_cast<int64_t>(local.size());
+             ++localIdx) {
+            const int64_t globalReaderIdx = layout.global_begin + localIdx;
+            const int64_t outputIdx =
+                globalReaderIdx - static_cast<int64_t>(interiorOffset);
+            if (outputIdx >= 0 && outputIdx < outputTotal &&
+                outputIdx < static_cast<int64_t>(gathered.size())) {
+                local[static_cast<std::size_t>(localIdx)] =
+                    gathered[static_cast<std::size_t>(outputIdx)];
+            }
+        }
+        return;
+    }
+    if (layout.owned.count <= 0 || local.empty()) {
+        return;
+    }
+    (void)size;
+    const int prev = layout.prev_rank;
+    const int next = layout.next_rank;
+    const int sendItemsPerNeighbor = std::min<int64_t>(
+        layout.owned.count, static_cast<int64_t>(temporalBlockSize));
+    if (sendItemsPerNeighbor <= 0) {
+        return;
+    }
+    const int64_t leftRecvItems = std::min<int64_t>(
+        static_cast<int64_t>(temporalBlockSize),
+        std::max<int64_t>(0, firstInterior));
+    const int64_t rightRecvStart = firstInterior + layout.owned.count;
+    const int64_t rightRecvItems = std::min<int64_t>(
+        static_cast<int64_t>(temporalBlockSize),
+        std::max<int64_t>(
+            0, static_cast<int64_t>(local.size()) - rightRecvStart));
+    auto packItems = [&](int64_t itemBegin, int64_t itemCount) {
+        std::vector<T> packed(static_cast<std::size_t>(itemCount), T{});
+        for (int64_t item = 0; item < itemCount; ++item) {
+            const int64_t sourceIdx = itemBegin + item;
+            if (sourceIdx >= 0 &&
+                sourceIdx < static_cast<int64_t>(local.size())) {
+                packed[static_cast<std::size_t>(item)] =
+                    local[static_cast<std::size_t>(sourceIdx)];
+            }
+        }
+        return packed;
+    };
+    auto unpackItems = [&](const std::vector<T>& packed, int64_t itemBegin) {
+        for (int64_t item = 0;
+             item < static_cast<int64_t>(packed.size());
+             ++item) {
+            const int64_t targetIdx = itemBegin + item;
+            if (targetIdx >= 0 &&
+                targetIdx < static_cast<int64_t>(local.size())) {
+                local[static_cast<std::size_t>(targetIdx)] =
+                    packed[static_cast<std::size_t>(item)];
+            }
+        }
+    };
+    std::vector<T> leftSendBuffer =
+        packItems(firstInterior, sendItemsPerNeighbor);
+    std::vector<T> rightSendBuffer =
+        packItems(firstInterior + layout.owned.count - sendItemsPerNeighbor,
+                  sendItemsPerNeighbor);
+    std::vector<T> leftRecvBuffer(static_cast<std::size_t>(leftRecvItems),
+                                  T{});
+    std::vector<T> rightRecvBuffer(static_cast<std::size_t>(rightRecvItems),
+                                   T{});
+    const int sendCount = narrow_mpi_count_or_abort(
+        sendItemsPerNeighbor,
+        "[DACPP][MPI][OR] temporal resident halo 1D send count exceeds MPI int range");
+    const int leftRecvCount = narrow_mpi_count_or_abort(
+        leftRecvItems,
+        "[DACPP][MPI][OR] temporal resident halo 1D left receive count exceeds MPI int range");
+    const int rightRecvCount = narrow_mpi_count_or_abort(
+        rightRecvItems,
+        "[DACPP][MPI][OR] temporal resident halo 1D right receive count exceeds MPI int range");
+    MPI_Request requests[4];
+    int requestCount = 0;
+    if (prev != MPI_PROC_NULL && leftRecvCount > 0) {
+        MPI_Irecv(leftRecvBuffer.data(),
+                  leftRecvCount,
+                  mpiType,
+                  prev,
+                  4113,
+                  MPI_COMM_WORLD,
+                  &requests[requestCount++]);
+    }
+    if (next != MPI_PROC_NULL && rightRecvCount > 0) {
+        MPI_Irecv(rightRecvBuffer.data(),
+                  rightRecvCount,
+                  mpiType,
+                  next,
+                  4114,
+                  MPI_COMM_WORLD,
+                  &requests[requestCount++]);
+    }
+    if (next != MPI_PROC_NULL) {
+        MPI_Isend(rightSendBuffer.data(),
+                  sendCount,
+                  mpiType,
+                  next,
+                  4113,
+                  MPI_COMM_WORLD,
+                  &requests[requestCount++]);
+    }
+    if (prev != MPI_PROC_NULL) {
+        MPI_Isend(leftSendBuffer.data(),
+                  sendCount,
+                  mpiType,
+                  prev,
+                  4114,
+                  MPI_COMM_WORLD,
+                  &requests[requestCount++]);
+    }
+    if (requestCount > 0) {
+        MPI_Waitall(requestCount, requests, MPI_STATUSES_IGNORE);
+    }
+    if (prev != MPI_PROC_NULL && leftRecvCount > 0) {
+        unpackItems(leftRecvBuffer, firstInterior - leftRecvItems);
+    }
+    if (next != MPI_PROC_NULL && rightRecvCount > 0) {
+        unpackItems(rightRecvBuffer, rightRecvStart);
     }
 }
 

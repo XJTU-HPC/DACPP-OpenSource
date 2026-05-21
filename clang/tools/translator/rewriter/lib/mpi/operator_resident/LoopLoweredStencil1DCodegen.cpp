@@ -490,6 +490,12 @@ void emitResidentHaloContextType(std::string& code,
     code += "    int __or_followup_offset = " +
             std::to_string(plan.orLoopLower.stencilResidentHalo.followupTargetOffset) +
             ";\n";
+    if (plan.orLoopLower.stencilResidentHalo.temporalBlockSize > 1) {
+        code += "    int __or_temporal_block_size = " +
+                std::to_string(
+                    plan.orLoopLower.stencilResidentHalo.temporalBlockSize) +
+                ";\n";
+    }
     code += "    dacpp::mpi::operator_resident::RankRange1D __or_range{};\n";
     code += "    dacpp::mpi::operator_resident::ResidentHalo1DLayout __or_halo_layout{};\n";
     code += "    std::vector<int> __or_counts;\n";
@@ -529,7 +535,11 @@ void emitResidentHaloInitFunction(std::string& code,
     code += "    ctx.__or_range = dacpp::mpi::operator_resident::rank_range_1d(ctx.__or_output_size, ctx.mpi_rank, ctx.mpi_size);\n";
     code += "    ctx.__or_local_item_count = ctx.__or_range.count;\n";
     code += "    ctx.__or_output_begin = ctx.__or_range.begin;\n";
-    code += "    ctx.__or_halo_layout = dacpp::mpi::operator_resident::resident_halo_1d_layout(ctx.__or_output_size, ctx.mpi_rank, ctx.mpi_size, ctx.__or_window_size);\n";
+    if (plan.orLoopLower.stencilResidentHalo.temporalBlockSize > 1) {
+        code += "    ctx.__or_halo_layout = dacpp::mpi::operator_resident::resident_halo_1d_layout_temporal(ctx.__or_output_size, ctx.mpi_rank, ctx.mpi_size, ctx.__or_temporal_block_size, ctx.__or_window_size);\n";
+    } else {
+        code += "    ctx.__or_halo_layout = dacpp::mpi::operator_resident::resident_halo_1d_layout(ctx.__or_output_size, ctx.mpi_rank, ctx.mpi_size, ctx.__or_window_size);\n";
+    }
     code += "    dacpp::mpi::operator_resident::counts_displs_1d(ctx.__or_output_size, ctx.mpi_size, ctx.__or_counts, ctx.__or_displs);\n";
     code += "    ctx." + localName(reader) +
             ".assign(static_cast<std::size_t>(ctx.__or_halo_layout.local_size), " +
@@ -558,10 +568,17 @@ void emitResidentHaloInitFunction(std::string& code,
                 ".tensor2Array(__or_initial_global_" + reader.calcParamName +
                 ");\n";
         code += "    }\n";
-        code += "    dacpp::mpi::operator_resident::scatter_window_1d(__or_initial_global_" +
-                reader.calcParamName + ", ctx." + localName(reader) +
-                ", ctx.__or_output_size, ctx.__or_input_size, ctx.__or_window_size, ctx.__or_halo_layout, ctx.mpi_rank, ctx.mpi_size, " +
-                readerMpiType + ");\n";
+        if (plan.orLoopLower.stencilResidentHalo.temporalBlockSize > 1) {
+            code += "    dacpp::mpi::operator_resident::scatter_window_1d_temporal(__or_initial_global_" +
+                    reader.calcParamName + ", ctx." + localName(reader) +
+                    ", ctx.__or_output_size, ctx.__or_input_size, ctx.__or_temporal_block_size, ctx.__or_window_size, ctx.__or_halo_layout, ctx.mpi_rank, ctx.mpi_size, " +
+                    readerMpiType + ");\n";
+        } else {
+            code += "    dacpp::mpi::operator_resident::scatter_window_1d(__or_initial_global_" +
+                    reader.calcParamName + ", ctx." + localName(reader) +
+                    ", ctx.__or_output_size, ctx.__or_input_size, ctx.__or_window_size, ctx.__or_halo_layout, ctx.mpi_rank, ctx.mpi_size, " +
+                    readerMpiType + ");\n";
+        }
     }
     code += "    dacpp::mpi::recordProfileSegment(ctx.__or_profile, dacpp::mpi::ProfileSegment::Scatter, dacpp_profile_scatter_start);\n";
     code += "    ctx." + localName(writer) + " = ctx." +
@@ -585,12 +602,20 @@ void emitResidentHaloRunFunction(std::string& code,
     const std::string writerMpiType = mpiDatatypeFor(writerType);
     const std::string calcName = plan.exprNode.calc->getName();
     const auto& halo = plan.orLoopLower.stencilResidentHalo;
+    const int temporalBlockSize = halo.temporalBlockSize;
+    const bool temporalBlocked = temporalBlockSize > 1;
     code += "void " + runName + "(" + ctxName + "& ctx, " +
             wrapperSignature(plan) + ") {\n";
     code += "    int mpi_rank = ctx.mpi_rank;\n";
     code += "    auto& q = ctx.q;\n";
     code += "    const int64_t __or_local_item_count = ctx.__or_local_item_count;\n";
     code += "    const int __or_writer_offset = ctx.__or_followup_offset;\n";
+    code += "    int64_t __or_kernel_item_count = __or_local_item_count;\n";
+    if (temporalBlocked) {
+        code += "    const int __or_temporal_block_size = ctx.__or_temporal_block_size;\n";
+        code += "    const bool __or_temporal_block_safe = ctx.__or_output_size >= static_cast<int64_t>(ctx.mpi_size) * static_cast<int64_t>(__or_temporal_block_size);\n";
+        code += "    const int __or_runtime_temporal_block_size = __or_temporal_block_safe ? __or_temporal_block_size : 1;\n";
+    }
     code += "    auto& " + localName(reader) + " = ctx." +
             localName(reader) + ";\n";
     code += "    auto& " + localName(writer) + " = ctx." +
@@ -608,49 +633,76 @@ void emitResidentHaloRunFunction(std::string& code,
     if (!scalarReaders(plan).empty()) {
         code += "    dacpp::mpi::recordProfileSegment(ctx.__or_profile, dacpp::mpi::ProfileSegment::Bcast, dacpp_profile_bcast_start);\n";
     }
-    code += "    auto dacpp_profile_kernel_start = dacpp::mpi::profileSegmentStart();\n";
-    code += "    if (__or_local_item_count > 0) {\n";
-    code += "        sycl::buffer<" + readerType + ", 1> __or_reader_buf(" +
-            localName(reader) + ".data(), sycl::range<1>(" +
-            localName(reader) + ".size()));\n";
+    if (temporalBlocked) {
+        code += "    int64_t __or_time_step = 0;\n";
+        code += "    const int64_t __or_time_limit = static_cast<int64_t>(" +
+                halo.temporalLoopLimitExpr + ");\n";
+        code += "    const int64_t __or_time_end = __or_time_limit" +
+                std::string(halo.temporalLoopLimitInclusive ? " + 1" : "") +
+                ";\n";
+        code += "    while (__or_time_step < __or_time_end) {\n";
+        code += "    const int __or_inner_steps = static_cast<int>(std::min<int64_t>(__or_runtime_temporal_block_size, __or_time_end - __or_time_step));\n";
+        code += "    auto dacpp_profile_halo_start = dacpp::mpi::profileSegmentStart();\n";
+        code += "    dacpp::mpi::operator_resident::exchange_halo_1d_temporal_inplace(" +
+                localName(reader) +
+                ", ctx.__or_halo_layout, ctx.__or_output_size, ctx.__or_window_size, ctx.__or_followup_offset, __or_runtime_temporal_block_size, mpi_rank, ctx.mpi_size, " +
+                writerMpiType + ");\n";
+        code += "    dacpp::mpi::recordProfileSegment(ctx.__or_profile, dacpp::mpi::ProfileSegment::Halo, dacpp_profile_halo_start);\n";
+    }
+    auto emitOneKernel = [&](const std::string& indent,
+                             const std::string& readerBufferName,
+                             const std::string& writerBufferName,
+                             const std::string& readerIndexExpr,
+                             const std::string& writerIndexExpr,
+                             bool recordKernelProfile) {
+        if (recordKernelProfile) {
+            code += indent +
+                    "auto dacpp_profile_kernel_start = dacpp::mpi::profileSegmentStart();\n";
+        }
+        code += indent + "if (__or_kernel_item_count > 0) {\n";
+        code += indent + "    sycl::buffer<" + readerType +
+                ", 1> __or_reader_buf(" + readerBufferName +
+                ".data(), sycl::range<1>(" + readerBufferName +
+                ".size()));\n";
     for (const auto* scalar : scalarReaders(plan)) {
         const std::string scalarType = elemType(plan, *scalar);
-        code += "        sycl::buffer<" + scalarType + ", 1> __or_scalar_buf_" +
+        code += indent + "    sycl::buffer<" + scalarType + ", 1> __or_scalar_buf_" +
                 scalar->calcParamName + "(" + localName(*scalar) +
                 ".data(), sycl::range<1>(" + localName(*scalar) +
                 ".size()));\n";
     }
-    code += "        sycl::buffer<" + writerType + ", 1> __or_writer_buf(" +
-            localName(writer) + ".data(), sycl::range<1>(" +
-            localName(writer) + ".size()));\n";
-    code += "        q.submit([&](sycl::handler& h) {\n";
-    code += "            auto __or_reader_acc = __or_reader_buf.get_access<sycl::access::mode::read>(h);\n";
+        code += indent + "    sycl::buffer<" + writerType +
+                ", 1> __or_writer_buf(" + writerBufferName +
+                ".data(), sycl::range<1>(" + writerBufferName +
+                ".size()));\n";
+        code += indent + "    q.submit([&](sycl::handler& h) {\n";
+        code += indent + "        auto __or_reader_acc = __or_reader_buf.get_access<sycl::access::mode::read>(h);\n";
     for (const auto* scalar : scalarReaders(plan)) {
-        code += "            auto __or_scalar_acc_" + scalar->calcParamName +
+        code += indent + "        auto __or_scalar_acc_" + scalar->calcParamName +
                 " = __or_scalar_buf_" + scalar->calcParamName +
                 ".get_access<sycl::access::mode::read>(h);\n";
     }
-    code += "            auto __or_writer_acc = __or_writer_buf.get_access<sycl::access::mode::read_write>(h);\n";
-    code += "            h.parallel_for(sycl::range<1>(static_cast<std::size_t>(__or_local_item_count)), [=](sycl::id<1> idx) {\n";
-    code += "                const int item_linear = static_cast<int>(idx[0]);\n";
-    code += "                auto* __or_reader_data = __or_reader_acc.template get_multi_ptr<sycl::access::decorated::no>().get();\n";
+        code += indent + "        auto __or_writer_acc = __or_writer_buf.get_access<sycl::access::mode::read_write>(h);\n";
+        code += indent + "        h.parallel_for(sycl::range<1>(static_cast<std::size_t>(__or_kernel_item_count)), [=](sycl::id<1> idx) {\n";
+        code += indent + "            const int item_linear = static_cast<int>(idx[0]);\n";
+        code += indent + "            auto* __or_reader_data = __or_reader_acc.template get_multi_ptr<sycl::access::decorated::no>().get();\n";
     for (const auto* scalar : scalarReaders(plan)) {
-        code += "                auto* __or_scalar_data_" +
+        code += indent + "            auto* __or_scalar_data_" +
                 scalar->calcParamName + " = __or_scalar_acc_" +
                 scalar->calcParamName +
                 ".template get_multi_ptr<sycl::access::decorated::no>().get();\n";
     }
-    code += "                auto* __or_writer_data = __or_writer_acc.template get_multi_ptr<sycl::access::decorated::no>().get();\n";
+        code += indent + "            auto* __or_writer_data = __or_writer_acc.template get_multi_ptr<sycl::access::decorated::no>().get();\n";
     for (const auto& param : plan.params) {
         const std::string paramType = elemType(plan, param);
         if (param.access == ParamAccessKind::StencilWindow) {
-            code += "                dacpp::mpi::ResidentHaloView1D<const " +
+            code += indent + "            dacpp::mpi::ResidentHaloView1D<const " +
                     paramType + "> view_" + param.calcParamName +
-                    "{__or_reader_data, item_linear};\n";
+                    "{__or_reader_data, " + readerIndexExpr + "};\n";
             continue;
         }
         if (param.access == ParamAccessKind::ReplicatedScalar) {
-            code += "                dacpp::mpi::ContiguousView1D<const " +
+            code += indent + "            dacpp::mpi::ContiguousView1D<const " +
                     paramType + "> view_" + param.calcParamName +
                     "{__or_scalar_data_" + param.calcParamName + ", 0};\n";
             continue;
@@ -658,14 +710,14 @@ void emitResidentHaloRunFunction(std::string& code,
         if (param.access == ParamAccessKind::OutputDirect &&
             param.writes &&
             !param.reads) {
-            code += "                dacpp::mpi::ContiguousView1D<" +
+            code += indent + "            dacpp::mpi::ContiguousView1D<" +
                     paramType + "> view_" + param.calcParamName +
-                    "{__or_writer_data, item_linear + __or_writer_offset};\n";
+                    "{__or_writer_data, " + writerIndexExpr + "};\n";
             continue;
         }
         return;
     }
-    code += "                " + calcName + "_mpi_local(";
+        code += indent + "            " + calcName + "_mpi_local(";
     for (int paramIdx = 0; paramIdx < plan.exprNode.calc->getNumParams();
          ++paramIdx) {
         if (paramIdx != 0) {
@@ -673,12 +725,38 @@ void emitResidentHaloRunFunction(std::string& code,
         }
         code += "view_" + plan.exprNode.calc->getParam(paramIdx)->getName();
     }
-    code += ");\n";
-    code += "            });\n";
-    code += "        });\n";
-    code += "        q.wait();\n";
-    code += "    }\n";
-    code += "    dacpp::mpi::recordProfileSegment(ctx.__or_profile, dacpp::mpi::ProfileSegment::Kernel, dacpp_profile_kernel_start);\n";
+        code += ");\n";
+        code += indent + "        });\n";
+        code += indent + "    });\n";
+        code += indent + "    q.wait();\n";
+        code += indent + "}\n";
+        if (recordKernelProfile) {
+            code += indent +
+                    "dacpp::mpi::recordProfileSegment(ctx.__or_profile, dacpp::mpi::ProfileSegment::Kernel, dacpp_profile_kernel_start);\n";
+        }
+    };
+    if (temporalBlocked) {
+        code += "    auto dacpp_profile_kernel_start = dacpp::mpi::profileSegmentStart();\n";
+        code += "    for (int __or_block_step = 0; __or_block_step < __or_inner_steps; ++__or_block_step) {\n";
+        code += "        const int64_t __or_compute_begin = std::max<int64_t>(0, ctx.__or_halo_layout.owned_offset - (__or_inner_steps - __or_block_step - 1));\n";
+        code += "        const int64_t __or_compute_end = std::min<int64_t>(ctx.__or_halo_layout.local_size - 2, ctx.__or_halo_layout.owned_offset + __or_local_item_count + (__or_inner_steps - __or_block_step - 1));\n";
+        code += "        __or_kernel_item_count = std::max<int64_t>(0, __or_compute_end - __or_compute_begin);\n";
+        emitOneKernel("        ", localName(reader), localName(writer),
+                      "item_linear + static_cast<int>(__or_compute_begin)",
+                      "item_linear + static_cast<int>(__or_compute_begin) + __or_writer_offset",
+                      false);
+        code += "        std::swap(" + localName(reader) + ", " +
+                localName(writer) + ");\n";
+        code += "    }\n";
+        code += "    dacpp::mpi::recordProfileSegment(ctx.__or_profile, dacpp::mpi::ProfileSegment::Kernel, dacpp_profile_kernel_start);\n";
+        code += "    __or_time_step += __or_inner_steps;\n";
+        code += "    }\n";
+        code += "    // P4.6 1D temporal-block=2 leaves the latest state in the resident reader buffer after the block loop.\n";
+        code += "}\n";
+        return;
+    }
+    emitOneKernel("    ", localName(reader), localName(writer), "item_linear",
+                  "item_linear + __or_writer_offset", true);
     code += "    auto dacpp_profile_halo_start = dacpp::mpi::profileSegmentStart();\n";
     if (halo.hasBoundaryLocalUpdate) {
         if (halo.boundaryCopiesWriter) {

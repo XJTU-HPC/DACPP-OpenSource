@@ -1,4 +1,4 @@
-# MPI 32-Node Top-10 Optimization Plan
+# MPI 32-Node Top-11 Optimization Plan
 
 This note records the current 32-rank optimization target list for the DACPP MPI
 translator. It is based on the benchmark driver:
@@ -34,6 +34,7 @@ should be revalidated with a 32-rank profile after each optimization batch.
 | 8 | `FOuLa1.0` | owner-loop 1D resident halo | boundary history broadcast and per-step halo latency |
 | 9 | `liuliang1.0` | P4.6 1D resident halo | 1000 small kernel launches and final double gather |
 | 10 | `mandel1.0` | `Contiguous1D` OR + scalar reduction | contiguous static partition load imbalance |
+| 11 | 2D spatial block partition | `StencilWindow2D` / `RowBlock2D` row-block layouts | row-only partitioning limits surface/volume balance and 2D locality |
 
 ## Global Implementation Rules
 
@@ -471,6 +472,43 @@ Fallback:
 - If the direct-reader recurrence cannot be proven for multi-step execution,
   retain one-step resident halo and only apply role-rotation cleanup.
 
+Implementation Status (2026-05-21):
+
+- Changed files: `rewriter/lib/mpi/operator_resident/OperatorChainAnalysis.cpp`
+  and `tests/waveEquation1.0/mpi_expect.txt`.
+- Accepted pattern: the existing P4.6 `StencilWindow2D` direct-reader resident
+  halo path remains accepted with `direct-reader=true`, read-cache offset
+  `(-1,-1)`, followup offset `(1,1)`, constant-local `cur`, scattered `prev`,
+  and pure resident buffer role rotation. Direct-reader temporal blocking is
+  not accepted yet.
+- Fallback conditions: `temporal-block=2` remains rejected for direct-reader
+  recurrence because the multi-step `prev/cur/next` recurrence proof is not yet
+  implemented. The one-step resident halo path is also retained for unproven
+  role rotation, mismatched window/followup/read-cache offsets, unreplayable
+  boundaries, host-visible state between steps, unsupported direct readers, or
+  uncertain final post-use.
+- Generated-code evidence: `waveEquation1.0` translation logs
+  `direct-reader=true`, `role-rotation=buffer-swap`, and
+  `temporal-block=2 rejected reason=direct-reader recurrence not enabled for
+  k=2`. Generated code keeps local resident vectors
+  `__or_local_prev`, `__or_local_cur`, and `__or_local_next`, rotates with
+  `ctx.__or_local_prev.swap(ctx.__or_local_cur)` and
+  `ctx.__or_local_cur.swap(ctx.__or_local_next)`, keeps the constant-local
+  `cur` initialization, and does not emit 2D temporal helpers. The 4-rank,
+  3-trial profile probe reports 2400 halo calls and 2400 kernel calls for 600
+  steps. The fixture still materializes `matCur` with a full post-use sync
+  because the source has a tensor member call; `matPrev` and `matNext` remain
+  post-use `none`.
+- Tests run: `cmake --build build --target translator -j8`;
+  `bash clang/tools/translator/test_mpi.sh waveEquation1.0 MDP1.0`;
+  `bash clang/tools/translator/test_mpi.sh stencil1.0 liuliang1.0 FOuLa1.0`;
+  `bash clang/tools/translator/test_mpi.sh mpiLoopStencilResidentHalo1D mpiLoopStencilResidentHaloEmptyRank1D mpiLoopStencilRightBoundaryFullSync1D mpiLoopStencilCountGuard2D mpiLoopStencilOrderReject2D mpiLoopStencilScalarReject2D`;
+  and a 4-rank, 3-trial profile probe for `waveEquation1.0`, `MDP1.0`,
+  `stencil1.0`, `liuliang1.0`, and `FOuLa1.0`.
+- Remaining risk: the direct-reader temporal block is still deferred. Halo calls
+  therefore remain at one exchange per step for `waveEquation1.0` until the
+  multi-step recurrence and final post-use proof are implemented.
+
 ### 7. `MDP1.0`
 
 Current shape:
@@ -503,6 +541,44 @@ Fallback:
 - Keep one-step resident halo for boundary-local updates, non-unit followup
   offsets, unsupported window sizes, dynamic loop bodies, or any host-visible
   side effect between steps.
+
+Implementation Status (2026-05-21):
+
+- Changed files: `dpcppLib/include/mpi/operator_resident/OperatorResidentRuntime.h`,
+  `rewriter/lib/mpi/operator_resident/LoopLoweredStencil1DCodegen.cpp`,
+  `rewriter/lib/mpi/operator_resident/OperatorChainAnalysis.cpp`,
+  `tests/MDP1.0/mpi_expect.txt`,
+  `tests/mpiLoopStencilResidentHalo1D/mpi_expect.txt`,
+  `tests/mpiLoopStencilResidentHaloEmptyRank1D/mpi_expect.txt`, and
+  `tests/liuliang1.0/mpi_expect.txt`.
+- Accepted pattern: conservative P4.6 `StencilWindow1D` resident-halo temporal
+  blocking with static `k=2`, canonical window size 3, followup offset 1,
+  reader extent exactly writer extent plus two halo elements, no direct reader,
+  no scalar reader, no read-cache route, no boundary-local update, and a
+  zero-based canonical loop bound.
+- Fallback conditions: one-step resident halo is kept for boundary-local
+  updates, non-unit followup offsets, unsupported window sizes, dynamic or
+  noncanonical loop bodies, host-visible side effects between steps, scalar or
+  direct/unsupported readers, read-cache routes, and partitions too narrow for a
+  safe two-step halo. Narrow runtime partitions use a block size of 1.
+- Generated-code evidence: `MDP1.0` and the 1D resident halo fixtures log
+  `temporal-block=2 accepted`; generated code emits
+  `resident_halo_1d_layout_temporal`, `scatter_window_1d_temporal`,
+  `exchange_halo_1d_temporal_inplace`, `__or_runtime_temporal_block_size`, an
+  inner `for (__or_block_step...)` loop, and resident reader/writer
+  `std::swap`. The 4-rank, 3-trial profile probe reports 1200 halo calls and
+  1200 kernel calls for 600 steps. The `liuliang1.0` fixture logs
+  `temporal-block=2 rejected reason=requires canonical 1D window size 3 and
+  followup offset 1` and does not emit the temporal 1D helpers.
+- Tests run: `cmake --build build --target translator -j8`;
+  `bash clang/tools/translator/test_mpi.sh waveEquation1.0 MDP1.0`;
+  `bash clang/tools/translator/test_mpi.sh stencil1.0 liuliang1.0 FOuLa1.0`;
+  `bash clang/tools/translator/test_mpi.sh mpiLoopStencilResidentHalo1D mpiLoopStencilResidentHaloEmptyRank1D mpiLoopStencilRightBoundaryFullSync1D mpiLoopStencilCountGuard2D mpiLoopStencilOrderReject2D mpiLoopStencilScalarReject2D`;
+  and a 4-rank, 3-trial profile probe for `waveEquation1.0`, `MDP1.0`,
+  `stencil1.0`, `liuliang1.0`, and `FOuLa1.0`.
+- Remaining risk: the implementation is intentionally limited to canonical
+  no-direct-reader 1D halos. Boundary-local replay, owner-loop sharing, and
+  larger or tunable temporal block sizes are left for later proof work.
 
 ### 8. `FOuLa1.0`
 
@@ -621,6 +697,58 @@ Fallback:
 - Keep contiguous partitioning when output order must be materialized fully,
   downstream resident readers require contiguous ownership, stencil/followup
   semantics depend on neighbors, or bounded reads cannot cheaply find the owner.
+
+### 11. 2D Spatial Block Partition
+
+Current shape:
+
+- Existing `StencilWindow2D` resident halo and `RowBlock2D` paths partition only
+  by contiguous row ranges.
+- Temporal blocking `k=2` reduces exchange frequency, but each rank still owns a
+  row slab and exchanges only vertical row halos.
+- At high rank counts, row slabs can become thin, and communication/locality are
+  limited by the row-only decomposition.
+
+Optimization:
+
+- Add a true 2D block or block-cyclic spatial decomposition for eligible 2D
+  layouts, separate from temporal blocking.
+- Represent rank ownership as a process grid with row and column block ranges.
+- Generate halo exchange for north/south/east/west neighbors, with corner/edge
+  handling when the stencil or followup contract needs it.
+- Keep temporal blocking orthogonal: first support one-step 2D block
+  partitioning, then allow widened halos for `k>1` only after the block
+  decomposition contract is proven.
+
+Likely files:
+
+- `rewriter/lib/mpi/operator_resident/PartitionCodegen.cpp`
+- `rewriter/lib/mpi/operator_resident/StencilWindowCodegen.cpp`
+- `rewriter/lib/mpi/operator_resident/OperatorChainAnalysis.cpp`
+- `rewriter/include/mpi/operator_resident/OperatorResidentPlan.h`
+- `dpcppLib/include/mpi/operator_resident/OperatorResidentRuntime.h`
+
+Acceptance:
+
+- Translation log reports a 2D block partition only when the layout, access
+  window, followup/read-cache offsets, boundary updates, and post-use sync can
+  be represented by the 2D ownership grid.
+- Generated code uses a 2D process-grid layout and exchanges only required
+  neighbor halos; it does not fall back to full-row gathers or replicated
+  tensors for steady-state stencil steps.
+- `stencil1.0` and, after direct-reader recurrence is proven,
+  `waveEquation1.0` pass with the 2D block layout.
+- 32-rank profile shows lower halo critical-path time or better kernel locality
+  than the row-block temporal path for suitable square-ish grids.
+
+Fallback:
+
+- Keep row-block partitioning for unsupported windows, nonlocal followup or
+  read-cache offsets, boundary conditions that cannot be mapped to the local
+  block, host-visible post-use that requires cheap contiguous rows, direct
+  readers whose role rotation is not proven on a 2D block grid, small grids
+  where row-block is cheaper, or any downstream resident contract that requires
+  contiguous row ownership.
 
 ## 32-Rank Benchmark Commands
 

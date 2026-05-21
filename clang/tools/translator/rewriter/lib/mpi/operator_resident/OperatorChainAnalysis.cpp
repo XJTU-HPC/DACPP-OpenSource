@@ -3764,13 +3764,69 @@ void annotateResidentHaloTemporalBlocking(
         reject("analysis context unavailable");
         return;
     }
-    if (plan.signature.layout != LocalLayoutKind::StencilWindow2D) {
-        reject("requires StencilWindow2D resident halo");
-        return;
-    }
     if (!metadata.enabled) {
         reject(metadata.rejectReason.empty() ? "resident halo not accepted"
                                              : metadata.rejectReason);
+        return;
+    }
+    if (plan.signature.layout == LocalLayoutKind::StencilWindow1D) {
+        if (metadata.hasDirectReader) {
+            reject("direct readers are outside StencilWindow1D resident halo");
+            return;
+        }
+        if (metadata.windowSize != 3 ||
+            metadata.followupTargetOffset != 1) {
+            reject("requires canonical 1D window size 3 and followup offset 1");
+            return;
+        }
+        if (metadata.hasBoundaryLocalUpdate) {
+            reject("boundary-local updates are not enabled for 1D k=2 replay");
+            return;
+        }
+        for (const auto& param : plan.params) {
+            if (isSupportedStencilScalarReader(param)) {
+                reject("scalar readers are not enabled for 1D k=2 replay");
+                return;
+            }
+        }
+        const ParamAccessPlan* reader = stencilWindowReaderParam(plan);
+        const ParamAccessPlan* writer = stencilOutputDirectWriterParam(plan);
+        if (!reader || !writer) {
+            reject("requires one window reader and one direct writer");
+            return;
+        }
+        const int64_t readerExtent =
+            staticOneDimShellArgExtent(dacppFile, plan, *reader);
+        const int64_t writerExtent =
+            staticOneDimShellArgExtent(dacppFile, plan, *writer);
+        if (readerExtent <= 0 || writerExtent <= 0 ||
+            readerExtent != writerExtent + 2 ||
+            writerExtent < 2) {
+            reject("requires proven 1D reader extent writer+2 with room for k=2");
+            return;
+        }
+        bool inclusive = false;
+        const std::string limitExpr =
+            loopIterationLimitExpr(loop, dacppFile->getContext(), inclusive);
+        if (limitExpr.empty()) {
+            reject("requires canonical zero-based for-loop bound");
+            return;
+        }
+        const DistributedStencilSitePlan sitePlan = analyzeDistributedStencilSite(
+            dacppFile, plan.exprNode.shell, plan.exprNode.calc,
+            plan.exprNode.dacExpr);
+        if (!sitePlan.supported || !sitePlan.readCacheTransitions.empty() ||
+            !sitePlan.boundaryLocalUpdates.empty()) {
+            reject("requires canonical B1 followup with no read-cache or boundary-local updates");
+            return;
+        }
+        plan.orLoopLower.stencilResidentHalo.temporalBlockSize = 2;
+        plan.orLoopLower.stencilResidentHalo.temporalLoopLimitExpr = limitExpr;
+        plan.orLoopLower.stencilResidentHalo.temporalLoopLimitInclusive = inclusive;
+        return;
+    }
+    if (plan.signature.layout != LocalLayoutKind::StencilWindow2D) {
+        reject("requires StencilWindow1D or StencilWindow2D resident halo");
         return;
     }
     if (metadata.hasDirectReader) {
@@ -6427,7 +6483,7 @@ void annotateLoopLowerCandidates(DacppFile* dacppFile,
                             << ","
                             << plan.orLoopLower.stencilResidentHalo
                                    .readCacheTargetColOffset
-                            << ")";
+                            << ") role-rotation=buffer-swap";
                     }
                 } else {
                     llvm::outs()

@@ -1,7 +1,7 @@
 LOG_CONTAINS:[DACPP][MPI][OR] expr=0 shell=LWR_shell layout=StencilWindow1D partition=accepted
 LOG_CONTAINS:[DACPP][MPI][OR] chain=0 layout=StencilWindow1D length=1 chain=accepted codegen=enabled
 LOG_CONTAINS:[DACPP][MPI] output new_rho sync=distributed-followup
-LOG_CONTAINS:[DACPP][MPI][OR][P4.6][Loop] expr=0 shell=LWR_shell layout=StencilWindow1D loop-lower=candidate loop=for kind=StencilResidentHalo structure=ctx/init/run/materialize resident-halo=true window-size=2 followup-offset=1 materialize=final
+LOG_CONTAINS:[DACPP][MPI][OR][P4.6][Loop] expr=0 shell=LWR_shell layout=StencilWindow1D loop-lower=candidate loop=for kind=StencilResidentHalo structure=ctx/init/run/materialize resident-halo=true window-size=2 followup-offset=1 materialize=final temporal-block=2 rejected reason=requires canonical 1D window size 3 and followup offset 1
 SYCL_CONTAINS:struct __dacpp_mpi_or_LWR_shell_lwr_0_ctx
 SYCL_CONTAINS:dacpp::mpi::SegmentedProfile __or_profile
 SYCL_CONTAINS:void __dacpp_mpi_or_LWR_shell_lwr_0_init(__dacpp_mpi_or_LWR_shell_lwr_0_ctx& ctx
@@ -22,6 +22,9 @@ SYCL_CONTAINS:__or_arg0.array2Tensor(__or_materialized_rho)
 SYCL_CONTAINS:dacpp::mpi::ProfileSegment::Materialize
 SYCL_CONTAINS:dacpp::mpi::reportSegmentedProfile("__dacpp_mpi_or_LWR_shell_lwr_0_materialize"
 SYCL_NOT_CONTAINS:MPI_Bcast(__or_global_rho.data()
+SYCL_NOT_CONTAINS:resident_halo_1d_layout_temporal
+SYCL_NOT_CONTAINS:scatter_window_1d_temporal
+SYCL_NOT_CONTAINS:exchange_halo_1d_temporal_inplace
 SYCL_NOT_CONTAINS:ContiguousView1D<const double> view_rho{__or_reader_data, output_idx}
 SYCL_NOT_CONTAINS:apply_followup_1d(__or_local_rho, __or_local_new_rho
 SYCL_NOT_CONTAINS:exchange_halo_1d(__or_local_rho, __or_local_new_rho

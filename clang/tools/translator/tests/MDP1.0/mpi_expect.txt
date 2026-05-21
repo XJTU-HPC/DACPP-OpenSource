@@ -1,18 +1,24 @@
 LOG_CONTAINS:[DACPP][MPI][OR] expr=0 shell=mdp_shell layout=StencilWindow1D partition=accepted
 LOG_CONTAINS:[DACPP][MPI][OR] chain=0 layout=StencilWindow1D length=1 chain=accepted codegen=enabled
 LOG_CONTAINS:[DACPP][MPI] output new_p sync=distributed-followup
-LOG_CONTAINS:[DACPP][MPI][OR][P4.6][Loop] expr=0 shell=mdp_shell layout=StencilWindow1D loop-lower=candidate loop=for kind=StencilResidentHalo structure=ctx/init/run/materialize resident-halo=true window-size=3 followup-offset=1 materialize=final
+LOG_CONTAINS:[DACPP][MPI][OR][P4.6][Loop] expr=0 shell=mdp_shell layout=StencilWindow1D loop-lower=candidate loop=for kind=StencilResidentHalo structure=ctx/init/run/materialize resident-halo=true window-size=3 followup-offset=1 materialize=final temporal-block=2 accepted
 SYCL_CONTAINS:struct __dacpp_mpi_or_mdp_shell_mdp_0_ctx
 SYCL_CONTAINS:void __dacpp_mpi_or_mdp_shell_mdp_0_init(__dacpp_mpi_or_mdp_shell_mdp_0_ctx& ctx
 SYCL_CONTAINS:void __dacpp_mpi_or_mdp_shell_mdp_0_run(__dacpp_mpi_or_mdp_shell_mdp_0_ctx& ctx
 SYCL_CONTAINS:void __dacpp_mpi_or_mdp_shell_mdp_0_materialize(__dacpp_mpi_or_mdp_shell_mdp_0_ctx& ctx
 SYCL_CONTAINS:void __dacpp_mpi_or_mdp_shell_mdp_0
 SYCL_CONTAINS:dacpp::mpi::operator_resident::ResidentHalo1DLayout __or_halo_layout
-SYCL_CONTAINS:dacpp::mpi::operator_resident::scatter_window_1d(__or_initial_global_p
-SYCL_CONTAINS:ResidentHaloView1D<const double> view_p{__or_reader_data, item_linear}
-SYCL_CONTAINS:ContiguousView1D<double> view_new_p{__or_writer_data, item_linear + __or_writer_offset}
-SYCL_CONTAINS:dacpp::mpi::operator_resident::exchange_halo_1d_inplace(__or_local_new_p, ctx.__or_halo_layout, ctx.__or_output_size
-SYCL_CONTAINS:ctx.__or_local_p.swap(ctx.__or_local_new_p);
+SYCL_CONTAINS:int __or_temporal_block_size = 2
+SYCL_CONTAINS:dacpp::mpi::operator_resident::resident_halo_1d_layout_temporal
+SYCL_CONTAINS:dacpp::mpi::operator_resident::scatter_window_1d_temporal(__or_initial_global_p
+SYCL_CONTAINS:const bool __or_temporal_block_safe = ctx.__or_output_size >= static_cast<int64_t>(ctx.mpi_size) * static_cast<int64_t>(__or_temporal_block_size)
+SYCL_CONTAINS:const int __or_runtime_temporal_block_size = __or_temporal_block_safe ? __or_temporal_block_size : 1
+SYCL_CONTAINS:while (__or_time_step < __or_time_end)
+SYCL_CONTAINS:dacpp::mpi::operator_resident::exchange_halo_1d_temporal_inplace(__or_local_p
+SYCL_CONTAINS:ResidentHaloView1D<const double> view_p{__or_reader_data, item_linear + static_cast<int>(__or_compute_begin)}
+SYCL_CONTAINS:ContiguousView1D<double> view_new_p{__or_writer_data, item_linear + static_cast<int>(__or_compute_begin) + __or_writer_offset}
+SYCL_CONTAINS:std::swap(__or_local_p, __or_local_new_p);
+SYCL_CONTAINS:P4.6 1D temporal-block=2 leaves the latest state in the resident reader buffer
 SYCL_CONTAINS:dacpp::mpi::operator_resident::owned_slice_1d(ctx.__or_local_p, ctx.__or_halo_layout, ctx.__or_followup_offset)
 SYCL_CONTAINS:MPI_Gatherv(__or_owned_new_p.data()
 SYCL_CONTAINS:__or_arg0.array2Tensor(__or_materialized_p)
@@ -25,6 +31,7 @@ SYCL_NOT_CONTAINS:MPI_Bcast(__or_global_p.data()
 SYCL_NOT_CONTAINS:ContiguousView1D<const double> view_p{__or_reader_data, output_idx}
 SYCL_NOT_CONTAINS:apply_followup_1d(__or_local_p, __or_local_new_p
 SYCL_NOT_CONTAINS:exchange_halo_1d(__or_local_p, __or_local_new_p
+SYCL_NOT_CONTAINS:exchange_halo_1d_inplace(__or_local_new_p
 SYCL_NOT_CONTAINS:MPI_Gatherv(ctx.__or_local_new_p.data()
 SYCL_NOT_CONTAINS:__or_followup_global_p
 SYCL_NOT_CONTAINS:PackPlan

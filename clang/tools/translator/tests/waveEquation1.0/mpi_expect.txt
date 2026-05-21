@@ -9,7 +9,9 @@ LOG_CONTAINS:[DACPP][MPI][OR] output matNext post-use=none reason=no host-visibl
 LOG_CONTAINS:[DACPP][MPI][OR] input matCur init-sync=constant-local value=0
 LOG_CONTAINS:[DACPP][MPI][OR] input matPrev init-sync=scatter fallback reason=tensor is not constructed from a vector variable
 LOG_CONTAINS:[DACPP][MPI][OR][P4.6][Loop] expr=0 shell=waveEqShell
-LOG_CONTAINS:kind=StencilResidentHalo structure=ctx/init/run/materialize resident-halo=true window-shape=3x3 followup-offset=(1,1) direct-reader=true read-cache-offset=(-1,-1) materialize=final
+LOG_CONTAINS:kind=StencilResidentHalo structure=ctx/init/run/materialize resident-halo=true window-shape=3x3 followup-offset=(1,1) direct-reader=true read-cache-offset=(-1,-1)
+LOG_CONTAINS:role-rotation=buffer-swap materialize=final
+LOG_CONTAINS:temporal-block=2 rejected reason=direct-reader recurrence not enabled for k=2
 SYCL_CONTAINS:struct __dacpp_mpi_or_waveEqShell_waveEq_0_ctx
 SYCL_CONTAINS:dacpp::mpi::SegmentedProfile __or_profile
 SYCL_CONTAINS:void __dacpp_mpi_or_waveEqShell_waveEq_0_init(__dacpp_mpi_or_waveEqShell_waveEq_0_ctx& ctx
@@ -51,6 +53,9 @@ SYCL_NOT_CONTAINS:MPI_Gatherv(ctx.__or_local_prev.data()
 SYCL_NOT_CONTAINS:dacpp::mpi::operator_resident::owned_slice_2d_rows(ctx.__or_local_prev
 SYCL_NOT_CONTAINS:MPI_Gatherv(__or_owned_prev.data()
 SYCL_NOT_CONTAINS:dacpp::mpi::ContiguousView2D<const double> view_cur
+SYCL_NOT_CONTAINS:exchange_halo_2d_rows_temporal_inplace
+SYCL_NOT_CONTAINS:resident_halo_2d_row_layout_temporal
+SYCL_NOT_CONTAINS:scatter_window_2d_rows_temporal
 SYCL_NOT_CONTAINS:MPI_Bcast(__or_materialized_next.data()
 SYCL_NOT_CONTAINS:void __dacpp_mpi_stencil_waveEqShell_waveEq_0
 SYCL_NOT_CONTAINS:AccessPattern
