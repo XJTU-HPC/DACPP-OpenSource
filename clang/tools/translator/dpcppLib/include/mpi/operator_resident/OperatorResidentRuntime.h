@@ -398,12 +398,17 @@ inline ResidentHalo2DSpatialLayout resident_halo_2d_spatial_layout(
     layout.input_cols = inputCols;
     if (layout.owned_rows.count > 0 && layout.owned_cols.count > 0) {
         const int64_t halo = std::max<int64_t>(0, haloWidth);
-        const int64_t interiorRowBegin = layout.owned_rows.begin + halo;
+        const int64_t followupOffset = 1;
+        const int64_t interiorRowBegin =
+            layout.owned_rows.begin + followupOffset;
         const int64_t interiorRowEnd =
-            layout.owned_rows.begin + layout.owned_rows.count + halo;
-        const int64_t interiorColBegin = layout.owned_cols.begin + halo;
+            layout.owned_rows.begin + layout.owned_rows.count +
+            followupOffset;
+        const int64_t interiorColBegin =
+            layout.owned_cols.begin + followupOffset;
         const int64_t interiorColEnd =
-            layout.owned_cols.begin + layout.owned_cols.count + halo;
+            layout.owned_cols.begin + layout.owned_cols.count +
+            followupOffset;
         layout.global_row_begin = std::max<int64_t>(0, interiorRowBegin - halo);
         layout.global_col_begin = std::max<int64_t>(0, interiorColBegin - halo);
         const int64_t globalRowEnd =
@@ -1390,6 +1395,15 @@ void exchange_halo_2d_rows_inplace(std::vector<T>& local,
 }
 
 template <typename T>
+void gather_spatial_owned_to_root(const std::vector<T>& owned,
+                                  std::vector<T>& global,
+                                  int64_t outputRows,
+                                  int64_t outputCols,
+                                  int rank,
+                                  int size,
+                                  MPI_Datatype mpiType);
+
+template <typename T>
 void exchange_halo_2d_spatial_inplace(
     std::vector<T>& local,
     const ResidentHalo2DSpatialLayout& layout,
@@ -1398,18 +1412,120 @@ void exchange_halo_2d_spatial_inplace(
     int64_t inputCols,
     int interiorRowOffset,
     int interiorColOffset,
+    int haloWidth,
     int rank,
     int size,
     MPI_Datatype mpiType) {
     if (outputRows <= 0 || outputCols <= 0 || inputCols <= 0 ||
         interiorRowOffset != 1 || interiorColOffset != 1 ||
+        haloWidth <= 0 ||
         layout.owned_rows.count <= 0 || layout.owned_cols.count <= 0 ||
         layout.local_row_count <= 0 || layout.local_col_count <= 0 ||
         local.empty()) {
         return;
     }
     (void)rank;
-    (void)size;
+    bool hasNarrowSpatialPartition = false;
+    for (int r = 0; r < size; ++r) {
+        const BlockRange2D range =
+            spatial_2d_owned_range(outputRows, outputCols, r, size);
+        if ((range.rows.count > 0 &&
+             range.rows.count < static_cast<int64_t>(haloWidth)) ||
+            (range.cols.count > 0 &&
+             range.cols.count < static_cast<int64_t>(haloWidth))) {
+            hasNarrowSpatialPartition = true;
+            break;
+        }
+    }
+    const int64_t ownedItemCount = checked_mul_int64_or_abort(
+        layout.owned_rows.count,
+        layout.owned_cols.count,
+        "[DACPP][MPI][OR] spatial resident halo 2D fallback owned size overflow");
+    if (hasNarrowSpatialPartition) {
+        std::vector<T> ownedSend(static_cast<std::size_t>(ownedItemCount),
+                                 T{});
+        for (int64_t row = 0; row < layout.owned_rows.count; ++row) {
+            const int64_t sourceRow =
+                layout.owned_row_offset + row;
+            if (sourceRow < 0 || sourceRow >= layout.local_row_count) {
+                continue;
+            }
+            const int64_t sourceBase = checked_mul_int64_or_abort(
+                sourceRow,
+                layout.local_col_count,
+                "[DACPP][MPI][OR] spatial resident halo 2D fallback send row overflow");
+            const int64_t sendBase = checked_mul_int64_or_abort(
+                row,
+                layout.owned_cols.count,
+                "[DACPP][MPI][OR] spatial resident halo 2D fallback send base overflow");
+            for (int64_t col = 0; col < layout.owned_cols.count; ++col) {
+                const int64_t sourceCol =
+                    layout.owned_col_offset + col;
+                if (sourceCol < 0 || sourceCol >= layout.local_col_count) {
+                    continue;
+                }
+                const std::size_t sourceIdx =
+                    static_cast<std::size_t>(sourceBase + sourceCol);
+                const std::size_t sendIdx =
+                    static_cast<std::size_t>(sendBase + col);
+                if (sourceIdx < local.size() && sendIdx < ownedSend.size()) {
+                    ownedSend[sendIdx] = local[sourceIdx];
+                }
+            }
+        }
+        std::vector<T> gathered;
+        gather_spatial_owned_to_root(ownedSend,
+                                     gathered,
+                                     outputRows,
+                                     outputCols,
+                                     rank,
+                                     size,
+                                     mpiType);
+        const int64_t gatheredCount = checked_mul_int64_or_abort(
+            outputRows,
+            outputCols,
+            "[DACPP][MPI][OR] spatial resident halo 2D fallback dense size overflow");
+        if (rank != 0) {
+            gathered.resize(static_cast<std::size_t>(gatheredCount), T{});
+        }
+        MPI_Bcast(gathered.empty() ? nullptr : gathered.data(),
+                  narrow_mpi_count_or_abort(
+                      gatheredCount,
+                      "[DACPP][MPI][OR] spatial resident halo 2D fallback broadcast count exceeds MPI int range"),
+                  mpiType,
+                  0,
+                  MPI_COMM_WORLD);
+        for (int64_t row = 0; row < layout.local_row_count; ++row) {
+            const int64_t globalInputRow = layout.global_row_begin + row;
+            const int64_t outputRow = globalInputRow - interiorRowOffset;
+            if (outputRow < 0 || outputRow >= outputRows) {
+                continue;
+            }
+            const int64_t localBase = checked_mul_int64_or_abort(
+                row,
+                layout.local_col_count,
+                "[DACPP][MPI][OR] spatial resident halo 2D fallback local row overflow");
+            const int64_t globalBase = checked_mul_int64_or_abort(
+                outputRow,
+                outputCols,
+                "[DACPP][MPI][OR] spatial resident halo 2D fallback global row overflow");
+            for (int64_t col = 0; col < layout.local_col_count; ++col) {
+                const int64_t globalInputCol = layout.global_col_begin + col;
+                const int64_t outputCol = globalInputCol - interiorColOffset;
+                if (outputCol < 0 || outputCol >= outputCols) {
+                    continue;
+                }
+                const std::size_t localIdx =
+                    static_cast<std::size_t>(localBase + col);
+                const std::size_t globalIdx =
+                    static_cast<std::size_t>(globalBase + outputCol);
+                if (localIdx < local.size() && globalIdx < gathered.size()) {
+                    local[localIdx] = gathered[globalIdx];
+                }
+            }
+        }
+        return;
+    }
     auto packRect = [&](int64_t rowBegin,
                         int64_t rowCount,
                         int64_t colBegin,
@@ -1502,56 +1618,118 @@ void exchange_halo_2d_spatial_inplace(
     const int southEastRank = spatial_2d_rank_from_coords(
         layout.proc_row + 1, layout.proc_col + 1, layout.grid_rows,
         layout.grid_cols);
-    const int64_t topRow = layout.owned_row_offset - 1;
+    const int64_t edgeWidth = std::min<int64_t>(
+        static_cast<int64_t>(haloWidth),
+        std::min(layout.owned_rows.count, layout.owned_cols.count));
+    if (edgeWidth <= 0) {
+        return;
+    }
+    const int64_t topRow = layout.owned_row_offset - edgeWidth;
     const int64_t bottomRow = layout.owned_row_offset + layout.owned_rows.count;
-    const int64_t leftCol = layout.owned_col_offset - 1;
+    const int64_t leftCol = layout.owned_col_offset - edgeWidth;
     const int64_t rightCol = layout.owned_col_offset + layout.owned_cols.count;
-    std::vector<T> northSend = packRect(layout.owned_row_offset, 1,
+    const int64_t northRows = std::min<int64_t>(
+        edgeWidth, std::max<int64_t>(0, layout.owned_row_offset));
+    const int64_t southRows = std::min<int64_t>(
+        edgeWidth,
+        std::max<int64_t>(0, layout.local_row_count - bottomRow));
+    const int64_t westCols = std::min<int64_t>(
+        edgeWidth, std::max<int64_t>(0, layout.owned_col_offset));
+    const int64_t eastCols = std::min<int64_t>(
+        edgeWidth,
+        std::max<int64_t>(0, layout.local_col_count - rightCol));
+    std::vector<T> northSend = packRect(layout.owned_row_offset, edgeWidth,
                                         layout.owned_col_offset,
                                         layout.owned_cols.count);
     std::vector<T> southSend = packRect(
-        layout.owned_row_offset + layout.owned_rows.count - 1, 1,
-        layout.owned_col_offset, layout.owned_cols.count);
+        layout.owned_row_offset + layout.owned_rows.count - edgeWidth,
+        edgeWidth, layout.owned_col_offset, layout.owned_cols.count);
     std::vector<T> westSend = packRect(layout.owned_row_offset,
                                        layout.owned_rows.count,
-                                       layout.owned_col_offset, 1);
+                                       layout.owned_col_offset, edgeWidth);
     std::vector<T> eastSend = packRect(
         layout.owned_row_offset, layout.owned_rows.count,
-        layout.owned_col_offset + layout.owned_cols.count - 1, 1);
+        layout.owned_col_offset + layout.owned_cols.count - edgeWidth,
+        edgeWidth);
     std::vector<T> northWestSend =
-        packRect(layout.owned_row_offset, 1, layout.owned_col_offset, 1);
+        packRect(layout.owned_row_offset, edgeWidth, layout.owned_col_offset,
+                 edgeWidth);
     std::vector<T> northEastSend =
-        packRect(layout.owned_row_offset, 1,
-                 layout.owned_col_offset + layout.owned_cols.count - 1, 1);
+        packRect(layout.owned_row_offset, edgeWidth,
+                 layout.owned_col_offset + layout.owned_cols.count -
+                     edgeWidth,
+                 edgeWidth);
     std::vector<T> southWestSend = packRect(
-        layout.owned_row_offset + layout.owned_rows.count - 1, 1,
-        layout.owned_col_offset, 1);
+        layout.owned_row_offset + layout.owned_rows.count - edgeWidth,
+        edgeWidth, layout.owned_col_offset, edgeWidth);
     std::vector<T> southEastSend = packRect(
-        layout.owned_row_offset + layout.owned_rows.count - 1, 1,
-        layout.owned_col_offset + layout.owned_cols.count - 1, 1);
+        layout.owned_row_offset + layout.owned_rows.count - edgeWidth,
+        edgeWidth,
+        layout.owned_col_offset + layout.owned_cols.count - edgeWidth,
+        edgeWidth);
     std::vector<T> northRecv(static_cast<std::size_t>(
-                                 hasNorth ? layout.owned_cols.count : 0),
+                                 hasNorth
+                                     ? checked_mul_int64_or_abort(
+                                           northRows,
+                                           layout.owned_cols.count,
+                                           "[DACPP][MPI][OR] spatial resident halo 2D north receive size overflow")
+                                     : 0),
                              T{});
     std::vector<T> southRecv(static_cast<std::size_t>(
-                                 hasSouth ? layout.owned_cols.count : 0),
+                                 hasSouth
+                                     ? checked_mul_int64_or_abort(
+                                           southRows,
+                                           layout.owned_cols.count,
+                                           "[DACPP][MPI][OR] spatial resident halo 2D south receive size overflow")
+                                     : 0),
                              T{});
     std::vector<T> westRecv(static_cast<std::size_t>(
-                                hasWest ? layout.owned_rows.count : 0),
+                                hasWest
+                                    ? checked_mul_int64_or_abort(
+                                          layout.owned_rows.count,
+                                          westCols,
+                                          "[DACPP][MPI][OR] spatial resident halo 2D west receive size overflow")
+                                    : 0),
                             T{});
     std::vector<T> eastRecv(static_cast<std::size_t>(
-                                hasEast ? layout.owned_rows.count : 0),
+                                hasEast
+                                    ? checked_mul_int64_or_abort(
+                                          layout.owned_rows.count,
+                                          eastCols,
+                                          "[DACPP][MPI][OR] spatial resident halo 2D east receive size overflow")
+                                    : 0),
                             T{});
     std::vector<T> northWestRecv(static_cast<std::size_t>(
-                                     hasNorth && hasWest ? 1 : 0),
+                                     hasNorth && hasWest
+                                         ? checked_mul_int64_or_abort(
+                                               northRows,
+                                               westCols,
+                                               "[DACPP][MPI][OR] spatial resident halo 2D northwest receive size overflow")
+                                         : 0),
                                  T{});
     std::vector<T> northEastRecv(static_cast<std::size_t>(
-                                     hasNorth && hasEast ? 1 : 0),
+                                     hasNorth && hasEast
+                                         ? checked_mul_int64_or_abort(
+                                               northRows,
+                                               eastCols,
+                                               "[DACPP][MPI][OR] spatial resident halo 2D northeast receive size overflow")
+                                         : 0),
                                  T{});
     std::vector<T> southWestRecv(static_cast<std::size_t>(
-                                     hasSouth && hasWest ? 1 : 0),
+                                     hasSouth && hasWest
+                                         ? checked_mul_int64_or_abort(
+                                               southRows,
+                                               westCols,
+                                               "[DACPP][MPI][OR] spatial resident halo 2D southwest receive size overflow")
+                                         : 0),
                                  T{});
     std::vector<T> southEastRecv(static_cast<std::size_t>(
-                                     hasSouth && hasEast ? 1 : 0),
+                                     hasSouth && hasEast
+                                         ? checked_mul_int64_or_abort(
+                                               southRows,
+                                               eastCols,
+                                               "[DACPP][MPI][OR] spatial resident halo 2D southeast receive size overflow")
+                                         : 0),
                                  T{});
     MPI_Request requests[16];
     int requestCount = 0;
@@ -1605,32 +1783,32 @@ void exchange_halo_2d_spatial_inplace(
         MPI_Waitall(requestCount, requests, MPI_STATUSES_IGNORE);
     }
     if (hasNorth) {
-        unpackRect(northRecv, topRow, 1, layout.owned_col_offset,
+        unpackRect(northRecv, topRow, northRows, layout.owned_col_offset,
                    layout.owned_cols.count);
     }
     if (hasSouth) {
-        unpackRect(southRecv, bottomRow, 1, layout.owned_col_offset,
+        unpackRect(southRecv, bottomRow, southRows, layout.owned_col_offset,
                    layout.owned_cols.count);
     }
     if (hasWest) {
         unpackRect(westRecv, layout.owned_row_offset,
-                   layout.owned_rows.count, leftCol, 1);
+                   layout.owned_rows.count, leftCol, westCols);
     }
     if (hasEast) {
         unpackRect(eastRecv, layout.owned_row_offset,
-                   layout.owned_rows.count, rightCol, 1);
+                   layout.owned_rows.count, rightCol, eastCols);
     }
     if (hasNorth && hasWest) {
-        unpackRect(northWestRecv, topRow, 1, leftCol, 1);
+        unpackRect(northWestRecv, topRow, northRows, leftCol, westCols);
     }
     if (hasNorth && hasEast) {
-        unpackRect(northEastRecv, topRow, 1, rightCol, 1);
+        unpackRect(northEastRecv, topRow, northRows, rightCol, eastCols);
     }
     if (hasSouth && hasWest) {
-        unpackRect(southWestRecv, bottomRow, 1, leftCol, 1);
+        unpackRect(southWestRecv, bottomRow, southRows, leftCol, westCols);
     }
     if (hasSouth && hasEast) {
-        unpackRect(southEastRecv, bottomRow, 1, rightCol, 1);
+        unpackRect(southEastRecv, bottomRow, southRows, rightCol, eastCols);
     }
 }
 

@@ -4110,12 +4110,12 @@ void annotateResidentHaloSpatial2D(
                                         : haloRejectReason);
         return;
     }
-    if (metadata.temporalBlockSize > 1) {
-        reject("spatial temporal-block=2 unsupported; row-temporal retained");
-        return;
-    }
     if (metadata.hasDirectReader) {
         reject("direct-reader recurrence requires row-layout role rotation");
+        return;
+    }
+    if (metadata.temporalBlockSize > 2) {
+        reject("spatial temporal-block>2 unsupported; row-temporal retained");
         return;
     }
     if (metadata.windowRows != 3 || metadata.windowCols != 3 ||
@@ -4144,11 +4144,18 @@ void annotateResidentHaloSpatial2D(
             reject("unsupported post-use contract for spatial-2d");
             return;
         }
+        if (metadata.temporalBlockSize > 1 &&
+            param.postUseSync.kind != PostUseSyncKind::None) {
+            reject("spatial temporal-block=2 requires no host post-use for profitability; row-temporal retained");
+            return;
+        }
     }
     metadata.spatial2DEnabled = true;
-    metadata.spatial2DHaloWidth = 1;
+    metadata.spatial2DHaloWidth = metadata.temporalBlockSize > 1 ? 2 : 1;
     metadata.spatial2DAcceptReason =
-        "canonical B2 3x3 stencil rectangular-owned writer cells";
+        metadata.temporalBlockSize > 1
+            ? "canonical B2 3x3 stencil temporal-block=2 rectangular-owned writer cells"
+            : "canonical B2 3x3 stencil rectangular-owned writer cells";
 }
 
 struct PhaseExchangeDetection {

@@ -10,7 +10,7 @@ LOG_CONTAINS:[DACPP][MPI][OR] input matCur init-sync=constant-local value=0
 LOG_CONTAINS:[DACPP][MPI][OR] input matPrev init-sync=scatter fallback reason=tensor is not constructed from a vector variable
 LOG_CONTAINS:[DACPP][MPI][OR][P4.6][Loop] expr=0 shell=waveEqShell
 LOG_CONTAINS:kind=StencilResidentHalo structure=ctx/init/run/materialize resident-halo=true window-shape=3x3 followup-offset=(1,1) direct-reader=true read-cache-offset=(-1,-1)
-LOG_CONTAINS:role-rotation=buffer-swap distribution=spatial-2d rejected reason=spatial temporal-block=2 unsupported; row-temporal retained materialize=final
+LOG_CONTAINS:role-rotation=buffer-swap distribution=spatial-2d rejected reason=direct-reader recurrence requires row-layout role rotation materialize=final
 LOG_CONTAINS:temporal-block=2 accepted direct-reader recurrence
 SYCL_CONTAINS:struct __dacpp_mpi_or_waveEqShell_waveEq_0_ctx
 SYCL_CONTAINS:dacpp::mpi::SegmentedProfile __or_profile
