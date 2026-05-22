@@ -30,6 +30,12 @@ struct RankRange1D {
     int64_t count = 0;
 };
 
+struct BlockCyclic1DLayout {
+    int64_t total = 0;
+    int64_t block_size = 1;
+    int64_t local_count = 0;
+};
+
 [[noreturn]] inline void abort_mpi_count_overflow(const char* what,
                                                   int64_t value) {
     int mpi_rank = 0;
@@ -71,6 +77,81 @@ inline RankRange1D rank_range_1d(int64_t total, int rank, int size) {
     const int64_t count = base + (rank < rem ? 1 : 0);
     const int64_t begin = rank * base + std::min<int64_t>(rank, rem);
     return {begin, count};
+}
+
+inline int64_t block_cyclic_count_1d(int64_t total,
+                                     int rank,
+                                     int size,
+                                     int64_t blockSize) {
+    if (total <= 0 || size <= 0 || blockSize <= 0 || rank < 0 ||
+        rank >= size) {
+        return 0;
+    }
+    const int64_t fullBlocks = total / blockSize;
+    const int64_t tail = total % blockSize;
+    const int64_t rounds = fullBlocks / size;
+    const int64_t extraFullBlocks = fullBlocks % size;
+    int64_t count = rounds * blockSize;
+    if (rank < extraFullBlocks) {
+        count += blockSize;
+    }
+    if (tail > 0 && rank == extraFullBlocks) {
+        count += tail;
+    }
+    return count;
+}
+
+inline BlockCyclic1DLayout block_cyclic_layout_1d(int64_t total,
+                                                  int rank,
+                                                  int size,
+                                                  int64_t blockSize) {
+    const int64_t safeBlock = std::max<int64_t>(1, blockSize);
+    return {total, safeBlock,
+            block_cyclic_count_1d(total, rank, size, safeBlock)};
+}
+
+inline int64_t block_cyclic_global_index_1d(int64_t localIndex,
+                                            int rank,
+                                            int size,
+                                            int64_t blockSize) {
+    const int64_t safeSize = std::max<int64_t>(1, size);
+    const int64_t safeBlock = std::max<int64_t>(1, blockSize);
+    const int64_t localBlock = localIndex / safeBlock;
+    const int64_t withinBlock = localIndex % safeBlock;
+    return (localBlock * safeSize + rank) * safeBlock + withinBlock;
+}
+
+inline int block_cyclic_owner_1d(int64_t globalIndex,
+                                 int size,
+                                 int64_t blockSize) {
+    if (globalIndex < 0 || size <= 0 || blockSize <= 0) {
+        return -1;
+    }
+    return static_cast<int>((globalIndex / blockSize) %
+                            static_cast<int64_t>(size));
+}
+
+inline int64_t block_cyclic_local_index_1d(int64_t globalIndex,
+                                           int size,
+                                           int64_t blockSize) {
+    if (globalIndex < 0 || size <= 0 || blockSize <= 0) {
+        return -1;
+    }
+    const int64_t block = globalIndex / blockSize;
+    const int64_t withinBlock = globalIndex % blockSize;
+    return (block / static_cast<int64_t>(size)) * blockSize + withinBlock;
+}
+
+inline void counts_1d_block_cyclic(int64_t total,
+                                   int size,
+                                   int64_t blockSize,
+                                   std::vector<int>& counts) {
+    counts.resize(size);
+    for (int r = 0; r < size; ++r) {
+        counts[r] = narrow_mpi_count_or_abort(
+            block_cyclic_count_1d(total, r, size, blockSize),
+            "[DACPP][MPI][OR] block-cyclic count exceeds MPI int range");
+    }
 }
 
 inline int64_t fixed_block_count_1d(int64_t total,

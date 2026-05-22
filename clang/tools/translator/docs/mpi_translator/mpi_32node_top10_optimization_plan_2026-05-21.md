@@ -792,6 +792,52 @@ Fallback:
   downstream resident readers require contiguous ownership, stencil/followup
   semantics depend on neighbors, or bounded reads cannot cheaply find the owner.
 
+Implementation Status (2026-05-22):
+
+- Changed files: `rewriter/include/mpi/operator_resident/OperatorResidentPlan.h`,
+  `rewriter/include/Rewriter_MPI_OperatorResident.h`,
+  `rewriter/lib/mpi/operator_resident/OperatorChainAnalysis.cpp`,
+  `rewriter/lib/mpi/operator_resident/ShellPartitionAnalysis.cpp`,
+  `rewriter/lib/mpi/operator_resident/PartitionCodegen.cpp`,
+  `rewriter/lib/mpi/operator_resident/CollectiveCodegenUtils.cpp`,
+  `rewriter/lib/mpi/operator_resident/ResidentBufferCodegen.cpp`,
+  `rewriter/lib/mpi/operator_resident/OperatorResidentCodegen_Internal.h`,
+  `dpcppLib/include/mpi/operator_resident/OperatorResidentRuntime.h`, and
+  `tests/mandel1.0/mpi_expect.txt`.
+- Accepted pattern: generic `Contiguous1D` single independent map with direct
+  one-to-one readers/writer, write-only output, no read/write output alias, no
+  downstream resident reader, no full materialization contract, non-byte MPI
+  element transport, and final scalar count reduction or bounded/small root
+  indexed use. The accepted distribution is block-cyclic with block size `64`.
+- Fallback conditions: non-`Contiguous1D` layouts, loop-lowered/followup
+  contracts, multiple or read/write direct outputs, non-direct parameters,
+  bind/order or 1D extent mismatch, direct input/output aliasing, byte-transport
+  element types, full output materialization, downstream resident readers, and
+  unsupported post-use/reduction.
+- Generated-code evidence: `mandel1.0` logs
+  `distribution=block-cyclic accepted independent-map scalar-reduction` while
+  retaining `post-use-reduction=accepted kind=count-eq-one`. Generated code uses
+  `block_cyclic_layout_1d`, `counts_1d_block_cyclic`, and
+  `block_cyclic_global_index_1d` to pack owned point blocks by rank, and still
+  finishes with scalar `MPI_Reduce`; no `MPI_Gatherv` or `array2Tensor` full
+  output materialization is emitted for `mandelbrot_flags`.
+- Verification/profile: `cmake --build build --target translator -j8` passed
+  after the namespace build fix. Correctness/structure passed for
+  `mandel1.0`; regression passed for
+  `FOuLa1.0 liuliang1.0 MDP1.0 stencil1.0 waveEquation1.0`; and nearby
+  fixtures passed for
+  `mpiBroadcastRootOnlyCout mpiBroadcastTensor2Array
+  mpiOrReadWriteAccumulate1D mpiOrReadWriteAccumulate2D vectorAddCombo
+  gradientSum DFT1.0 matMul1.0`. The 4-rank three-trial profile probe in
+  `/Volumes/QUQ/working/mpi_tmp/profile_segments_next10_probe` has status `ok`
+  for `mandel1.0`, `MDP1.0`, `stencil1.0`, `waveEquation1.0`, `FOuLa1.0`, and
+  `liuliang1.0`. Mandel generated-code structure is block-cyclic, and its
+  profiled kernel balance is near-even: trial ratios
+  `kernel max_ms / (kernel sum_ms / 4)` were `1.0016`, `1.0107`, and `1.0060`.
+  The same probe logs preserved P6-P9 accepted paths including wave/MDP/stencil
+  temporal blocking, FOuLa owner-loop boundary replay, and liuliang
+  boundary-local temporal blocking with bounded final materialization.
+
 ### 11. 2D Spatial Block Partition
 
 Current shape:

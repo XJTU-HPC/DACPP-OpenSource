@@ -34,6 +34,12 @@ bool usesByte(const ShellPartitionPlan& plan, const ParamAccessPlan& param) {
     return usesByteTransport(elemType(plan, param));
 }
 
+bool usesBlockCyclic1D(const ShellPartitionPlan& plan) {
+    return plan.signature.layout == LocalLayoutKind::Contiguous1D &&
+           plan.signature.contiguous1DDistribution.kind ==
+               Contiguous1DDistributionKind::BlockCyclic;
+}
+
 void emitByteCounts(std::string& code,
                     const std::string& suffix,
                     const std::string& type) {
@@ -72,7 +78,13 @@ void emitScatter(std::string& code,
                     : param.constantInit.globalIndexName;
             code += "    for (int64_t __or_local_i = 0; __or_local_i < __or_local_item_count; ++__or_local_i) {\n";
             code += "        const int64_t " + indexName +
-                    " = __or_range.begin + __or_local_i;\n";
+                    " = ";
+            if (usesBlockCyclic1D(plan)) {
+                code += "__or_global_index_for_local(__or_local_i)";
+            } else {
+                code += "__or_range.begin + __or_local_i";
+            }
+            code += ";\n";
             code += "        " + local +
                     "[static_cast<std::size_t>(__or_local_i)] = " +
                     param.constantInit.valueExpr + ";\n";
@@ -85,6 +97,86 @@ void emitScatter(std::string& code,
             code += "    // Constant-initialized input " + param.calcParamName +
                     " is filled locally; skip root pack/scatter.\n";
         }
+        return;
+    }
+    if (usesBlockCyclic1D(plan) && !usesByte(plan, param) &&
+        (param.access == ParamAccessKind::DirectMapped ||
+         (param.access == ParamAccessKind::OutputDirect && param.reads &&
+          param.writes)) &&
+        param.tensorDims.size() == 1 && param.tensorDims[0] == 0) {
+        code += "    auto dacpp_profile_scatter_start_" + param.calcParamName +
+                " = dacpp::mpi::profileSegmentStart();\n";
+        code += "    if (mpi_rank == 0) {\n";
+        code += "        const int64_t __or_direct_offset_" +
+                param.calcParamName + " = " + paramVarName(param) +
+                ".getOffset();\n";
+        code += "        const int64_t __or_direct_stride_" +
+                param.calcParamName + " = " + paramVarName(param) +
+                ".getStride(0);\n";
+        code += "        const bool __or_block_cyclic_direct_" +
+                param.calcParamName +
+                " = (__or_direct_offset_" + param.calcParamName +
+                " >= 0 && __or_direct_stride_" + param.calcParamName +
+                " == 1 && " + paramVarName(param) +
+                ".getSize() >= __or_total_items && __or_direct_offset_" +
+                param.calcParamName + " + __or_total_items <= " +
+                paramVarName(param) + ".getSize());\n";
+        code += "        std::vector<" + type + "> " + global + ";\n";
+        code += "        const " + type + "* __or_block_cyclic_src_" +
+                param.calcParamName + " = nullptr;\n";
+        code += "        if (__or_block_cyclic_direct_" +
+                param.calcParamName + ") {\n";
+        code += "            __or_block_cyclic_src_" + param.calcParamName +
+                " = " + paramVarName(param) +
+                ".getDataPtr().get() + __or_direct_offset_" +
+                param.calcParamName + ";\n";
+        code += "        } else {\n";
+        code += "            auto dacpp_profile_pack_start_" +
+                param.calcParamName +
+                " = dacpp::mpi::profileSegmentStart();\n";
+        code += "            " + paramVarName(param) + ".tensor2Array(" +
+                global + ");\n";
+        code += "            __or_block_cyclic_src_" + param.calcParamName +
+                " = " + global + ".data();\n";
+        code += "            dacpp::mpi::recordProfileSegment(dacpp_profile, dacpp::mpi::ProfileSegment::Pack, dacpp_profile_pack_start_" +
+                param.calcParamName + ");\n";
+        code += "        }\n";
+        code += "        for (int __or_r = 0; __or_r < mpi_size; ++__or_r) {\n";
+        code += "            const int64_t __or_target_count = dacpp::mpi::operator_resident::block_cyclic_count_1d(__or_total_items, __or_r, mpi_size, __or_block_cyclic_block_size);\n";
+        code += "            if (__or_r == 0) {\n";
+        code += "                for (int64_t __or_local_i = 0; __or_local_i < __or_target_count; ++__or_local_i) {\n";
+        code += "                    const int64_t __or_global_i = dacpp::mpi::operator_resident::block_cyclic_global_index_1d(__or_local_i, 0, mpi_size, __or_block_cyclic_block_size);\n";
+        code += "                    " + local +
+                "[static_cast<std::size_t>(__or_local_i)] = __or_block_cyclic_src_" +
+                param.calcParamName +
+                "[static_cast<std::size_t>(__or_global_i)];\n";
+        code += "                }\n";
+        code += "            } else if (__or_target_count > 0) {\n";
+        code += "                std::vector<" + type + "> __or_block_cyclic_payload(static_cast<std::size_t>(__or_target_count));\n";
+        code += "                for (int64_t __or_local_i = 0; __or_local_i < __or_target_count; ++__or_local_i) {\n";
+        code += "                    const int64_t __or_global_i = dacpp::mpi::operator_resident::block_cyclic_global_index_1d(__or_local_i, __or_r, mpi_size, __or_block_cyclic_block_size);\n";
+        code += "                    __or_block_cyclic_payload[static_cast<std::size_t>(__or_local_i)] = __or_block_cyclic_src_" +
+                param.calcParamName +
+                "[static_cast<std::size_t>(__or_global_i)];\n";
+        code += "                }\n";
+        code += "                MPI_Send(__or_block_cyclic_payload.data(), dacpp::mpi::operator_resident::narrow_mpi_count_or_abort(__or_target_count, \"[DACPP][MPI][OR] block-cyclic scatter count exceeds MPI int range\"), " +
+                mpiType + ", __or_r, 4801, MPI_COMM_WORLD);\n";
+        code += "            }\n";
+        code += "        }\n";
+        code += "        if (mpi_size > 1) {\n";
+        code += "            MPI_Barrier(MPI_COMM_WORLD);\n";
+        code += "        }\n";
+        code += "    } else if (__or_local_item_count > 0) {\n";
+        code += "        MPI_Recv(" + local +
+                ".data(), dacpp::mpi::operator_resident::narrow_mpi_count_or_abort(__or_local_item_count, \"[DACPP][MPI][OR] block-cyclic scatter recv count exceeds MPI int range\"), " +
+                mpiType +
+                ", 0, 4801, MPI_COMM_WORLD, MPI_STATUS_IGNORE);\n";
+        code += "        MPI_Barrier(MPI_COMM_WORLD);\n";
+        code += "    } else if (mpi_size > 1) {\n";
+        code += "        MPI_Barrier(MPI_COMM_WORLD);\n";
+        code += "    }\n";
+        code += "    dacpp::mpi::recordProfileSegment(dacpp_profile, dacpp::mpi::ProfileSegment::Scatter, dacpp_profile_scatter_start_" +
+                param.calcParamName + ");\n";
         return;
     }
     code += "    std::vector<" + type + "> " + global + ";\n";

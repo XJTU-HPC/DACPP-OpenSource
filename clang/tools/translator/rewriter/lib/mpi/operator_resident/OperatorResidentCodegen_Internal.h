@@ -19,6 +19,7 @@ std::string localName(const ParamAccessPlan& param);
 std::string globalName(const ParamAccessPlan& param);
 std::string scalarName(const ParamAccessPlan& param);
 bool usesByte(const ShellPartitionPlan& plan, const ParamAccessPlan& param);
+bool usesBlockCyclic1D(const ShellPartitionPlan& plan);
 
 void emitByteCounts(std::string& code,
                     const std::string& suffix,

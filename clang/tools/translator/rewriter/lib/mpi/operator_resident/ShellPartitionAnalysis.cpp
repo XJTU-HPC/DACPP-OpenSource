@@ -49,6 +49,19 @@ const char* localLayoutKindName(LocalLayoutKind kind) {
     return "Unsupported";
 }
 
+const char* contiguous1DDistributionKindName(
+    Contiguous1DDistributionKind kind) {
+    switch (kind) {
+    case Contiguous1DDistributionKind::Contiguous:
+        return "contiguous";
+    case Contiguous1DDistributionKind::Cyclic:
+        return "cyclic";
+    case Contiguous1DDistributionKind::BlockCyclic:
+        return "block-cyclic";
+    }
+    return "contiguous";
+}
+
 const char* paramAccessKindName(ParamAccessKind kind) {
     switch (kind) {
     case ParamAccessKind::DirectMapped:

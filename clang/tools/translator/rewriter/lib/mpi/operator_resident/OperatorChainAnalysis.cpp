@@ -1103,6 +1103,110 @@ bool directReadAliasesOutputDirectWrite(const ShellPartitionPlan& plan) {
     return false;
 }
 
+const ParamAccessPlan* singleOutputDirectParamAnyMode(
+    const ShellPartitionPlan& plan) {
+    const ParamAccessPlan* result = nullptr;
+    for (const auto& param : plan.params) {
+        if (param.access == ParamAccessKind::OutputDirect && param.writes) {
+            if (result) {
+                return nullptr;
+            }
+            result = &param;
+        }
+    }
+    return result;
+}
+
+bool hasResidentReaderOrFullMaterializeContract(const ShellPartitionPlan& plan) {
+    for (const auto& param : plan.params) {
+        if (param.retainResidentAfterWrite || param.readFromResident) {
+            return true;
+        }
+        if (param.writes &&
+            param.access == ParamAccessKind::OutputDirect &&
+            param.materializeAfterWrite) {
+            return true;
+        }
+        if (param.writes &&
+            param.access == ParamAccessKind::OutputDirect &&
+            param.postUseSync.kind == PostUseSyncKind::FullTensor) {
+            return true;
+        }
+    }
+    return false;
+}
+
+std::string contiguous1DDistributionRejectReason(
+    const ShellPartitionPlan& plan,
+    std::string* acceptReason) {
+    if (acceptReason) {
+        acceptReason->clear();
+    }
+    if (plan.signature.layout != LocalLayoutKind::Contiguous1D) {
+        return "requires Contiguous1D layout";
+    }
+    if (plan.loopLowerCandidate ||
+        plan.orLoopLower.kind != OrLoopLowerKind::None) {
+        return "loop-lowered/followup contracts require contiguous ownership";
+    }
+    if (plan.signature.bindOrder.size() != 1 ||
+        plan.signature.bindSizes.size() != 1) {
+        return "requires single 1D ownership domain";
+    }
+    const ParamAccessPlan* writer = singleOutputDirectParamAnyMode(plan);
+    if (!writer) {
+        return "requires exactly one direct output writer";
+    }
+    if (writer->reads) {
+        return "read_write output direct requires contiguous ownership";
+    }
+    if (directReadAliasesOutputDirectWrite(plan)) {
+        return "direct read aliases output direct write";
+    }
+    for (const auto& param : plan.params) {
+        if (param.access == ParamAccessKind::ReplicatedScalar) {
+            continue;
+        }
+        if (param.access != ParamAccessKind::DirectMapped &&
+            param.access != ParamAccessKind::OutputDirect) {
+            return "non-direct parameter requires contiguous ownership";
+        }
+        if (usesByteTransport(analysisElemType(plan, param))) {
+            return "byte-transport element type requires contiguous ownership";
+        }
+        if (param.bindOrder.size() != 1 ||
+            !operator_resident::sameOrder(param.bindOrder,
+                                          plan.signature.bindOrder)) {
+            return "parameter bind order mismatch";
+        }
+        if (param.access == ParamAccessKind::DirectMapped &&
+            param.tensorDims.size() != 1) {
+            return "direct reader extent is not one-to-one 1D";
+        }
+        if (param.access == ParamAccessKind::OutputDirect &&
+            param.tensorDims.size() != 1) {
+            return "output writer extent is not one-to-one 1D";
+        }
+    }
+    if (hasResidentReaderOrFullMaterializeContract(plan)) {
+        return "downstream/full-materialize contract requires contiguous ownership";
+    }
+    if (writer->postUseReductionCountEqOne) {
+        if (acceptReason) {
+            *acceptReason = "independent-map scalar-reduction";
+        }
+        return "";
+    }
+    if (writer->postUseSync.kind == PostUseSyncKind::BoundedIndexedRootRead &&
+        !writer->postUseSync.boundedIndices.empty()) {
+        if (acceptReason) {
+            *acceptReason = "independent-map bounded/small-root-use";
+        }
+        return "";
+    }
+    return "unsupported post-use/reduction";
+}
+
 bool hasReplicatedScalarParam(const ShellPartitionPlan& plan) {
     for (const auto& param : plan.params) {
         if (param.access == ParamAccessKind::ReplicatedScalar) {
@@ -6677,6 +6781,26 @@ void finalizeChain(OperatorResidentChainPlan& chain,
         return;
     }
     analyzeResidency(chain);
+    if (chain.exprPlans.size() == 1) {
+        ShellPartitionPlan& plan = chain.exprPlans.front();
+        std::string acceptReason;
+        const std::string rejectReason =
+            contiguous1DDistributionRejectReason(plan, &acceptReason);
+        if (rejectReason.empty()) {
+            plan.signature.contiguous1DDistribution.kind =
+                Contiguous1DDistributionKind::BlockCyclic;
+            plan.signature.contiguous1DDistribution.blockSize = 64;
+            plan.signature.contiguous1DDistribution.reason = acceptReason;
+            chain.signature = plan.signature;
+            llvm::outs()
+                << "[DACPP][MPI][OR] distribution=block-cyclic accepted "
+                << acceptReason << " block-size=64\n";
+        } else if (plan.signature.layout == LocalLayoutKind::Contiguous1D) {
+            llvm::outs()
+                << "[DACPP][MPI][OR] distribution=block-cyclic rejected reason="
+                << rejectReason << "\n";
+        }
+    }
     annotateRowBlock2DPointwiseFusion(chain, allPlans);
     // Note: chain accepted does not mean OR codegen is enabled for this layout
     // Check supportedPhaseLayout() to see which layouts actually generate OR code
@@ -6709,7 +6833,7 @@ OperatorResidentChainPlan buildSingleOperatorResidentChain(
     chain.signature = shellPlan.signature;
     chain.exprs.push_back(shellPlan.exprNode);
     chain.exprPlans.push_back(shellPlan);
-    analyzeResidency(chain);
+    finalizeChain(chain);
     return chain;
 }
 

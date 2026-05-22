@@ -63,6 +63,11 @@ std::string localLinearIndexExprForBoundedIndex(const ShellPartitionPlan& plan,
     if ((plan.signature.layout == LocalLayoutKind::Contiguous1D ||
          plan.signature.layout == LocalLayoutKind::ReplicatedFullTensor) &&
         index.indices.size() == 1) {
+        if (usesBlockCyclic1D(plan)) {
+            return "dacpp::mpi::operator_resident::block_cyclic_local_index_1d(" +
+                   std::to_string(index.indices[0]) +
+                   ", mpi_size, __or_block_cyclic_block_size)";
+        }
         return "(" + std::to_string(index.indices[0]) + " - __or_range.begin)";
     }
     if (plan.signature.layout == LocalLayoutKind::RowBlock2D &&
@@ -85,6 +90,9 @@ std::string ownerPredicateForBoundedIndex(const ShellPartitionPlan& plan,
     if ((plan.signature.layout == LocalLayoutKind::Contiguous1D ||
          plan.signature.layout == LocalLayoutKind::ReplicatedFullTensor) &&
         index.indices.size() == 1) {
+        if (usesBlockCyclic1D(plan)) {
+            return "(dacpp::mpi::operator_resident::block_cyclic_owner_1d(__or_target_index, mpi_size, __or_block_cyclic_block_size) == mpi_rank)";
+        }
         return "(__or_target_index >= __or_range.begin && __or_target_index < __or_range.begin + __or_range.count)";
     }
     if (plan.signature.layout == LocalLayoutKind::RowBlock2D &&
@@ -188,14 +196,21 @@ void emitBoundedIndexedRootReadSync(std::string& code,
             code += "            const int64_t __or_target_index = " +
                     std::to_string(bounded.indices[0]) + ";\n";
             code += "            int __or_owner_rank = -1;\n";
-            code += "            for (int __or_owner_candidate = 0; __or_owner_candidate < mpi_size; ++__or_owner_candidate) {\n";
-            code += "                const auto __or_owner_range = dacpp::mpi::operator_resident::rank_range_1d(" +
-                    ownerTotal + ", __or_owner_candidate, mpi_size);\n";
-            code += "                if (__or_target_index >= __or_owner_range.begin && __or_target_index < __or_owner_range.begin + __or_owner_range.count) {\n";
-            code += "                    __or_owner_rank = __or_owner_candidate;\n";
-            code += "                    break;\n";
-            code += "                }\n";
-            code += "            }\n";
+            if (usesBlockCyclic1D(plan)) {
+                code += "            if (__or_target_index >= 0 && __or_target_index < " +
+                        ownerTotal + ") {\n";
+                code += "                __or_owner_rank = dacpp::mpi::operator_resident::block_cyclic_owner_1d(__or_target_index, mpi_size, __or_block_cyclic_block_size);\n";
+                code += "            }\n";
+            } else {
+                code += "            for (int __or_owner_candidate = 0; __or_owner_candidate < mpi_size; ++__or_owner_candidate) {\n";
+                code += "                const auto __or_owner_range = dacpp::mpi::operator_resident::rank_range_1d(" +
+                        ownerTotal + ", __or_owner_candidate, mpi_size);\n";
+                code += "                if (__or_target_index >= __or_owner_range.begin && __or_target_index < __or_owner_range.begin + __or_owner_range.count) {\n";
+                code += "                    __or_owner_rank = __or_owner_candidate;\n";
+                code += "                    break;\n";
+                code += "                }\n";
+                code += "            }\n";
+            }
         } else {
             code += "            const int64_t __or_target_row = " +
                     std::to_string(bounded.indices[0]) + ";\n";

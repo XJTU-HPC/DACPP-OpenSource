@@ -65,6 +65,19 @@ enum class ResidencyKind {
     Unknown
 };
 
+enum class Contiguous1DDistributionKind {
+    Contiguous,
+    Cyclic,
+    BlockCyclic
+};
+
+struct Contiguous1DDistributionPlan {
+    Contiguous1DDistributionKind kind =
+        Contiguous1DDistributionKind::Contiguous;
+    int64_t blockSize = 1;
+    std::string reason;
+};
+
 enum class OrLoopLowerKind {
     None,
     Direct1D,
@@ -188,12 +201,17 @@ struct PartitionSignature {
     std::vector<int> bindOrder;
     LocalLayoutKind layout = LocalLayoutKind::Unsupported;
     std::string linearization;
+    Contiguous1DDistributionPlan contiguous1DDistribution;
 };
 
 inline bool isCompatibleForChain(const PartitionSignature& lhs,
                                  const PartitionSignature& rhs) {
     return lhs.bindSizes == rhs.bindSizes &&
-           lhs.bindOrder == rhs.bindOrder;
+           lhs.bindOrder == rhs.bindOrder &&
+           lhs.contiguous1DDistribution.kind ==
+               rhs.contiguous1DDistribution.kind &&
+           lhs.contiguous1DDistribution.blockSize ==
+               rhs.contiguous1DDistribution.blockSize;
 }
 
 struct ParamAccessPlan {

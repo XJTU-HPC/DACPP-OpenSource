@@ -38,6 +38,7 @@ void analyzeResidency(OperatorResidentChainPlan& chain);
 
 const char* localLayoutKindName(LocalLayoutKind kind);
 const char* paramAccessKindName(ParamAccessKind kind);
+const char* contiguous1DDistributionKindName(Contiguous1DDistributionKind kind);
 
 std::string operatorResidentWrapperName(Shell* shell,
                                         Calc* calc,
