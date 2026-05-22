@@ -892,49 +892,56 @@ Fallback:
 
 Implementation Status (2026-05-22):
 
-- Implemented a conservative `distribution=spatial-2d` subset for canonical
-  B2 `StencilWindow2D` resident halo loops: static 3x3 stride-1 stencil
-  windows, writer-to-reader followup offset `(1,1)`, no direct-reader
-  recurrence, no scalar readers, and canonical top/bottom/left/right
-  boundary-local self-copy updates. Eligibility is derived from layout,
-  access, loop, boundary, and post-use facts; no benchmark-name checks are used.
-- Added plan metadata and translator logs. Accepted logs include
-  `distribution=spatial-2d accepted stencil halo-width=1`; unsupported 2D
-  resident-halo shapes report `distribution=spatial-2d rejected reason=...`.
-  `waveEquation1.0` currently rejects spatial-2d because its B3 direct-reader
-  recurrence still requires row-layout role rotation and keeps the proven
-  row-temporal `k=2` path.
+- Implemented and tightened a conservative `distribution=spatial-2d` subset for
+  B2 `StencilWindow2D` resident halo loops: static 3x3 stride-1 stencil windows,
+  writer-to-reader followup offset `(1,1)`, no direct-reader recurrence, no
+  scalar readers, and replayable top/bottom/left/right boundary-local self-copy
+  updates. The boundary proof now accepts safe full-span loop spellings such as
+  `<= last` and `< last` for existing boundary variants. Eligibility is derived
+  from layout, access, loop, boundary, temporal, and post-use facts; no
+  benchmark-name checks are used.
+- Added a profitability/compatibility gate for the current one-step spatial
+  implementation. If the same 2D resident-halo shape has proven
+  `temporal-block=2`, spatial-2d is rejected with
+  `distribution=spatial-2d rejected reason=spatial temporal-block=2 unsupported; row-temporal retained`
+  and the row-temporal path remains active. This preserves `stencil1.0`,
+  `mpiLoopStencilCountGuard2D`, and B3 direct-reader cases such as
+  `waveEquation1.0` on their existing `k=2` row-temporal contracts until
+  widened spatial halos and role rotation are proven.
 - Added runtime/codegen support for a 2D process-grid rectangle layout:
   `ResidentHalo2DSpatialLayout`, row/column owned ranges, rectangle initial
   scatter, north/south/east/west plus corner halo exchange, spatial owned
   slices, root reassembly for full post-use materialization, and spatial owner
   lookup for bounded root reads. Steady-state exchange avoids full output
-  gather/allgather; full gather remains only for host post-use contracts such as
-  `matIn[0].print()`.
-- `stencil1.0` now accepts the 2D spatial partition and generated code contains
-  `resident_halo_2d_spatial_layout`, `scatter_window_2d_spatial`,
-  `exchange_halo_2d_spatial_inplace`, and
-  `gather_spatial_owned_to_root`. Nearby canonical no-use fixture
-  `mpiLoopStencilCountGuard2D` accepts the same spatial mode without final
-  materialization.
-- Verified translator build, `stencil1.0`, P6-P10 regressions
-  (`mandel1.0 FOuLa1.0 liuliang1.0 MDP1.0 waveEquation1.0`), and related
-  2D/stencil/operator-resident fixtures including
-  `mpiLoopStencilCountGuard2D`, `mpiLoopStencilOrderReject2D`,
-  `mpiLoopStencilScalarReject2D`, `mpiDistributedStencil2DRowBlock`,
-  `mpiOrStencilBoundaryStride2D`, `mpiMixedStencilORPhaseC`,
-  `mpiOrReadWriteAccumulate2D`, `jacobi1.0`, and `imageAdjustment1.0`.
-  The requested 4-rank, 3-trial profile probe in
-  `/Volumes/QUQ/working/mpi_tmp/profile_segments_p11_probe` passed all six
-  requested cases with status `ok`.
-- Profile evidence confirms the structural switch rather than a speed win yet:
-  `stencil1.0` logs spatial-2d and generates
-  `exchange_halo_2d_spatial_inplace`, but its 4-rank median is slower
-  (`dac_wall_median_s=8.687478`) than the previous row-temporal style because
-  this first spatial subset intentionally uses one-step halos and leaves
-  temporal blocking for the row fallback. The next performance step is to prove
-  widened 2D halos/temporal blocking on the rectangle layout or add a runtime
-  profitability gate that keeps small/low-rank cases on row-temporal fallback.
+  gather/allgather; bounded root reads send only requested owner values.
+- Added `spatialStencil2DOneStep`, a non-`mpi*` one-step 2D stencil fixture that
+  is spatial-2d accepted and has bounded/small root post-use. Generated code
+  contains `resident_halo_2d_spatial_layout`,
+  `scatter_window_2d_spatial`, `exchange_halo_2d_spatial_inplace`, spatial
+  owner lookup, two bounded `MPI_Send`/`MPI_Recv` value transfers, and no
+  `gather_spatial_owned_to_root`/full `MPI_Gatherv` materialization.
+- Tightened post-use scanning for loop-lowered DAC expressions inside helper
+  functions. The resident-halo analysis now walks outward through enclosing
+  compounds and sees host uses after the outer loop, so fixtures such as
+  `mpiMixedStencilORPhaseC` keep full loop-exit materialization for
+  `matIn[0].print()` instead of incorrectly logging `post-use=none`.
+- Current accepted spatial-2d scope remains one-step B2. Unsupported or less
+  profitable cases log structural rejection reasons: direct-reader recurrence,
+  scalar readers, full/unsupported post-use, unsafe boundary replay, missing
+  resident halo contract, or the temporal-block fallback reason above. The next
+  performance step is to prove spatial `k=2` widened halos, role-buffer
+  rotation, and post-use contracts on the rectangle layout; until then, proven
+  row-temporal/block-cyclic/bounded-materialize/resident-continuation paths are
+  retained.
+- Verified with translator build, required `stencil1.0`, the P6-P11 protection
+  set (`mandel1.0`, `FOuLa1.0`, `liuliang1.0`, `MDP1.0`, `waveEquation1.0`),
+  related non-`mpi*` 2D/access/stencil fixtures found by `rg`
+  (`spatialStencil2DOneStep`, `jacobi1.0`, `imageAdjustment1.0`,
+  `gradientSum`, `matMul1.0`), and nearby structural/rejection fixtures. The
+  requested 4-rank, 3-trial profile probe passed all six cases in
+  `/Volumes/QUQ/working/mpi_tmp/profile_segments_p11_extend_probe`; `stencil1.0`
+  and `waveEquation1.0` logs confirm row-temporal `k=2` retention, and
+  `mandel1.0` remains block-cyclic with scalar `MPI_Reduce`.
 
 ## 32-Rank Benchmark Commands
 

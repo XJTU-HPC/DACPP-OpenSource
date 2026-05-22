@@ -83,6 +83,7 @@ MPI_TESTS=(
     "mpiPhaseCHalo1D"
     "mpiPhaseCHaloWide1D"
     "mpiMixedStencilORPhaseC"
+    "spatialStencil2DOneStep"
     "stencil1.0"
     "waveEquation1.0"
 )

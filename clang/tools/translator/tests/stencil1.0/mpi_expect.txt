@@ -4,25 +4,22 @@ LOG_CONTAINS:[DACPP][MPI][OR] expr=0 shell=stencilShell layout=StencilWindow2D p
 LOG_CONTAINS:[DACPP][MPI][OR] chain=0 layout=StencilWindow2D length=1 chain=accepted codegen=enabled
 LOG_CONTAINS:[DACPP][MPI] output matOut sync=distributed-followup
 LOG_CONTAINS:[DACPP][MPI][OR][P4.6][Loop] expr=0 shell=stencilShell
-LOG_CONTAINS:kind=StencilResidentHalo structure=ctx/init/run/materialize resident-halo=true window-shape=3x3 followup-offset=(1,1) distribution=spatial-2d accepted stencil halo-width=1
-LOG_CONTAINS:temporal-block=2 rejected reason=spatial-2d one-step partition keeps temporal blocking on row fallback
+LOG_CONTAINS:kind=StencilResidentHalo structure=ctx/init/run/materialize resident-halo=true window-shape=3x3 followup-offset=(1,1) distribution=spatial-2d rejected reason=spatial temporal-block=2 unsupported; row-temporal retained
+LOG_CONTAINS:temporal-block=2 accepted
 SYCL_CONTAINS:struct __dacpp_mpi_or_stencilShell_stencil_0_ctx
 SYCL_CONTAINS:void __dacpp_mpi_or_stencilShell_stencil_0_init(__dacpp_mpi_or_stencilShell_stencil_0_ctx& ctx
 SYCL_CONTAINS:void __dacpp_mpi_or_stencilShell_stencil_0_run(__dacpp_mpi_or_stencilShell_stencil_0_ctx& ctx
 SYCL_CONTAINS:void __dacpp_mpi_or_stencilShell_stencil_0_materialize(__dacpp_mpi_or_stencilShell_stencil_0_ctx& ctx
 SYCL_CONTAINS:dacpp::mpi::operator_resident::ResidentHalo2DSpatialLayout __or_spatial_layout
-SYCL_CONTAINS:int __or_spatial_halo_width = 1
-SYCL_CONTAINS:resident_halo_2d_spatial_layout(ctx.__or_output_rows, ctx.__or_output_cols
-SYCL_CONTAINS:ctx.__or_output_row_range = ctx.__or_spatial_layout.owned_rows
-SYCL_CONTAINS:ctx.__or_output_col_range = ctx.__or_spatial_layout.owned_cols
-SYCL_CONTAINS:dacpp::mpi::operator_resident::scatter_window_2d_spatial(__or_initial_global_mat
+SYCL_CONTAINS:int __or_temporal_block_size = 2
+SYCL_CONTAINS:dacpp::mpi::operator_resident::resident_halo_2d_row_layout_temporal
+SYCL_CONTAINS:dacpp::mpi::operator_resident::scatter_window_2d_rows_temporal(__or_initial_global_mat
 SYCL_CONTAINS:const int64_t __or_local_output_cols = ctx.__or_local_output_cols
-SYCL_CONTAINS:const int64_t __or_local_reader_cols = ctx.__or_spatial_layout.local_col_count
-SYCL_CONTAINS:ResidentHaloView2D<const double> view_mat{__or_reader_data, static_cast<int>((local_row + 0) * static_cast<int>(__or_local_reader_cols) + local_col + static_cast<int>((ctx.__or_spatial_layout.owned_col_offset - __or_writer_col_offset)))
-SYCL_CONTAINS:ContiguousView1D<double> view_out{__or_writer_data, static_cast<int>((local_row + ctx.__or_spatial_layout.owned_row_offset) * static_cast<int>(__or_local_reader_cols) + local_col + static_cast<int>(ctx.__or_spatial_layout.owned_col_offset))}
-SYCL_CONTAINS:dacpp::mpi::operator_resident::exchange_halo_2d_spatial_inplace(__or_local_out
-SYCL_CONTAINS:dacpp::mpi::operator_resident::owned_slice_2d_spatial(ctx.__or_local_mat
-SYCL_CONTAINS:dacpp::mpi::operator_resident::gather_spatial_owned_to_root(__or_owned_out
+SYCL_CONTAINS:const int64_t __or_local_reader_cols = __or_input_cols
+SYCL_CONTAINS:dacpp::mpi::operator_resident::exchange_halo_2d_rows_temporal_inplace(__or_local_mat
+SYCL_CONTAINS:P4.6 temporal-block=2 leaves the latest state in the resident reader buffer
+SYCL_CONTAINS:dacpp::mpi::operator_resident::owned_slice_2d_rows_temporal(ctx.__or_local_mat
+SYCL_CONTAINS:MPI_Gatherv(__or_owned_out.data()
 SYCL_CONTAINS:dacpp::mpi::map_2d_global_with_offset(static_cast<int64_t>(__or_idx), ctx.__or_output_cols, __or_followup_reader_cols_mat, 1, 1)
 SYCL_CONTAINS:__or_materialized_mat[static_cast<std::size_t>(__or_boundary_target)] = __or_materialized_mat[static_cast<std::size_t>(__or_boundary_source)]
 SYCL_CONTAINS:dacpp::mpi::SegmentedProfile __or_profile
@@ -35,8 +32,9 @@ SYCL_NOT_CONTAINS:MPI_Bcast(__or_global_mat.data()
 SYCL_NOT_CONTAINS:apply_followup_2d(__or_local_mat, __or_local_out
 SYCL_NOT_CONTAINS:exchange_halo_2d_rows(__or_local_mat, __or_local_out
 SYCL_NOT_CONTAINS:exchange_halo_2d_rows_inplace(__or_local_out
-SYCL_NOT_CONTAINS:exchange_halo_2d_rows_temporal_inplace
-SYCL_NOT_CONTAINS:resident_halo_2d_row_layout_temporal
+SYCL_NOT_CONTAINS:exchange_halo_2d_spatial_inplace
+SYCL_NOT_CONTAINS:scatter_window_2d_spatial
+SYCL_NOT_CONTAINS:gather_spatial_owned_to_root
 SYCL_NOT_CONTAINS:MPI_Allgatherv
 SYCL_NOT_CONTAINS:__or_followup_global_mat
 SYCL_NOT_CONTAINS:dacpp::mpi::ContiguousView2D<const double> view_mat

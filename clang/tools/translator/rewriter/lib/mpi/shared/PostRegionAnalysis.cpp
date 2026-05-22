@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "clang/AST/ASTTypeTraits.h"
+#include "clang/AST/Decl.h"
 #include "clang/AST/Expr.h"
 #include "clang/AST/ExprCXX.h"
 #include "clang/AST/ParentMapContext.h"
@@ -1105,39 +1106,80 @@ bool loopBodyIsIfTensorEqOneIncrement(const clang::Stmt* body,
            isScalarIncrement(ifStmt->getThen(), scalarName);
 }
 
-const clang::CompoundStmt* enclosingCompoundAfterDac(
+std::vector<const clang::Stmt*> collectPostDacStmts(
     DacppFile* dacppFile,
     const clang::BinaryOperator* dacExpr) {
-    if (!dacppFile || !dacExpr || !dacppFile->getMainBody() ||
-        !dacppFile->getContext()) {
-        return nullptr;
+    std::vector<const clang::Stmt*> result;
+    if (!dacppFile || !dacExpr || !dacppFile->getContext()) {
+        return result;
     }
-    const auto* compound =
-        llvm::dyn_cast<clang::CompoundStmt>(dacppFile->getMainBody());
-    if (!compound) {
-        return nullptr;
-    }
-    return compound;
-}
 
-bool stmtContainsDacExpr(DacppFile* dacppFile,
-                         const clang::Stmt* stmt,
-                         const clang::BinaryOperator* dacExpr) {
-    if (!dacppFile || !stmt || !dacExpr || !dacppFile->getContext()) {
-        return false;
+    clang::ASTContext* context = dacppFile->getContext();
+    clang::DynTypedNode current = clang::DynTypedNode::create(*dacExpr);
+    const clang::Stmt* containedStmt = dacExpr;
+    std::set<const clang::Stmt*> appended;
+
+    for (int depth = 0; depth < 64; ++depth) {
+        auto parents = context->getParents(current);
+        if (parents.empty()) {
+            break;
+        }
+        const clang::DynTypedNode& parent = parents[0];
+        if (const auto* compound = parent.get<clang::CompoundStmt>()) {
+            bool sawContainingChild = false;
+            for (const clang::Stmt* child : compound->body()) {
+                if (!child) {
+                    continue;
+                }
+                if (!sawContainingChild) {
+                    if (child == containedStmt ||
+                        containsDacExpr(child, dacExpr, context)) {
+                        sawContainingChild = true;
+                    }
+                    continue;
+                }
+                if (appended.insert(child).second) {
+                    result.push_back(child);
+                }
+            }
+            containedStmt = compound;
+            current = clang::DynTypedNode::create(*compound);
+            continue;
+        }
+        if (const auto* stmt = parent.get<clang::Stmt>()) {
+            containedStmt = stmt;
+            current = clang::DynTypedNode::create(*stmt);
+            continue;
+        }
+        if (parent.get<clang::FunctionDecl>()) {
+            break;
+        }
+        break;
     }
-    const auto& sourceManager = dacppFile->getContext()->getSourceManager();
-    const clang::SourceRange outer = stmt->getSourceRange();
-    const clang::SourceRange inner = dacExpr->getSourceRange();
-    if (outer.isInvalid() || inner.isInvalid()) {
-        return false;
+
+    if (!result.empty() || !dacppFile->getMainBody()) {
+        return result;
     }
-    auto beforeOrEqual = [&](clang::SourceLocation lhs,
-                             clang::SourceLocation rhs) {
-        return lhs == rhs || sourceManager.isBeforeInTranslationUnit(lhs, rhs);
-    };
-    return beforeOrEqual(outer.getBegin(), inner.getBegin()) &&
-           beforeOrEqual(inner.getEnd(), outer.getEnd());
+
+    const auto* mainCompound =
+        llvm::dyn_cast<clang::CompoundStmt>(dacppFile->getMainBody());
+    if (!mainCompound) {
+        return result;
+    }
+    bool sawDac = false;
+    for (const clang::Stmt* stmt : mainCompound->body()) {
+        if (!stmt) {
+            continue;
+        }
+        if (!sawDac) {
+            if (stmt == dacExpr || containsDacExpr(stmt, dacExpr, context)) {
+                sawDac = true;
+            }
+            continue;
+        }
+        result.push_back(stmt);
+    }
+    return result;
 }
 
 bool isSupportedIncrement(const clang::ForStmt* forStmt) {
@@ -1374,24 +1416,11 @@ PostUseReductionPlan analyzePostUseReduction(
         result.reason = "missing input";
         return result;
     }
-    const auto* compound = enclosingCompoundAfterDac(dacppFile, dacExpr);
-    if (!compound) {
-        result.reason = "missing enclosing compound";
-        return result;
-    }
-
-    bool sawDac = false;
+    const auto postStmts = collectPostDacStmts(dacppFile, dacExpr);
     const clang::Stmt* resetStmt = nullptr;
     std::string scalarName;
     const clang::ForStmt* reductionLoop = nullptr;
-    for (const clang::Stmt* stmt : compound->body()) {
-        if (stmt == dacExpr || stmtContainsDacExpr(dacppFile, stmt, dacExpr)) {
-            sawDac = true;
-            continue;
-        }
-        if (!sawDac) {
-            continue;
-        }
+    for (const clang::Stmt* stmt : postStmts) {
         if (!resetStmt) {
             std::string candidateScalar;
             if (!isScalarZeroAssignment(stmt, candidateScalar)) {
@@ -1447,13 +1476,6 @@ PostUseSyncPlan analyzePostUseSync(
         return result;
     }
 
-    const auto* compound = enclosingCompoundAfterDac(dacppFile, dacExpr);
-    if (!compound) {
-        result.kind = PostUseSyncKind::FullTensor;
-        result.reason = "missing enclosing compound";
-        return result;
-    }
-
     std::set<const clang::Stmt*> ignoredPostStmts;
     if (shell && calc) {
         for (const auto& region :
@@ -1470,20 +1492,12 @@ PostUseSyncPlan analyzePostUseSync(
         }
     }
 
-    bool sawDac = false;
+    const auto postStmts = collectPostDacStmts(dacppFile, dacExpr);
     bool sawHostUse = false;
     const clang::Stmt* tensor2ArrayStmt = nullptr;
     std::string tensor2ArrayTarget;
-    for (const clang::Stmt* stmt : compound->body()) {
+    for (const clang::Stmt* stmt : postStmts) {
         if (!stmt) {
-            continue;
-        }
-        if (stmt == dacExpr ||
-            containsDacExpr(stmt, dacExpr, dacppFile->getContext())) {
-            sawDac = true;
-            continue;
-        }
-        if (!sawDac) {
             continue;
         }
         if (isIgnoredLoweredPostStmt(stmt, ignoredPostStmts,

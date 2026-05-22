@@ -3729,6 +3729,14 @@ std::string stencilResidentHaloRejectReason(
         return compact == "0" || compact == "0.0" || compact == "0.0f" ||
                compact == "0.0F";
     };
+    auto loopCoversBoundarySpan = [](const BoundaryLocalUpdate& update,
+                                     int64_t extent) {
+        const std::string loopLower = compactExprText(update.loopLowerExpr);
+        const std::string loopUpper = compactExprText(update.loopUpperExpr);
+        return loopLower == "0" &&
+               ((extent > 0 && loopUpper == std::to_string(extent - 1)) ||
+                endsWith(loopUpper, "-1"));
+    };
     if (directReader) {
         const std::string directReaderType =
             plan.exprNode.calc->getParam(directReader->paramIndex)
@@ -3840,14 +3848,14 @@ std::string stencilResidentHaloRejectReason(
 
         if (!update.targetRowUsesLoop && !update.sourceRowUsesLoop &&
             update.targetColUsesLoop && update.sourceColUsesLoop &&
-            sameColLoopExpr && loopLower == "0" && update.loopUpperInclusive &&
+            sameColLoopExpr && loopCoversBoundarySpan(update, readerCols) &&
             isZeroExpr(update.targetRowExpr) && isOneExpr(update.sourceRowExpr)) {
             sawTop = true;
             continue;
         }
         if (!update.targetRowUsesLoop && !update.sourceRowUsesLoop &&
             update.targetColUsesLoop && update.sourceColUsesLoop &&
-            sameColLoopExpr && loopLower == "0" && update.loopUpperInclusive &&
+            sameColLoopExpr && loopCoversBoundarySpan(update, readerCols) &&
             isLastIndexExpr(update.targetRowExpr, readerRows) &&
             isPenultimateIndexExpr(update.sourceRowExpr, readerRows)) {
             sawBottom = true;
@@ -3855,16 +3863,14 @@ std::string stencilResidentHaloRejectReason(
         }
         if (update.targetRowUsesLoop && update.sourceRowUsesLoop &&
             !update.targetColUsesLoop && !update.sourceColUsesLoop &&
-            sameRowLoopExpr && loopLower == "0" &&
-            !update.loopUpperInclusive &&
+            sameRowLoopExpr && loopCoversBoundarySpan(update, readerRows) &&
             isZeroExpr(update.targetColExpr) && isOneExpr(update.sourceColExpr)) {
             sawLeft = true;
             continue;
         }
         if (update.targetRowUsesLoop && update.sourceRowUsesLoop &&
             !update.targetColUsesLoop && !update.sourceColUsesLoop &&
-            sameRowLoopExpr && loopLower == "0" &&
-            !update.loopUpperInclusive &&
+            sameRowLoopExpr && loopCoversBoundarySpan(update, readerRows) &&
             isLastIndexExpr(update.targetColExpr, readerCols) &&
             isPenultimateIndexExpr(update.sourceColExpr, readerCols)) {
             sawRight = true;
@@ -4104,6 +4110,10 @@ void annotateResidentHaloSpatial2D(
                                         : haloRejectReason);
         return;
     }
+    if (metadata.temporalBlockSize > 1) {
+        reject("spatial temporal-block=2 unsupported; row-temporal retained");
+        return;
+    }
     if (metadata.hasDirectReader) {
         reject("direct-reader recurrence requires row-layout role rotation");
         return;
@@ -4139,14 +4149,6 @@ void annotateResidentHaloSpatial2D(
     metadata.spatial2DHaloWidth = 1;
     metadata.spatial2DAcceptReason =
         "canonical B2 3x3 stencil rectangular-owned writer cells";
-    if (metadata.temporalBlockSize > 1) {
-        metadata.temporalBlockSize = 0;
-        metadata.temporalLoopLimitExpr.clear();
-        metadata.temporalLoopLimitInclusive = false;
-        metadata.temporalBlockAcceptReason.clear();
-        metadata.temporalBlockRejectReason =
-            "spatial-2d one-step partition keeps temporal blocking on row fallback";
-    }
 }
 
 struct PhaseExchangeDetection {
