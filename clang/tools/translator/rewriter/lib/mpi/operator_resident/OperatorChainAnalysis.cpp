@@ -4110,10 +4110,6 @@ void annotateResidentHaloSpatial2D(
                                         : haloRejectReason);
         return;
     }
-    if (metadata.hasDirectReader) {
-        reject("direct-reader recurrence requires row-layout role rotation");
-        return;
-    }
     if (metadata.temporalBlockSize > 2) {
         reject("spatial temporal-block>2 unsupported; row-temporal retained");
         return;
@@ -4133,7 +4129,8 @@ void annotateResidentHaloSpatial2D(
             reject("scalar readers are outside conservative spatial-2d contract");
             return;
         }
-        if (param.access == ParamAccessKind::DirectMapped &&
+        if (!metadata.hasDirectReader &&
+            param.access == ParamAccessKind::DirectMapped &&
             param.reads && !param.writes) {
             reject("direct readers are outside conservative spatial-2d contract");
             return;
@@ -4144,7 +4141,8 @@ void annotateResidentHaloSpatial2D(
             reject("unsupported post-use contract for spatial-2d");
             return;
         }
-        if (metadata.temporalBlockSize > 1 &&
+        if (!metadata.hasDirectReader &&
+            metadata.temporalBlockSize > 1 &&
             param.postUseSync.kind != PostUseSyncKind::None) {
             reject("spatial temporal-block=2 with host post-use is not profitable in the current rectangular buffer path; row-temporal retained");
             return;
@@ -4152,10 +4150,17 @@ void annotateResidentHaloSpatial2D(
     }
     metadata.spatial2DEnabled = true;
     metadata.spatial2DHaloWidth = metadata.temporalBlockSize > 1 ? 2 : 1;
-    metadata.spatial2DAcceptReason =
-        metadata.temporalBlockSize > 1
-            ? "canonical B2 3x3 stencil temporal-block=2 rectangular-owned writer cells"
-            : "canonical B2 3x3 stencil rectangular-owned writer cells";
+    if (metadata.hasDirectReader) {
+        metadata.spatial2DAcceptReason =
+            metadata.temporalBlockSize > 1
+                ? "canonical B3 3x3 direct-reader temporal-block=2 spatial role rotation"
+                : "canonical B3 3x3 direct-reader spatial role rotation";
+    } else {
+        metadata.spatial2DAcceptReason =
+            metadata.temporalBlockSize > 1
+                ? "canonical B2 3x3 stencil temporal-block=2 rectangular-owned writer cells"
+                : "canonical B2 3x3 stencil rectangular-owned writer cells";
+    }
 }
 
 struct PhaseExchangeDetection {

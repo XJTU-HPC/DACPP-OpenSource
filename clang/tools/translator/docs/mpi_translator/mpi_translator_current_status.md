@@ -188,10 +188,9 @@ Accepted 2D resident halo:
 - for the current direct-reader extension: at most one direct reader, exactly
   the current `(-1,-1)` read-cache transition, and the current top-level
   statement order
-- conservative spatial-2d is B2 only: one-step may use bounded/small post-use,
-  while spatial `k=2` is accepted only for no-host-use contracts; bounded/full
-  host post-use retains row-temporal `k=2` with an explicit profitability reject
-  log
+- conservative spatial-2d covers B2 one-step, B2 `k=2` with no host use, and
+  the canonical B3 direct-reader `k=2` role-rotation shape; B2 bounded/full host
+  post-use retains row-temporal `k=2` with an explicit profitability reject log
 
 Representative tests:
 
@@ -383,7 +382,7 @@ as external wall time. External wall time remains the `mpirun` timing in
 | `oddeven0.1` | P5 loop-resident `FixedBlockPhaseExchange` | Current optimized path removes per-iteration materialization. |
 | `stencil1.0` | P4.6 `StencilWindow2D` row-temporal resident halo | Spatial `k=2` is rejected for bounded host post-use as not profitable in the current rectangular buffer path; row-temporal `k=2` is retained. |
 | `vectorAddCombo` | `Contiguous1D` OR chain | Uses resident-buffer reference/move optimization for chain intermediates and skips the final no-downstream resident registry rewrite after required output materialization. |
-| `waveEquation1.0` | P4.6 `StencilWindow2D` row-temporal resident halo with direct-reader extension | Triple resident role rotation; spatial-2d stays rejected until spatial direct-reader role rotation is proven. |
+| `waveEquation1.0` | P4.6 `StencilWindow2D` spatial-2d resident halo with direct-reader extension | Triple resident role rotation is now proven for the canonical B3 `k=2` spatial path. |
 
 ## TODO
 

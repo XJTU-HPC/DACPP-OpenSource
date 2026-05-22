@@ -934,11 +934,14 @@ Implementation Status (2026-05-22):
   `exchange_halo_2d_rows_temporal_inplace` with no spatial exchange. This keeps
   the fallback based on post-use contract and profitability evidence, not
   benchmark names.
-- B3 direct-reader cases such as `waveEquation1.0` still reject spatial-2d with
-  `distribution=spatial-2d rejected reason=direct-reader recurrence requires row-layout role rotation`
-  and retain the row-temporal `temporal-block=2 accepted direct-reader
-  recurrence` path. No spatial role rotation is claimed for direct-reader
-  recurrence.
+- B3 direct-reader cases now have a conservative spatial role-rotation path for
+  the proven `waveEquation1.0` shape. The accepted log is
+  `distribution=spatial-2d accepted stencil halo-width=2 reason=canonical B3
+  3x3 direct-reader temporal-block=2 spatial role rotation ... temporal-block=2
+  accepted direct-reader recurrence`. Codegen scatters the embedded `prev`
+  recurrence state with `scatter_window_2d_spatial`, exchanges the `cur` spatial
+  halo with width 2, runs the same shrinking spatial rectangle replay for both
+  block steps, and rotates `prev/cur/next` buffers with `swap()`.
 - Runtime/codegen support for the 2D process-grid rectangle layout now covers
   both one-step and k=2 spatial execution:
   `ResidentHalo2DSpatialLayout`, row/column owned ranges, rectangle initial
@@ -959,29 +962,29 @@ Implementation Status (2026-05-22):
   compounds and sees host uses after the outer loop, so fixtures such as
   `mpiMixedStencilORPhaseC` keep full loop-exit materialization for
   `matIn[0].print()` instead of incorrectly logging `post-use=none`.
-- Current accepted spatial-2d scope is B2 only: one-step supports bounded/small
-  post-use, while k=2 is limited to no-host-use contracts until the rectangular
-  spatial k=2 kernel/layout path is made profitable for bounded/full host
-  post-use. Unsupported or less
-  profitable cases log structural rejection reasons: direct-reader recurrence,
-  scalar readers, unsupported/profitability-rejected post-use, unsafe boundary
-  replay, missing resident halo contract, or unsupported temporal block size.
-  The next performance step is direct-reader spatial role rotation and cheaper
-  bounded/full spatial k=2 post-use and its kernel/layout cost; until that is proven,
-  row-temporal/block-cyclic/bounded-materialize/resident continuation paths are
-  retained.
+- Current accepted spatial-2d scope is B2 one-step, B2 k=2 with no host use, and
+  the canonical B3 direct-reader k=2 shape. B2 bounded/full host post-use still
+  retains row-temporal k=2 until the rectangular spatial k=2 kernel/layout path
+  is made profitable for that contract. Unsupported or less profitable cases log
+  structural rejection reasons: scalar readers, unsupported/profitability-
+  rejected post-use, unsafe boundary replay, missing resident halo contract, or
+  unsupported temporal block size. The next performance step is cheaper
+  bounded/full B2 spatial k=2 post-use and kernel/layout cost; until that is
+  proven, row-temporal/block-cyclic/bounded-materialize/resident continuation
+  paths are retained.
 - Verified with translator build, required `stencil1.0`, the P6-P11 protection
   set (`mandel1.0`, `FOuLa1.0`, `liuliang1.0`, `MDP1.0`, `waveEquation1.0`),
   related non-`mpi*` 2D/access/stencil fixtures found by `rg`
   (`spatialStencil2DOneStep`, `jacobi1.0`, `imageAdjustment1.0`,
   `gradientSum`, `matMul1.0`), and nearby structural/rejection fixtures. The
   requested 4-rank, 3-trial profile probe passed all six cases in
-  `/Volumes/QUQ/working/mpi_tmp/profile_segments_p11_stencil1_spatial_k2_profit`;
+  `/Volumes/QUQ/working/mpi_tmp/profile_segments_2d_spatial_b3_probe`;
   `stencil1.0` logs confirm the profitability fallback and row-temporal `k=2`
-  retention (`dac_wall_median_s=0.850681`), `mpiLoopStencilCountGuard2D` proves
+  retention (`dac_wall_median_s=0.845356`), `mpiLoopStencilCountGuard2D` proves
   no-use spatial-2d `halo-width=2 temporal-block=2` without full gather,
-  `waveEquation1.0` confirms direct-reader row-temporal `k=2` retention, and
-  `mandel1.0` remains block-cyclic with scalar `MPI_Reduce`.
+  `waveEquation1.0` confirms direct-reader spatial-2d `halo-width=2
+  temporal-block=2` retention (`dac_wall_median_s=0.968622`), and `mandel1.0`
+  remains block-cyclic with scalar `MPI_Reduce`.
 
 ## 32-Rank Benchmark Commands
 
