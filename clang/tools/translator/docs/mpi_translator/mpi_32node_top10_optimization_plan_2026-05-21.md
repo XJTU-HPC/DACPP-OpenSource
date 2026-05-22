@@ -925,8 +925,15 @@ Implementation Status (2026-05-22):
   had `dac_wall_median_s=4.838048` and a `kernel` median max of
   `4496.731972 ms`. The profitable current path remains row-temporal k=2
   (`profile_segments_p11_spatial_k2_probe` recorded `dac_wall_median_s=0.864732`
-  with no gather segment). This keeps the fallback based on post-use contract
-  and profitability evidence, not benchmark names.
+  with no gather segment). A fresh 2026-05-22 confirmation profile in
+  `/Volumes/QUQ/working/mpi_tmp/profile_segments_p11_stencil1_spatial_k2_profit`
+  records `stencil1.0` at `dac_wall_median_s=0.850681`; its translator log
+  reports `distribution=spatial-2d rejected reason=spatial temporal-block=2 with
+  host post-use is not profitable in the current rectangular buffer path;
+  row-temporal retained`, and generated code uses
+  `exchange_halo_2d_rows_temporal_inplace` with no spatial exchange. This keeps
+  the fallback based on post-use contract and profitability evidence, not
+  benchmark names.
 - B3 direct-reader cases such as `waveEquation1.0` still reject spatial-2d with
   `distribution=spatial-2d rejected reason=direct-reader recurrence requires row-layout role rotation`
   and retain the row-temporal `temporal-block=2 accepted direct-reader
@@ -969,9 +976,9 @@ Implementation Status (2026-05-22):
   (`spatialStencil2DOneStep`, `jacobi1.0`, `imageAdjustment1.0`,
   `gradientSum`, `matMul1.0`), and nearby structural/rejection fixtures. The
   requested 4-rank, 3-trial profile probe passed all six cases in
-  `/Volumes/QUQ/working/mpi_tmp/profile_segments_p11_spatial_k2_probe`;
+  `/Volumes/QUQ/working/mpi_tmp/profile_segments_p11_stencil1_spatial_k2_profit`;
   `stencil1.0` logs confirm the profitability fallback and row-temporal `k=2`
-  retention (`dac_wall_median_s=0.864732`), `mpiLoopStencilCountGuard2D` proves
+  retention (`dac_wall_median_s=0.850681`), `mpiLoopStencilCountGuard2D` proves
   no-use spatial-2d `halo-width=2 temporal-block=2` without full gather,
   `waveEquation1.0` confirms direct-reader row-temporal `k=2` retention, and
   `mandel1.0` remains block-cyclic with scalar `MPI_Reduce`.

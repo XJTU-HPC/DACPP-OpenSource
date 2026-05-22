@@ -188,11 +188,17 @@ Accepted 2D resident halo:
 - for the current direct-reader extension: at most one direct reader, exactly
   the current `(-1,-1)` read-cache transition, and the current top-level
   statement order
+- conservative spatial-2d is B2 only: one-step may use bounded/small post-use,
+  while spatial `k=2` is accepted only for no-host-use contracts; bounded/full
+  host post-use retains row-temporal `k=2` with an explicit profitability reject
+  log
 
 Representative tests:
 
 - `stencil1.0`
 - `waveEquation1.0`
+- `spatialStencil2DOneStep`
+- `mpiLoopStencilCountGuard2D`
 
 Current implementation shape:
 
@@ -200,8 +206,8 @@ Current implementation shape:
 - loop body computes directly into the next resident state
 - in-place neighbor halo exchange
 - role rotation with `swap()`
-- final `Gatherv` of owned slices only, followed by required host-visible tensor
-  materialization
+- final bounded/small or owned-slice materialization only when host-visible
+  post-use requires it
 
 ### FOuLa Owner-Loop Specialization
 
@@ -375,9 +381,9 @@ as external wall time. External wall time remains the `mpirun` timing in
 | `mandel1.0` | OR or legacy depending on current generated path | Needs a current path-specific benchmark check. |
 | `matMul1.0` | `RowPartitionFullRow` | Broadcasts one matrix/payload side by current row-partition design. |
 | `oddeven0.1` | P5 loop-resident `FixedBlockPhaseExchange` | Current optimized path removes per-iteration materialization. |
-| `stencil1.0` | P4.6 `StencilWindow2D` resident halo | Current closeout path is near hand-written MPI. |
+| `stencil1.0` | P4.6 `StencilWindow2D` row-temporal resident halo | Spatial `k=2` is rejected for bounded host post-use as not profitable in the current rectangular buffer path; row-temporal `k=2` is retained. |
 | `vectorAddCombo` | `Contiguous1D` OR chain | Uses resident-buffer reference/move optimization for chain intermediates and skips the final no-downstream resident registry rewrite after required output materialization. |
-| `waveEquation1.0` | P4.6 `StencilWindow2D` resident halo with direct-reader extension | Triple resident role rotation. |
+| `waveEquation1.0` | P4.6 `StencilWindow2D` row-temporal resident halo with direct-reader extension | Triple resident role rotation; spatial-2d stays rejected until spatial direct-reader role rotation is proven. |
 
 ## TODO
 
