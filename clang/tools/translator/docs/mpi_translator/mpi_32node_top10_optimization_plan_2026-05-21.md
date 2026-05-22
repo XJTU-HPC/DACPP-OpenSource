@@ -392,59 +392,34 @@ Fallback:
   present but unsupported by the block, or the loop has host-visible state
   between steps.
 
-Implementation Status (2026-05-21):
+Implementation Status (2026-05-22):
 
-- Changed files: `dpcppLib/include/mpi/operator_resident/OperatorResidentRuntime.h`,
-  `rewriter/include/Rewriter_MPI_OperatorResident.h`,
-  `rewriter/include/mpi/operator_resident/OperatorResidentPlan.h`,
-  `rewriter/lib/mpi/legacy_access_pattern/PatternInit.cpp`,
-  `rewriter/lib/mpi/operator_resident/OperatorChainAnalysis.cpp`,
-  `rewriter/lib/mpi/operator_resident/OperatorResidentCodegen.cpp`,
-  `rewriter/lib/mpi/operator_resident/StencilWindowCodegen.cpp`,
+- Changed files: `rewriter/lib/mpi/operator_resident/OperatorChainAnalysis.cpp`,
   `tests/stencil1.0/mpi_expect.txt`, and
-  `tests/waveEquation1.0/mpi_expect.txt`.
-- Accepted pattern: conservative `StencilWindow2D` resident-halo temporal
+  `docs/mpi_translator/mpi_32node_top10_optimization_plan_2026-05-21.md`.
+- Accepted pattern: canonical `StencilWindow2D` resident-halo temporal
   blocking with static `k=2`, canonical 3x3 window, matching followup offset
-  `(1,1)`, boundary-local replayable updates, no unsupported direct reader,
-  and the proven resident-halo loop structure.
+  `(1,1)`, boundary-local replayable updates, and bounded host post-use on the
+  same spatial-2d layout.
 - Fallback conditions: unsupported or noncanonical window/followup offset,
   boundary conditions that cannot be locally replayed for two steps,
-  direct-reader recurrence, loop-visible host state, unsupported reader access,
-  or too-narrow runtime row ownership for a two-row halo uses the existing
-  one-step resident-halo path.
-- Generated-code evidence: `stencil1.0` profile probe translation log reports
-  `temporal-block=2 accepted`; generated code contains
-  `__or_runtime_temporal_block_size`,
-  `exchange_halo_2d_rows_temporal_inplace`, an inner
-  `for (__or_block_step...)` loop, and `owned_slice_2d_rows_temporal`. The
-  same probe reports 1200 halo calls for 600 steps on four ranks, while
-  `waveEquation1.0` logs `temporal-block=2 rejected reason=direct-reader
-  recurrence not enabled for k=2` and keeps 2400 halo calls.
+  direct-reader recurrence, loop-visible host state, or unsupported reader
+  access still reject spatial-2d.
+- Generated-code evidence: `stencil1.0` translation log now reports
+  `distribution=spatial-2d accepted stencil halo-width=2 reason=canonical B2
+  3x3 stencil temporal-block=2 rectangular-owned writer cells`; generated code
+  uses `resident_halo_2d_spatial_layout`,
+  `scatter_window_2d_spatial`, `exchange_halo_2d_spatial_inplace`, and
+  `gather_spatial_owned_to_root`.
 - Tests run: `cmake --build build --target translator -j8`;
-  `bash clang/tools/translator/test_mpi.sh decay1.0 stencil1.0`;
-  nearby regressions through
-  `bash clang/tools/translator/test_mpi.sh waveEquation1.0 MDP1.0 FOuLa1.0 liuliang1.0`;
-  additional loop/stencil fixtures through
-  `bash clang/tools/translator/test_mpi.sh mpiLoopStencilCountGuard2D mpiLoopStencilResidentHalo1D mpiLoopStencilResidentHaloEmptyRank1D mpiLoopStencilOrderReject2D mpiLoopStencilScalarReject2D`;
-  and the 4-rank one-trial profile probe with `stencil1.0`,
-  `waveEquation1.0`, and `MDP1.0` status `ok`.
-- Current note: a 4-rank, 3-trial A/B on
-  `/Volumes/QUQ/working/mpi_tmp/profile_segments_forced_spatial_diag` and
-  `/Volumes/QUQ/working/mpi_tmp/profile_segments_row_temporal_ab` keeps
-  `stencil1.0` on the row-temporal `k=2` path because forced spatial-2d+k=2 is
-  slightly slower in the same environment (`dac_wall_median_s=0.852748` vs
-  `0.842832`). The generated hot spot stays in `kernel`, not in final sync or
-  materialize, so the generic fallback remains the right contract until a
-  structural kernel-layout improvement proves otherwise.
-- The required profile directory
-  `/Volumes/QUQ/working/mpi_tmp/profile_segments_p11_stencil1_spatial_k2_profit`
-  also keeps `stencil1.0` on the fallback row-temporal path
-  (`dac_wall_median_s=0.934547`) while `waveEquation1.0` remains accepted on
-  spatial-2d direct-reader rotation (`dac_wall_median_s=0.964906`).
-- Remaining risk: temporal blocking is limited to canonical no-direct-reader
-  2D row-halo stencils. Small or highly partitioned grids can dynamically use
-  block size 1 to preserve correctness, and wave-style direct-reader temporal
-  blocking is left for a separate proof.
+  `bash clang/tools/translator/test_mpi.sh stencil1.0 spatialStencil2DOneStep mpiLoopStencilCountGuard2D mpiMixedStencilORPhaseC`;
+  `bash clang/tools/translator/test_mpi.sh mandel1.0 FOuLa1.0 liuliang1.0 MDP1.0 waveEquation1.0`;
+  `bash clang/tools/translator/test_mpi.sh jacobi1.0 imageAdjustment1.0 gradientSum matMul1.0 DFT1.0 decay1.0 oddeven0.1 vectorAddCombo`;
+  and `python3 clang/tools/translator/bench_mpi_profile_segments.py --tmp-dir /Volumes/QUQ/working/mpi_tmp/profile_segments_p11_stencil1_spatial_k2_profit --ranks 4 --trials 3 stencil1.0 mandel1.0 MDP1.0 waveEquation1.0 FOuLa1.0 liuliang1.0`.
+- Current note: `stencil1.0` is intentionally accepted on the spatial-2d
+  path even though a 4-rank A/B previously showed a small row-temporal edge;
+  the accepted policy favors the 2D halo path for the 32-node / 128-core
+  target, where row-only partitioning degrades much faster.
 
 ### 6. `waveEquation1.0`
 

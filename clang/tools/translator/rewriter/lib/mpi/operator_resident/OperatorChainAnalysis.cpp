@@ -4141,12 +4141,6 @@ void annotateResidentHaloSpatial2D(
             reject("unsupported post-use contract for spatial-2d");
             return;
         }
-        if (!metadata.hasDirectReader &&
-            metadata.temporalBlockSize > 1 &&
-            param.postUseSync.kind != PostUseSyncKind::None) {
-            reject("spatial temporal-block=2 with host post-use is not profitable in the current rectangular buffer path; row-temporal retained");
-            return;
-        }
     }
     metadata.spatial2DEnabled = true;
     metadata.spatial2DHaloWidth = metadata.temporalBlockSize > 1 ? 2 : 1;
