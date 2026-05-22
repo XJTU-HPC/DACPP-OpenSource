@@ -703,7 +703,8 @@ void exchange_halo_1d_temporal_inplace(std::vector<T>& local,
                                        int rank,
                                        int size,
                                        MPI_Datatype mpiType) {
-    if (interiorOffset != 1 || temporalBlockSize <= 0 || windowSize != 3) {
+    if (interiorOffset != 1 || temporalBlockSize <= 0 ||
+        (windowSize != 2 && windowSize != 3)) {
         return;
     }
     (void)rank;
@@ -776,11 +777,6 @@ void exchange_halo_1d_temporal_inplace(std::vector<T>& local,
     (void)size;
     const int prev = layout.prev_rank;
     const int next = layout.next_rank;
-    const int sendItemsPerNeighbor = std::min<int64_t>(
-        layout.owned.count, static_cast<int64_t>(temporalBlockSize));
-    if (sendItemsPerNeighbor <= 0) {
-        return;
-    }
     const int64_t leftRecvItems = std::min<int64_t>(
         static_cast<int64_t>(temporalBlockSize),
         std::max<int64_t>(0, firstInterior));
@@ -789,6 +785,44 @@ void exchange_halo_1d_temporal_inplace(std::vector<T>& local,
         static_cast<int64_t>(temporalBlockSize),
         std::max<int64_t>(
             0, static_cast<int64_t>(local.size()) - rightRecvStart));
+    auto neighborLeftRecvItems = [&](int neighborRank) {
+        if (neighborRank == MPI_PROC_NULL) {
+            return int64_t{0};
+        }
+        const ResidentHalo1DLayout target =
+            resident_halo_1d_layout_temporal(
+                outputTotal, neighborRank, size, temporalBlockSize, windowSize);
+        const int64_t targetFirstInterior =
+            target.owned_offset + static_cast<int64_t>(interiorOffset);
+        return std::min<int64_t>(
+            std::min<int64_t>(target.owned.count,
+                              static_cast<int64_t>(temporalBlockSize)),
+            std::max<int64_t>(0, targetFirstInterior));
+    };
+    auto neighborRightRecvItems = [&](int neighborRank) {
+        if (neighborRank == MPI_PROC_NULL) {
+            return int64_t{0};
+        }
+        const ResidentHalo1DLayout target =
+            resident_halo_1d_layout_temporal(
+                outputTotal, neighborRank, size, temporalBlockSize, windowSize);
+        const int64_t targetFirstInterior =
+            target.owned_offset + static_cast<int64_t>(interiorOffset);
+        const int64_t targetRightRecvStart =
+            targetFirstInterior + target.owned.count;
+        return std::min<int64_t>(
+            std::min<int64_t>(target.owned.count,
+                              static_cast<int64_t>(temporalBlockSize)),
+            std::max<int64_t>(0, target.local_size - targetRightRecvStart));
+    };
+    const int64_t leftSendItems =
+        std::min<int64_t>(layout.owned.count, neighborRightRecvItems(prev));
+    const int64_t rightSendItems =
+        std::min<int64_t>(layout.owned.count, neighborLeftRecvItems(next));
+    if (leftRecvItems <= 0 && rightRecvItems <= 0 &&
+        leftSendItems <= 0 && rightSendItems <= 0) {
+        return;
+    }
     auto packItems = [&](int64_t itemBegin, int64_t itemCount) {
         std::vector<T> packed(static_cast<std::size_t>(itemCount), T{});
         for (int64_t item = 0; item < itemCount; ++item) {
@@ -813,18 +847,20 @@ void exchange_halo_1d_temporal_inplace(std::vector<T>& local,
             }
         }
     };
-    std::vector<T> leftSendBuffer =
-        packItems(firstInterior, sendItemsPerNeighbor);
+    std::vector<T> leftSendBuffer = packItems(firstInterior, leftSendItems);
     std::vector<T> rightSendBuffer =
-        packItems(firstInterior + layout.owned.count - sendItemsPerNeighbor,
-                  sendItemsPerNeighbor);
+        packItems(firstInterior + layout.owned.count - rightSendItems,
+                  rightSendItems);
     std::vector<T> leftRecvBuffer(static_cast<std::size_t>(leftRecvItems),
                                   T{});
     std::vector<T> rightRecvBuffer(static_cast<std::size_t>(rightRecvItems),
                                    T{});
-    const int sendCount = narrow_mpi_count_or_abort(
-        sendItemsPerNeighbor,
-        "[DACPP][MPI][OR] temporal resident halo 1D send count exceeds MPI int range");
+    const int leftSendCount = narrow_mpi_count_or_abort(
+        leftSendItems,
+        "[DACPP][MPI][OR] temporal resident halo 1D left send count exceeds MPI int range");
+    const int rightSendCount = narrow_mpi_count_or_abort(
+        rightSendItems,
+        "[DACPP][MPI][OR] temporal resident halo 1D right send count exceeds MPI int range");
     const int leftRecvCount = narrow_mpi_count_or_abort(
         leftRecvItems,
         "[DACPP][MPI][OR] temporal resident halo 1D left receive count exceeds MPI int range");
@@ -851,18 +887,18 @@ void exchange_halo_1d_temporal_inplace(std::vector<T>& local,
                   MPI_COMM_WORLD,
                   &requests[requestCount++]);
     }
-    if (next != MPI_PROC_NULL) {
+    if (next != MPI_PROC_NULL && rightSendCount > 0) {
         MPI_Isend(rightSendBuffer.data(),
-                  sendCount,
+                  rightSendCount,
                   mpiType,
                   next,
                   4113,
                   MPI_COMM_WORLD,
                   &requests[requestCount++]);
     }
-    if (prev != MPI_PROC_NULL) {
+    if (prev != MPI_PROC_NULL && leftSendCount > 0) {
         MPI_Isend(leftSendBuffer.data(),
-                  sendCount,
+                  leftSendCount,
                   mpiType,
                   prev,
                   4114,

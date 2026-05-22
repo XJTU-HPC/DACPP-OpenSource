@@ -28,6 +28,7 @@ namespace operator_resident {
 namespace {
 
 std::string loopVarName(const clang::ForStmt* forStmt);
+const clang::Expr* singleExprLoopBody(const clang::Stmt* stmt);
 
 std::string getExprSourceText(const clang::Expr* expr, DacppFile* dacppFile) {
     if (!expr || !dacppFile || !dacppFile->getContext()) {
@@ -470,6 +471,189 @@ struct OwnerMatrixShapeProof {
     const clang::ValueDecl* timeStepCountDecl = nullptr;
 };
 
+struct ArraySliceExpr {
+    std::string baseName;
+    const clang::ValueDecl* baseDecl = nullptr;
+    const clang::Expr* firstIndex = nullptr;
+    const clang::Expr* secondIndex = nullptr;
+};
+
+bool extractOneDimArraySubscript(const clang::Expr* expr,
+                                 TensorSubscriptExpr* subscript) {
+    expr = stripExpr(expr);
+    const auto* array =
+        llvm::dyn_cast_or_null<clang::ArraySubscriptExpr>(expr);
+    if (!array || !subscript) {
+        return false;
+    }
+    const auto* baseRef =
+        llvm::dyn_cast_or_null<clang::DeclRefExpr>(
+            stripExpr(array->getBase()));
+    if (!baseRef || !baseRef->getDecl()) {
+        return false;
+    }
+    subscript->baseName = baseRef->getDecl()->getNameAsString();
+    subscript->index = array->getIdx();
+    return true;
+}
+
+bool extractTwoDimArraySubscript(const clang::Expr* expr,
+                                 ArraySliceExpr* slice) {
+    expr = stripExpr(expr);
+    const auto* outer =
+        llvm::dyn_cast_or_null<clang::ArraySubscriptExpr>(expr);
+    if (!outer || !slice) {
+        return false;
+    }
+    const auto* inner = llvm::dyn_cast_or_null<clang::ArraySubscriptExpr>(
+        stripExpr(outer->getBase()));
+    if (!inner) {
+        return false;
+    }
+    const auto* baseRef =
+        llvm::dyn_cast_or_null<clang::DeclRefExpr>(stripExpr(inner->getBase()));
+    if (!baseRef || !baseRef->getDecl()) {
+        return false;
+    }
+    slice->baseName = baseRef->getDecl()->getNameAsString();
+    slice->baseDecl = baseRef->getDecl();
+    slice->firstIndex = inner->getIdx();
+    slice->secondIndex = outer->getIdx();
+    return true;
+}
+
+bool isExpectedValueExpr(const clang::Expr* expr,
+                         const std::string& expectedName,
+                         const clang::ValueDecl* expectedDecl) {
+    return isDeclRefToExpectedValue(expr, expectedName, expectedDecl);
+}
+
+bool isAllowedMathFunction(const clang::FunctionDecl* func) {
+    if (!func) {
+        return false;
+    }
+    static const std::set<std::string> allowed = {
+        "exp", "std::exp", "sin", "std::sin", "cos", "std::cos",
+        "sqrt", "std::sqrt", "fabs", "std::fabs", "abs", "std::abs",
+        "pow", "std::pow", "log", "std::log"};
+    return allowed.count(func->getNameAsString()) != 0 ||
+           allowed.count(func->getQualifiedNameAsString()) != 0;
+}
+
+bool pureScalarFunctionHasSafeBody(
+    const clang::FunctionDecl* func,
+    std::set<const clang::FunctionDecl*>& active);
+
+class PureScalarExprVisitor
+    : public clang::RecursiveASTVisitor<PureScalarExprVisitor> {
+public:
+    PureScalarExprVisitor(clang::ASTContext* context,
+                          std::set<const clang::FunctionDecl*>& active)
+        : Context(context), Active(active) {}
+
+    bool VisitArraySubscriptExpr(clang::ArraySubscriptExpr*) {
+        Unsupported = true;
+        Reason = "function reads array state";
+        return false;
+    }
+
+    bool VisitCXXOperatorCallExpr(clang::CXXOperatorCallExpr* call) {
+        if (call && call->getOperator() == clang::OO_Subscript) {
+            Unsupported = true;
+            Reason = "function reads tensor state";
+            return false;
+        }
+        return true;
+    }
+
+    bool VisitCallExpr(clang::CallExpr* call) {
+        if (!call || Unsupported) {
+            return false;
+        }
+        if (llvm::isa<clang::CXXMemberCallExpr>(call) ||
+            llvm::isa<clang::CXXOperatorCallExpr>(call)) {
+            Unsupported = true;
+            Reason = "function uses unsupported call";
+            return false;
+        }
+        const auto* callee = call->getDirectCallee();
+        if (!callee || (!isAllowedMathFunction(callee) &&
+                        !pureScalarFunctionHasSafeBody(callee, Active))) {
+            Unsupported = true;
+            Reason = "function uses unsupported call";
+            return false;
+        }
+        return true;
+    }
+
+    bool VisitDeclRefExpr(clang::DeclRefExpr* ref) {
+        if (!ref || Unsupported || !ref->getDecl()) {
+            return false;
+        }
+        const auto* decl = ref->getDecl();
+        if (llvm::isa<clang::ParmVarDecl>(decl) ||
+            llvm::isa<clang::FunctionDecl>(decl)) {
+            return true;
+        }
+        if (const auto* var = llvm::dyn_cast<clang::VarDecl>(decl)) {
+            if (var->hasGlobalStorage() || var->getType().isConstQualified()) {
+                return true;
+            }
+        }
+        if (Context) {
+            clang::Expr::EvalResult evalResult;
+            if (ref->EvaluateAsRValue(evalResult, *Context)) {
+                return true;
+            }
+        }
+        Unsupported = true;
+        Reason = "function depends on mutable local scalar";
+        return false;
+    }
+
+    bool Unsupported = false;
+    std::string Reason;
+
+private:
+    clang::ASTContext* Context = nullptr;
+    std::set<const clang::FunctionDecl*>& Active;
+};
+
+bool pureScalarFunctionHasSafeBody(
+    const clang::FunctionDecl* func,
+    std::set<const clang::FunctionDecl*>& active) {
+    if (!func || isAllowedMathFunction(func)) {
+        return func != nullptr;
+    }
+    const clang::FunctionDecl* definition = nullptr;
+    if (!func->hasBody(definition) || !definition || !definition->getBody()) {
+        return false;
+    }
+    if (active.count(definition) != 0) {
+        return false;
+    }
+    const auto* compound =
+        llvm::dyn_cast_or_null<clang::CompoundStmt>(definition->getBody());
+    if (!compound || compound->size() != 1) {
+        return false;
+    }
+    const auto* ret =
+        llvm::dyn_cast_or_null<clang::ReturnStmt>(*compound->body_begin());
+    if (!ret || !ret->getRetValue()) {
+        return false;
+    }
+    active.insert(definition);
+    PureScalarExprVisitor visitor(&definition->getASTContext(), active);
+    visitor.TraverseStmt(const_cast<clang::Expr*>(ret->getRetValue()));
+    active.erase(definition);
+    return !visitor.Unsupported;
+}
+
+std::string regexEscape(const std::string& text) {
+    static const std::regex metachar(R"([.^$|()\\[\]{}*+?])");
+    return std::regex_replace(text, metachar, R"(\$&)");
+}
+
 bool extractDeclPlusOne(const clang::Expr* expr,
                         std::string* name,
                         const clang::ValueDecl** decl) {
@@ -558,6 +742,457 @@ bool hasOwnerWritebackLoopBound(const clang::ForStmt* forStmt,
            isExpectedValueMinusOne(cond->getRHS(),
                                    proof.rowInteriorEndName,
                                    proof.rowInteriorEndDecl);
+}
+
+bool isArrayZeroToTimeEndInitLoop(const clang::ForStmt* forStmt,
+                                  const OwnerMatrixShapeProof& proof,
+                                  std::string* loopVar) {
+    const std::string var = loopVarName(forStmt);
+    if (var.empty() || !isForwardUnitLoopFromZero(forStmt, var)) {
+        return false;
+    }
+    const auto* cond = llvm::dyn_cast_or_null<clang::BinaryOperator>(
+        forStmt ? forStmt->getCond() : nullptr);
+    if (!cond || cond->getOpcode() != clang::BO_LE ||
+        !isDeclRefToName(cond->getLHS(), var) ||
+        !isExpectedValueExpr(cond->getRHS(), proof.timeStepCountName,
+                             proof.timeStepCountDecl)) {
+        return false;
+    }
+    if (loopVar) {
+        *loopVar = var;
+    }
+    return true;
+}
+
+const clang::Expr* singleAssignRhs(const clang::Stmt* stmt,
+                                   const clang::Expr** lhs = nullptr) {
+    const clang::Expr* expr = singleExprLoopBody(stmt);
+    expr = stripExpr(expr);
+    const auto* binary = llvm::dyn_cast_or_null<clang::BinaryOperator>(expr);
+    if (!binary || binary->getOpcode() != clang::BO_Assign) {
+        return nullptr;
+    }
+    if (lhs) {
+        *lhs = binary->getLHS();
+    }
+    return binary->getRHS();
+}
+
+std::vector<const clang::BinaryOperator*> topLevelAssignments(
+    const clang::Stmt* stmt) {
+    std::vector<const clang::BinaryOperator*> result;
+    if (!stmt) {
+        return result;
+    }
+    if (const auto* compound =
+            llvm::dyn_cast_or_null<clang::CompoundStmt>(stmt)) {
+        for (const clang::Stmt* child : compound->body()) {
+            const auto* expr =
+                llvm::dyn_cast_or_null<clang::Expr>(child);
+            const auto* binary =
+                llvm::dyn_cast_or_null<clang::BinaryOperator>(
+                    stripExpr(expr));
+            if (!binary || binary->getOpcode() != clang::BO_Assign) {
+                return {};
+            }
+            result.push_back(binary);
+        }
+        return result;
+    }
+    const auto* expr = llvm::dyn_cast_or_null<clang::Expr>(stmt);
+    const auto* binary =
+        llvm::dyn_cast_or_null<clang::BinaryOperator>(stripExpr(expr));
+    if (binary && binary->getOpcode() == clang::BO_Assign) {
+        result.push_back(binary);
+    }
+    return result;
+}
+
+std::vector<std::string> arrayNamesFromDeclStmt(const clang::Stmt* stmt) {
+    std::vector<std::string> result;
+    const auto* declStmt = llvm::dyn_cast_or_null<clang::DeclStmt>(stmt);
+    if (!declStmt) {
+        return result;
+    }
+    for (const clang::Decl* decl : declStmt->decls()) {
+        const auto* varDecl = llvm::dyn_cast_or_null<clang::VarDecl>(decl);
+        if (!varDecl) {
+            continue;
+        }
+        const std::string typeName = varDecl->getType().getAsString();
+        if (typeName.find('*') == std::string::npos &&
+            typeName.find("[]") == std::string::npos) {
+            continue;
+        }
+        result.push_back(varDecl->getNameAsString());
+    }
+    return result;
+}
+
+std::string findTimeArrayNameBeforeOwnerDecl(
+    DacppFile* dacppFile,
+    const clang::ForStmt* outerLoop,
+    const clang::ValueDecl* ownerDecl,
+    const OwnerMatrixShapeProof& proof) {
+    if (!dacppFile || !dacppFile->getContext() || !outerLoop || !ownerDecl) {
+        return "";
+    }
+    auto parents = dacppFile->getContext()->getParents(*outerLoop);
+    const auto* compound =
+        parents.empty() ? nullptr : parents[0].get<clang::CompoundStmt>();
+    if (!compound) {
+        return "";
+    }
+    std::set<std::string> arrayDecls;
+    std::string candidate;
+    for (const clang::Stmt* child : compound->body()) {
+        if (!child) {
+            continue;
+        }
+        if (child == outerLoop) {
+            break;
+        }
+        const std::vector<std::string> declaredArrays =
+            arrayNamesFromDeclStmt(child);
+        for (const std::string& declared : declaredArrays) {
+            arrayDecls.insert(declared);
+        }
+        if (!declaredArrays.empty()) {
+            continue;
+        }
+        const auto* forStmt = llvm::dyn_cast_or_null<clang::ForStmt>(child);
+        std::string timeLoopVar;
+        if (!isArrayZeroToTimeEndInitLoop(forStmt, proof, &timeLoopVar)) {
+            continue;
+        }
+        const clang::Expr* lhs = nullptr;
+        const clang::Expr* rhs = singleAssignRhs(forStmt->getBody(), &lhs);
+        if (!rhs) {
+            continue;
+        }
+        TensorSubscriptExpr target;
+        if (!extractOneDimArraySubscript(lhs, &target) ||
+            target.baseName.empty() ||
+            !isDeclRefToName(target.index, timeLoopVar) ||
+            arrayDecls.count(target.baseName) == 0) {
+            continue;
+        }
+        candidate = target.baseName;
+    }
+    return candidate;
+}
+
+bool isBoundaryFormulaLoop(const clang::ForStmt* forStmt,
+                           const OwnerMatrixShapeProof& proof,
+                           std::string* loopVar) {
+    const std::string var = loopVarName(forStmt);
+    if (var.empty() || !isForwardUnitLoopFromInteger(forStmt, var, 1)) {
+        return false;
+    }
+    const auto* cond = llvm::dyn_cast_or_null<clang::BinaryOperator>(
+        forStmt ? forStmt->getCond() : nullptr);
+    if (!cond || cond->getOpcode() != clang::BO_LE ||
+        !isDeclRefToName(cond->getLHS(), var) ||
+        !isExpectedValueExpr(cond->getRHS(), proof.timeStepCountName,
+                             proof.timeStepCountDecl)) {
+        return false;
+    }
+    if (loopVar) {
+        *loopVar = var;
+    }
+    return true;
+}
+
+class BoundaryReplayExprVisitor
+    : public clang::RecursiveASTVisitor<BoundaryReplayExprVisitor> {
+public:
+    BoundaryReplayExprVisitor(std::string loopVar,
+                              std::string timeArrayName,
+                              clang::ASTContext* context)
+        : LoopVar(std::move(loopVar)),
+          TimeArrayName(std::move(timeArrayName)),
+          Context(context) {}
+
+    bool VisitCXXOperatorCallExpr(clang::CXXOperatorCallExpr* call) {
+        if (call && call->getOperator() == clang::OO_Subscript) {
+            Unsupported = true;
+            Reason = "tensor reads are not replayable";
+        }
+        return !Unsupported;
+    }
+
+    bool VisitArraySubscriptExpr(clang::ArraySubscriptExpr* subscript) {
+        if (!subscript || Unsupported) {
+            return false;
+        }
+        TensorSubscriptExpr oneDim;
+        if (!extractOneDimArraySubscript(subscript, &oneDim) ||
+            oneDim.baseName != TimeArrayName ||
+            !isDeclRefToName(oneDim.index, LoopVar)) {
+            Unsupported = true;
+            Reason = "boundary formula uses unsupported array read";
+            return false;
+        }
+        UsesTimeArray = true;
+        return true;
+    }
+
+    bool VisitCallExpr(clang::CallExpr* call) {
+        if (!call || Unsupported) {
+            return false;
+        }
+        if (llvm::isa<clang::CXXMemberCallExpr>(call) ||
+            llvm::isa<clang::CXXOperatorCallExpr>(call)) {
+            Unsupported = true;
+            Reason = "boundary formula uses unsupported member/operator call";
+            return false;
+        }
+        const auto* callee = call->getDirectCallee();
+        if (!callee) {
+            Unsupported = true;
+            Reason = "boundary formula uses unknown function call";
+            return false;
+        }
+        std::set<const clang::FunctionDecl*> active;
+        if (!isAllowedMathFunction(callee) &&
+            !pureScalarFunctionHasSafeBody(callee, active)) {
+            Unsupported = true;
+            Reason = "boundary formula uses unsupported function call";
+            return false;
+        }
+        return true;
+    }
+
+    bool VisitDeclRefExpr(clang::DeclRefExpr* ref) {
+        if (!ref || Unsupported) {
+            return false;
+        }
+        const clang::ValueDecl* decl = ref->getDecl();
+        if (!decl) {
+            return true;
+        }
+        const std::string name = decl->getNameAsString();
+        if (name == LoopVar || name == TimeArrayName) {
+            return true;
+        }
+        if (const auto* func = llvm::dyn_cast<clang::FunctionDecl>(decl)) {
+            std::set<const clang::FunctionDecl*> active;
+            if (isAllowedMathFunction(func) ||
+                pureScalarFunctionHasSafeBody(func, active)) {
+                return true;
+            }
+        }
+        if (const auto* var = llvm::dyn_cast<clang::VarDecl>(decl)) {
+            if (var->hasGlobalStorage()) {
+                return true;
+            }
+            if (var->getType().isConstQualified()) {
+                return true;
+            }
+        }
+        if (Context) {
+            clang::Expr::EvalResult evalResult;
+            if (ref->EvaluateAsRValue(evalResult, *Context)) {
+                return true;
+            }
+        }
+        Unsupported = true;
+        Reason = "boundary formula depends on mutable local scalar";
+        return false;
+    }
+
+    bool Unsupported = false;
+    bool UsesTimeArray = false;
+    std::string Reason;
+
+private:
+    std::string LoopVar;
+    std::string TimeArrayName;
+    clang::ASTContext* Context = nullptr;
+};
+
+struct BoundaryReplayPlan {
+    bool supported = false;
+    std::string reason;
+    std::string timeArrayName;
+    std::string timeElementType;
+    std::string leftExpr;
+    std::string rightExpr;
+};
+
+BoundaryReplayPlan analyzeOwnerBoundaryReplay(
+    DacppFile* dacppFile,
+    const clang::ForStmt* outerLoop,
+    const std::string& ownerName,
+    const clang::ValueDecl* ownerDecl,
+    const OwnerMatrixShapeProof& proof) {
+    BoundaryReplayPlan result;
+    if (!dacppFile || !dacppFile->getContext() || !outerLoop ||
+        ownerName.empty() || !ownerDecl) {
+        result.reason = "boundary replay analysis context unavailable";
+        return result;
+    }
+    const std::string timeArray =
+        findTimeArrayNameBeforeOwnerDecl(dacppFile, outerLoop, ownerDecl,
+                                         proof);
+    if (timeArray.empty()) {
+        result.reason = "boundary replay requires local time array";
+        return result;
+    }
+    auto parents = dacppFile->getContext()->getParents(*outerLoop);
+    const auto* compound =
+        parents.empty() ? nullptr : parents[0].get<clang::CompoundStmt>();
+    if (!compound) {
+        result.reason = "boundary replay parent compound unavailable";
+        return result;
+    }
+    const clang::Stmt* ownerDeclStmt = nullptr;
+    bool sawOwnerDecl = false;
+    const auto* ownerVar = llvm::dyn_cast<clang::VarDecl>(ownerDecl);
+    for (const clang::Stmt* child : compound->body()) {
+        const auto* declStmt = llvm::dyn_cast_or_null<clang::DeclStmt>(child);
+        if (!declStmt || !declStmt->isSingleDecl()) {
+            continue;
+        }
+        if (declStmt->getSingleDecl() == ownerVar) {
+            ownerDeclStmt = child;
+            sawOwnerDecl = true;
+            break;
+        }
+    }
+    if (!sawOwnerDecl || !ownerDeclStmt) {
+        result.reason = "boundary replay owner declaration unavailable";
+        return result;
+    }
+    const clang::ValueDecl* timeArrayDecl = nullptr;
+    for (const clang::Stmt* child : compound->body()) {
+        if (child == outerLoop) {
+            break;
+        }
+        const auto* declStmt = llvm::dyn_cast_or_null<clang::DeclStmt>(child);
+        if (!declStmt) {
+            continue;
+        }
+        for (const clang::Decl* decl : declStmt->decls()) {
+            const auto* varDecl = llvm::dyn_cast_or_null<clang::VarDecl>(decl);
+            if (varDecl && varDecl->getNameAsString() == timeArray) {
+                timeArrayDecl = varDecl;
+                break;
+            }
+        }
+        if (timeArrayDecl) {
+            break;
+        }
+    }
+    if (!timeArrayDecl) {
+        result.reason = "boundary replay time array declaration unavailable";
+        return result;
+    }
+    clang::QualType timeType = timeArrayDecl->getType();
+    if (const auto* pointerType = timeType->getAs<clang::PointerType>()) {
+        timeType = pointerType->getPointeeType();
+    } else if (const auto* arrayType =
+                   dacppFile->getContext()->getAsArrayType(timeType)) {
+        timeType = arrayType->getElementType();
+    } else {
+        result.reason = "boundary replay time array type unsupported";
+        return result;
+    }
+    result.timeElementType = timeType.getUnqualifiedType().getAsString();
+
+    const clang::Expr* leftRhs = nullptr;
+    const clang::Expr* rightRhs = nullptr;
+    std::string leftLoopVar;
+    std::string rightLoopVar;
+    for (const clang::Stmt* child : compound->body()) {
+        if (child == ownerDeclStmt) {
+            break;
+        }
+        const auto* forStmt = llvm::dyn_cast_or_null<clang::ForStmt>(child);
+        std::string loopVar;
+        if (!isBoundaryFormulaLoop(forStmt, proof, &loopVar)) {
+            continue;
+        }
+        const std::vector<const clang::BinaryOperator*> assignments =
+            topLevelAssignments(forStmt->getBody());
+        if (assignments.empty()) {
+            continue;
+        }
+        for (const auto* assignment : assignments) {
+            ArraySliceExpr slice;
+            if (!assignment ||
+                !extractTwoDimArraySubscript(assignment->getLHS(), &slice) ||
+                !isDeclRefToName(slice.secondIndex, loopVar)) {
+                continue;
+            }
+            if (isIntegerLiteralValue(slice.firstIndex, 0)) {
+                leftRhs = assignment->getRHS();
+                leftLoopVar = loopVar;
+            } else if (isExpectedValueExpr(slice.firstIndex,
+                                          proof.rowInteriorEndName,
+                                          proof.rowInteriorEndDecl)) {
+                rightRhs = assignment->getRHS();
+                rightLoopVar = loopVar;
+            }
+        }
+    }
+    if (!leftRhs || !rightRhs || leftLoopVar.empty() || rightLoopVar.empty()) {
+        result.reason = "boundary replay requires left/right boundary loops";
+        return result;
+    }
+
+    auto extractReplayExpr = [&](const clang::Expr* rhs,
+                                 const std::string& loopVar,
+                                 std::string* exprText,
+                                 std::string* reason) {
+        if (loopVar.empty() || !rhs) {
+            *reason = "boundary replay requires simple assignment";
+            return false;
+        }
+        BoundaryReplayExprVisitor visitor(loopVar, timeArray,
+                                          dacppFile->getContext());
+        visitor.TraverseStmt(const_cast<clang::Expr*>(rhs));
+        if (visitor.Unsupported) {
+            *reason = visitor.Reason;
+            return false;
+        }
+        if (!visitor.UsesTimeArray) {
+            *reason = "boundary replay formula must depend on local time array";
+            return false;
+        }
+        *exprText = getExprSourceText(rhs, dacppFile);
+        if (exprText->empty()) {
+            *reason = "boundary replay source text unavailable";
+            return false;
+        }
+        const std::regex timeArrayPattern(
+            "\\b" + regexEscape(timeArray) + "\\s*\\[\\s*" +
+            regexEscape(loopVar) + "\\s*\\]");
+        *exprText = std::regex_replace(*exprText, timeArrayPattern,
+                                       "__or_boundary_time");
+        const std::regex loopVarPattern("\\b" + regexEscape(loopVar) + "\\b");
+        *exprText = std::regex_replace(*exprText, loopVarPattern,
+                                       "__or_boundary_step");
+        return true;
+    };
+
+    std::string leftReason;
+    std::string rightReason;
+    if (!extractReplayExpr(leftRhs, leftLoopVar, &result.leftExpr,
+                           &leftReason)) {
+        result.reason = leftReason;
+        return result;
+    }
+    if (!extractReplayExpr(rightRhs, rightLoopVar, &result.rightExpr,
+                           &rightReason)) {
+        result.reason = rightReason;
+        return result;
+    }
+    result.supported = true;
+    result.reason = "local-formula";
+    result.timeArrayName = timeArray;
+    return result;
 }
 
 bool isReaderSliceStmt(const clang::Stmt* stmt,
@@ -1549,6 +2184,22 @@ LoopLocalStencilOwnerLoopContract detectLoopLocalStencilOwnerLoop(
     contract.fixedPostUseRow = fixedPostUse.supported;
     contract.postUseRow = fixedPostUse.row;
     contract.postUseReason = fixedPostUse.reason;
+    const BoundaryReplayPlan boundaryReplay = analyzeOwnerBoundaryReplay(
+        dacppFile, outerLoop, contract.ownerTensorName, ownerDecl,
+        ownerShapeProof);
+    contract.boundaryReplayLocalFormula = boundaryReplay.supported;
+    contract.boundaryReplayReason = boundaryReplay.reason;
+    contract.boundaryTimeArrayName = boundaryReplay.timeArrayName;
+    contract.boundaryTimeElementType = boundaryReplay.timeElementType;
+    contract.leftBoundaryExpr = boundaryReplay.leftExpr;
+    contract.rightBoundaryExpr = boundaryReplay.rightExpr;
+    if (contract.boundaryReplayLocalFormula) {
+        contract.temporalBlockSize = 2;
+        contract.temporalBlockReason = "owner-loop boundary replay";
+    } else {
+        contract.temporalBlockReason =
+            "requires replayable owner-loop boundary formula";
+    }
     contract.lowering = buildOwnerLoopLoweringContract(
         exprPlan, outerLoop, loopBody, shape.ownerName, *reader, *writer);
     const OwnerLoopContractCheck consistency =
@@ -1578,7 +2229,15 @@ std::string buildLoopLocalStencilOwnerLoopCode(
     }
     std::string code;
     code += "void " + contract.functionName + "(dacpp::Matrix<" + type +
-            ">& __or_owner, " + type + " __or_scalar_value) {\n";
+            ">& __or_owner, " + type + " __or_scalar_value";
+    if (contract.boundaryReplayLocalFormula) {
+        code += ", " +
+                (contract.boundaryTimeElementType.empty()
+                     ? type
+                     : contract.boundaryTimeElementType) +
+                "* __or_boundary_time_values";
+    }
+    code += ") {\n";
     code += "    int mpi_rank = 0;\n";
     code += "    int mpi_size = 1;\n";
     code += "    MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);\n";
@@ -1603,8 +2262,15 @@ std::string buildLoopLocalStencilOwnerLoopCode(
     code +=
         "    const auto __or_range = dacpp::mpi::operator_resident::rank_range_1d(__or_output_size, mpi_rank, mpi_size);\n";
     code += "    const int64_t __or_local_item_count = __or_range.count;\n";
-    code +=
-        "    const auto __or_halo_layout = dacpp::mpi::operator_resident::resident_halo_1d_layout(__or_output_size, mpi_rank, mpi_size, __or_window_size);\n";
+    if (contract.temporalBlockSize > 1) {
+        code += "    const int __or_temporal_block_size = 2;\n";
+        code += "    const bool __or_temporal_block_safe = __or_output_size >= static_cast<int64_t>(mpi_size) * static_cast<int64_t>(__or_temporal_block_size);\n";
+        code += "    const int __or_runtime_temporal_block_size = __or_temporal_block_safe ? __or_temporal_block_size : 1;\n";
+        code += "    auto __or_halo_layout = dacpp::mpi::operator_resident::resident_halo_1d_layout_temporal(__or_output_size, mpi_rank, mpi_size, __or_runtime_temporal_block_size, __or_window_size);\n";
+    } else {
+        code +=
+            "    auto __or_halo_layout = dacpp::mpi::operator_resident::resident_halo_1d_layout(__or_output_size, mpi_rank, mpi_size, __or_window_size);\n";
+    }
     code += "    std::vector<" + type + "> __or_initial_col;\n";
     code +=
         "    dacpp::mpi::recordProfileSegment(dacpp_profile, dacpp::mpi::ProfileSegment::Init, dacpp_profile_init_start);\n";
@@ -1630,22 +2296,24 @@ std::string buildLoopLocalStencilOwnerLoopCode(
     code +=
         "    std::vector<" + type +
         "> __or_scalar_vec(1, __or_scalar_value);\n";
-    code += "    std::vector<" + type + "> __or_left_boundary_values;\n";
-    code += "    std::vector<" + type + "> __or_right_boundary_values;\n";
-    code += "    auto dacpp_profile_bcast_start_boundaries = dacpp::mpi::profileSegmentStart();\n";
-    code += "    __or_left_boundary_values.resize(static_cast<std::size_t>(__or_cols));\n";
-    code += "    __or_right_boundary_values.resize(static_cast<std::size_t>(__or_cols));\n";
-    code += "    if (mpi_rank == 0) {\n";
-    code += "        for (int64_t __or_col = 0; __or_col < __or_cols; ++__or_col) {\n";
-    code += "            __or_left_boundary_values[static_cast<std::size_t>(__or_col)] = __or_owner.getElement({0, static_cast<int>(__or_col)});\n";
-    code += "            __or_right_boundary_values[static_cast<std::size_t>(__or_col)] = __or_owner.getElement({static_cast<int>(__or_rows - 1), static_cast<int>(__or_col)});\n";
-    code += "        }\n";
-    code += "    }\n";
-    code += "    MPI_Bcast(__or_left_boundary_values.data(), dacpp::mpi::operator_resident::narrow_mpi_count_or_abort(__or_cols, \"[DACPP][MPI][OR][FOuLa] left boundary bcast count exceeds MPI int range\"), " +
-            mpiType + ", 0, MPI_COMM_WORLD);\n";
-    code += "    MPI_Bcast(__or_right_boundary_values.data(), dacpp::mpi::operator_resident::narrow_mpi_count_or_abort(__or_cols, \"[DACPP][MPI][OR][FOuLa] right boundary bcast count exceeds MPI int range\"), " +
-            mpiType + ", 0, MPI_COMM_WORLD);\n";
-    code += "    dacpp::mpi::recordProfileSegment(dacpp_profile, dacpp::mpi::ProfileSegment::Bcast, dacpp_profile_bcast_start_boundaries);\n";
+    if (!contract.boundaryReplayLocalFormula) {
+        code += "    std::vector<" + type + "> __or_left_boundary_values;\n";
+        code += "    std::vector<" + type + "> __or_right_boundary_values;\n";
+        code += "    auto dacpp_profile_bcast_start_boundaries = dacpp::mpi::profileSegmentStart();\n";
+        code += "    __or_left_boundary_values.resize(static_cast<std::size_t>(__or_cols));\n";
+        code += "    __or_right_boundary_values.resize(static_cast<std::size_t>(__or_cols));\n";
+        code += "    if (mpi_rank == 0) {\n";
+        code += "        for (int64_t __or_col = 0; __or_col < __or_cols; ++__or_col) {\n";
+        code += "            __or_left_boundary_values[static_cast<std::size_t>(__or_col)] = __or_owner.getElement({0, static_cast<int>(__or_col)});\n";
+        code += "            __or_right_boundary_values[static_cast<std::size_t>(__or_col)] = __or_owner.getElement({static_cast<int>(__or_rows - 1), static_cast<int>(__or_col)});\n";
+        code += "        }\n";
+        code += "    }\n";
+        code += "    MPI_Bcast(__or_left_boundary_values.data(), dacpp::mpi::operator_resident::narrow_mpi_count_or_abort(__or_cols, \"[DACPP][MPI][OR][OwnerLoop] left boundary bcast count exceeds MPI int range\"), " +
+                mpiType + ", 0, MPI_COMM_WORLD);\n";
+        code += "    MPI_Bcast(__or_right_boundary_values.data(), dacpp::mpi::operator_resident::narrow_mpi_count_or_abort(__or_cols, \"[DACPP][MPI][OR][OwnerLoop] right boundary bcast count exceeds MPI int range\"), " +
+                mpiType + ", 0, MPI_COMM_WORLD);\n";
+        code += "    dacpp::mpi::recordProfileSegment(dacpp_profile, dacpp::mpi::ProfileSegment::Bcast, dacpp_profile_bcast_start_boundaries);\n";
+    }
     if (contract.fixedPostUseRow) {
         code += "    const bool __or_fixed_row_valid = __or_fixed_postuse_row > 0 && __or_fixed_postuse_row < __or_rows;\n";
         code += "    const bool __or_owns_fixed_row = __or_fixed_row_valid && __or_fixed_postuse_out >= __or_range.begin && __or_fixed_postuse_out < __or_range.begin + __or_range.count;\n";
@@ -1653,7 +2321,7 @@ std::string buildLoopLocalStencilOwnerLoopCode(
         code += "    std::vector<" + type + "> __or_selected_history;\n";
         code += "    if (__or_owns_fixed_row) {\n";
         code += "        __or_selected_history.assign(static_cast<std::size_t>(__or_cols), " + type + "{});\n";
-        code += "        __or_selected_history[0] = __or_curr[static_cast<std::size_t>(__or_local_fixed_out + 1)];\n";
+        code += "        __or_selected_history[0] = __or_curr[static_cast<std::size_t>(__or_halo_layout.owned_offset + 1 + __or_local_fixed_out)];\n";
         code += "    }\n";
     } else {
         code +=
@@ -1668,12 +2336,45 @@ std::string buildLoopLocalStencilOwnerLoopCode(
     }
     code +=
         "    const int __or_last_owner_rank = dacpp::mpi::operator_resident::nearest_nonempty_rank_1d(__or_output_size, mpi_size, mpi_size, -1);\n";
-    code +=
-        "    for (int64_t __or_step = 0; __or_step < __or_steps; ++__or_step) {\n";
-    code += "        __or_scalar_vec[0] = __or_scalar_value;\n";
-    code +=
-        "        auto dacpp_profile_kernel_start = dacpp::mpi::profileSegmentStart();\n";
-    code += "        if (__or_local_item_count > 0) {\n";
+    if (contract.temporalBlockSize > 1) {
+        code += "    dacpp::mpi::operator_resident::scatter_window_1d_temporal(__or_initial_col, __or_curr, __or_output_size, __or_rows, __or_runtime_temporal_block_size, __or_window_size, __or_halo_layout, mpi_rank, mpi_size, " +
+                mpiType + ");\n";
+        code += "    __or_next.assign(__or_curr.size(), " + type + "{});\n";
+        code += "    for (int64_t __or_step = 0; __or_step < __or_steps;) {\n";
+        code += "        const int __or_inner_steps = static_cast<int>(std::min<int64_t>(__or_runtime_temporal_block_size, __or_steps - __or_step));\n";
+        code += "        auto dacpp_profile_halo_start = dacpp::mpi::profileSegmentStart();\n";
+        code += "        dacpp::mpi::operator_resident::exchange_halo_1d_temporal_inplace(__or_curr, __or_halo_layout, __or_output_size, __or_window_size, 1, __or_runtime_temporal_block_size, mpi_rank, mpi_size, " +
+                mpiType + ");\n";
+        code += "        dacpp::mpi::recordProfileSegment(dacpp_profile, dacpp::mpi::ProfileSegment::Halo, dacpp_profile_halo_start);\n";
+        code += "        auto dacpp_profile_kernel_start = dacpp::mpi::profileSegmentStart();\n";
+        code += "        for (int __or_block_step = 0; __or_block_step < __or_inner_steps; ++__or_block_step) {\n";
+        code += "            const int64_t __or_compute_begin = std::max<int64_t>(0, __or_halo_layout.owned_offset - (__or_inner_steps - __or_block_step - 1));\n";
+        code += "            const int64_t __or_valid_reader_end = std::max<int64_t>(0, __or_halo_layout.local_size - (__or_window_size - 1));\n";
+        code += "            const int64_t __or_compute_end = std::min<int64_t>(__or_valid_reader_end, __or_halo_layout.owned_offset + __or_local_item_count + (__or_inner_steps - __or_block_step - 1));\n";
+        code += "            const int64_t __or_kernel_item_count = std::max<int64_t>(0, __or_compute_end - __or_compute_begin);\n";
+    } else {
+        code +=
+            "    for (int64_t __or_step = 0; __or_step < __or_steps; ++__or_step) {\n";
+    }
+    const std::string loopIndent =
+        contract.temporalBlockSize > 1 ? "            " : "        ";
+    const std::string kernelCount =
+        contract.temporalBlockSize > 1 ? "__or_kernel_item_count"
+                                       : "__or_local_item_count";
+    const std::string readerIndex =
+        contract.temporalBlockSize > 1
+            ? "item_linear + static_cast<int>(__or_compute_begin)"
+            : "item_linear";
+    const std::string writerIndex =
+        contract.temporalBlockSize > 1
+            ? "item_linear + static_cast<int>(__or_compute_begin) + 1"
+            : "item_linear + 1";
+    code += loopIndent + "__or_scalar_vec[0] = __or_scalar_value;\n";
+    if (contract.temporalBlockSize <= 1) {
+        code +=
+            "        auto dacpp_profile_kernel_start = dacpp::mpi::profileSegmentStart();\n";
+    }
+    code += loopIndent + "if (" + kernelCount + " > 0) {\n";
     code += "            sycl::buffer<" + type +
             ", 1> __or_reader_buf(__or_curr.data(), sycl::range<1>(__or_curr.size()));\n";
     code += "            sycl::buffer<" + type +
@@ -1688,7 +2389,7 @@ std::string buildLoopLocalStencilOwnerLoopCode(
     code +=
         "                auto __or_scalar_acc = __or_scalar_buf.get_access<sycl::access::mode::read>(h);\n";
     code +=
-        "                h.parallel_for(sycl::range<1>(static_cast<std::size_t>(__or_local_item_count)), [=](sycl::id<1> idx) {\n";
+        "                h.parallel_for(sycl::range<1>(static_cast<std::size_t>(" + kernelCount + ")), [=](sycl::id<1> idx) {\n";
     code +=
         "                    const int item_linear = static_cast<int>(idx[0]);\n";
     code +=
@@ -1703,13 +2404,13 @@ std::string buildLoopLocalStencilOwnerLoopCode(
         if (param.paramIndex == reader->paramIndex) {
             code += "                    dacpp::mpi::ContiguousView1D<const " +
                     paramType + "> view_" + param.calcParamName +
-                    "{__or_reader_data, item_linear};\n";
+                    "{__or_reader_data, " + readerIndex + "};\n";
             continue;
         }
         if (param.paramIndex == writer->paramIndex) {
             code += "                    dacpp::mpi::ContiguousView1D<" +
                     paramType + "> view_" + param.calcParamName +
-                    "{__or_writer_data, item_linear + 1};\n";
+                    "{__or_writer_data, " + writerIndex + "};\n";
             continue;
         }
         if (param.paramIndex == scalar->paramIndex) {
@@ -1728,38 +2429,77 @@ std::string buildLoopLocalStencilOwnerLoopCode(
     code += "            });\n";
     code += "            q.wait();\n";
     code += "        }\n";
+    if (contract.temporalBlockSize <= 1) {
+        code +=
+            "        dacpp::mpi::recordProfileSegment(dacpp_profile, dacpp::mpi::ProfileSegment::Kernel, dacpp_profile_kernel_start);\n";
+    }
+    if (contract.boundaryReplayLocalFormula) {
+        code += loopIndent + "const int64_t __or_boundary_step = __or_step + __or_block_step + 1;\n";
+        code += loopIndent + "const " +
+                (contract.boundaryTimeElementType.empty()
+                     ? type
+                     : contract.boundaryTimeElementType) +
+                " __or_boundary_time = __or_boundary_time_values[static_cast<std::size_t>(__or_boundary_step)];\n";
+        code += loopIndent + type + " __or_left_boundary = static_cast<" +
+                type + ">(" + contract.leftBoundaryExpr + ");\n";
+        code += loopIndent + type + " __or_right_boundary = static_cast<" +
+                type + ">(" + contract.rightBoundaryExpr + ");\n";
+    } else {
+        code += "        " + type + " __or_left_boundary{};\n";
+        code += "        " + type + " __or_right_boundary{};\n";
+        code += "        __or_left_boundary = __or_left_boundary_values[static_cast<std::size_t>(__or_step + 1)];\n";
+        code += "        __or_right_boundary = __or_right_boundary_values[static_cast<std::size_t>(__or_step + 1)];\n";
+    }
+    code += loopIndent + "if (mpi_rank == 0 && !__or_next.empty()) {\n";
+    code += loopIndent + "    __or_next[0] = __or_left_boundary;\n";
+    code += loopIndent + "}\n";
     code +=
-        "        dacpp::mpi::recordProfileSegment(dacpp_profile, dacpp::mpi::ProfileSegment::Kernel, dacpp_profile_kernel_start);\n";
-    code += "        " + type + " __or_left_boundary{};\n";
-    code += "        " + type + " __or_right_boundary{};\n";
-    code += "        __or_left_boundary = __or_left_boundary_values[static_cast<std::size_t>(__or_step + 1)];\n";
-    code += "        __or_right_boundary = __or_right_boundary_values[static_cast<std::size_t>(__or_step + 1)];\n";
-    code += "        if (mpi_rank == 0 && !__or_next.empty()) {\n";
-    code += "            __or_next[0] = __or_left_boundary;\n";
-    code += "        }\n";
+        loopIndent + "if (mpi_rank == __or_last_owner_rank && __or_local_item_count > 0) {\n";
     code +=
-        "        if (mpi_rank == __or_last_owner_rank && __or_local_item_count > 0 && static_cast<std::size_t>(__or_local_item_count + 1) < __or_next.size()) {\n";
+        loopIndent + "    const int64_t __or_right_boundary_index = __or_halo_layout.owned_offset + __or_local_item_count + 1;\n";
     code +=
-        "            __or_next[static_cast<std::size_t>(__or_local_item_count + 1)] = __or_right_boundary;\n";
-    code += "        }\n";
+        loopIndent + "    if (__or_right_boundary_index >= 0 && static_cast<std::size_t>(__or_right_boundary_index) < __or_next.size()) {\n";
     code +=
-        "        auto dacpp_profile_halo_start = dacpp::mpi::profileSegmentStart();\n";
-    code +=
-        "        dacpp::mpi::operator_resident::exchange_halo_1d_inplace(__or_next, __or_halo_layout, __or_output_size, __or_window_size, 1, mpi_rank, mpi_size, " +
-        mpiType + ");\n";
-    code +=
-        "        dacpp::mpi::recordProfileSegment(dacpp_profile, dacpp::mpi::ProfileSegment::Halo, dacpp_profile_halo_start);\n";
-    code += "        __or_curr.swap(__or_next);\n";
-    if (contract.fixedPostUseRow) {
-        code += "        if (__or_owns_fixed_row) {\n";
-        code += "            __or_selected_history[static_cast<std::size_t>(__or_step + 1)] = __or_curr[static_cast<std::size_t>(__or_local_fixed_out + 1)];\n";
-        code += "        }\n";
+        loopIndent + "        __or_next[static_cast<std::size_t>(__or_right_boundary_index)] = __or_right_boundary;\n";
+    code += loopIndent + "    }\n";
+    code += loopIndent + "}\n";
+    if (contract.temporalBlockSize > 1) {
+        code += loopIndent + "std::swap(__or_curr, __or_next);\n";
     } else {
         code +=
-            "        for (int64_t __or_i = 0; __or_i < __or_local_item_count; ++__or_i) {\n";
+            "        auto dacpp_profile_halo_start = dacpp::mpi::profileSegmentStart();\n";
         code +=
-            "            __or_local_history[static_cast<std::size_t>(__or_i * __or_cols + (__or_step + 1))] = __or_curr[static_cast<std::size_t>(__or_i + 1)];\n";
+            "        dacpp::mpi::operator_resident::exchange_halo_1d_inplace(__or_next, __or_halo_layout, __or_output_size, __or_window_size, 1, mpi_rank, mpi_size, " +
+            mpiType + ");\n";
+        code +=
+            "        dacpp::mpi::recordProfileSegment(dacpp_profile, dacpp::mpi::ProfileSegment::Halo, dacpp_profile_halo_start);\n";
+        code += "        __or_curr.swap(__or_next);\n";
+    }
+    if (contract.fixedPostUseRow) {
+        const std::string historyStep =
+            contract.temporalBlockSize > 1
+                ? "(__or_step + __or_block_step + 1)"
+                : "(__or_step + 1)";
+        code += loopIndent + "if (__or_owns_fixed_row) {\n";
+        code += loopIndent + "    __or_selected_history[static_cast<std::size_t>(" +
+                historyStep + ")] = __or_curr[static_cast<std::size_t>(__or_halo_layout.owned_offset + 1 + __or_local_fixed_out)];\n";
+        code += loopIndent + "}\n";
+    } else {
+        const std::string historyStep =
+            contract.temporalBlockSize > 1
+                ? "(__or_step + __or_block_step + 1)"
+                : "(__or_step + 1)";
+        code +=
+            loopIndent + "for (int64_t __or_i = 0; __or_i < __or_local_item_count; ++__or_i) {\n";
+        code +=
+            loopIndent + "    __or_local_history[static_cast<std::size_t>(__or_i * __or_cols + " +
+            historyStep + ")] = __or_curr[static_cast<std::size_t>(__or_halo_layout.owned_offset + 1 + __or_i)];\n";
+        code += loopIndent + "}\n";
+    }
+    if (contract.temporalBlockSize > 1) {
         code += "        }\n";
+        code += "        dacpp::mpi::recordProfileSegment(dacpp_profile, dacpp::mpi::ProfileSegment::Kernel, dacpp_profile_kernel_start);\n";
+        code += "        __or_step += __or_inner_steps;\n";
     }
     code += "    }\n";
     if (contract.fixedPostUseRow) {
@@ -1779,10 +2519,10 @@ std::string buildLoopLocalStencilOwnerLoopCode(
         code += "        __or_selected_global_history.resize(static_cast<std::size_t>(__or_cols));\n";
         code += "    }\n";
         code += "    auto dacpp_profile_gather_start = dacpp::mpi::profileSegmentStart();\n";
-        code += "    const int __or_selected_history_count = __or_fixed_row_valid ? dacpp::mpi::operator_resident::narrow_mpi_count_or_abort(__or_cols, \"[DACPP][MPI][OR][FOuLa] selected row history count exceeds MPI int range\") : 0;\n";
+        code += "    const int __or_selected_history_count = __or_fixed_row_valid ? dacpp::mpi::operator_resident::narrow_mpi_count_or_abort(__or_cols, \"[DACPP][MPI][OR][OwnerLoop] selected row history count exceeds MPI int range\") : 0;\n";
         code += "    if (__or_fixed_row_valid) {\n";
         code += "        if (__or_fixed_owner_rank == MPI_PROC_NULL) {\n";
-        code += "            if (mpi_rank == 0) std::fprintf(stderr, \"[DACPP][MPI][OR][FOuLa] fixed owner row has no rank owner\\n\");\n";
+        code += "            if (mpi_rank == 0) std::fprintf(stderr, \"[DACPP][MPI][OR][OwnerLoop] fixed owner row has no rank owner\\n\");\n";
         code += "            MPI_Abort(MPI_COMM_WORLD, 4);\n";
         code += "        }\n";
         code += "        if (mpi_rank == __or_fixed_owner_rank) {\n";
@@ -1810,9 +2550,9 @@ std::string buildLoopLocalStencilOwnerLoopCode(
         code +=
             "        const auto __or_r_range = dacpp::mpi::operator_resident::rank_range_1d(__or_output_size, __or_r, mpi_size);\n";
         code +=
-            "        __or_hist_counts[__or_r] = dacpp::mpi::operator_resident::narrow_mpi_count_or_abort(__or_r_range.count * __or_cols, \"[DACPP][MPI][OR][FOuLa] history gather count exceeds MPI int range\");\n";
+            "        __or_hist_counts[__or_r] = dacpp::mpi::operator_resident::narrow_mpi_count_or_abort(__or_r_range.count * __or_cols, \"[DACPP][MPI][OR][OwnerLoop] history gather count exceeds MPI int range\");\n";
         code +=
-            "        __or_hist_displs[__or_r] = dacpp::mpi::operator_resident::narrow_mpi_count_or_abort(__or_r_range.begin * __or_cols, \"[DACPP][MPI][OR][FOuLa] history gather displacement exceeds MPI int range\");\n";
+            "        __or_hist_displs[__or_r] = dacpp::mpi::operator_resident::narrow_mpi_count_or_abort(__or_r_range.begin * __or_cols, \"[DACPP][MPI][OR][OwnerLoop] history gather displacement exceeds MPI int range\");\n";
         code += "    }\n";
         code += "    std::vector<" + type + "> __or_global_history;\n";
         code += "    if (mpi_rank == 0) {\n";
@@ -1822,7 +2562,7 @@ std::string buildLoopLocalStencilOwnerLoopCode(
         code +=
             "    auto dacpp_profile_gather_start = dacpp::mpi::profileSegmentStart();\n";
         code +=
-            "    MPI_Gatherv(__or_local_history.data(), dacpp::mpi::operator_resident::narrow_mpi_count_or_abort(__or_local_item_count * __or_cols, \"[DACPP][MPI][OR][FOuLa] local history gather count exceeds MPI int range\"), " +
+            "    MPI_Gatherv(__or_local_history.data(), dacpp::mpi::operator_resident::narrow_mpi_count_or_abort(__or_local_item_count * __or_cols, \"[DACPP][MPI][OR][OwnerLoop] local history gather count exceeds MPI int range\"), " +
             mpiType +
             ", mpi_rank == 0 ? __or_global_history.data() : nullptr, mpi_rank == 0 ? __or_hist_counts.data() : nullptr, mpi_rank == 0 ? __or_hist_displs.data() : nullptr, " +
             mpiType + ", 0, MPI_COMM_WORLD);\n";
@@ -1870,6 +2610,20 @@ void logLoopLocalStencilOwnerLoopAccepted(
     } else if (!contract.postUseReason.empty()) {
         llvm::outs() << " fixed-row=fallback reason="
                      << contract.postUseReason;
+    }
+    if (contract.boundaryReplayLocalFormula) {
+        llvm::outs() << " boundary-bcast=elided local-formula";
+    } else if (!contract.boundaryReplayReason.empty()) {
+        llvm::outs() << " boundary-bcast=kept reason="
+                     << contract.boundaryReplayReason;
+    }
+    if (contract.temporalBlockSize > 1) {
+        llvm::outs() << " temporal-block="
+                     << contract.temporalBlockSize
+                     << " accepted owner-loop boundary replay";
+    } else if (!contract.temporalBlockReason.empty()) {
+        llvm::outs() << " temporal-block=2 rejected reason="
+                     << contract.temporalBlockReason;
     }
     llvm::outs()
                  << " guard-compile=fallback guard-runtime=count-or-shape"

@@ -1,27 +1,36 @@
 LOG_CONTAINS:[DACPP][MPI][OR] expr=0 shell=PDE layout=StencilWindow1D partition=accepted
 LOG_CONTAINS:[DACPP][MPI][OR] chain=0 layout=StencilWindow1D length=1 chain=accepted codegen=enabled
-LOG_CONTAINS:[DACPP][MPI][OR][FOuLa] expr=0 owner-loop=candidate owner=u_tensor
+LOG_CONTAINS:[DACPP][MPI][OR][OwnerLoop] expr=0 owner-loop=candidate owner=u_tensor
 LOG_CONTAINS:[DACPP][MPI][OR][OwnerLoop] expr=0 owner-loop=accepted contract=LoopLocalStencilOwnerLoop
-LOG_CONTAINS:contract-source=replace-loop contract-remove=writer-slice,scalar-vector-storage,scalar-payload,scalar-shell-arg,reader-slice,dac-expression,owner-writeback contract-resident=3 contract-materialize=loop-exit materialize=fixed-row row=1 guard-compile=fallback guard-runtime=count-or-shape owner=u_tensor
+LOG_CONTAINS:contract-source=replace-loop contract-remove=writer-slice,scalar-vector-storage,scalar-payload,scalar-shell-arg,reader-slice,dac-expression,owner-writeback contract-resident=3 contract-materialize=loop-exit materialize=fixed-row row=1 boundary-bcast=elided local-formula temporal-block=2 accepted owner-loop boundary replay
+LOG_CONTAINS:guard-compile=fallback guard-runtime=count-or-shape owner=u_tensor
 LOG_CONTAINS:contract-check=pass reason=owner-loop-contract-consistent
-LOG_CONTAINS:[DACPP][MPI][OR][FOuLa] expr=0 owner-loop=rewrite-enabled
+LOG_CONTAINS:[DACPP][MPI][OR][OwnerLoop] expr=0 owner-loop=rewrite-enabled
 LOG_CONTAINS:[DACPP][MPI][OR][OwnerLoop] expr=0 owner-loop=rewrite-enabled contract=LoopLocalStencilOwnerLoop
 SYCL_CONTAINS:void __dacpp_mpi_or_PDE_pde_0_owner_loop
-SYCL_CONTAINS:__dacpp_mpi_or_PDE_pde_0_owner_loop(u_tensor, r);
+SYCL_CONTAINS:__dacpp_mpi_or_PDE_pde_0_owner_loop(u_tensor, r, t);
 SYCL_CONTAINS:dacpp::mpi::operator_resident::scatter_window_1d
-SYCL_CONTAINS:dacpp::mpi::operator_resident::exchange_halo_1d_inplace
+SYCL_CONTAINS:dacpp::mpi::operator_resident::resident_halo_1d_layout_temporal
+SYCL_CONTAINS:dacpp::mpi::operator_resident::scatter_window_1d_temporal
+SYCL_CONTAINS:dacpp::mpi::operator_resident::exchange_halo_1d_temporal_inplace
+SYCL_CONTAINS:__or_valid_reader_end = std::max<int64_t>(0, __or_halo_layout.local_size - (__or_window_size - 1))
+SYCL_CONTAINS:__or_halo_layout.owned_offset + 1 + __or_local_fixed_out
+SYCL_CONTAINS:__or_boundary_time_values
+SYCL_CONTAINS:__or_boundary_time = __or_boundary_time_values
+SYCL_CONTAINS:__or_left_boundary = static_cast<double>(alpha(__or_boundary_time))
+SYCL_CONTAINS:__or_right_boundary = static_cast<double>(beta(__or_boundary_time))
 SYCL_CONTAINS:ContiguousView1D<const double> view_r{__or_scalar_data, 0}
 SYCL_CONTAINS:__or_fixed_postuse_row = 1
 SYCL_CONTAINS:__or_selected_history
 SYCL_CONTAINS:MPI_Send(__or_selected_history.data()
 SYCL_CONTAINS:MPI_Recv(__or_selected_global_history.data()
-SYCL_CONTAINS:MPI_Bcast(__or_left_boundary_values.data()
-SYCL_CONTAINS:MPI_Bcast(__or_right_boundary_values.data()
 SYCL_CONTAINS:dacpp::mpi::SegmentedProfile dacpp_profile
 SYCL_CONTAINS:dacpp::mpi::ProfileSegment::Kernel
 SYCL_CONTAINS:dacpp::mpi::ProfileSegment::Halo
 SYCL_CONTAINS:dacpp::mpi::reportSegmentedProfile("__dacpp_mpi_or_PDE_pde_0_owner_loop"
 SYCL_NOT_CONTAINS:MPI_Gatherv(__or_local_history.data()
+SYCL_NOT_CONTAINS:MPI_Bcast(__or_left_boundary_values.data()
+SYCL_NOT_CONTAINS:MPI_Bcast(__or_right_boundary_values.data()
 SYCL_NOT_CONTAINS:MPI_Bcast(&__or_left_boundary
 SYCL_NOT_CONTAINS:MPI_Bcast(&__or_right_boundary
 SYCL_NOT_CONTAINS:MPI_Bcast(__or_global_u_kin.data()

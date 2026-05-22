@@ -591,6 +591,49 @@ void emitResidentHaloScalarRefreshes(std::string& code,
     emitScalarRefreshes(code, plan);
 }
 
+void emitBoundaryLocalReplay1D(std::string& code,
+                               const std::string& indent,
+                               const ShellPartitionPlan& plan,
+                               const ParamAccessPlan& reader,
+                               const ParamAccessPlan& writer,
+                               const std::string& targetBuffer,
+                               const std::string& sourceBuffer,
+                               const std::string& rankExpr) {
+    const auto& halo = plan.orLoopLower.stencilResidentHalo;
+    if (!halo.hasBoundaryLocalUpdate) {
+        return;
+    }
+    const std::string readerType = elemType(plan, reader);
+    if (halo.boundaryCopiesWriter) {
+        code += indent + "if (" + rankExpr + " == 0 && !" + targetBuffer +
+                ".empty()) {\n";
+        code += indent + "    const int64_t __or_boundary_target = " +
+                std::to_string(halo.boundaryTargetIndex) + ";\n";
+        code += indent + "    const int64_t __or_boundary_source = static_cast<int64_t>(__or_writer_offset) + " +
+                std::to_string(halo.boundarySourceIndex) + ";\n";
+        code += indent + "    if (__or_boundary_target >= 0 && __or_boundary_target < static_cast<int64_t>(" +
+                targetBuffer + ".size()) && __or_boundary_source >= 0 && __or_boundary_source < static_cast<int64_t>(" +
+                sourceBuffer + ".size())) {\n";
+        code += indent + "        " + targetBuffer +
+                "[static_cast<std::size_t>(__or_boundary_target)] = " +
+                sourceBuffer +
+                "[static_cast<std::size_t>(__or_boundary_source)];\n";
+        code += indent + "    }\n";
+        code += indent + "}\n";
+    } else if (!halo.boundaryConstantValue.empty()) {
+        code += indent + "if (" + rankExpr + " == 0) {\n";
+        code += indent + "    const int64_t __or_boundary_target = " +
+                std::to_string(halo.boundaryTargetIndex) + ";\n";
+        code += indent + "    if (__or_boundary_target >= 0 && __or_boundary_target < static_cast<int64_t>(" +
+                targetBuffer + ".size())) {\n";
+        code += indent + "        " + targetBuffer +
+                "[static_cast<std::size_t>(__or_boundary_target)] = static_cast<" +
+                readerType + ">(" + halo.boundaryConstantValue + ");\n";
+        code += indent + "    }\n";
+        code += indent + "}\n";
+    }
+}
+
 void emitResidentHaloRunFunction(std::string& code,
                                  const std::string& ctxName,
                                  const std::string& runName,
@@ -739,12 +782,16 @@ void emitResidentHaloRunFunction(std::string& code,
         code += "    auto dacpp_profile_kernel_start = dacpp::mpi::profileSegmentStart();\n";
         code += "    for (int __or_block_step = 0; __or_block_step < __or_inner_steps; ++__or_block_step) {\n";
         code += "        const int64_t __or_compute_begin = std::max<int64_t>(0, ctx.__or_halo_layout.owned_offset - (__or_inner_steps - __or_block_step - 1));\n";
-        code += "        const int64_t __or_compute_end = std::min<int64_t>(ctx.__or_halo_layout.local_size - 2, ctx.__or_halo_layout.owned_offset + __or_local_item_count + (__or_inner_steps - __or_block_step - 1));\n";
+        code += "        const int64_t __or_valid_reader_end = std::max<int64_t>(0, ctx.__or_halo_layout.local_size - (ctx.__or_window_size - 1));\n";
+        code += "        const int64_t __or_compute_end = std::min<int64_t>(__or_valid_reader_end, ctx.__or_halo_layout.owned_offset + __or_local_item_count + (__or_inner_steps - __or_block_step - 1));\n";
         code += "        __or_kernel_item_count = std::max<int64_t>(0, __or_compute_end - __or_compute_begin);\n";
         emitOneKernel("        ", localName(reader), localName(writer),
                       "item_linear + static_cast<int>(__or_compute_begin)",
                       "item_linear + static_cast<int>(__or_compute_begin) + __or_writer_offset",
                       false);
+        emitBoundaryLocalReplay1D(code, "        ", plan, reader, writer,
+                                  localName(writer), localName(writer),
+                                  "mpi_rank");
         code += "        std::swap(" + localName(reader) + ", " +
                 localName(writer) + ");\n";
         code += "    }\n";
@@ -758,36 +805,9 @@ void emitResidentHaloRunFunction(std::string& code,
     emitOneKernel("    ", localName(reader), localName(writer), "item_linear",
                   "item_linear + __or_writer_offset", true);
     code += "    auto dacpp_profile_halo_start = dacpp::mpi::profileSegmentStart();\n";
-    if (halo.hasBoundaryLocalUpdate) {
-        if (halo.boundaryCopiesWriter) {
-            code += "    if (mpi_rank == 0 && !" + localName(writer) +
-                    ".empty()) {\n";
-            code += "        const int64_t __or_boundary_target = " +
-                    std::to_string(halo.boundaryTargetIndex) + ";\n";
-            code += "        const int64_t __or_boundary_source = static_cast<int64_t>(__or_writer_offset) + " +
-                    std::to_string(halo.boundarySourceIndex) + ";\n";
-            code += "        if (__or_boundary_target >= 0 && __or_boundary_target < static_cast<int64_t>(" +
-                    localName(writer) + ".size()) && __or_boundary_source >= 0 && __or_boundary_source < static_cast<int64_t>(" +
-                    localName(writer) + ".size())) {\n";
-            code += "            " + localName(writer) +
-                    "[static_cast<std::size_t>(__or_boundary_target)] = " +
-                    localName(writer) +
-                    "[static_cast<std::size_t>(__or_boundary_source)];\n";
-            code += "        }\n";
-            code += "    }\n";
-        } else if (!halo.boundaryConstantValue.empty()) {
-            code += "    if (mpi_rank == 0) {\n";
-            code += "        const int64_t __or_boundary_target = " +
-                    std::to_string(halo.boundaryTargetIndex) + ";\n";
-            code += "        if (__or_boundary_target >= 0 && __or_boundary_target < static_cast<int64_t>(" +
-                    localName(writer) + ".size())) {\n";
-            code += "            " + localName(writer) +
-                    "[static_cast<std::size_t>(__or_boundary_target)] = static_cast<" +
-                    readerType + ">(" + halo.boundaryConstantValue + ");\n";
-            code += "        }\n";
-            code += "    }\n";
-        }
-    }
+    emitBoundaryLocalReplay1D(code, "    ", plan, reader, writer,
+                              localName(writer), localName(writer),
+                              "mpi_rank");
     code += "    dacpp::mpi::operator_resident::exchange_halo_1d_inplace(" +
             localName(writer) +
             ", ctx.__or_halo_layout, ctx.__or_output_size, ctx.__or_window_size, ctx.__or_followup_offset, mpi_rank, ctx.mpi_size, " +
@@ -812,6 +832,91 @@ void emitResidentHaloMaterializeFunction(std::string& code,
     code += "void " + materializeName + "(" + ctxName + "& ctx, " +
             wrapperSignature(plan) + ") {\n";
     code += "    int mpi_rank = ctx.mpi_rank;\n";
+    if (reader.postUseSync.kind == PostUseSyncKind::BoundedIndexedRootRead &&
+        !reader.postUseSync.boundedIndices.empty()) {
+        const std::string valueMpiCount =
+            usesByteTransport(readerType)
+                ? "static_cast<int>(sizeof(" + readerType + "))"
+                : "1";
+        code += "    auto dacpp_profile_final_sync_start = dacpp::mpi::profileSegmentStart();\n";
+        code += "    std::vector<" + readerType + "> __or_bounded_values_" +
+                reader.calcParamName + "(static_cast<std::size_t>(" +
+                std::to_string(reader.postUseSync.boundedIndices.size()) +
+                "), " + readerType + "{});\n";
+        for (std::size_t idx = 0;
+             idx < reader.postUseSync.boundedIndices.size(); ++idx) {
+            const auto& bounded = reader.postUseSync.boundedIndices[idx];
+            if (bounded.indices.size() != 1) {
+                continue;
+            }
+            code += "    {\n";
+            code += "        const int64_t __or_target_index = " +
+                    std::to_string(bounded.indices[0]) + ";\n";
+            code += "        const int64_t __or_target_output_index = __or_target_index - static_cast<int64_t>(ctx.__or_followup_offset);\n";
+            code += "        int __or_owner_rank = -1;\n";
+            code += "        for (int __or_owner_candidate = 0; __or_owner_candidate < ctx.mpi_size; ++__or_owner_candidate) {\n";
+            code += "            const auto __or_owner_range = dacpp::mpi::operator_resident::rank_range_1d(ctx.__or_output_size, __or_owner_candidate, ctx.mpi_size);\n";
+            code += "            if (__or_target_output_index >= __or_owner_range.begin && __or_target_output_index < __or_owner_range.begin + __or_owner_range.count) {\n";
+            code += "                __or_owner_rank = __or_owner_candidate;\n";
+            code += "                break;\n";
+            code += "            }\n";
+            code += "        }\n";
+            code += "        if (__or_owner_rank < 0) {\n";
+            code += "            if (mpi_rank == 0) std::fprintf(stderr, \"[DACPP][MPI][OR] resident halo 1D bounded read has no owner\\n\");\n";
+            code += "            MPI_Abort(MPI_COMM_WORLD, 6);\n";
+            code += "        }\n";
+            code += "        if (mpi_rank == __or_owner_rank) {\n";
+            code += "            const int64_t __or_local_index = ctx.__or_halo_layout.owned_offset + ctx.__or_followup_offset + (__or_target_output_index - ctx.__or_range.begin);\n";
+            code += "            if (__or_local_index < 0 || static_cast<std::size_t>(__or_local_index) >= ctx." +
+                    localName(reader) + ".size()) {\n";
+            code += "                if (mpi_rank == 0) std::fprintf(stderr, \"[DACPP][MPI][OR] resident halo 1D bounded read local index out of range\\n\");\n";
+            code += "                MPI_Abort(MPI_COMM_WORLD, 6);\n";
+            code += "            }\n";
+            code += "            __or_bounded_values_" + reader.calcParamName +
+                    "[static_cast<std::size_t>(" + std::to_string(idx) +
+                    ")] = ctx." + localName(reader) +
+                    "[static_cast<std::size_t>(__or_local_index)];\n";
+            code += "            if (__or_owner_rank != 0) {\n";
+            code += "                MPI_Send(&__or_bounded_values_" +
+                    reader.calcParamName + "[static_cast<std::size_t>(" +
+                    std::to_string(idx) + ")], " + valueMpiCount + ", " +
+                    readerMpiType + ", 0, 4921, MPI_COMM_WORLD);\n";
+            code += "            }\n";
+            code += "        } else if (mpi_rank == 0) {\n";
+            code += "            MPI_Recv(&__or_bounded_values_" +
+                    reader.calcParamName + "[static_cast<std::size_t>(" +
+                    std::to_string(idx) + ")], " + valueMpiCount + ", " +
+                    readerMpiType + ", __or_owner_rank, 4921, MPI_COMM_WORLD, MPI_STATUS_IGNORE);\n";
+            code += "        }\n";
+            code += "    }\n";
+        }
+        code += "    dacpp::mpi::recordProfileSegment(ctx.__or_profile, dacpp::mpi::ProfileSegment::FinalSync, dacpp_profile_final_sync_start);\n";
+        code += "    auto dacpp_profile_materialize_start = dacpp::mpi::profileSegmentStart();\n";
+        code += "    if (mpi_rank == 0) {\n";
+        for (std::size_t idx = 0;
+             idx < reader.postUseSync.boundedIndices.size(); ++idx) {
+            const auto& bounded = reader.postUseSync.boundedIndices[idx];
+            if (bounded.indices.size() != 1) {
+                continue;
+            }
+            code += "        " + paramVarName(reader) +
+                    ".reviseValue(__or_bounded_values_" +
+                    reader.calcParamName + "[static_cast<std::size_t>(" +
+                    std::to_string(idx) + ")], std::vector<int>{" +
+                    std::to_string(bounded.indices[0]) + "});\n";
+        }
+        code += "    }\n";
+        code += "    dacpp::mpi::recordProfileSegment(ctx.__or_profile, dacpp::mpi::ProfileSegment::Materialize, dacpp_profile_materialize_start);\n";
+        for (const auto& param : plan.params) {
+            if (param.paramIndex != reader.paramIndex) {
+                code += "    (void)" + paramVarName(param) + ";\n";
+            }
+        }
+        code += "    dacpp::mpi::reportSegmentedProfile(\"" + materializeName +
+                "\", ctx.__or_profile, MPI_COMM_WORLD);\n";
+        code += "}\n";
+        return;
+    }
     code += "    auto dacpp_profile_gather_start_writer = dacpp::mpi::profileSegmentStart();\n";
     code += "    std::vector<" + writerType + "> __or_materialized_" +
             writer.calcParamName + ";\n";

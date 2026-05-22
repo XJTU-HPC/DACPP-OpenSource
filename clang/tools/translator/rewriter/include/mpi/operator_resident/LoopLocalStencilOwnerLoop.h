@@ -28,6 +28,14 @@ struct LoopLocalStencilOwnerLoopContract {
     std::string functionName;
     std::string elementType;
     std::string mpiType;
+    bool boundaryReplayLocalFormula = false;
+    std::string boundaryReplayReason;
+    std::string boundaryTimeArrayName;
+    std::string boundaryTimeElementType;
+    std::string leftBoundaryExpr;
+    std::string rightBoundaryExpr;
+    int temporalBlockSize = 0;
+    std::string temporalBlockReason;
     bool fixedPostUseRow = false;
     int64_t postUseRow = -1;
     std::string postUseReason;

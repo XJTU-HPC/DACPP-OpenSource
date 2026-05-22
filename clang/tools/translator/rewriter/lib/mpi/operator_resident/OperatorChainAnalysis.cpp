@@ -30,6 +30,11 @@ namespace mpi_rewriter {
 
 namespace {
 
+const ParamAccessPlan* stencilWindowReaderParam(
+    const ShellPartitionPlan& plan);
+const ParamAccessPlan* stencilOutputDirectWriterParam(
+    const ShellPartitionPlan& plan);
+
 const clang::CallExpr* getShellCallExpr(const clang::BinaryOperator* dacExpr) {
     if (!dacExpr) {
         return nullptr;
@@ -571,9 +576,17 @@ bool layoutSupportsBoundedPostUseSync(const ShellPartitionPlan& plan,
         if (bounded.indices.empty() || bounded.indices.size() > 2) {
             return false;
         }
-        if (param.access == ParamAccessKind::StencilWindow ||
-            plan.signature.layout == LocalLayoutKind::StencilWindow2D) {
+        if (plan.signature.layout == LocalLayoutKind::StencilWindow2D ||
+            (param.access == ParamAccessKind::StencilWindow &&
+             plan.signature.layout == LocalLayoutKind::StencilWindow2D)) {
             if (bounded.indices.size() != 2) {
+                return false;
+            }
+            continue;
+        }
+        if (param.access == ParamAccessKind::StencilWindow &&
+            plan.signature.layout == LocalLayoutKind::StencilWindow1D) {
+            if (bounded.indices.size() != 1) {
                 return false;
             }
             continue;
@@ -602,14 +615,68 @@ bool layoutSupportsBoundedPostUseSync(const ShellPartitionPlan& plan,
     return true;
 }
 
-void downgradeUnsupportedBoundedPostUse(ShellPartitionPlan& plan,
-                                        ParamAccessPlan& param) {
+bool stencilWindow1DBoundedPostUseCoveredByFollowup(
+    DacppFile* dacppFile,
+    const ShellPartitionPlan& plan,
+    const ParamAccessPlan& param) {
     if (param.postUseSync.kind != PostUseSyncKind::BoundedIndexedRootRead ||
-        layoutSupportsBoundedPostUseSync(plan, param)) {
+        param.access != ParamAccessKind::StencilWindow ||
+        plan.signature.layout != LocalLayoutKind::StencilWindow1D) {
+        return true;
+    }
+    const ParamAccessPlan* reader = stencilWindowReaderParam(plan);
+    const ParamAccessPlan* writer = stencilOutputDirectWriterParam(plan);
+    if (!reader || !writer || reader->paramIndex != param.paramIndex) {
+        return false;
+    }
+    const int64_t writerExtent =
+        staticOneDimShellArgExtent(dacppFile, plan, *writer);
+    if (writerExtent <= 0) {
+        return false;
+    }
+    const DistributedStencilSitePlan sitePlan = analyzeDistributedStencilSite(
+        dacppFile, plan.exprNode.shell, plan.exprNode.calc,
+        plan.exprNode.dacExpr);
+    if (!sitePlan.supported || sitePlan.followupMappings.size() != 1) {
+        return false;
+    }
+    const auto& mapping = sitePlan.followupMappings.front();
+    if (mapping.writerParamIndex != writer->paramIndex ||
+        mapping.readerParamIndex != reader->paramIndex ||
+        mapping.targetOffset < 0) {
+        return false;
+    }
+    for (const auto& bounded : param.postUseSync.boundedIndices) {
+        if (bounded.indices.size() != 1) {
+            return false;
+        }
+        const int64_t outputIndex =
+            bounded.indices[0] - static_cast<int64_t>(mapping.targetOffset);
+        if (outputIndex < 0 || outputIndex >= writerExtent) {
+            return false;
+        }
+    }
+    return true;
+}
+
+void downgradeUnsupportedBoundedPostUse(ShellPartitionPlan& plan,
+                                        ParamAccessPlan& param,
+                                        DacppFile* dacppFile) {
+    if (param.postUseSync.kind != PostUseSyncKind::BoundedIndexedRootRead) {
+        return;
+    }
+    std::string reason;
+    if (!layoutSupportsBoundedPostUseSync(plan, param)) {
+        reason = "bounded indexed read unsupported for layout";
+    } else if (!stencilWindow1DBoundedPostUseCoveredByFollowup(
+                   dacppFile, plan, param)) {
+        reason = "bounded indexed read outside 1D followup-owned range";
+    }
+    if (reason.empty()) {
         return;
     }
     param.postUseSync.kind = PostUseSyncKind::FullTensor;
-    param.postUseSync.reason = "bounded indexed read unsupported for layout";
+    param.postUseSync.reason = reason;
     param.postUseSync.boundedIndices.clear();
     param.postUseSync.tensor2ArrayStmt = nullptr;
     param.postUseSync.tensor2ArrayTargetName.clear();
@@ -642,7 +709,7 @@ void annotateOutputSync(ShellPartitionPlan& plan, DacppFile* dacppFile) {
         param.postUseSync = analyzePostUseSync(
             dacppFile, plan.exprNode.shell, plan.exprNode.calc,
             plan.exprNode.dacExpr, param.actualTensorName);
-        downgradeUnsupportedBoundedPostUse(plan, param);
+        downgradeUnsupportedBoundedPostUse(plan, param, dacppFile);
         const OutputSyncRequirement syncRequirement =
             classifyOutputSyncRequirement(dacppFile, param.actualTensorName,
                                           plan.exprNode.dacExpr);
@@ -3759,6 +3826,7 @@ void annotateResidentHaloTemporalBlocking(
     plan.orLoopLower.stencilResidentHalo.temporalBlockRejectReason.clear();
     auto reject = [&](const std::string& reason) {
         plan.orLoopLower.stencilResidentHalo.temporalBlockRejectReason = reason;
+        plan.orLoopLower.stencilResidentHalo.temporalBlockAcceptReason.clear();
     };
     if (!dacppFile || !dacppFile->getContext() || !loop) {
         reject("analysis context unavailable");
@@ -3774,13 +3842,9 @@ void annotateResidentHaloTemporalBlocking(
             reject("direct readers are outside StencilWindow1D resident halo");
             return;
         }
-        if (metadata.windowSize != 3 ||
+        if ((metadata.windowSize != 2 && metadata.windowSize != 3) ||
             metadata.followupTargetOffset != 1) {
-            reject("requires canonical 1D window size 3 and followup offset 1");
-            return;
-        }
-        if (metadata.hasBoundaryLocalUpdate) {
-            reject("boundary-local updates are not enabled for 1D k=2 replay");
+            reject("requires canonical 1D window size 2/3 and followup offset 1");
             return;
         }
         for (const auto& param : plan.params) {
@@ -3800,9 +3864,9 @@ void annotateResidentHaloTemporalBlocking(
         const int64_t writerExtent =
             staticOneDimShellArgExtent(dacppFile, plan, *writer);
         if (readerExtent <= 0 || writerExtent <= 0 ||
-            readerExtent != writerExtent + 2 ||
+            readerExtent != writerExtent + metadata.windowSize - 1 ||
             writerExtent < 2) {
-            reject("requires proven 1D reader extent writer+2 with room for k=2");
+            reject("requires proven 1D reader extent writer+halo with room for k=2");
             return;
         }
         bool inclusive = false;
@@ -3815,14 +3879,28 @@ void annotateResidentHaloTemporalBlocking(
         const DistributedStencilSitePlan sitePlan = analyzeDistributedStencilSite(
             dacppFile, plan.exprNode.shell, plan.exprNode.calc,
             plan.exprNode.dacExpr);
-        if (!sitePlan.supported || !sitePlan.readCacheTransitions.empty() ||
-            !sitePlan.boundaryLocalUpdates.empty()) {
-            reject("requires canonical B1 followup with no read-cache or boundary-local updates");
+        if (!sitePlan.supported || !sitePlan.readCacheTransitions.empty()) {
+            reject("requires canonical B1 followup with no read-cache");
+            return;
+        }
+        const bool hasBoundaryReplay = metadata.hasBoundaryLocalUpdate;
+        if (!hasBoundaryReplay && !sitePlan.boundaryLocalUpdates.empty()) {
+            reject("requires canonical replayable 1D boundary-local update");
+            return;
+        }
+        if (hasBoundaryReplay &&
+            (sitePlan.boundaryLocalUpdates.size() != 1 ||
+             !metadata.boundaryCopiesWriter ||
+             metadata.boundaryTargetIndex != 0 ||
+             metadata.boundarySourceIndex != 0)) {
+            reject("requires left boundary-local writer copy for 1D k=2 replay");
             return;
         }
         plan.orLoopLower.stencilResidentHalo.temporalBlockSize = 2;
         plan.orLoopLower.stencilResidentHalo.temporalLoopLimitExpr = limitExpr;
         plan.orLoopLower.stencilResidentHalo.temporalLoopLimitInclusive = inclusive;
+        plan.orLoopLower.stencilResidentHalo.temporalBlockAcceptReason =
+            hasBoundaryReplay ? "boundary-local replay" : "canonical";
         return;
     }
     if (plan.signature.layout != LocalLayoutKind::StencilWindow2D) {
@@ -6536,7 +6614,19 @@ void annotateLoopLowerCandidates(DacppFile* dacppFile,
                         << plan.orLoopLower.stencilResidentHalo
                                .followupTargetOffset;
                 }
+                const ParamAccessPlan* readerParam =
+                    stencilWindowReaderParam(plan);
+                const bool finalBoundedSmall =
+                    plan.signature.layout == LocalLayoutKind::StencilWindow1D &&
+                    readerParam &&
+                    readerParam->postUseSync.kind ==
+                        PostUseSyncKind::BoundedIndexedRootRead &&
+                    !readerParam->postUseSync.boundedIndices.empty();
                 llvm::outs() << " materialize=final";
+                if (finalBoundedSmall) {
+                    llvm::outs()
+                        << " final-materialize=bounded/small";
+                }
                 if (plan.orLoopLower.stencilResidentHalo.temporalBlockSize >
                     1) {
                     llvm::outs()
@@ -6546,6 +6636,14 @@ void annotateLoopLowerCandidates(DacppFile* dacppFile,
                         << " accepted";
                     if (plan.orLoopLower.stencilResidentHalo.hasDirectReader) {
                         llvm::outs() << " direct-reader recurrence";
+                    } else if (!plan.orLoopLower.stencilResidentHalo
+                                    .temporalBlockAcceptReason.empty() &&
+                               plan.orLoopLower.stencilResidentHalo
+                                       .temporalBlockAcceptReason !=
+                                   "canonical") {
+                        llvm::outs() << " "
+                                     << plan.orLoopLower.stencilResidentHalo
+                                            .temporalBlockAcceptReason;
                     }
                 } else if (!plan.orLoopLower.stencilResidentHalo
                                 .temporalBlockRejectReason.empty()) {

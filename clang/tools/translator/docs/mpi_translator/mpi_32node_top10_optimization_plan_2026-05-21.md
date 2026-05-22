@@ -634,6 +634,44 @@ Fallback:
   calls, non-deterministic functions, tensor reads, host mutation, aliasing, or
   any expression that cannot be safely re-evaluated on every rank.
 
+Implementation Status (2026-05-22):
+
+- Completed boundary history broadcast elision and owner-loop temporal blocking
+  for the proven owner-loop `StencilWindow1D` contract.
+- Changed files: `rewriter/include/mpi/operator_resident/LoopLocalStencilOwnerLoop.h`,
+  `rewriter/lib/mpi/operator_resident/LoopLocalStencilOwnerLoop.cpp`,
+  `rewriter/lib/Rewriter_MPI.cpp`,
+  `dpcppLib/include/mpi/operator_resident/OperatorResidentRuntime.h`, and
+  `tests/FOuLa1.0/mpi_expect.txt`.
+- Accepted pattern: strict loop-local owner history update with one window
+  reader, one direct writer, one invariant replicated scalar payload, matching
+  writer-slice writeback, fixed-row or full-history loop-exit materialization,
+  and boundary formulas proven replayable from a local time array plus literals,
+  constants/globals, allowed math functions, or safe single-return scalar helper
+  functions.
+- Fallback conditions: unsupported owner-loop shape, wrong slice/writeback,
+  variant scalar payload, extra owner mutation, multiple writers, missing
+  writeback, noncanonical loop bounds, table/array reads other than the proven
+  time array, tensor reads, unsupported/unknown/member/operator calls, mutable
+  local scalar dependencies, or any failed owner-loop temporal replay proof.
+- Generated-code/log evidence: `FOuLa1.0` logs
+  `boundary-bcast=elided local-formula temporal-block=2 accepted owner-loop boundary replay`;
+  generated code passes the time array into
+  `__dacpp_mpi_or_PDE_pde_0_owner_loop(u_tensor, r, t)`, uses
+  `resident_halo_1d_layout_temporal`,
+  `scatter_window_1d_temporal`, and
+  `exchange_halo_1d_temporal_inplace`, replays `alpha(__or_boundary_time)` and
+  `beta(__or_boundary_time)` locally, and contains no left/right boundary
+  history `MPI_Bcast`.
+  Owner-loop reject fixtures still reject wrong slices, variant scalars, missing
+  writeback, extra mutation, multiple writers, scalar payload/shell-arg issues,
+  loop-bound mismatch, writer range mismatch, and writeback-index mismatch.
+- Verification/profile: `bash clang/tools/translator/test_mpi.sh FOuLa1.0`
+  passes. The 4-rank profile probe in
+  `/Volumes/QUQ/working/mpi_tmp/profile_segments_next89_probe` has status `ok`
+  for `FOuLa1.0`; wall median `0.318110 s`, profile median `0.323944 s`,
+  and owner-loop halo calls `1200` for `600` time steps.
+
 ### 9. `liuliang1.0`
 
 Current shape:
@@ -670,6 +708,48 @@ Fallback:
 - Keep current materialization for unsupported host post-use, non-fixed
   boundary reads, uncertain final tensor state, or boundary-local update shapes
   not covered by the temporal block proof.
+
+Implementation Status (2026-05-22):
+
+- Completed `StencilWindow1D` k=2 temporal blocking for the boundary-local replay
+  contract and refined 1D resident-halo final materialization for bounded root
+  reads.
+- Changed files: `rewriter/include/mpi/operator_resident/OperatorResidentPlan.h`,
+  `rewriter/lib/mpi/operator_resident/OperatorChainAnalysis.cpp`,
+  `rewriter/lib/mpi/operator_resident/LoopLoweredStencil1DCodegen.cpp`,
+  `dpcppLib/include/mpi/operator_resident/OperatorResidentRuntime.h`,
+  `tests/liuliang1.0/mpi_expect.txt`, `tests/MDP1.0/mpi_expect.txt`,
+  `tests/mpiLoopStencilResidentHalo1D/mpi_expect.txt`, and
+  `tests/mpiLoopStencilResidentHaloEmptyRank1D/mpi_expect.txt`.
+- Accepted pattern: 1D resident halo with window size 2 or 3, followup offset 1,
+  one window reader, one direct writer, proven reader extent
+  `writer + halo`, canonical zero-based time loop, no direct/scalar/read-cache
+  readers, and either no boundary-local update or one replayable left
+  boundary-local writer copy from source index 0 to target index 0.
+- Final post-use improvement: bounded/small root reads of a 1D resident-halo
+  reader are mapped through the followup offset to the owning output rank; only
+  the requested values are sent to root and patched with `reviseValue`. Reads
+  outside the followup-owned range, unsupported layouts, uncertain post-use,
+  dynamic/escaped uses, or non-1D bounded reads conservatively fall back to full
+  materialization.
+- Generated-code/log evidence: `liuliang1.0` logs
+  `final-materialize=bounded/small temporal-block=2 accepted boundary-local replay`
+  and `output rho post-use=bounded-index count=1`. Generated code uses
+  `resident_halo_1d_layout_temporal`,
+  `scatter_window_1d_temporal`, and
+  `exchange_halo_1d_temporal_inplace`, replays the left boundary-local update
+  inside each inner block step, sends one `__or_bounded_values_rho` value to root
+  for `rho[15]`, and omits the previous `MPI_Gatherv`/`array2Tensor` full
+  materialization. `mpiLoopStencilRightBoundaryFullSync1D` still falls back to
+  `StencilFullSync` because right-boundary updates are outside the accepted
+  replay contract.
+- Verification/profile: `bash clang/tools/translator/test_mpi.sh liuliang1.0`
+  and the targeted 1D/right-boundary fixtures pass. The 4-rank profile probe in
+  `/Volumes/QUQ/working/mpi_tmp/profile_segments_next89_probe` has status `ok`
+  for `liuliang1.0`; wall median `0.390312 s`, profile median `0.390306 s`,
+  halo calls `2000` for `1000` steps, and final sync/materialize are bounded
+  single-value paths. The same probe keeps `MDP1.0`, `stencil1.0`, and
+  `waveEquation1.0` status `ok` with their k=2 temporal paths still accepted.
 
 ### 10. `mandel1.0`
 

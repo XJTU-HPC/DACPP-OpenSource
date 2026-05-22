@@ -368,7 +368,7 @@ void Rewriter::rewriteMPI() {
     std::unordered_map<int, mpi_rewriter::operator_resident::
                                 LoopLocalStencilOwnerLoopContract>
         ownerLoopContracts;
-    std::set<const clang::Stmt*> rewrittenFoulaLoops;
+    std::set<const clang::Stmt*> rewrittenOwnerLoops;
 
     for (const auto& site : dacppFile->getMPIStencilSites()) {
         if (!site.dacExpr || !site.outerLoop) {
@@ -387,7 +387,7 @@ void Rewriter::rewriteMPI() {
                     detectLoopLocalStencilOwnerLoop(dacppFile, exprPlan);
             if (contract.enabled) {
                 ownerLoopContracts[exprPlan.exprIndex] = contract;
-                llvm::outs() << "[DACPP][MPI][OR][FOuLa] expr="
+                llvm::outs() << "[DACPP][MPI][OR][OwnerLoop] expr="
                              << exprPlan.exprIndex
                              << " owner-loop=candidate owner="
                              << contract.ownerTensorName << "\n";
@@ -518,15 +518,21 @@ void Rewriter::rewriteMPI() {
         auto ownerLoopIt = ownerLoopContracts.find(exprIdx);
         if (ownerLoopIt != ownerLoopContracts.end() &&
             ownerLoopIt->second.replacementStmt &&
-            rewrittenFoulaLoops.insert(ownerLoopIt->second.replacementStmt)
+            rewrittenOwnerLoops.insert(ownerLoopIt->second.replacementStmt)
                 .second) {
+            std::string ownerLoopCall = ownerLoopIt->second.functionName + "(" +
+                ownerLoopIt->second.ownerTensorName + ", " +
+                ownerLoopIt->second.scalarExpr;
+            if (ownerLoopIt->second.boundaryReplayLocalFormula) {
+                ownerLoopCall += ", " +
+                    ownerLoopIt->second.boundaryTimeArrayName;
+            }
+            ownerLoopCall += ");";
             rewriter->ReplaceText(
                 ownerLoopIt->second.replacementStmt->getSourceRange(),
-                ownerLoopIt->second.functionName + "(" +
-                    ownerLoopIt->second.ownerTensorName + ", " +
-                    ownerLoopIt->second.scalarExpr + ");");
+                ownerLoopCall);
             rewrittenDacExprs.insert(dacExpr);
-            llvm::outs() << "[DACPP][MPI][OR][FOuLa] expr=" << exprIdx
+            llvm::outs() << "[DACPP][MPI][OR][OwnerLoop] expr=" << exprIdx
                          << " owner-loop=rewrite-enabled\n";
             mpi_rewriter::operator_resident::
                 logLoopLocalStencilOwnerLoopRewriteEnabled(

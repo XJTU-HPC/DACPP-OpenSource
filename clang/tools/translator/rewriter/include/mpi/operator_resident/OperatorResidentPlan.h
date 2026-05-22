@@ -111,6 +111,7 @@ struct OrLoopLowerPlan {
         std::string temporalLoopLimitExpr;
         bool temporalLoopLimitInclusive = false;
         std::string temporalBlockRejectReason;
+        std::string temporalBlockAcceptReason;
         std::string rejectReason;
     } stencilResidentHalo;
     struct FixedBlockPhaseExchangeMetadata {
