@@ -120,6 +120,10 @@ struct OrLoopLowerPlan {
         std::string boundaryConstantValue;
         int leftHalo = 0;
         int rightHalo = 0;
+        bool spatial2DEnabled = false;
+        int spatial2DHaloWidth = 0;
+        std::string spatial2DRejectReason;
+        std::string spatial2DAcceptReason;
         int temporalBlockSize = 0;
         std::string temporalLoopLimitExpr;
         bool temporalLoopLimitInclusive = false;

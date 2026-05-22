@@ -2,7 +2,8 @@ MPI_STRUCTURE_ONLY:1
 LOG_CONTAINS:[DACPP][MPI][OR] expr=0 shell=countGuardShell layout=StencilWindow2D partition=accepted
 LOG_CONTAINS:[DACPP][MPI][OR] chain=0 layout=StencilWindow2D length=1 chain=accepted codegen=enabled
 LOG_CONTAINS:[DACPP][MPI][OR][P4.6][Loop] expr=0 shell=countGuardShell
-LOG_CONTAINS:kind=StencilResidentHalo structure=ctx/init/run/materialize resident-halo=true window-shape=3x3 followup-offset=(1,1) materialize=final
+LOG_CONTAINS:kind=StencilResidentHalo structure=ctx/init/run/materialize resident-halo=true window-shape=3x3 followup-offset=(1,1) distribution=spatial-2d accepted stencil halo-width=1
+LOG_CONTAINS:temporal-block=2 rejected reason=spatial-2d one-step partition keeps temporal blocking on row fallback
 LOG_CONTAINS:contract=StencilResidentHalo
 LOG_CONTAINS:contract-materialize=loop-exit guard-compile=fallback guard-runtime=count-or-shape
 LOG_CONTAINS:contract-check=pass reason=p4.6-contract-consistent
@@ -12,11 +13,20 @@ LOG_CONTAINS:[DACPP][MPI][OR] output matOut post-use=none reason=no host-visible
 SYCL_CONTAINS:checked_mul_int64_or_abort(
 SYCL_CONTAINS:narrow_mpi_count_or_abort(
 SYCL_CONTAINS:resident halo 2D gather count exceeds MPI int range
-SYCL_CONTAINS:resident halo 2D local reader size exceeds MPI int range
+SYCL_CONTAINS:spatial resident halo 2D local reader size exceeds MPI int range
 SYCL_CONTAINS:resident halo 2D initial reader size exceeds MPI int range
+SYCL_CONTAINS:dacpp::mpi::operator_resident::ResidentHalo2DSpatialLayout __or_spatial_layout
+SYCL_CONTAINS:int __or_spatial_halo_width = 1
+SYCL_CONTAINS:resident_halo_2d_spatial_layout(ctx.__or_output_rows, ctx.__or_output_cols
+SYCL_CONTAINS:ctx.__or_output_col_range = ctx.__or_spatial_layout.owned_cols
+SYCL_CONTAINS:dacpp::mpi::operator_resident::exchange_halo_2d_spatial_inplace(__or_local_out
 SYCL_CONTAINS:// No host post-use for out; skip full resident halo writer materialization.
 SYCL_CONTAINS:// No host post-use for mat; skip full resident halo reader materialization.
 SYCL_NOT_CONTAINS:resident halo 2D materialize sendcount exceeds MPI int range
+SYCL_NOT_CONTAINS:MPI_Gatherv(__or_owned_out.data()
+SYCL_NOT_CONTAINS:gather_spatial_owned_to_root
+SYCL_NOT_CONTAINS:exchange_halo_2d_rows_temporal_inplace
+SYCL_NOT_CONTAINS:MPI_Allgatherv
 SYCL_NOT_CONTAINS:static_cast<int>(ctx.__or_local_item_count)
 SYCL_NOT_CONTAINS:static_cast<int>(ctx.__or_row_counts[static_cast<std::size_t>(r)] * ctx.__or_output_cols)
 SYCL_NOT_CONTAINS:static_cast<int>(ctx.__or_row_displs[static_cast<std::size_t>(r)] * ctx.__or_output_cols)

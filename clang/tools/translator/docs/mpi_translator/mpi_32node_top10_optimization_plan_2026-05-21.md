@@ -890,6 +890,52 @@ Fallback:
   where row-block is cheaper, or any downstream resident contract that requires
   contiguous row ownership.
 
+Implementation Status (2026-05-22):
+
+- Implemented a conservative `distribution=spatial-2d` subset for canonical
+  B2 `StencilWindow2D` resident halo loops: static 3x3 stride-1 stencil
+  windows, writer-to-reader followup offset `(1,1)`, no direct-reader
+  recurrence, no scalar readers, and canonical top/bottom/left/right
+  boundary-local self-copy updates. Eligibility is derived from layout,
+  access, loop, boundary, and post-use facts; no benchmark-name checks are used.
+- Added plan metadata and translator logs. Accepted logs include
+  `distribution=spatial-2d accepted stencil halo-width=1`; unsupported 2D
+  resident-halo shapes report `distribution=spatial-2d rejected reason=...`.
+  `waveEquation1.0` currently rejects spatial-2d because its B3 direct-reader
+  recurrence still requires row-layout role rotation and keeps the proven
+  row-temporal `k=2` path.
+- Added runtime/codegen support for a 2D process-grid rectangle layout:
+  `ResidentHalo2DSpatialLayout`, row/column owned ranges, rectangle initial
+  scatter, north/south/east/west plus corner halo exchange, spatial owned
+  slices, root reassembly for full post-use materialization, and spatial owner
+  lookup for bounded root reads. Steady-state exchange avoids full output
+  gather/allgather; full gather remains only for host post-use contracts such as
+  `matIn[0].print()`.
+- `stencil1.0` now accepts the 2D spatial partition and generated code contains
+  `resident_halo_2d_spatial_layout`, `scatter_window_2d_spatial`,
+  `exchange_halo_2d_spatial_inplace`, and
+  `gather_spatial_owned_to_root`. Nearby canonical no-use fixture
+  `mpiLoopStencilCountGuard2D` accepts the same spatial mode without final
+  materialization.
+- Verified translator build, `stencil1.0`, P6-P10 regressions
+  (`mandel1.0 FOuLa1.0 liuliang1.0 MDP1.0 waveEquation1.0`), and related
+  2D/stencil/operator-resident fixtures including
+  `mpiLoopStencilCountGuard2D`, `mpiLoopStencilOrderReject2D`,
+  `mpiLoopStencilScalarReject2D`, `mpiDistributedStencil2DRowBlock`,
+  `mpiOrStencilBoundaryStride2D`, `mpiMixedStencilORPhaseC`,
+  `mpiOrReadWriteAccumulate2D`, `jacobi1.0`, and `imageAdjustment1.0`.
+  The requested 4-rank, 3-trial profile probe in
+  `/Volumes/QUQ/working/mpi_tmp/profile_segments_p11_probe` passed all six
+  requested cases with status `ok`.
+- Profile evidence confirms the structural switch rather than a speed win yet:
+  `stencil1.0` logs spatial-2d and generates
+  `exchange_halo_2d_spatial_inplace`, but its 4-rank median is slower
+  (`dac_wall_median_s=8.687478`) than the previous row-temporal style because
+  this first spatial subset intentionally uses one-step halos and leaves
+  temporal blocking for the row fallback. The next performance step is to prove
+  widened 2D halos/temporal blocking on the rectangle layout or add a runtime
+  profitability gate that keeps small/low-rank cases on row-temporal fallback.
+
 ## 32-Rank Benchmark Commands
 
 Use a fresh artifact directory for every optimization batch:

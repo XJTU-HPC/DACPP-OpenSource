@@ -4084,6 +4084,71 @@ void annotateResidentHaloTemporalBlocking(
     plan.orLoopLower.stencilResidentHalo.temporalLoopLimitInclusive = inclusive;
 }
 
+void annotateResidentHaloSpatial2D(
+    ShellPartitionPlan& plan,
+    bool haloCandidate,
+    const std::string& haloRejectReason) {
+    auto& metadata = plan.orLoopLower.stencilResidentHalo;
+    metadata.spatial2DEnabled = false;
+    metadata.spatial2DHaloWidth = 0;
+    metadata.spatial2DAcceptReason.clear();
+    metadata.spatial2DRejectReason.clear();
+    auto reject = [&](const std::string& reason) {
+        metadata.spatial2DRejectReason = reason;
+    };
+    if (plan.signature.layout != LocalLayoutKind::StencilWindow2D) {
+        return;
+    }
+    if (!haloCandidate || !metadata.enabled) {
+        reject(haloRejectReason.empty() ? "resident halo not accepted"
+                                        : haloRejectReason);
+        return;
+    }
+    if (metadata.hasDirectReader) {
+        reject("direct-reader recurrence requires row-layout role rotation");
+        return;
+    }
+    if (metadata.windowRows != 3 || metadata.windowCols != 3 ||
+        metadata.windowRowStride != 1 || metadata.windowColStride != 1) {
+        reject("requires static 3x3 stride-1 stencil window");
+        return;
+    }
+    if (metadata.followupTargetRowOffset != 1 ||
+        metadata.followupTargetColOffset != 1) {
+        reject("requires writer->reader followup offset (1,1)");
+        return;
+    }
+    for (const auto& param : plan.params) {
+        if (isSupportedStencilScalarReader(param)) {
+            reject("scalar readers are outside conservative spatial-2d contract");
+            return;
+        }
+        if (param.access == ParamAccessKind::DirectMapped &&
+            param.reads && !param.writes) {
+            reject("direct readers are outside conservative spatial-2d contract");
+            return;
+        }
+        if (param.postUseSync.kind == PostUseSyncKind::FullTensor &&
+            !param.broadcastMaterializedOutput &&
+            param.access != ParamAccessKind::StencilWindow) {
+            reject("unsupported post-use contract for spatial-2d");
+            return;
+        }
+    }
+    metadata.spatial2DEnabled = true;
+    metadata.spatial2DHaloWidth = 1;
+    metadata.spatial2DAcceptReason =
+        "canonical B2 3x3 stencil rectangular-owned writer cells";
+    if (metadata.temporalBlockSize > 1) {
+        metadata.temporalBlockSize = 0;
+        metadata.temporalLoopLimitExpr.clear();
+        metadata.temporalLoopLimitInclusive = false;
+        metadata.temporalBlockAcceptReason.clear();
+        metadata.temporalBlockRejectReason =
+            "spatial-2d one-step partition keeps temporal blocking on row fallback";
+    }
+}
+
 struct PhaseExchangeDetection {
     bool valid = false;
     std::size_t planAIndex = 0;
@@ -6666,6 +6731,7 @@ void annotateLoopLowerCandidates(DacppFile* dacppFile,
         } else {
             annotateResidentHaloTemporalBlocking(dacppFile, plan,
                                                  p46OuterLoop, haloMetadata);
+            annotateResidentHaloSpatial2D(plan, haloCandidate, haloReason);
         }
         if (p46Candidate) {
             populateStencilLoopLoweringContract(dacppFile, plan, haloReason);
@@ -6709,6 +6775,23 @@ void annotateLoopLowerCandidates(DacppFile* dacppFile,
                             << plan.orLoopLower.stencilResidentHalo
                                    .readCacheTargetColOffset
                             << ") role-rotation=buffer-swap";
+                    }
+                    if (plan.orLoopLower.stencilResidentHalo
+                            .spatial2DEnabled) {
+                        llvm::outs()
+                            << " distribution=spatial-2d accepted"
+                            << " stencil halo-width="
+                            << plan.orLoopLower.stencilResidentHalo
+                                   .spatial2DHaloWidth
+                            << " reason="
+                            << plan.orLoopLower.stencilResidentHalo
+                                   .spatial2DAcceptReason;
+                    } else if (!plan.orLoopLower.stencilResidentHalo
+                                    .spatial2DRejectReason.empty()) {
+                        llvm::outs()
+                            << " distribution=spatial-2d rejected reason="
+                            << plan.orLoopLower.stencilResidentHalo
+                                   .spatial2DRejectReason;
                     }
                 } else {
                     llvm::outs()

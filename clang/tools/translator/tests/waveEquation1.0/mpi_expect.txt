@@ -10,7 +10,7 @@ LOG_CONTAINS:[DACPP][MPI][OR] input matCur init-sync=constant-local value=0
 LOG_CONTAINS:[DACPP][MPI][OR] input matPrev init-sync=scatter fallback reason=tensor is not constructed from a vector variable
 LOG_CONTAINS:[DACPP][MPI][OR][P4.6][Loop] expr=0 shell=waveEqShell
 LOG_CONTAINS:kind=StencilResidentHalo structure=ctx/init/run/materialize resident-halo=true window-shape=3x3 followup-offset=(1,1) direct-reader=true read-cache-offset=(-1,-1)
-LOG_CONTAINS:role-rotation=buffer-swap materialize=final
+LOG_CONTAINS:role-rotation=buffer-swap distribution=spatial-2d rejected reason=direct-reader recurrence requires row-layout role rotation materialize=final
 LOG_CONTAINS:temporal-block=2 accepted direct-reader recurrence
 SYCL_CONTAINS:struct __dacpp_mpi_or_waveEqShell_waveEq_0_ctx
 SYCL_CONTAINS:dacpp::mpi::SegmentedProfile __or_profile
@@ -31,9 +31,9 @@ SYCL_CONTAINS:while (__or_time_step < __or_time_end)
 SYCL_CONTAINS:const int __or_inner_steps = static_cast<int>(std::min<int64_t>(__or_runtime_temporal_block_size
 SYCL_CONTAINS:dacpp::mpi::operator_resident::exchange_halo_2d_rows_temporal_inplace(__or_local_cur
 SYCL_CONTAINS:for (int __or_block_step = 0; __or_block_step < __or_inner_steps; ++__or_block_step)
-SYCL_CONTAINS:dacpp::mpi::ResidentHaloView2D<const double> view_cur{__or_reader_data, static_cast<int>((local_row + __or_compute_row_begin - 1) * static_cast<int>(__or_input_cols) + local_col)
-SYCL_CONTAINS:dacpp::mpi::ContiguousView1D<const double> view_prev{__or_direct_reader_data, static_cast<int>((local_row + __or_compute_row_begin) * static_cast<int>(__or_input_cols) + local_col + __or_writer_col_offset)}
-SYCL_CONTAINS:dacpp::mpi::ContiguousView1D<double> view_next{__or_writer_data, static_cast<int>((local_row + __or_compute_row_begin) * static_cast<int>(__or_input_cols) + local_col + __or_writer_col_offset)}
+SYCL_CONTAINS:dacpp::mpi::ResidentHaloView2D<const double> view_cur{__or_reader_data, static_cast<int>((local_row + __or_compute_row_begin - 1) * static_cast<int>(__or_local_reader_cols) + local_col
+SYCL_CONTAINS:dacpp::mpi::ContiguousView1D<const double> view_prev{__or_direct_reader_data, static_cast<int>((local_row + __or_compute_row_begin) * static_cast<int>(__or_local_reader_cols) + local_col
+SYCL_CONTAINS:dacpp::mpi::ContiguousView1D<double> view_next{__or_writer_data, static_cast<int>((local_row + __or_compute_row_begin) * static_cast<int>(__or_local_reader_cols) + local_col
 SYCL_CONTAINS:std::swap(__or_local_prev, __or_local_cur);
 SYCL_CONTAINS:std::swap(__or_local_cur, __or_local_next);
 SYCL_CONTAINS:dacpp::mpi::operator_resident::owned_slice_2d_rows_temporal(ctx.__or_local_cur
@@ -57,6 +57,9 @@ SYCL_NOT_CONTAINS:apply_read_cache_transition_2d(__or_local_prev, __or_local_cur
 SYCL_NOT_CONTAINS:apply_followup_2d(__or_local_cur, __or_local_next
 SYCL_NOT_CONTAINS:exchange_halo_2d_rows(__or_local_cur, __or_local_next
 SYCL_NOT_CONTAINS:exchange_halo_2d_rows_inplace(__or_local_next
+SYCL_NOT_CONTAINS:exchange_halo_2d_spatial_inplace
+SYCL_NOT_CONTAINS:scatter_window_2d_spatial
+SYCL_NOT_CONTAINS:gather_spatial_owned_to_root
 SYCL_NOT_CONTAINS:MPI_Gatherv(ctx.__or_local_next.data()
 SYCL_NOT_CONTAINS:MPI_Gatherv(ctx.__or_local_prev.data()
 SYCL_NOT_CONTAINS:dacpp::mpi::operator_resident::owned_slice_2d_rows(ctx.__or_local_prev

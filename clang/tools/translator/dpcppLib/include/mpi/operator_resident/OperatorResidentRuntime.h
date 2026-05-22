@@ -30,6 +30,11 @@ struct RankRange1D {
     int64_t count = 0;
 };
 
+struct BlockRange2D {
+    RankRange1D rows{};
+    RankRange1D cols{};
+};
+
 struct BlockCyclic1DLayout {
     int64_t total = 0;
     int64_t block_size = 1;
@@ -182,6 +187,61 @@ inline void counts_displs_1d(int64_t total,
     }
 }
 
+inline void spatial_2d_process_grid(int size, int& rows, int& cols) {
+    const int safeSize = std::max(1, size);
+    rows = 1;
+    for (int candidate = 1; candidate * candidate <= safeSize; ++candidate) {
+        if (safeSize % candidate == 0) {
+            rows = candidate;
+        }
+    }
+    cols = safeSize / rows;
+}
+
+inline int spatial_2d_rank_from_coords(int procRow,
+                                       int procCol,
+                                       int gridRows,
+                                       int gridCols) {
+    if (procRow < 0 || procRow >= gridRows || procCol < 0 ||
+        procCol >= gridCols) {
+        return MPI_PROC_NULL;
+    }
+    return procRow * gridCols + procCol;
+}
+
+inline BlockRange2D spatial_2d_owned_range(int64_t rows,
+                                           int64_t cols,
+                                           int rank,
+                                           int size) {
+    int gridRows = 1;
+    int gridCols = 1;
+    spatial_2d_process_grid(size, gridRows, gridCols);
+    const int procRow = rank / gridCols;
+    const int procCol = rank % gridCols;
+    return {rank_range_1d(rows, procRow, gridRows),
+            rank_range_1d(cols, procCol, gridCols)};
+}
+
+inline int spatial_2d_owner_rank(int64_t row,
+                                 int64_t col,
+                                 int64_t rows,
+                                 int64_t cols,
+                                 int size) {
+    if (row < 0 || row >= rows || col < 0 || col >= cols || size <= 0) {
+        return -1;
+    }
+    for (int rank = 0; rank < size; ++rank) {
+        const BlockRange2D owned = spatial_2d_owned_range(rows, cols, rank, size);
+        if (row >= owned.rows.begin &&
+            row < owned.rows.begin + owned.rows.count &&
+            col >= owned.cols.begin &&
+            col < owned.cols.begin + owned.cols.count) {
+            return rank;
+        }
+    }
+    return -1;
+}
+
 inline int nearest_nonempty_rank_1d(int64_t total,
                                     int rank,
                                     int size,
@@ -270,6 +330,28 @@ struct ResidentHalo2DRowLayout {
     int next_rank = MPI_PROC_NULL;
 };
 
+struct ResidentHalo2DSpatialLayout {
+    RankRange1D owned_rows{};
+    RankRange1D owned_cols{};
+    int64_t input_rows = 0;
+    int64_t input_cols = 0;
+    int64_t local_row_count = 0;
+    int64_t local_col_count = 0;
+    int64_t local_size = 0;
+    int64_t global_row_begin = 0;
+    int64_t global_col_begin = 0;
+    int64_t owned_row_offset = 0;
+    int64_t owned_col_offset = 0;
+    int grid_rows = 1;
+    int grid_cols = 1;
+    int proc_row = 0;
+    int proc_col = 0;
+    int north_rank = MPI_PROC_NULL;
+    int south_rank = MPI_PROC_NULL;
+    int west_rank = MPI_PROC_NULL;
+    int east_rank = MPI_PROC_NULL;
+};
+
 inline ResidentHalo2DRowLayout resident_halo_2d_row_layout(
     int64_t outputRows,
     int64_t inputCols,
@@ -291,6 +373,66 @@ inline ResidentHalo2DRowLayout resident_halo_2d_row_layout(
     layout.owned_row_offset = 0;
     layout.prev_rank = nearest_nonempty_rank_1d(outputRows, rank, size, -1);
     layout.next_rank = nearest_nonempty_rank_1d(outputRows, rank, size, 1);
+    return layout;
+}
+
+inline ResidentHalo2DSpatialLayout resident_halo_2d_spatial_layout(
+    int64_t outputRows,
+    int64_t outputCols,
+    int64_t inputRows,
+    int64_t inputCols,
+    int rank,
+    int size,
+    int haloWidth) {
+    ResidentHalo2DSpatialLayout layout;
+    spatial_2d_process_grid(size, layout.grid_rows, layout.grid_cols);
+    layout.proc_row = layout.grid_cols > 0 ? rank / layout.grid_cols : 0;
+    layout.proc_col = layout.grid_cols > 0 ? rank % layout.grid_cols : 0;
+    layout.owned_rows = rank_range_1d(outputRows,
+                                      layout.proc_row,
+                                      layout.grid_rows);
+    layout.owned_cols = rank_range_1d(outputCols,
+                                      layout.proc_col,
+                                      layout.grid_cols);
+    layout.input_rows = inputRows;
+    layout.input_cols = inputCols;
+    if (layout.owned_rows.count > 0 && layout.owned_cols.count > 0) {
+        const int64_t halo = std::max<int64_t>(0, haloWidth);
+        const int64_t interiorRowBegin = layout.owned_rows.begin + halo;
+        const int64_t interiorRowEnd =
+            layout.owned_rows.begin + layout.owned_rows.count + halo;
+        const int64_t interiorColBegin = layout.owned_cols.begin + halo;
+        const int64_t interiorColEnd =
+            layout.owned_cols.begin + layout.owned_cols.count + halo;
+        layout.global_row_begin = std::max<int64_t>(0, interiorRowBegin - halo);
+        layout.global_col_begin = std::max<int64_t>(0, interiorColBegin - halo);
+        const int64_t globalRowEnd =
+            std::min<int64_t>(inputRows, interiorRowEnd + halo);
+        const int64_t globalColEnd =
+            std::min<int64_t>(inputCols, interiorColEnd + halo);
+        layout.local_row_count =
+            std::max<int64_t>(0, globalRowEnd - layout.global_row_begin);
+        layout.local_col_count =
+            std::max<int64_t>(0, globalColEnd - layout.global_col_begin);
+        layout.owned_row_offset = interiorRowBegin - layout.global_row_begin;
+        layout.owned_col_offset = interiorColBegin - layout.global_col_begin;
+    }
+    layout.local_size = checked_mul_int64_or_abort(
+        layout.local_row_count,
+        layout.local_col_count,
+        "[DACPP][MPI][OR] spatial resident halo 2D local size overflow");
+    layout.north_rank = spatial_2d_rank_from_coords(
+        layout.proc_row - 1, layout.proc_col, layout.grid_rows,
+        layout.grid_cols);
+    layout.south_rank = spatial_2d_rank_from_coords(
+        layout.proc_row + 1, layout.proc_col, layout.grid_rows,
+        layout.grid_cols);
+    layout.west_rank = spatial_2d_rank_from_coords(
+        layout.proc_row, layout.proc_col - 1, layout.grid_rows,
+        layout.grid_cols);
+    layout.east_rank = spatial_2d_rank_from_coords(
+        layout.proc_row, layout.proc_col + 1, layout.grid_rows,
+        layout.grid_cols);
     return layout;
 }
 
@@ -544,6 +686,91 @@ void scatter_window_2d_rows(const std::vector<T>& global,
                  mpiType,
                  0,
                  4301,
+                 MPI_COMM_WORLD,
+                 MPI_STATUS_IGNORE);
+    }
+}
+
+template <typename T>
+std::vector<T> pack_spatial_window_2d(const std::vector<T>& global,
+                                      const ResidentHalo2DSpatialLayout& layout,
+                                      int64_t inputCols) {
+    std::vector<T> packed(static_cast<std::size_t>(layout.local_size), T{});
+    if (layout.local_row_count <= 0 || layout.local_col_count <= 0 ||
+        inputCols <= 0 || global.empty()) {
+        return packed;
+    }
+    for (int64_t row = 0; row < layout.local_row_count; ++row) {
+        const int64_t globalRow = layout.global_row_begin + row;
+        const int64_t globalBase = checked_mul_int64_or_abort(
+            globalRow,
+            inputCols,
+            "[DACPP][MPI][OR] spatial resident halo 2D pack row overflow");
+        const int64_t packedBase = checked_mul_int64_or_abort(
+            row,
+            layout.local_col_count,
+            "[DACPP][MPI][OR] spatial resident halo 2D pack base overflow");
+        for (int64_t col = 0; col < layout.local_col_count; ++col) {
+            const int64_t globalCol = layout.global_col_begin + col;
+            const std::size_t globalIdx =
+                static_cast<std::size_t>(globalBase + globalCol);
+            const std::size_t packedIdx =
+                static_cast<std::size_t>(packedBase + col);
+            if (globalIdx < global.size() && packedIdx < packed.size()) {
+                packed[packedIdx] = global[globalIdx];
+            }
+        }
+    }
+    return packed;
+}
+
+template <typename T>
+void scatter_window_2d_spatial(const std::vector<T>& global,
+                               std::vector<T>& local,
+                               int64_t outputRows,
+                               int64_t outputCols,
+                               int64_t inputRows,
+                               int64_t inputCols,
+                               int haloWidth,
+                               const ResidentHalo2DSpatialLayout& layout,
+                               int rank,
+                               int size,
+                               MPI_Datatype mpiType) {
+    local.assign(static_cast<std::size_t>(layout.local_size), T{});
+    if (rank == 0) {
+        for (int r = 0; r < size; ++r) {
+            const ResidentHalo2DSpatialLayout target =
+                resident_halo_2d_spatial_layout(outputRows, outputCols,
+                                                inputRows, inputCols, r, size,
+                                                haloWidth);
+            if (target.local_size <= 0) {
+                continue;
+            }
+            std::vector<T> packed =
+                pack_spatial_window_2d(global, target, inputCols);
+            if (r == 0) {
+                local = std::move(packed);
+            } else {
+                const int sendCount = narrow_mpi_count_or_abort(
+                    target.local_size,
+                    "[DACPP][MPI][OR] spatial resident halo 2D scatter count exceeds MPI int range");
+                MPI_Send(packed.data(),
+                         sendCount,
+                         mpiType,
+                         r,
+                         4305,
+                         MPI_COMM_WORLD);
+            }
+        }
+    } else if (layout.local_size > 0) {
+        const int recvCount = narrow_mpi_count_or_abort(
+            layout.local_size,
+            "[DACPP][MPI][OR] spatial resident halo 2D recv count exceeds MPI int range");
+        MPI_Recv(local.data(),
+                 recvCount,
+                 mpiType,
+                 0,
+                 4305,
                  MPI_COMM_WORLD,
                  MPI_STATUS_IGNORE);
     }
@@ -1163,6 +1390,251 @@ void exchange_halo_2d_rows_inplace(std::vector<T>& local,
 }
 
 template <typename T>
+void exchange_halo_2d_spatial_inplace(
+    std::vector<T>& local,
+    const ResidentHalo2DSpatialLayout& layout,
+    int64_t outputRows,
+    int64_t outputCols,
+    int64_t inputCols,
+    int interiorRowOffset,
+    int interiorColOffset,
+    int rank,
+    int size,
+    MPI_Datatype mpiType) {
+    if (outputRows <= 0 || outputCols <= 0 || inputCols <= 0 ||
+        interiorRowOffset != 1 || interiorColOffset != 1 ||
+        layout.owned_rows.count <= 0 || layout.owned_cols.count <= 0 ||
+        layout.local_row_count <= 0 || layout.local_col_count <= 0 ||
+        local.empty()) {
+        return;
+    }
+    (void)rank;
+    (void)size;
+    auto packRect = [&](int64_t rowBegin,
+                        int64_t rowCount,
+                        int64_t colBegin,
+                        int64_t colCount) {
+        std::vector<T> packed(static_cast<std::size_t>(
+            checked_mul_int64_or_abort(
+                rowCount,
+                colCount,
+                "[DACPP][MPI][OR] spatial resident halo 2D pack size overflow")),
+                              T{});
+        for (int64_t row = 0; row < rowCount; ++row) {
+            const int64_t sourceRow = rowBegin + row;
+            if (sourceRow < 0 || sourceRow >= layout.local_row_count) {
+                continue;
+            }
+            const int64_t sourceBase = checked_mul_int64_or_abort(
+                sourceRow,
+                layout.local_col_count,
+                "[DACPP][MPI][OR] spatial resident halo 2D pack row overflow");
+            const int64_t packedBase = checked_mul_int64_or_abort(
+                row,
+                colCount,
+                "[DACPP][MPI][OR] spatial resident halo 2D pack base overflow");
+            for (int64_t col = 0; col < colCount; ++col) {
+                const int64_t sourceCol = colBegin + col;
+                const std::size_t sourceIdx =
+                    static_cast<std::size_t>(sourceBase + sourceCol);
+                const std::size_t packedIdx =
+                    static_cast<std::size_t>(packedBase + col);
+                if (sourceCol >= 0 && sourceCol < layout.local_col_count &&
+                    sourceIdx < local.size() && packedIdx < packed.size()) {
+                    packed[packedIdx] = local[sourceIdx];
+                }
+            }
+        }
+        return packed;
+    };
+    auto unpackRect = [&](const std::vector<T>& packed,
+                          int64_t rowBegin,
+                          int64_t rowCount,
+                          int64_t colBegin,
+                          int64_t colCount) {
+        for (int64_t row = 0; row < rowCount; ++row) {
+            const int64_t targetRow = rowBegin + row;
+            if (targetRow < 0 || targetRow >= layout.local_row_count) {
+                continue;
+            }
+            const int64_t targetBase = checked_mul_int64_or_abort(
+                targetRow,
+                layout.local_col_count,
+                "[DACPP][MPI][OR] spatial resident halo 2D unpack row overflow");
+            const int64_t packedBase = checked_mul_int64_or_abort(
+                row,
+                colCount,
+                "[DACPP][MPI][OR] spatial resident halo 2D unpack base overflow");
+            for (int64_t col = 0; col < colCount; ++col) {
+                const int64_t targetCol = colBegin + col;
+                const std::size_t targetIdx =
+                    static_cast<std::size_t>(targetBase + targetCol);
+                const std::size_t packedIdx =
+                    static_cast<std::size_t>(packedBase + col);
+                if (targetCol >= 0 && targetCol < layout.local_col_count &&
+                    targetIdx < local.size() && packedIdx < packed.size()) {
+                    local[targetIdx] = packed[packedIdx];
+                }
+            }
+        }
+    };
+    const bool hasNorth = layout.north_rank != MPI_PROC_NULL &&
+                          layout.owned_row_offset > 0;
+    const bool hasSouth =
+        layout.south_rank != MPI_PROC_NULL &&
+        layout.owned_row_offset + layout.owned_rows.count <
+            layout.local_row_count;
+    const bool hasWest = layout.west_rank != MPI_PROC_NULL &&
+                         layout.owned_col_offset > 0;
+    const bool hasEast =
+        layout.east_rank != MPI_PROC_NULL &&
+        layout.owned_col_offset + layout.owned_cols.count <
+            layout.local_col_count;
+    const int northWestRank = spatial_2d_rank_from_coords(
+        layout.proc_row - 1, layout.proc_col - 1, layout.grid_rows,
+        layout.grid_cols);
+    const int northEastRank = spatial_2d_rank_from_coords(
+        layout.proc_row - 1, layout.proc_col + 1, layout.grid_rows,
+        layout.grid_cols);
+    const int southWestRank = spatial_2d_rank_from_coords(
+        layout.proc_row + 1, layout.proc_col - 1, layout.grid_rows,
+        layout.grid_cols);
+    const int southEastRank = spatial_2d_rank_from_coords(
+        layout.proc_row + 1, layout.proc_col + 1, layout.grid_rows,
+        layout.grid_cols);
+    const int64_t topRow = layout.owned_row_offset - 1;
+    const int64_t bottomRow = layout.owned_row_offset + layout.owned_rows.count;
+    const int64_t leftCol = layout.owned_col_offset - 1;
+    const int64_t rightCol = layout.owned_col_offset + layout.owned_cols.count;
+    std::vector<T> northSend = packRect(layout.owned_row_offset, 1,
+                                        layout.owned_col_offset,
+                                        layout.owned_cols.count);
+    std::vector<T> southSend = packRect(
+        layout.owned_row_offset + layout.owned_rows.count - 1, 1,
+        layout.owned_col_offset, layout.owned_cols.count);
+    std::vector<T> westSend = packRect(layout.owned_row_offset,
+                                       layout.owned_rows.count,
+                                       layout.owned_col_offset, 1);
+    std::vector<T> eastSend = packRect(
+        layout.owned_row_offset, layout.owned_rows.count,
+        layout.owned_col_offset + layout.owned_cols.count - 1, 1);
+    std::vector<T> northWestSend =
+        packRect(layout.owned_row_offset, 1, layout.owned_col_offset, 1);
+    std::vector<T> northEastSend =
+        packRect(layout.owned_row_offset, 1,
+                 layout.owned_col_offset + layout.owned_cols.count - 1, 1);
+    std::vector<T> southWestSend = packRect(
+        layout.owned_row_offset + layout.owned_rows.count - 1, 1,
+        layout.owned_col_offset, 1);
+    std::vector<T> southEastSend = packRect(
+        layout.owned_row_offset + layout.owned_rows.count - 1, 1,
+        layout.owned_col_offset + layout.owned_cols.count - 1, 1);
+    std::vector<T> northRecv(static_cast<std::size_t>(
+                                 hasNorth ? layout.owned_cols.count : 0),
+                             T{});
+    std::vector<T> southRecv(static_cast<std::size_t>(
+                                 hasSouth ? layout.owned_cols.count : 0),
+                             T{});
+    std::vector<T> westRecv(static_cast<std::size_t>(
+                                hasWest ? layout.owned_rows.count : 0),
+                            T{});
+    std::vector<T> eastRecv(static_cast<std::size_t>(
+                                hasEast ? layout.owned_rows.count : 0),
+                            T{});
+    std::vector<T> northWestRecv(static_cast<std::size_t>(
+                                     hasNorth && hasWest ? 1 : 0),
+                                 T{});
+    std::vector<T> northEastRecv(static_cast<std::size_t>(
+                                     hasNorth && hasEast ? 1 : 0),
+                                 T{});
+    std::vector<T> southWestRecv(static_cast<std::size_t>(
+                                     hasSouth && hasWest ? 1 : 0),
+                                 T{});
+    std::vector<T> southEastRecv(static_cast<std::size_t>(
+                                     hasSouth && hasEast ? 1 : 0),
+                                 T{});
+    MPI_Request requests[16];
+    int requestCount = 0;
+    auto postRecv = [&](std::vector<T>& buffer,
+                        int source,
+                        int tag) {
+        if (source != MPI_PROC_NULL && !buffer.empty()) {
+            MPI_Irecv(buffer.data(),
+                      narrow_mpi_count_or_abort(
+                          static_cast<int64_t>(buffer.size()),
+                          "[DACPP][MPI][OR] spatial resident halo 2D receive count exceeds MPI int range"),
+                      mpiType,
+                      source,
+                      tag,
+                      MPI_COMM_WORLD,
+                      &requests[requestCount++]);
+        }
+    };
+    auto postSend = [&](const std::vector<T>& buffer,
+                        int target,
+                        int tag) {
+        if (target != MPI_PROC_NULL && !buffer.empty()) {
+            MPI_Isend(buffer.data(),
+                      narrow_mpi_count_or_abort(
+                          static_cast<int64_t>(buffer.size()),
+                          "[DACPP][MPI][OR] spatial resident halo 2D send count exceeds MPI int range"),
+                      mpiType,
+                      target,
+                      tag,
+                      MPI_COMM_WORLD,
+                      &requests[requestCount++]);
+        }
+    };
+    postRecv(northRecv, layout.north_rank, 4401);
+    postRecv(southRecv, layout.south_rank, 4402);
+    postRecv(westRecv, layout.west_rank, 4403);
+    postRecv(eastRecv, layout.east_rank, 4404);
+    postRecv(northWestRecv, northWestRank, 4405);
+    postRecv(northEastRecv, northEastRank, 4406);
+    postRecv(southWestRecv, southWestRank, 4407);
+    postRecv(southEastRecv, southEastRank, 4408);
+    postSend(southSend, layout.south_rank, 4401);
+    postSend(northSend, layout.north_rank, 4402);
+    postSend(eastSend, layout.east_rank, 4403);
+    postSend(westSend, layout.west_rank, 4404);
+    postSend(southEastSend, southEastRank, 4405);
+    postSend(southWestSend, southWestRank, 4406);
+    postSend(northEastSend, northEastRank, 4407);
+    postSend(northWestSend, northWestRank, 4408);
+    if (requestCount > 0) {
+        MPI_Waitall(requestCount, requests, MPI_STATUSES_IGNORE);
+    }
+    if (hasNorth) {
+        unpackRect(northRecv, topRow, 1, layout.owned_col_offset,
+                   layout.owned_cols.count);
+    }
+    if (hasSouth) {
+        unpackRect(southRecv, bottomRow, 1, layout.owned_col_offset,
+                   layout.owned_cols.count);
+    }
+    if (hasWest) {
+        unpackRect(westRecv, layout.owned_row_offset,
+                   layout.owned_rows.count, leftCol, 1);
+    }
+    if (hasEast) {
+        unpackRect(eastRecv, layout.owned_row_offset,
+                   layout.owned_rows.count, rightCol, 1);
+    }
+    if (hasNorth && hasWest) {
+        unpackRect(northWestRecv, topRow, 1, leftCol, 1);
+    }
+    if (hasNorth && hasEast) {
+        unpackRect(northEastRecv, topRow, 1, rightCol, 1);
+    }
+    if (hasSouth && hasWest) {
+        unpackRect(southWestRecv, bottomRow, 1, leftCol, 1);
+    }
+    if (hasSouth && hasEast) {
+        unpackRect(southEastRecv, bottomRow, 1, rightCol, 1);
+    }
+}
+
+template <typename T>
 void exchange_halo_2d_rows_temporal_inplace(
     std::vector<T>& local,
     const ResidentHalo2DRowLayout& layout,
@@ -1555,6 +2027,136 @@ std::vector<T> owned_slice_2d_rows(const std::vector<T>& local,
         }
     }
     return owned;
+}
+
+template <typename T>
+std::vector<T> owned_slice_2d_spatial(
+    const std::vector<T>& local,
+    const ResidentHalo2DSpatialLayout& layout,
+    int64_t outputRows,
+    int64_t outputCols,
+    int sourceRowOffset,
+    int sourceColOffset) {
+    (void)outputRows;
+    const int64_t ownedItemCount = checked_mul_int64_or_abort(
+        layout.owned_rows.count,
+        layout.owned_cols.count,
+        "[DACPP][MPI][OR] spatial resident halo 2D owned slice size overflow");
+    std::vector<T> owned(static_cast<std::size_t>(ownedItemCount), T{});
+    if (layout.owned_rows.count <= 0 || layout.owned_cols.count <= 0 ||
+        layout.local_col_count <= 0 || outputCols <= 0 || local.empty()) {
+        return owned;
+    }
+    for (int64_t row = 0; row < layout.owned_rows.count; ++row) {
+        const int64_t sourceRow = layout.owned_row_offset + row + sourceRowOffset - 1;
+        if (sourceRow < 0 || sourceRow >= layout.local_row_count) {
+            continue;
+        }
+        const int64_t ownedBase = checked_mul_int64_or_abort(
+            row,
+            layout.owned_cols.count,
+            "[DACPP][MPI][OR] spatial resident halo 2D owned slice base overflow");
+        const int64_t sourceBase = checked_mul_int64_or_abort(
+            sourceRow,
+            layout.local_col_count,
+            "[DACPP][MPI][OR] spatial resident halo 2D source slice base overflow");
+        for (int64_t col = 0; col < layout.owned_cols.count; ++col) {
+            const int64_t sourceCol =
+                layout.owned_col_offset + col + sourceColOffset - 1;
+            if (sourceCol < 0 || sourceCol >= layout.local_col_count) {
+                continue;
+            }
+            const std::size_t ownedIdx =
+                static_cast<std::size_t>(ownedBase + col);
+            const std::size_t sourceIdx =
+                static_cast<std::size_t>(sourceBase + sourceCol);
+            if (ownedIdx < owned.size() && sourceIdx < local.size()) {
+                owned[ownedIdx] = local[sourceIdx];
+            }
+        }
+    }
+    return owned;
+}
+
+template <typename T>
+void gather_spatial_owned_to_root(const std::vector<T>& owned,
+                                  std::vector<T>& global,
+                                  int64_t outputRows,
+                                  int64_t outputCols,
+                                  int rank,
+                                  int size,
+                                  MPI_Datatype mpiType) {
+    std::vector<int> counts(static_cast<std::size_t>(size), 0);
+    std::vector<int> displs(static_cast<std::size_t>(size), 0);
+    int64_t gatheredCount = 0;
+    for (int r = 0; r < size; ++r) {
+        const BlockRange2D range =
+            spatial_2d_owned_range(outputRows, outputCols, r, size);
+        const int64_t rankCount = checked_mul_int64_or_abort(
+            range.rows.count,
+            range.cols.count,
+            "[DACPP][MPI][OR] spatial resident halo 2D gather rank size overflow");
+        counts[static_cast<std::size_t>(r)] = narrow_mpi_count_or_abort(
+            rankCount,
+            "[DACPP][MPI][OR] spatial resident halo 2D gather rank count exceeds MPI int range");
+        displs[static_cast<std::size_t>(r)] = narrow_mpi_count_or_abort(
+            gatheredCount,
+            "[DACPP][MPI][OR] spatial resident halo 2D gather displacement exceeds MPI int range");
+        gatheredCount += rankCount;
+    }
+    std::vector<T> gathered;
+    if (rank == 0) {
+        gathered.resize(static_cast<std::size_t>(gatheredCount));
+    }
+    const int sendCount = narrow_mpi_count_or_abort(
+        static_cast<int64_t>(owned.size()),
+        "[DACPP][MPI][OR] spatial resident halo 2D gather send count exceeds MPI int range");
+    MPI_Gatherv(owned.empty() ? nullptr : owned.data(),
+                sendCount,
+                mpiType,
+                rank == 0 && !gathered.empty() ? gathered.data() : nullptr,
+                rank == 0 ? counts.data() : nullptr,
+                rank == 0 ? displs.data() : nullptr,
+                mpiType,
+                0,
+                MPI_COMM_WORLD);
+    if (rank != 0) {
+        return;
+    }
+    global.assign(static_cast<std::size_t>(
+                      checked_mul_int64_or_abort(
+                          outputRows,
+                          outputCols,
+                          "[DACPP][MPI][OR] spatial resident halo 2D global gather size overflow")),
+                  T{});
+    for (int r = 0; r < size; ++r) {
+        const BlockRange2D range =
+            spatial_2d_owned_range(outputRows, outputCols, r, size);
+        for (int64_t row = 0; row < range.rows.count; ++row) {
+            const int64_t globalRow = range.rows.begin + row;
+            const int64_t globalBase = checked_mul_int64_or_abort(
+                globalRow,
+                outputCols,
+                "[DACPP][MPI][OR] spatial resident halo 2D global row overflow");
+            const int64_t gatheredBase =
+                static_cast<int64_t>(displs[static_cast<std::size_t>(r)]) +
+                checked_mul_int64_or_abort(
+                    row,
+                    range.cols.count,
+                    "[DACPP][MPI][OR] spatial resident halo 2D gathered row overflow");
+            for (int64_t col = 0; col < range.cols.count; ++col) {
+                const int64_t globalCol = range.cols.begin + col;
+                const std::size_t globalIdx =
+                    static_cast<std::size_t>(globalBase + globalCol);
+                const std::size_t gatheredIdx =
+                    static_cast<std::size_t>(gatheredBase + col);
+                if (globalIdx < global.size() &&
+                    gatheredIdx < gathered.size()) {
+                    global[globalIdx] = gathered[gatheredIdx];
+                }
+            }
+        }
+    }
 }
 
 template <typename T>
