@@ -428,6 +428,19 @@ Implementation Status (2026-05-21):
   `bash clang/tools/translator/test_mpi.sh mpiLoopStencilCountGuard2D mpiLoopStencilResidentHalo1D mpiLoopStencilResidentHaloEmptyRank1D mpiLoopStencilOrderReject2D mpiLoopStencilScalarReject2D`;
   and the 4-rank one-trial profile probe with `stencil1.0`,
   `waveEquation1.0`, and `MDP1.0` status `ok`.
+- Current note: a 4-rank, 3-trial A/B on
+  `/Volumes/QUQ/working/mpi_tmp/profile_segments_forced_spatial_diag` and
+  `/Volumes/QUQ/working/mpi_tmp/profile_segments_row_temporal_ab` keeps
+  `stencil1.0` on the row-temporal `k=2` path because forced spatial-2d+k=2 is
+  slightly slower in the same environment (`dac_wall_median_s=0.852748` vs
+  `0.842832`). The generated hot spot stays in `kernel`, not in final sync or
+  materialize, so the generic fallback remains the right contract until a
+  structural kernel-layout improvement proves otherwise.
+- The required profile directory
+  `/Volumes/QUQ/working/mpi_tmp/profile_segments_p11_stencil1_spatial_k2_profit`
+  also keeps `stencil1.0` on the fallback row-temporal path
+  (`dac_wall_median_s=0.934547`) while `waveEquation1.0` remains accepted on
+  spatial-2d direct-reader rotation (`dac_wall_median_s=0.964906`).
 - Remaining risk: temporal blocking is limited to canonical no-direct-reader
   2D row-halo stencils. Small or highly partitioned grids can dynamically use
   block size 1 to preserve correctness, and wave-style direct-reader temporal
