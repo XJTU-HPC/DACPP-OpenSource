@@ -4,7 +4,7 @@ LOG_CONTAINS:[DACPP][MPI][OR] expr=0 shell=stencilShell layout=StencilWindow2D p
 LOG_CONTAINS:[DACPP][MPI][OR] chain=0 layout=StencilWindow2D length=1 chain=accepted codegen=enabled
 LOG_CONTAINS:[DACPP][MPI] output matOut sync=distributed-followup
 LOG_CONTAINS:[DACPP][MPI][OR][P4.6][Loop] expr=0 shell=stencilShell
-LOG_CONTAINS:kind=StencilResidentHalo structure=ctx/init/run/materialize resident-halo=true window-shape=3x3 followup-offset=(1,1) distribution=spatial-2d rejected reason=spatial temporal-block=2 requires no host post-use for profitability; row-temporal retained
+LOG_CONTAINS:kind=StencilResidentHalo structure=ctx/init/run/materialize resident-halo=true window-shape=3x3 followup-offset=(1,1) distribution=spatial-2d rejected reason=spatial temporal-block=2 with host post-use is not profitable in the current rectangular buffer path; row-temporal retained
 LOG_CONTAINS:temporal-block=2 accepted
 SYCL_CONTAINS:struct __dacpp_mpi_or_stencilShell_stencil_0_ctx
 SYCL_CONTAINS:void __dacpp_mpi_or_stencilShell_stencil_0_init(__dacpp_mpi_or_stencilShell_stencil_0_ctx& ctx

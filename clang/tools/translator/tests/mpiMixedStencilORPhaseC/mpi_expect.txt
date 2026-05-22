@@ -1,7 +1,7 @@
 LOG_CONTAINS:[DACPP][MPI][OR] expr=0 shell=stencilShell layout=StencilWindow2D partition=accepted
 LOG_CONTAINS:[DACPP][MPI][OR] chain=0 layout=StencilWindow2D length=1 chain=accepted codegen=enabled
 LOG_CONTAINS:[DACPP][MPI][OR] output matIn post-use=full fallback reason=bounded indexed read is not root-observable cout
-LOG_CONTAINS:distribution=spatial-2d rejected reason=spatial temporal-block=2 requires no host post-use for profitability; row-temporal retained
+LOG_CONTAINS:distribution=spatial-2d rejected reason=spatial temporal-block=2 with host post-use is not profitable in the current rectangular buffer path; row-temporal retained
 LOG_CONTAINS:[DACPP][MPI][PhaseC] param next transport=write after write-before-read analysis
 LOG_CONTAINS:[DACPP][MPI][PhaseC] site clampShell_clamp_step partial-exchange enabled
 LOG_NOT_CONTAINS:partial-exchange disabled

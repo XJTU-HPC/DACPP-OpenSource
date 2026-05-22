@@ -4146,7 +4146,7 @@ void annotateResidentHaloSpatial2D(
         }
         if (metadata.temporalBlockSize > 1 &&
             param.postUseSync.kind != PostUseSyncKind::None) {
-            reject("spatial temporal-block=2 requires no host post-use for profitability; row-temporal retained");
+            reject("spatial temporal-block=2 with host post-use is not profitable in the current rectangular buffer path; row-temporal retained");
             return;
         }
     }

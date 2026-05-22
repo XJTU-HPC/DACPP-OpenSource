@@ -912,11 +912,21 @@ Implementation Status (2026-05-22):
 - Added a conservative profitability fallback for spatial `temporal-block=2`:
   the k=2 spatial path currently requires no host post-use. Bounded or full
   host post-use logs
-  `distribution=spatial-2d rejected reason=spatial temporal-block=2 requires no host post-use for profitability; row-temporal retained`
+  `distribution=spatial-2d rejected reason=spatial temporal-block=2 with host post-use is not profitable in the current rectangular buffer path; row-temporal retained`
   and stays on the row-temporal path. This avoids replacing `stencil1.0` large
   bounded-output profiles with the slower spatial k=2 materialization path,
   while allowing no-use contracts such as `mpiLoopStencilCountGuard2D` to prove
   spatial k=2 with no full gather.
+- Follow-up profiling confirmed the reason for retaining row-temporal on
+  bounded `stencil1.0`: experimentally enabling bounded host post-use for
+  spatial k=2 produced correct code with no full output gather and microsecond
+  materialization, but the 4-rank large profile in
+  `/Volumes/QUQ/working/mpi_tmp/profile_segments_p11_stencil1_spatial_k2_experiment`
+  had `dac_wall_median_s=4.838048` and a `kernel` median max of
+  `4496.731972 ms`. The profitable current path remains row-temporal k=2
+  (`profile_segments_p11_spatial_k2_probe` recorded `dac_wall_median_s=0.864732`
+  with no gather segment). This keeps the fallback based on post-use contract
+  and profitability evidence, not benchmark names.
 - B3 direct-reader cases such as `waveEquation1.0` still reject spatial-2d with
   `distribution=spatial-2d rejected reason=direct-reader recurrence requires row-layout role rotation`
   and retain the row-temporal `temporal-block=2 accepted direct-reader
@@ -943,13 +953,14 @@ Implementation Status (2026-05-22):
   `mpiMixedStencilORPhaseC` keep full loop-exit materialization for
   `matIn[0].print()` instead of incorrectly logging `post-use=none`.
 - Current accepted spatial-2d scope is B2 only: one-step supports bounded/small
-  post-use, while k=2 is limited to no-host-use contracts until a cheaper
-  bounded/full post-use materialization strategy is proven. Unsupported or less
+  post-use, while k=2 is limited to no-host-use contracts until the rectangular
+  spatial k=2 kernel/layout path is made profitable for bounded/full host
+  post-use. Unsupported or less
   profitable cases log structural rejection reasons: direct-reader recurrence,
   scalar readers, unsupported/profitability-rejected post-use, unsafe boundary
   replay, missing resident halo contract, or unsupported temporal block size.
   The next performance step is direct-reader spatial role rotation and cheaper
-  bounded/full spatial k=2 post-use; until that is proven,
+  bounded/full spatial k=2 post-use and its kernel/layout cost; until that is proven,
   row-temporal/block-cyclic/bounded-materialize/resident continuation paths are
   retained.
 - Verified with translator build, required `stencil1.0`, the P6-P11 protection
