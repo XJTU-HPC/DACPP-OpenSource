@@ -54,6 +54,219 @@ bash test_mpi.sh
 4. Generalize the `FOuLa1.0` loop-local argument contract.
 5. Expand stencil and FixedBlock accepted surfaces.
 
+## 32-Node / 128-Core Scalability Risk TODO
+
+Updated: 2026-05-22
+
+This section tracks the remaining high-risk scaling issues after the current
+top-10 pass. The focus is not ordinary communication overhead, but cases where
+larger rank counts expose fixed work, root-centric work, replicated operands, or
+too-small local kernels. Current generated code does not show a major bug where
+every rank still launches a full global kernel range; the risks below are the
+next likely limiters for 32 nodes / 128 cores.
+
+### Risk Summary
+
+| Priority | Area | Cases | Risk | Current status |
+|---:|---|---|---|---|
+| P0 | Replicated operands | `DFT1.0`, `matMul1.0` | Input broadcast/root pack does not shrink with ranks; local output count shrinks but each output still depends on a large/full operand. | Correct but communication and memory footprint scale poorly. |
+| P1 | 1D stencil underfill | `MDP1.0`, `liuliang1.0`, `FOuLa1.0` | At 128 ranks, `8192 / 128 ~= 64` owned cells per rank; launch and halo latency dominate even though local item count shrinks. | Correct k=2 temporal blocking exists, but fixed per-block overhead remains high. |
+| P2 | Root materialization | `matMul1.0`, `DFT1.0`, `imageAdjustment1.0`, `waveEquation1.0` | Full `Gatherv`/root tensor rebuild for member calls or conservative host post-use can dominate after kernels shrink. | Correct; bounded/small paths exist only for proven cases. |
+| P3 | Stencil launch and halo frequency | `stencil1.0`, `waveEquation1.0`, 1D stencil cases | Hundreds/thousands of time steps still imply many kernel launches and halo exchanges. | `stencil1.0` and `waveEquation1.0` now use 2D spatial halo k=2; 1D cases use k=2 where proven. |
+| P4 | Root scatter/pack initialization | Many OR/resident cases | Root `tensor2Array`, packing, and point-to-point scatter remain fixed/root-heavy for non-local initializers. | Several constant/index-local fast paths exist; many fallbacks remain conservative. |
+| P5 | Mandel dynamic imbalance | `mandel1.0` | Block-cyclic improves balance, but iteration count remains data-dependent. | Correct block-cyclic + `MPI_Reduce`; dynamic scheduling not implemented. |
+
+### Phase A: Confirm No Full-Global Kernel Ranges
+
+Goal: keep the current core invariant explicit before deeper optimization:
+accepted top-10 paths must launch kernels over local work ranges, not over the
+full global shape on every rank.
+
+Tasks:
+
+- For each top-10 case, inspect generated `*.mpi.dac_sycl_buffer.cpp` and
+  translation logs from a fresh full `test_mpi.sh` run.
+- Record the kernel range expression:
+  - `__or_local_item_count`
+  - `__or_kernel_item_count`
+  - row-block local count
+  - block-cyclic local count
+  - spatial-2d owned rows/cols
+- Flag any kernel range derived directly from the full global size without a
+  local partition.
+- Add `mpi_expect.txt` guards where a scaling-critical local range is not
+  already checked.
+
+Done when:
+
+- A small table documents all top-10 kernel ranges.
+- Any full-global per-rank kernel range is either fixed or explicitly justified
+  as algorithmically required.
+- `bash clang/tools/translator/test_mpi.sh` passes.
+
+### Phase B: Replicated Operand Work and Memory
+
+Goal: reduce the two biggest replicated-input risks without breaking current
+OR contracts.
+
+Tasks:
+
+- `DFT1.0`:
+  - Confirm current compute shape is `N/P` outputs, each scanning full input.
+  - Add profile rows that separate replicated-input broadcast from kernel time.
+  - Prototype tiled input broadcast or distributed DFT planning only behind a
+    new structural proof; do not silently change output semantics.
+- `matMul1.0`:
+  - Confirm current shape is row/output partitioned with full or large `B`
+    payload broadcast.
+  - Add a 2D matmul design note for SUMMA-style block multiplication or a
+    narrower first step that broadcasts `B` tiles.
+  - Keep existing RowPartitionFullRow path as fallback.
+
+Done when:
+
+- The doc records whether the next practical step is a tiled broadcast or a
+  full 2D algorithm.
+- Generated logs distinguish replicated/full operand broadcast cost from local
+  kernel cost.
+- Existing `matMul1.0` and `DFT1.0` tests pass unchanged.
+
+### Phase C: 1D Stencil Underfill
+
+Goal: stop high-rank 1D stencils from becoming launch/halo latency benchmarks
+once local ranges are only tens of cells per rank.
+
+Tasks:
+
+- Measure `MDP1.0`, `liuliang1.0`, and `FOuLa1.0` at the largest available
+  local rank count; record owned cells per rank, halo calls, kernel calls, and
+  profile medians.
+- Extend temporal blocking from fixed `k=2` to a shape-safe larger `k` where:
+  - boundary replay is proven,
+  - host post-use is bounded/small or otherwise safe,
+  - narrow runtime partitions degrade safely,
+  - owner-loop replay remains correct for `FOuLa1.0`.
+- Consider a generated device-side multi-step loop if larger halos are too
+  costly or boundary replay becomes too complex.
+
+Done when:
+
+- At least one 1D stencil accepts `k>2` or an equivalent multi-step local replay
+  path with explicit translator logs.
+- Rejected cases log a precise reason, not a silent downgrade.
+- `MDP1.0`, `liuliang1.0`, `FOuLa1.0`, and nearby stencil fixtures pass.
+
+### Phase D: Root Materialization and Host Post-Use
+
+Goal: prevent full gathers from dominating once local kernels shrink.
+
+Tasks:
+
+- Inventory top-10 cases that still materialize full tensors because of member
+  calls, function calls, or conservative post-use.
+- Split post-use into:
+  - bounded/small root reads,
+  - root-only reductions,
+  - true full tensor visibility,
+  - unknown/member-call fallback.
+- Add more selective materialization only when root-visible semantics are
+  proven.
+- Keep full materialization for `print()`, unknown member calls, tensor escapes,
+  and all-rank visibility unless a proof says otherwise.
+
+Done when:
+
+- Each full materialization in the top-10 has an explicit log reason.
+- At least one currently full-materialized case is converted to selective or
+  bounded sync with tests.
+- Full `test_mpi.sh` passes.
+
+### Phase E: Root Scatter and Initialization
+
+Goal: reduce root-side `tensor2Array`, pack, and scatter pressure.
+
+Tasks:
+
+- Mine logs for `init-sync=scatter fallback reason=...` across top-10 and
+  focused fixtures.
+- Prioritize additional local init recognizers:
+  - constant matrices/arrays,
+  - affine index generation,
+  - safe scalar helper functions,
+  - simple vector size constructors currently rejected as ambiguous.
+- Add structure checks proving root pack/scatter disappeared for accepted
+  shapes.
+
+Done when:
+
+- The highest-volume scatter fallback in the current top-10 is either converted
+  to local init or documented as unsafe.
+- Accepted local init paths keep alias/function escape guards.
+
+### Phase F: Mandel Load Balance
+
+Goal: decide whether block-cyclic is enough for the 32-node target.
+
+Tasks:
+
+- Measure `mandel1.0` at multiple block sizes if the block size is tunable, or
+  add a conservative tuning hook if not.
+- Compare kernel max/sum imbalance across ranks.
+- Only consider dynamic work scheduling if block-cyclic still leaves a large
+  imbalance and the reduction-only output contract remains simple.
+
+Done when:
+
+- There is profile evidence for the chosen block size.
+- Any dynamic scheduling proposal has a separate correctness plan.
+
+## Prompt For A Follow-Up Agent
+
+Use this prompt to hand off the next phase:
+
+```text
+You are working in /Volumes/QUQ/working/dacpp on branch tqc-2.
+
+Goal: continue the MPI translator 32-node / 128-core scalability pass from
+clang/tools/translator/docs/mpi_translator/mpi_performance_optimization_todolist.md.
+Do not change semantics to win benchmarks. Do not special-case benchmark names.
+Keep current dirty/untracked user files untouched.
+
+Start with the "32-Node / 128-Core Scalability Risk TODO" section.
+
+Phase order:
+1. Phase A: regenerate current MPI outputs with full test_mpi.sh, then inventory
+   kernel range expressions for the top-10 cases. Confirm no accepted path runs
+   a full global kernel range per rank. Add mpi_expect guards for missing local
+   range evidence.
+2. Phase B: analyze replicated operand risks in DFT1.0 and matMul1.0. Produce
+   a concrete design choice: tiled broadcast vs full 2D algorithm. Implement
+   only a structurally proven, generic improvement if the proof is small.
+3. Phase C: attack 1D stencil underfill for MDP1.0, liuliang1.0, and FOuLa1.0.
+   Prefer larger proven temporal blocking or device-side multi-step replay.
+   Every reject/fallback needs a translator log reason.
+4. Phase D/E: reduce full root materialization and root scatter only where
+   post-use/init proofs are explicit.
+5. Phase F: revisit mandel1.0 block-cyclic balance only after higher-risk fixed
+   costs are addressed.
+
+Required verification for any implementation:
+- cmake --build build --target translator -j8
+- bash clang/tools/translator/test_mpi.sh <focused cases>
+- bash clang/tools/translator/test_mpi.sh for high-blast-radius changes
+- profile with bench_mpi_profile_segments.py for changed top-10 cases
+
+Before committing, run:
+- git diff --cached --name-status
+and confirm staged files contain only the current task's changes.
+
+Deliverables:
+- code/tests/docs updates,
+- exact translator log evidence for accepted/rejected paths,
+- profile artifact path and summary,
+- commit and push to tqc-2 if changes are made.
+```
+
 ## 1. Segmented Profiling
 
 Goal: make performance work evidence-driven. The generated MPI code should be

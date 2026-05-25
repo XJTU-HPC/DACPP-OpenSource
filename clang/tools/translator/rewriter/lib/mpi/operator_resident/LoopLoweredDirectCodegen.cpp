@@ -265,7 +265,9 @@ void emitScalarRefreshes(std::string& code,
 }
 
 void emitRunKernel(std::string& code, const ShellPartitionPlan& plan) {
-    code += "    if (ctx.__or_local_item_count > 0) {\n";
+    code += "    const int64_t __or_local_item_count = ctx.__or_local_item_count;\n";
+    code += "    auto& q = ctx.q;\n";
+    code += "    if (__or_local_item_count > 0) {\n";
     code += "        {\n";
     for (const auto& param : plan.params) {
         const std::string type = elemType(plan, param);
@@ -275,7 +277,7 @@ void emitRunKernel(std::string& code, const ShellPartitionPlan& plan) {
                 ".data(), sycl::range<1>(" + ctxLocalName(param) +
                 ".size()));\n";
     }
-    code += "            ctx.q.submit([&](sycl::handler& h) {\n";
+    code += "            q.submit([&](sycl::handler& h) {\n";
     for (const auto& param : plan.params) {
         const std::string mode =
             param.reads && !param.writes ? "sycl::access::mode::read"
@@ -284,7 +286,7 @@ void emitRunKernel(std::string& code, const ShellPartitionPlan& plan) {
                 " = __or_buffer_" + param.calcParamName +
                 ".get_access<" + mode + ">(h);\n";
     }
-    code += "                h.parallel_for(sycl::range<1>(static_cast<std::size_t>(ctx.__or_local_item_count)), [=](sycl::id<1> idx) {\n";
+    code += "                h.parallel_for(sycl::range<1>(static_cast<std::size_t>(__or_local_item_count)), [=](sycl::id<1> idx) {\n";
     code += "                    const int item_linear = static_cast<int>(idx[0]);\n";
     for (const auto& param : plan.params) {
         code += "                    auto* __or_data_" + param.calcParamName +
@@ -311,7 +313,7 @@ void emitRunKernel(std::string& code, const ShellPartitionPlan& plan) {
     code += ");\n";
     code += "                });\n";
     code += "            });\n";
-    code += "            ctx.q.wait();\n";
+    code += "            q.wait();\n";
     code += "        }\n";
     code += "    }\n";
 }
@@ -339,14 +341,22 @@ void emitDeviceTimeLoopRunFunction(std::string& code,
     code += "bool " + runLoopName + "(" + ctxName + "& ctx, " +
             wrapperSignature(plan) + ") {\n";
     emitScalarRefreshes(code, plan, true);
+    const std::string initialScalar =
+        "__or_initial_scalar_" + scalar->calcParamName;
+    const std::string localItemCount = "__or_local_item_count";
     code += "    // P4.5 device time loop: each work-item replays scalar evolution locally and materializes only the selected host row.\n";
+    code += "    const " + elemType(plan, *scalar) + " " + initialScalar +
+            " = " + ctxScalarName(*scalar) + ";\n";
+    code += "    const int64_t " + localItemCount +
+            " = ctx.__or_local_item_count;\n";
+    code += "    auto& q = ctx.q;\n";
     code += "    const auto __or_selective_target_row = static_cast<int64_t>(" +
             std::to_string(plan.loopLowerSelectiveMaterialize.targetRow) +
             ");\n";
     code += "    bool __or_selected_row_reached = false;\n";
     code += "    {\n";
     code += "        " + elemType(plan, *scalar) + " " +
-            timeScalarName(*scalar) + " = " + ctxScalarName(*scalar) +
+            timeScalarName(*scalar) + " = " + initialScalar +
             ";\n";
     code += "        while (" +
             plan.loopLowerDeviceTimeLoop.conditionExpr + ") {\n";
@@ -360,7 +370,7 @@ void emitDeviceTimeLoopRunFunction(std::string& code,
     code += "        }\n";
     code += "    }\n";
     code += "    auto dacpp_profile_kernel_start = dacpp::mpi::profileSegmentStart();\n";
-    code += "    if (ctx.__or_local_item_count > 0) {\n";
+    code += "    if (" + localItemCount + " > 0) {\n";
     code += "        {\n";
     for (const auto& param : plan.params) {
         if (param.access == ParamAccessKind::ReplicatedScalar) {
@@ -373,7 +383,7 @@ void emitDeviceTimeLoopRunFunction(std::string& code,
                 ".data(), sycl::range<1>(" + ctxLocalName(param) +
                 ".size()));\n";
     }
-    code += "            ctx.q.submit([&](sycl::handler& h) {\n";
+    code += "            q.submit([&](sycl::handler& h) {\n";
     for (const auto& param : plan.params) {
         if (param.access == ParamAccessKind::ReplicatedScalar) {
             continue;
@@ -385,11 +395,11 @@ void emitDeviceTimeLoopRunFunction(std::string& code,
                 " = __or_buffer_" + param.calcParamName +
                 ".get_access<" + mode + ">(h);\n";
     }
-    code += "                h.parallel_for(sycl::range<1>(static_cast<std::size_t>(ctx.__or_local_item_count)), [=](sycl::id<1> idx) {\n";
+    code += "                h.parallel_for(sycl::range<1>(static_cast<std::size_t>(" + localItemCount + ")), [=](sycl::id<1> idx) {\n";
     code += "                    const int item_linear = static_cast<int>(idx[0]);\n";
     code += "                    const int64_t __or_selective_target = __or_selective_target_row;\n";
     code += "                    " + elemType(plan, *scalar) + " " +
-            timeScalarName(*scalar) + " = " + ctxScalarName(*scalar) +
+            timeScalarName(*scalar) + " = " + initialScalar +
             ";\n";
     code += "                    " + elemType(plan, *output) +
             " __or_selected_value = " + elemType(plan, *output) + "{};\n";
@@ -447,7 +457,7 @@ void emitDeviceTimeLoopRunFunction(std::string& code,
     code += "                    }\n";
     code += "                });\n";
     code += "            });\n";
-    code += "            ctx.q.wait();\n";
+    code += "            q.wait();\n";
     code += "        }\n";
     code += "    }\n";
     code += "    dacpp::mpi::recordProfileSegment(ctx.__or_profile, dacpp::mpi::ProfileSegment::Kernel, dacpp_profile_kernel_start);\n";

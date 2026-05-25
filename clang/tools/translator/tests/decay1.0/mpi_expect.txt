@@ -15,7 +15,8 @@ SYCL_CONTAINS:dacpp::mpi::ProfileSegment::Materialize
 SYCL_CONTAINS:dacpp::mpi::reportSegmentedProfile("__dacpp_mpi_or_DECAY_decay_0_materialize"
 SYCL_CONTAINS:__or_resident_out_local_A
 SYCL_CONTAINS:P4.5 device time loop
-SYCL_CONTAINS:double __or_time_scalar_t = ctx.__or_scalar_t
+SYCL_CONTAINS:const double __or_initial_scalar_t = ctx.__or_scalar_t
+SYCL_CONTAINS:double __or_time_scalar_t = __or_initial_scalar_t
 SYCL_CONTAINS:static_cast<int64_t>(10*__or_time_scalar_t)
 SYCL_CONTAINS:const bool __dacpp_mpi_or_selected_row_0 =
 SYCL_CONTAINS:if (__dacpp_mpi_is_root_rank() && (__dacpp_mpi_or_selected_row_0))
@@ -26,3 +27,4 @@ SYCL_CONTAINS:MPI_Gatherv(ctx.__or_local_local_A.data()
 SYCL_CONTAINS:__or_arg2.array2Tensor(__or_materialized_local_A);
 SYCL_CONTAINS:P4.5 loop-lowered direct scalar reader
 SYCL_NOT_CONTAINS:MPI_Bcast(&ctx.__or_scalar_t
+SYCL_NOT_CONTAINS:double __or_time_scalar_t = ctx.__or_scalar_t
