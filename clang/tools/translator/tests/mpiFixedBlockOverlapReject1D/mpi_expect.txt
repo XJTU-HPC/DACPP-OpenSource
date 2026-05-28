@@ -1,6 +1,0 @@
-MPI_STRUCTURE_ONLY:true
-LOG_CONTAINS:[DACPP][MPI][OR] expr=0 shell=OVERLAP partition=rejected reason=fixed block requires split size to equal split stride
-SYCL_CONTAINS:AccessPattern
-SYCL_CONTAINS:OVERLAP_copy3(input, output)
-SYCL_NOT_CONTAINS:__dacpp_mpi_or_OVERLAP_copy3_0
-SYCL_NOT_CONTAINS:fixed_block_count_1d

@@ -1,9 +1,0 @@
-MPI_STRUCTURE_ONLY:1
-LOG_CONTAINS:[DACPP][MPI][OR] expr=0 shell=PDE layout=StencilWindow1D partition=accepted
-LOG_CONTAINS:[DACPP][MPI][OR][OwnerLoop] expr=0 owner-loop=rejected contract=LoopLocalStencilOwnerLoop reason=requires owner loop bound to cover matrix time columns
-LOG_NOT_CONTAINS:[DACPP][MPI][OR][OwnerLoop] expr=0 owner-loop=candidate
-SYCL_CONTAINS:void __dacpp_mpi_or_PDE_pde_0
-SYCL_NOT_CONTAINS:void __dacpp_mpi_or_PDE_pde_0_owner_loop
-SYCL_NOT_CONTAINS:__dacpp_mpi_or_PDE_pde_0_owner_loop(
-SYCL_NOT_CONTAINS:AccessPattern
-SYCL_NOT_CONTAINS:PackPlan

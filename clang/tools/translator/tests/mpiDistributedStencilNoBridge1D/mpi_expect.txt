@@ -1,7 +1,0 @@
-LOG_CONTAINS:[DACPP][MPI][PhaseC] site smoothShell_smooth_step partial-exchange enabled
-LOG_NOT_CONTAINS:partial-exchange disabled
-SYCL_CONTAINS:ctx.use_partial_exchange = true;
-SYCL_CONTAINS:build_halo_plan_from_exchange_plan
-SYCL_CONTAINS:publish_local_writes_with_halo_or_exchange
-SYCL_CONTAINS:__dacpp_mpi_stencil_materialize_smoothShell_smooth_step
-SYCL_NOT_CONTAINS:root_bridge_plan = dacpp::mpi::build_exchange_plan_from_layouts

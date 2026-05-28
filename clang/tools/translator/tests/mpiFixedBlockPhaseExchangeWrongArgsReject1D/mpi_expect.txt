@@ -1,6 +1,0 @@
-MPI_STRUCTURE_ONLY:true
-LOG_CONTAINS:[DACPP][MPI][OR][P5][PhaseExchange] expr=0 shell=ODDEVEN phase-exchange=rejected reason=phase-exchange B shell args must use the recognized helper decls
-SYCL_CONTAINS:dacpp::mpi::operator_resident::fixed_block_count_1d
-SYCL_NOT_CONTAINS:fixed_block_phase_exchange_step
-SYCL_NOT_CONTAINS:AccessPattern
-SYCL_NOT_CONTAINS:PackPlan

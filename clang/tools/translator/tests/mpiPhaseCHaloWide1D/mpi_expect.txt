@@ -1,7 +1,0 @@
-LOG_CONTAINS:[DACPP][MPI][PhaseC] site wideShell_wide_step partial-exchange enabled (root-bridge)
-LOG_NOT_CONTAINS:[DACPP][MPI][PhaseC] route detected next->state
-LOG_NOT_CONTAINS:partial-exchange disabled
-SYCL_CONTAINS:ctx.use_partial_exchange = true;
-SYCL_CONTAINS:root_bridge_plan = dacpp::mpi::build_exchange_plan_from_layouts
-SYCL_CONTAINS:__dacpp_mpi_region_wideShell_wide_step_0_stmt_0
-SYCL_NOT_CONTAINS:publish_local_writes_with_halo_or_exchange

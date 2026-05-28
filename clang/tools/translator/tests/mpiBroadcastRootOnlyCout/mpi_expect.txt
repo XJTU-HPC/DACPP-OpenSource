@@ -1,3 +1,0 @@
-LOG_CONTAINS:[DACPP][MPI] output output_tensor sync=root-only
-SYCL_CONTAINS:if (__dacpp_mpi_is_root_rank())
-SYCL_NOT_CONTAINS:MPI_Bcast

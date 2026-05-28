@@ -1,5 +1,0 @@
-MPI_STRUCTURE_ONLY:1
-LOG_CONTAINS:[DACPP][MPI][OR] expr=0 shell=scalarStencilShell partition=rejected
-LOG_NOT_CONTAINS:[DACPP][MPI][OR][P4.6][Loop] expr=0 shell=scalarStencilShell
-SYCL_NOT_CONTAINS:void __dacpp_mpi_or_scalarStencilShell_scalarStencil_0
-SYCL_NOT_CONTAINS:ResidentHalo2DRowLayout

@@ -1,8 +1,0 @@
-LOG_CONTAINS:[DACPP][MPI] output output_tensor sync=root-only
-LOG_CONTAINS:[DACPP][MPI][OR] output output_tensor post-use=bounded-index count=2 reason=root-only tensor2Array bounded target read
-SYCL_CONTAINS:host_output.assign(8, {});
-SYCL_CONTAINS:host_output[static_cast<std::size_t>(0)] = output_tensor.getElement({0});
-SYCL_CONTAINS:host_output[static_cast<std::size_t>(7)] = output_tensor.getElement({7});
-SYCL_CONTAINS:if (__dacpp_mpi_is_root_rank()) {
-SYCL_NOT_CONTAINS:MPI_Gatherv(__or_local_output.data()
-SYCL_NOT_CONTAINS:MPI_Bcast

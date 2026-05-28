@@ -28,6 +28,7 @@
 
 # Nested build directory
 /build*
+/dacpp_mpi_translated_package_20260527
 
 #==============================================================================#
 # Explicit files to ignore (only matches one).
