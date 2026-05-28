@@ -236,47 +236,6 @@ std::vector<const clang::Expr*> collectSubscriptIndices(
     return reversed;
 }
 
-bool extractConstTensorIndexRead(const clang::Expr* expr,
-                                 const std::string& tensorName,
-                                 clang::ASTContext* context,
-                                 PostUseBoundedIndex& index) {
-    std::string baseName;
-    const std::vector<const clang::Expr*> indexExprs =
-        collectSubscriptIndices(expr, baseName);
-    if (baseName != tensorName ||
-        (indexExprs.size() != 1 && indexExprs.size() != 2)) {
-        return false;
-    }
-    PostUseBoundedIndex candidate;
-    for (const clang::Expr* indexExpr : indexExprs) {
-        int64_t value = 0;
-        if (!evaluateIntegerConstant(indexExpr, context, value) || value < 0) {
-            return false;
-        }
-        candidate.indices.push_back(value);
-    }
-    index = std::move(candidate);
-    return true;
-}
-
-bool extractConstVectorIndexRead(const clang::Expr* expr,
-                                 const std::string& vectorName,
-                                 clang::ASTContext* context,
-                                 PostUseBoundedIndex& index) {
-    std::string baseName;
-    const std::vector<const clang::Expr*> indexExprs =
-        collectSubscriptIndices(expr, baseName);
-    if (baseName != vectorName || indexExprs.size() != 1) {
-        return false;
-    }
-    int64_t value = 0;
-    if (!evaluateIntegerConstant(indexExprs[0], context, value) || value < 0) {
-        return false;
-    }
-    index.indices = {value};
-    return true;
-}
-
 bool sameIndex(const PostUseBoundedIndex& lhs,
                const PostUseBoundedIndex& rhs) {
     return lhs.indices == rhs.indices;
@@ -768,6 +727,7 @@ public:
     bool FullUse = false;
     std::string Reason;
     std::vector<PostUseBoundedIndex> Indices;
+    std::unordered_map<std::string, std::vector<int64_t>> LoopPrefixes;
 
     PostUseIndexedReadVisitor(std::string tensorName,
                               clang::ASTContext* context)
@@ -795,7 +755,9 @@ public:
         ++WriteDepth;
         TraverseStmt(binary->getLHS());
         --WriteDepth;
-        recordFull("compound assignment reads tensor");
+        if (exprContainsTensorName(binary->getLHS())) {
+            recordFull("compound assignment reads tensor");
+        }
         TraverseStmt(binary->getRHS());
         return true;
     }
@@ -808,7 +770,9 @@ public:
             ++WriteDepth;
             TraverseStmt(unary->getSubExpr());
             --WriteDepth;
-            recordFull("increment/decrement reads tensor");
+            if (exprContainsTensorName(unary->getSubExpr())) {
+                recordFull("increment/decrement reads tensor");
+            }
             return true;
         }
         if (unary->getOpcode() == clang::UO_AddrOf &&
@@ -820,6 +784,26 @@ public:
             PostUseIndexedReadVisitor>::TraverseUnaryOperator(unary);
     }
 
+    bool TraverseForStmt(clang::ForStmt* loop) {
+        if (!loop) {
+            return true;
+        }
+        std::string loopVarName;
+        int64_t endExclusive = 0;
+        if (!extractSimplePrefixLoop(loop, Context, loopVarName,
+                                     endExclusive)) {
+            return clang::RecursiveASTVisitor<
+                PostUseIndexedReadVisitor>::TraverseForStmt(loop);
+        }
+        LoopPrefixes[loopVarName].push_back(endExclusive);
+        TraverseStmt(loop->getBody());
+        LoopPrefixes[loopVarName].pop_back();
+        if (LoopPrefixes[loopVarName].empty()) {
+            LoopPrefixes.erase(loopVarName);
+        }
+        return true;
+    }
+
     bool TraverseCXXOperatorCallExpr(clang::CXXOperatorCallExpr* opCall) {
         if (!opCall) {
             return true;
@@ -829,11 +813,7 @@ public:
                 std::string baseName;
                 (void)collectSubscriptIndices(opCall, baseName);
                 if (baseName == TensorName) {
-                    PostUseBoundedIndex index;
-                    if (extractConstTensorIndexRead(opCall, TensorName, Context,
-                                                    index)) {
-                        addUniqueIndex(Indices, index);
-                    } else {
+                    if (!recordTensorRead(opCall)) {
                         recordFull("non-constant indexed read");
                     }
                     return true;
@@ -873,10 +853,7 @@ public:
             std::string baseName;
             (void)collectSubscriptIndices(array, baseName);
             if (baseName == TensorName) {
-                PostUseBoundedIndex index;
-                if (extractConstTensorIndexRead(array, TensorName, Context, index)) {
-                    addUniqueIndex(Indices, index);
-                } else {
+                if (!recordTensorRead(array)) {
                     recordFull("non-constant indexed read");
                 }
                 return true;
@@ -891,10 +868,7 @@ public:
             std::string baseName;
             (void)collectSubscriptIndices(array, baseName);
             if (baseName == TensorName) {
-                PostUseBoundedIndex index;
-                if (extractConstTensorIndexRead(array, TensorName, Context, index)) {
-                    addUniqueIndex(Indices, index);
-                } else {
+                if (!recordTensorRead(array)) {
                     recordFull("non-constant indexed read");
                 }
             }
@@ -974,6 +948,70 @@ private:
         return false;
     }
 
+    bool indexExprValues(const clang::Expr* expr,
+                         std::vector<int64_t>& values) const {
+        values.clear();
+        int64_t value = 0;
+        if (evaluateIntegerConstant(expr, Context, value) && value >= 0) {
+            values.push_back(value);
+            return true;
+        }
+        const std::string loopVar = declRefName(expr);
+        const auto it = LoopPrefixes.find(loopVar);
+        if (it == LoopPrefixes.end() || it->second.empty()) {
+            return false;
+        }
+        const int64_t endExclusive = it->second.back();
+        for (int64_t idx = 0; idx < endExclusive; ++idx) {
+            values.push_back(idx);
+        }
+        return true;
+    }
+
+    bool recordTensorRead(const clang::Expr* expr) {
+        std::string baseName;
+        const std::vector<const clang::Expr*> indexExprs =
+            collectSubscriptIndices(expr, baseName);
+        if (baseName != TensorName ||
+            (indexExprs.size() != 1 && indexExprs.size() != 2)) {
+            return false;
+        }
+
+        std::vector<std::vector<int64_t>> perDimValues;
+        int64_t totalExpanded = 1;
+        for (const clang::Expr* indexExpr : indexExprs) {
+            std::vector<int64_t> values;
+            if (!indexExprValues(indexExpr, values) || values.empty()) {
+                return false;
+            }
+            if (totalExpanded >
+                kMaxTensor2ArrayBoundedIndices /
+                    static_cast<int64_t>(values.size())) {
+                return false;
+            }
+            totalExpanded *= static_cast<int64_t>(values.size());
+            perDimValues.push_back(std::move(values));
+        }
+
+        if (perDimValues.size() == 1) {
+            for (int64_t i : perDimValues[0]) {
+                PostUseBoundedIndex index;
+                index.indices = {i};
+                addUniqueIndex(Indices, index);
+            }
+            return true;
+        }
+
+        for (int64_t i : perDimValues[0]) {
+            for (int64_t j : perDimValues[1]) {
+                PostUseBoundedIndex index;
+                index.indices = {i, j};
+                addUniqueIndex(Indices, index);
+            }
+        }
+        return true;
+    }
+
     bool exprContainsOnlyConstTensorIndexReads(const clang::Expr* expr) const {
         if (!expr) {
             return true;
@@ -982,8 +1020,7 @@ private:
         std::string baseName;
         (void)collectSubscriptIndices(expr, baseName);
         if (baseName == TensorName) {
-            PostUseBoundedIndex ignored;
-            return extractConstTensorIndexRead(expr, TensorName, Context, ignored);
+            return tensorReadExprIsBounded(expr);
         }
 
         if (const auto* dre = llvm::dyn_cast<clang::DeclRefExpr>(
@@ -1018,7 +1055,7 @@ private:
             }
             const clang::DynTypedNode& parent = parents[0];
             if (const auto* expr = parent.get<clang::Expr>()) {
-                if (extractConstTensorIndexRead(expr, TensorName, Context, index)) {
+                if (tensorReadExprIsBounded(expr)) {
                     return true;
                 }
                 current = parent;
@@ -1027,6 +1064,23 @@ private:
             return false;
         }
         return false;
+    }
+
+    bool tensorReadExprIsBounded(const clang::Expr* expr) const {
+        std::string baseName;
+        const std::vector<const clang::Expr*> indexExprs =
+            collectSubscriptIndices(expr, baseName);
+        if (baseName != TensorName ||
+            (indexExprs.size() != 1 && indexExprs.size() != 2)) {
+            return false;
+        }
+        for (const clang::Expr* indexExpr : indexExprs) {
+            std::vector<int64_t> values;
+            if (!indexExprValues(indexExpr, values) || values.empty()) {
+                return false;
+            }
+        }
+        return true;
     }
 };
 

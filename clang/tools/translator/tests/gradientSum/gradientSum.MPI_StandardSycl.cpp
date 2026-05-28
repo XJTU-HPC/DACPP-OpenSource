@@ -111,7 +111,7 @@ int main(int argc, char** argv) {
             h.parallel_for<GradientSumNaiveKernel>(
                 sycl_compat::range<1>(static_cast<std::size_t>(local_count)),
                 [=](sycl_compat::id<1> idx) {
-                    float sum = 0.0f;
+                    int sum = 0;
                     for (int j = 0; j < INPUT_SIZE; ++j) {
                         sum += grads[static_cast<std::size_t>(idx[0]) *
                                          INPUT_SIZE + j];
