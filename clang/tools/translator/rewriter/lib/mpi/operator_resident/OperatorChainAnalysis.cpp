@@ -4110,6 +4110,8 @@ void annotateResidentHaloSpatial2D(
                                         : haloRejectReason);
         return;
     }
+    reject("spatial-2d halo disabled; using row-temporal resident halo");
+    return;
     if (metadata.temporalBlockSize > 2) {
         reject("spatial temporal-block>2 unsupported; row-temporal retained");
         return;

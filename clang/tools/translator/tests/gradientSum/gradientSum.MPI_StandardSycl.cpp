@@ -47,27 +47,58 @@ int main(int argc, char** argv) {
     MPI_Comm_size(MPI_COMM_WORLD, &size);
 
     const int local_count = rows_for_rank(rank, size);
-    const int local_begin = row_begin_for_rank(rank, size);
+    std::vector<int> counts(size, 0);
+    std::vector<int> displs(size, 0);
+    std::vector<int> payload_counts(size, 0);
+    std::vector<int> payload_displs(size, 0);
+    int offset = 0;
+    int payload_offset = 0;
+    for (int r = 0; r < size; ++r) {
+        counts[r] = rows_for_rank(r, size);
+        displs[r] = offset;
+        payload_counts[r] = counts[r] * INPUT_SIZE;
+        payload_displs[r] = payload_offset;
+        offset += counts[r];
+        payload_offset += payload_counts[r];
+    }
 
-    std::vector<float> host_grads(static_cast<std::size_t>(NUM_NEURONS) *
-                                  INPUT_SIZE);
-    for (int i = 0; i < NUM_NEURONS; ++i) {
-        for (int j = 0; j < INPUT_SIZE; ++j) {
-            host_grads[static_cast<std::size_t>(i) * INPUT_SIZE + j] =
-                static_cast<float>(i + j);
+    std::vector<float> global_grads;
+    if (rank == 0) {
+        global_grads.resize(static_cast<std::size_t>(NUM_NEURONS) * INPUT_SIZE);
+        for (int i = 0; i < NUM_NEURONS; ++i) {
+            for (int j = 0; j < INPUT_SIZE; ++j) {
+                global_grads[static_cast<std::size_t>(i) * INPUT_SIZE + j] =
+                    static_cast<float>(i + j);
+            }
         }
     }
 
+    std::vector<float> local_grads(static_cast<std::size_t>(local_count) *
+                                   INPUT_SIZE);
     std::vector<float> local_sum(local_count, 0.0f);
+    std::vector<float> global_sum;
+    if (rank == 0) {
+        global_sum.resize(NUM_NEURONS, 0.0f);
+    }
 
     sycl_compat::queue q{sycl_compat::default_selector_v};
 
     MPI_Barrier(MPI_COMM_WORLD);
     const auto t0 = std::chrono::steady_clock::now();
 
+    MPI_Scatterv(rank == 0 ? global_grads.data() : nullptr,
+                 payload_counts.data(),
+                 payload_displs.data(),
+                 MPI_FLOAT,
+                 local_grads.data(),
+                 static_cast<int>(local_grads.size()),
+                 MPI_FLOAT,
+                 0,
+                 MPI_COMM_WORLD);
+
     if (local_count > 0) {
         sycl_compat::buffer<float, 1> grad_buf(
-            host_grads.data(), sycl_compat::range<1>(host_grads.size()));
+            local_grads.data(), sycl_compat::range<1>(local_grads.size()));
         sycl_compat::buffer<float, 1> sum_buf(
             local_sum.data(), sycl_compat::range<1>(local_sum.size()));
 
@@ -80,33 +111,20 @@ int main(int argc, char** argv) {
             h.parallel_for<GradientSumNaiveKernel>(
                 sycl_compat::range<1>(static_cast<std::size_t>(local_count)),
                 [=](sycl_compat::id<1> idx) {
-                    const int neuron = local_begin + static_cast<int>(idx[0]);
                     float sum = 0.0f;
                     for (int j = 0; j < INPUT_SIZE; ++j) {
-                        sum += grads[static_cast<std::size_t>(neuron) *
-                                         INPUT_SIZE +
-                                     j];
+                        sum += grads[static_cast<std::size_t>(idx[0]) *
+                                         INPUT_SIZE + j];
                     }
                     sums[idx] = sum;
                 });
         });
         q.wait();
     }
-
-    std::vector<int> counts(size, 0);
-    std::vector<int> displs(size, 0);
-    int offset = 0;
-    for (int r = 0; r < size; ++r) {
-        counts[r] = rows_for_rank(r, size);
-        displs[r] = offset;
-        offset += counts[r];
-    }
-
-    std::vector<float> global_sum(NUM_NEURONS, 0.0f);
     MPI_Gatherv(local_sum.data(),
                 local_count,
                 MPI_FLOAT,
-                global_sum.data(),
+                rank == 0 ? global_sum.data() : nullptr,
                 counts.data(),
                 displs.data(),
                 MPI_FLOAT,

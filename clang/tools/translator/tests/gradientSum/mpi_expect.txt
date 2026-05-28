@@ -8,6 +8,7 @@ SYCL_CONTAINS:const int64_t __or_payload_len_grads = __or_arg0.getShape(1);
 SYCL_CONTAINS:__or_payload_index_extent_grads = __or_arg0.getShape(0);
 SYCL_CONTAINS:RowPartitionFullRow input payload/index range out of bounds
 SYCL_CONTAINS:MPI_Scatterv(mpi_rank == 0 ? __or_payload_send_ptr_grads : nullptr
+SYCL_CONTAINS:__or_buffer_neuronSum.get_access<sycl::access::mode::discard_write>(h)
 SYCL_CONTAINS:const int64_t src_linear = indexed_value * __or_input_cols_grads + payload_i;
 SYCL_NOT_CONTAINS:const int64_t src_linear = payload_i * __or_input_cols_grads + indexed_value;
 SYCL_NOT_CONTAINS:AccessPattern

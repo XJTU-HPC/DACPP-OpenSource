@@ -162,7 +162,8 @@ std::string buildLocalCalcCode(Shell* shell, Calc* calc) {
         }
         code += ">\n";
     }
-    code += "inline void " + calc->getName() + "_mpi_local(";
+    code += "__attribute__((always_inline)) inline void " +
+            calc->getName() + "_mpi_local(";
     for (int paramIdx = 0; paramIdx < calc->getNumParams(); ++paramIdx) {
         code += "__dacpp_view_t" + std::to_string(paramIdx) + " " +
                 calc->getParam(paramIdx)->getName();

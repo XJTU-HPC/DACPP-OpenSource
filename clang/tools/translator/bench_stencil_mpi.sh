@@ -58,27 +58,40 @@ import sys
 
 path = Path(sys.argv[1])
 src = path.read_text()
-loop_re = re.compile(r"(?P<indent>[ \t]*)for\s*\(\s*int\s+i\s*=\s*0\s*;\s*i\s*<\s*TIME_STEPS\s*;\s*i\+\+\s*\)\s*\{")
-match = loop_re.search(src)
-if not match:
-    raise SystemExit("failed to find time-step loop")
-insert = (
-    f"{match.group('indent')}MPI_Barrier(MPI_COMM_WORLD);\n"
-    f"{match.group('indent')}double __dacpp_bench_start = MPI_Wtime();\n"
+ctx_re = re.compile(
+    r"(?P<indent>[ \t]*)__dacpp_mpi_or_[A-Za-z0-9_]+_ctx\s+__dacpp_mpi_or_ctx_[A-Za-z0-9_]+\s*;\n"
 )
-src = src[:match.start()] + insert + src[match.start():]
-mat_re = re.compile(r"(?P<indent>[ \t]*)__dacpp_mpi_stencil_materialize_stencilShell_stencil\s*\([^;]+;\n")
-mat = mat_re.search(src, match.end() + len(insert))
-if not mat:
-    raise SystemExit("failed to find stencil materialize call")
-insert_after = (
-    f"{mat.group('indent')}MPI_Barrier(MPI_COMM_WORLD);\n"
-    f"{mat.group('indent')}double __dacpp_bench_local = MPI_Wtime() - __dacpp_bench_start;\n"
-    f"{mat.group('indent')}double __dacpp_bench_elapsed = 0.0;\n"
-    f"{mat.group('indent')}MPI_Reduce(&__dacpp_bench_local, &__dacpp_bench_elapsed, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);\n"
-    f"{mat.group('indent')}if (mpi_rank == 0) std::cout << \"time_sec=\" << __dacpp_bench_elapsed << std::endl;\n"
+init_re = re.compile(
+    r"(?P<indent>[ \t]*)__dacpp_mpi_or_[A-Za-z0-9_]+_init\s*\([^;]+;\n"
 )
-src = src[:mat.end()] + insert_after + src[mat.end():]
+run_re = re.compile(
+    r"(?P<indent>[ \t]*)__dacpp_mpi_or_[A-Za-z0-9_]+_run\s*\([^;]+;\n"
+)
+
+ctx = ctx_re.search(src)
+if not ctx:
+    raise SystemExit("failed to find translated ctx declaration")
+init = init_re.search(src, ctx.end())
+if not init:
+    raise SystemExit("failed to find translated init call")
+run = run_re.search(src, init.end())
+if not run:
+    raise SystemExit("failed to find translated run call")
+
+insert_before_run = (
+    f"{run.group('indent')}MPI_Barrier(MPI_COMM_WORLD);\n"
+    f"{run.group('indent')}double __dacpp_bench_start = MPI_Wtime();\n"
+)
+src = src[:run.start()] + insert_before_run + src[run.start():]
+run_end = run.end() + len(insert_before_run)
+insert_after_run = (
+    f"{run.group('indent')}MPI_Barrier(MPI_COMM_WORLD);\n"
+    f"{run.group('indent')}double __dacpp_bench_local = MPI_Wtime() - __dacpp_bench_start;\n"
+    f"{run.group('indent')}double __dacpp_bench_elapsed = 0.0;\n"
+    f"{run.group('indent')}MPI_Reduce(&__dacpp_bench_local, &__dacpp_bench_elapsed, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);\n"
+    f"{run.group('indent')}if (mpi_rank == 0) std::cout << \"time_sec=\" << __dacpp_bench_elapsed << std::endl;\n"
+)
+src = src[:run_end] + insert_after_run + src[run_end:]
 path.write_text(src)
 PY
 }
@@ -103,9 +116,14 @@ import re
 import sys
 text = Path(sys.argv[1]).read_text(errors="ignore")
 matches = re.findall(r"time_sec=([0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)", text)
-if not matches:
-    raise SystemExit("missing time_sec")
-print(matches[-1])
+if matches:
+    print(matches[-1])
+    raise SystemExit(0)
+matches = re.findall(r"\[MPI_StandardSycl\]\[stencil\]\[(?:naive|row-halo)\] seconds=([0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)", text)
+if matches:
+    print(matches[-1])
+    raise SystemExit(0)
+raise SystemExit("missing time_sec")
 PY
 }
 

@@ -525,6 +525,99 @@ void scatter_window_2d_rows_temporal(const std::vector<T>& global,
 }
 
 template <typename T>
+void scatter_window_2d_rows_temporal_offset(
+    const std::vector<T>& global,
+    std::vector<T>& local,
+    int64_t outputRows,
+    int64_t outputCols,
+    int64_t inputCols,
+    int temporalBlockRows,
+    int targetRowOffset,
+    int targetColOffset,
+    const ResidentHalo2DRowLayout& layout,
+    int rank,
+    int size,
+    MPI_Datatype mpiType) {
+    auto packTarget = [&](const ResidentHalo2DRowLayout& target,
+                          std::vector<T>& packed) {
+        packed.assign(static_cast<std::size_t>(target.local_size), T{});
+        if (target.local_size <= 0) {
+            return;
+        }
+        for (int64_t localRow = 0; localRow < target.local_row_count;
+             ++localRow) {
+            const int64_t sourceRow =
+                target.global_row_begin + localRow - targetRowOffset;
+            if (sourceRow < 0 || sourceRow >= outputRows) {
+                continue;
+            }
+            const int64_t targetColBegin =
+                std::max<int64_t>(0, static_cast<int64_t>(targetColOffset));
+            const int64_t sourceColBegin =
+                std::max<int64_t>(0, -static_cast<int64_t>(targetColOffset));
+            const int64_t colsToCopy = std::min<int64_t>(
+                outputCols - sourceColBegin, inputCols - targetColBegin);
+            if (colsToCopy <= 0) {
+                continue;
+            }
+            const std::size_t sourceBase = static_cast<std::size_t>(
+                checked_mul_int64_or_abort(
+                    sourceRow,
+                    outputCols,
+                    "[DACPP][MPI][OR] temporal resident halo 2D offset scatter source row overflow") +
+                sourceColBegin);
+            const std::size_t targetBase = static_cast<std::size_t>(
+                checked_mul_int64_or_abort(
+                    localRow,
+                    inputCols,
+                    "[DACPP][MPI][OR] temporal resident halo 2D offset scatter target row overflow") +
+                targetColBegin);
+            std::copy_n(global.data() + sourceBase,
+                        static_cast<std::size_t>(colsToCopy),
+                        packed.data() + targetBase);
+        }
+    };
+
+    local.assign(static_cast<std::size_t>(layout.local_size), T{});
+    if (rank == 0) {
+        for (int r = 0; r < size; ++r) {
+            const ResidentHalo2DRowLayout target =
+                resident_halo_2d_row_layout_temporal(
+                    outputRows, inputCols, r, size, temporalBlockRows);
+            if (target.local_size <= 0) {
+                continue;
+            }
+            std::vector<T> packed;
+            packTarget(target, packed);
+            if (r == 0) {
+                local.swap(packed);
+            } else {
+                const int sendCount = narrow_mpi_count_or_abort(
+                    target.local_size,
+                    "[DACPP][MPI][OR] temporal resident halo 2D offset scatter count exceeds MPI int range");
+                MPI_Send(packed.data(),
+                         sendCount,
+                         mpiType,
+                         r,
+                         4303,
+                         MPI_COMM_WORLD);
+            }
+        }
+    } else if (layout.local_size > 0) {
+        const int recvCount = narrow_mpi_count_or_abort(
+            layout.local_size,
+            "[DACPP][MPI][OR] temporal resident halo 2D offset scatter recv count exceeds MPI int range");
+        MPI_Recv(local.data(),
+                 recvCount,
+                 mpiType,
+                 0,
+                 4303,
+                 MPI_COMM_WORLD,
+                 MPI_STATUS_IGNORE);
+    }
+}
+
+template <typename T>
 void scatter_window_1d(const std::vector<T>& global,
                        std::vector<T>& local,
                        int64_t outputTotal,
@@ -1979,6 +2072,88 @@ void exchange_halo_2d_rows_temporal_inplace(
             outputCols,
             "[DACPP][MPI][OR] temporal resident halo 2D bottom receive width overflow"),
         "[DACPP][MPI][OR] temporal resident halo 2D bottom receive width exceeds MPI int range");
+    const bool fullRowFastPath =
+        interiorRowOffset == 1 &&
+        interiorColOffset == 1 &&
+        inputCols == outputCols + 2 &&
+        temporalBlockRows > 1;
+    if (fullRowFastPath) {
+        const int sendFullRowCount = narrow_mpi_count_or_abort(
+            checked_mul_int64_or_abort(
+                sendRowsPerNeighbor,
+                inputCols,
+                "[DACPP][MPI][OR] temporal resident halo 2D full-row send width overflow"),
+            "[DACPP][MPI][OR] temporal resident halo 2D full-row send width exceeds MPI int range");
+        const int topRecvFullRowCount = narrow_mpi_count_or_abort(
+            checked_mul_int64_or_abort(
+                topRecvRows,
+                inputCols,
+                "[DACPP][MPI][OR] temporal resident halo 2D full-row top receive width overflow"),
+            "[DACPP][MPI][OR] temporal resident halo 2D full-row top receive width exceeds MPI int range");
+        const int bottomRecvFullRowCount = narrow_mpi_count_or_abort(
+            checked_mul_int64_or_abort(
+                bottomRecvRows,
+                inputCols,
+                "[DACPP][MPI][OR] temporal resident halo 2D full-row bottom receive width overflow"),
+            "[DACPP][MPI][OR] temporal resident halo 2D full-row bottom receive width exceeds MPI int range");
+        MPI_Request requests[4];
+        int requestCount = 0;
+        if (prev != MPI_PROC_NULL && topRecvFullRowCount > 0) {
+            MPI_Irecv(local.data(),
+                      topRecvFullRowCount,
+                      mpiType,
+                      prev,
+                      4213,
+                      MPI_COMM_WORLD,
+                      &requests[requestCount++]);
+        }
+        if (next != MPI_PROC_NULL && bottomRecvFullRowCount > 0) {
+            const int64_t recvOffset =
+                checked_mul_int64_or_abort(
+                    bottomRecvRowStart,
+                    inputCols,
+                    "[DACPP][MPI][OR] temporal resident halo 2D full-row bottom receive offset overflow");
+            MPI_Irecv(local.data() + recvOffset,
+                      bottomRecvFullRowCount,
+                      mpiType,
+                      next,
+                      4214,
+                      MPI_COMM_WORLD,
+                      &requests[requestCount++]);
+        }
+        if (next != MPI_PROC_NULL) {
+            const int64_t sendOffset =
+                checked_mul_int64_or_abort(
+                    layout.owned_row_offset + interiorRowOffset +
+                        layout.owned_rows.count - sendRowsPerNeighbor,
+                    inputCols,
+                    "[DACPP][MPI][OR] temporal resident halo 2D full-row bottom send offset overflow");
+            MPI_Isend(local.data() + sendOffset,
+                      sendFullRowCount,
+                      mpiType,
+                      next,
+                      4213,
+                      MPI_COMM_WORLD,
+                      &requests[requestCount++]);
+        }
+        if (prev != MPI_PROC_NULL) {
+            const int64_t sendOffset = checked_mul_int64_or_abort(
+                layout.owned_row_offset + interiorRowOffset,
+                inputCols,
+                "[DACPP][MPI][OR] temporal resident halo 2D full-row top send offset overflow");
+            MPI_Isend(local.data() + sendOffset,
+                      sendFullRowCount,
+                      mpiType,
+                      prev,
+                      4214,
+                      MPI_COMM_WORLD,
+                      &requests[requestCount++]);
+        }
+        if (requestCount > 0) {
+            MPI_Waitall(requestCount, requests, MPI_STATUSES_IGNORE);
+        }
+        return;
+    }
     auto packRows = [&](int64_t rowBegin, int64_t rowCount) {
         std::vector<T> packed(static_cast<std::size_t>(
             checked_mul_int64_or_abort(

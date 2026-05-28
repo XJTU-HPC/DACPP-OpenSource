@@ -83,8 +83,6 @@ updated = re.sub(
     src,
     count=1,
 )
-if updated == src:
-    raise SystemExit(f"failed to remove coarse result dump from {path}")
 path.write_text(updated)
 PY
 }
@@ -98,29 +96,40 @@ import sys
 
 path = Path(sys.argv[1])
 src = path.read_text()
-loop_re = re.compile(
-    r"(?P<indent>[ \t]*)for\s*\(\s*int\s+(?P<var>\w+)\s*=\s*0\s*;\s*(?P=var)\s*<\s*TIME_STEPS\s*;\s*(?P=var)\+\+\s*\)\s*\{"
+ctx_re = re.compile(
+    r"(?P<indent>[ \t]*)__dacpp_mpi_or_[A-Za-z0-9_]+_ctx\s+__dacpp_mpi_or_ctx_[A-Za-z0-9_]+\s*;\n"
 )
-match = loop_re.search(src)
-if not match:
-    raise SystemExit("failed to find wave time-step loop")
-insert = (
-    f"{match.group('indent')}MPI_Barrier(MPI_COMM_WORLD);\n"
-    f"{match.group('indent')}double __dacpp_bench_start = MPI_Wtime();\n"
+init_re = re.compile(
+    r"(?P<indent>[ \t]*)__dacpp_mpi_or_[A-Za-z0-9_]+_init\s*\([^;]+;\n"
 )
-src = src[:match.start()] + insert + src[match.start():]
-mat_re = re.compile(r"(?P<indent>[ \t]*)__dacpp_mpi_stencil_materialize_waveEqShell_waveEq\s*\([^;]+;\n")
-mat = mat_re.search(src, match.end() + len(insert))
-if not mat:
-    raise SystemExit("failed to find wave materialize call")
-insert_after = (
-    f"{mat.group('indent')}MPI_Barrier(MPI_COMM_WORLD);\n"
-    f"{mat.group('indent')}double __dacpp_bench_local = MPI_Wtime() - __dacpp_bench_start;\n"
-    f"{mat.group('indent')}double __dacpp_bench_elapsed = 0.0;\n"
-    f"{mat.group('indent')}MPI_Reduce(&__dacpp_bench_local, &__dacpp_bench_elapsed, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);\n"
-    f"{mat.group('indent')}if (mpi_rank == 0) std::cout << \"time_sec=\" << __dacpp_bench_elapsed << std::endl;\n"
+run_re = re.compile(
+    r"(?P<indent>[ \t]*)__dacpp_mpi_or_[A-Za-z0-9_]+_run\s*\([^;]+;\n"
 )
-src = src[:mat.end()] + insert_after + src[mat.end():]
+
+ctx = ctx_re.search(src)
+if not ctx:
+    raise SystemExit("failed to find translated ctx declaration")
+init = init_re.search(src, ctx.end())
+if not init:
+    raise SystemExit("failed to find translated init call")
+run = run_re.search(src, init.end())
+if not run:
+    raise SystemExit("failed to find translated run call")
+
+insert_before_run = (
+    f"{run.group('indent')}MPI_Barrier(MPI_COMM_WORLD);\n"
+    f"{run.group('indent')}double __dacpp_bench_start = MPI_Wtime();\n"
+)
+src = src[:run.start()] + insert_before_run + src[run.start():]
+run_end = run.end() + len(insert_before_run)
+insert_after_run = (
+    f"{run.group('indent')}MPI_Barrier(MPI_COMM_WORLD);\n"
+    f"{run.group('indent')}double __dacpp_bench_local = MPI_Wtime() - __dacpp_bench_start;\n"
+    f"{run.group('indent')}double __dacpp_bench_elapsed = 0.0;\n"
+    f"{run.group('indent')}MPI_Reduce(&__dacpp_bench_local, &__dacpp_bench_elapsed, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);\n"
+    f"{run.group('indent')}if (mpi_rank == 0) std::cout << \"time_sec=\" << __dacpp_bench_elapsed << std::endl;\n"
+)
+src = src[:run_end] + insert_after_run + src[run_end:]
 path.write_text(src)
 PY
 }

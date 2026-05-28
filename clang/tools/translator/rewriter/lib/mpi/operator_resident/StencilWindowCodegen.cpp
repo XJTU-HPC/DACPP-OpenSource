@@ -191,6 +191,12 @@ bool exprIsStaticIndex(const std::string& exprText,
           compact.compare(compact.size() - 2, 2, "-1") == 0))) {
         return true;
     }
+    if (extent > 1 && value == extent - 2 &&
+        (compact == std::to_string(extent - 2) ||
+         (compact.size() >= 2 &&
+          compact.compare(compact.size() - 2, 2, "-2") == 0))) {
+        return true;
+    }
     return false;
 }
 
@@ -213,6 +219,58 @@ bool updateLoopCoversIndex(const BoundaryLocalUpdate& update,
             upper.compare(upper.size() >= 2 ? upper.size() - 2 : 0,
                           upper.size() >= 2 ? 2 : upper.size(),
                           "-1") == 0);
+}
+
+bool isCanonicalRowTemporalResidentHalo2D(const ShellPartitionPlan& plan) {
+    const auto& halo = plan.orLoopLower.stencilResidentHalo;
+    return plan.signature.layout == LocalLayoutKind::StencilWindow2D &&
+           halo.temporalBlockSize > 1 &&
+           !halo.spatial2DEnabled &&
+           halo.windowRows == 3 &&
+           halo.windowCols == 3 &&
+           halo.windowRowStride == 1 &&
+           halo.windowColStride == 1 &&
+           halo.followupTargetRowOffset == 1 &&
+           halo.followupTargetColOffset == 1;
+}
+
+bool supportsRowTemporalBoundaryFastPathUpdate(
+    const BoundaryLocalUpdate& update) {
+    if (update.rank != 2) {
+        return false;
+    }
+    if (update.targetRowUsesLoop == update.targetColUsesLoop) {
+        return false;
+    }
+    if (update.constantRhs) {
+        return true;
+    }
+    return update.targetRowUsesLoop == update.sourceRowUsesLoop &&
+           update.targetColUsesLoop == update.sourceColUsesLoop;
+}
+
+bool canUseRowTemporalBoundaryFastPath(
+    const ShellPartitionPlan& plan,
+    const ParamAccessPlan& reader,
+    const std::vector<BoundaryLocalUpdate>& updates) {
+    bool canUseRowTemporalFastPath = isCanonicalRowTemporalResidentHalo2D(plan);
+    if (!canUseRowTemporalFastPath) {
+        return false;
+    }
+    bool hasRelevantUpdate = false;
+    for (const auto& update : updates) {
+        if (update.rank != 2 || update.paramIndex != reader.paramIndex) {
+            continue;
+        }
+        if (!update.constantRhs && update.sourceParamIndex != reader.paramIndex) {
+            return false;
+        }
+        if (!supportsRowTemporalBoundaryFastPathUpdate(update)) {
+            return false;
+        }
+        hasRelevantUpdate = true;
+    }
+    return hasRelevantUpdate;
 }
 
 bool constantBoundaryValueForIndex(const ShellPartitionPlan& plan,
@@ -1089,8 +1147,148 @@ void emitResidentHaloBoundaryRefresh2D(
     const std::string& localColBeginExpr,
     const std::string& localColCountExpr,
     const std::string& localStrideExpr,
+    const std::string& localReaderSizeExpr,
     const std::string& readerRowsExpr,
     const std::string& readerColsExpr) {
+    const bool canUseRowTemporalFastPath =
+        canUseRowTemporalBoundaryFastPath(plan, reader, updates);
+    if (canUseRowTemporalFastPath) {
+        for (const auto& update : updates) {
+            if (update.rank != 2 || update.paramIndex != reader.paramIndex) {
+                continue;
+            }
+            const std::string loopLower =
+                update.loopLowerExpr.empty() ? "0" : update.loopLowerExpr;
+            const std::string loopUpper =
+                update.loopUpperExpr.empty()
+                    ? (update.targetRowUsesLoop ? readerRowsExpr : readerColsExpr)
+                    : update.loopUpperExpr;
+            const std::string loopBeginExpr =
+                "static_cast<int64_t>(" + loopLower + ")";
+            const std::string loopEndExpr =
+                update.loopUpperInclusive
+                    ? "(static_cast<int64_t>(" + loopUpper + ") + 1)"
+                    : "static_cast<int64_t>(" + loopUpper + ")";
+            code += "    {\n";
+            if (update.targetRowUsesLoop) {
+                code += "        const int64_t __or_boundary_col = static_cast<int64_t>(" +
+                        update.targetColExpr + ");\n";
+                code += "        if (__or_boundary_col >= " + localColBeginExpr +
+                        " && __or_boundary_col < " + localColBeginExpr +
+                        " + " + localColCountExpr + ") {\n";
+                code += "            const int64_t __or_boundary_begin = std::max<int64_t>(" +
+                        loopBeginExpr + ", " + localRowBeginExpr + ");\n";
+                code += "            const int64_t __or_boundary_end = std::min<int64_t>(" +
+                        loopEndExpr + ", " + localRowBeginExpr + " + " +
+                        localRowCountExpr + ");\n";
+                code += "            const int64_t __or_boundary_local_col = __or_boundary_col - " +
+                        localColBeginExpr + ";\n";
+                code += "            for (int64_t __or_boundary_row = __or_boundary_begin; __or_boundary_row < __or_boundary_end; ++__or_boundary_row) {\n";
+                code += "                const int64_t __or_boundary_target_local = (__or_boundary_row - " +
+                        localRowBeginExpr + ") * " + localStrideExpr +
+                        " + __or_boundary_local_col;\n";
+                if (update.constantRhs) {
+                    code += "                if (__or_boundary_target_local < 0 || static_cast<std::size_t>(__or_boundary_target_local) >= " +
+                            localReaderSizeExpr + ") continue;\n";
+                    code += "                " + localReaderName +
+                            "[static_cast<std::size_t>(__or_boundary_target_local)] = static_cast<" +
+                            elemType(plan, reader) + ">(" +
+                            (update.constantValue.empty() ? "0"
+                                                          : update.constantValue) +
+                            ");\n";
+                } else {
+                    code += "                const int64_t __or_boundary_source_row = " +
+                            (update.sourceRowUsesLoop ? "__or_boundary_row"
+                                                      : update.sourceRowExpr) +
+                            ";\n";
+                    code += "                const int64_t __or_boundary_source_col = " +
+                            (update.sourceColUsesLoop ? "__or_boundary_row"
+                                                      : update.sourceColExpr) +
+                            ";\n";
+                    code += "                if (__or_boundary_source_row < " +
+                            localRowBeginExpr + " || __or_boundary_source_row >= " +
+                            localRowBeginExpr + " + " + localRowCountExpr +
+                            ") continue;\n";
+                    code += "                if (__or_boundary_source_col < " +
+                            localColBeginExpr + " || __or_boundary_source_col >= " +
+                            localColBeginExpr + " + " + localColCountExpr +
+                            ") continue;\n";
+                    code += "                const int64_t __or_boundary_source_local = (__or_boundary_source_row - " +
+                            localRowBeginExpr + ") * " + localStrideExpr +
+                            " + (__or_boundary_source_col - " + localColBeginExpr +
+                            ");\n";
+                    code += "                if (__or_boundary_target_local < 0 || __or_boundary_source_local < 0 || static_cast<std::size_t>(__or_boundary_target_local) >= " +
+                            localReaderSizeExpr + " || static_cast<std::size_t>(__or_boundary_source_local) >= " +
+                            localReaderSizeExpr + ") continue;\n";
+                    code += "                " + localReaderName +
+                            "[static_cast<std::size_t>(__or_boundary_target_local)] = " +
+                            localReaderName +
+                            "[static_cast<std::size_t>(__or_boundary_source_local)];\n";
+                }
+                code += "            }\n";
+                code += "        }\n";
+            } else {
+                code += "        const int64_t __or_boundary_row = static_cast<int64_t>(" +
+                        update.targetRowExpr + ");\n";
+                code += "        if (__or_boundary_row >= " + localRowBeginExpr +
+                        " && __or_boundary_row < " + localRowBeginExpr +
+                        " + " + localRowCountExpr + ") {\n";
+                code += "            const int64_t __or_boundary_begin = std::max<int64_t>(" +
+                        loopBeginExpr + ", " + localColBeginExpr + ");\n";
+                code += "            const int64_t __or_boundary_end = std::min<int64_t>(" +
+                        loopEndExpr + ", " + localColBeginExpr + " + " +
+                        localColCountExpr + ");\n";
+                code += "            const int64_t __or_boundary_local_row = __or_boundary_row - " +
+                        localRowBeginExpr + ";\n";
+                code += "            for (int64_t __or_boundary_col = __or_boundary_begin; __or_boundary_col < __or_boundary_end; ++__or_boundary_col) {\n";
+                code += "                const int64_t __or_boundary_target_local = __or_boundary_local_row * " +
+                        localStrideExpr + " + (__or_boundary_col - " +
+                        localColBeginExpr + ");\n";
+                if (update.constantRhs) {
+                    code += "                if (__or_boundary_target_local < 0 || static_cast<std::size_t>(__or_boundary_target_local) >= " +
+                            localReaderSizeExpr + ") continue;\n";
+                    code += "                " + localReaderName +
+                            "[static_cast<std::size_t>(__or_boundary_target_local)] = static_cast<" +
+                            elemType(plan, reader) + ">(" +
+                            (update.constantValue.empty() ? "0"
+                                                          : update.constantValue) +
+                            ");\n";
+                } else {
+                    code += "                const int64_t __or_boundary_source_row = " +
+                            (update.sourceRowUsesLoop ? "__or_boundary_col"
+                                                      : update.sourceRowExpr) +
+                            ";\n";
+                    code += "                const int64_t __or_boundary_source_col = " +
+                            (update.sourceColUsesLoop ? "__or_boundary_col"
+                                                      : update.sourceColExpr) +
+                            ";\n";
+                    code += "                if (__or_boundary_source_row < " +
+                            localRowBeginExpr + " || __or_boundary_source_row >= " +
+                            localRowBeginExpr + " + " + localRowCountExpr +
+                            ") continue;\n";
+                    code += "                if (__or_boundary_source_col < " +
+                            localColBeginExpr + " || __or_boundary_source_col >= " +
+                            localColBeginExpr + " + " + localColCountExpr +
+                            ") continue;\n";
+                    code += "                const int64_t __or_boundary_source_local = (__or_boundary_source_row - " +
+                            localRowBeginExpr + ") * " + localStrideExpr +
+                            " + (__or_boundary_source_col - " + localColBeginExpr +
+                            ");\n";
+                    code += "                if (__or_boundary_target_local < 0 || __or_boundary_source_local < 0 || static_cast<std::size_t>(__or_boundary_target_local) >= " +
+                            localReaderSizeExpr + " || static_cast<std::size_t>(__or_boundary_source_local) >= " +
+                            localReaderSizeExpr + ") continue;\n";
+                    code += "                " + localReaderName +
+                            "[static_cast<std::size_t>(__or_boundary_target_local)] = " +
+                            localReaderName +
+                            "[static_cast<std::size_t>(__or_boundary_source_local)];\n";
+                }
+                code += "            }\n";
+                code += "        }\n";
+            }
+            code += "    }\n";
+        }
+        return;
+    }
     for (const auto& update : updates) {
         if (update.rank != 2 || update.paramIndex != reader.paramIndex) {
             continue;
@@ -1147,7 +1345,7 @@ void emitResidentHaloBoundaryRefresh2D(
                 ");\n";
         if (update.constantRhs) {
             code += "            if (__or_boundary_target_local < 0 || static_cast<std::size_t>(__or_boundary_target_local) >= " +
-                    localReaderName + ".size()) continue;\n";
+                    localReaderSizeExpr + ") continue;\n";
             code += "            " + localReaderName +
                     "[static_cast<std::size_t>(__or_boundary_target_local)] = static_cast<" +
                     elemType(plan, reader) +
@@ -1172,8 +1370,8 @@ void emitResidentHaloBoundaryRefresh2D(
                     " + (__or_boundary_source_col - " + localColBeginExpr +
                     ");\n";
             code += "            if (__or_boundary_target_local < 0 || __or_boundary_source_local < 0 || static_cast<std::size_t>(__or_boundary_target_local) >= " +
-                    localReaderName + ".size() || static_cast<std::size_t>(__or_boundary_source_local) >= " +
-                    localReaderName + ".size()) continue;\n";
+                    localReaderSizeExpr + " || static_cast<std::size_t>(__or_boundary_source_local) >= " +
+                    localReaderSizeExpr + ") continue;\n";
             code += "            " + localReaderName +
                     "[static_cast<std::size_t>(__or_boundary_target_local)] = " +
                     localReaderName +
@@ -1437,8 +1635,7 @@ void emitResidentHaloInitFunction2D(std::string& code,
                     ".tensor2Array(__or_initial_global_" +
                     directReader->calcParamName + ");\n";
             code += "    }\n";
-            if (spatial2D ||
-                plan.orLoopLower.stencilResidentHalo.temporalBlockSize > 1) {
+            if (spatial2D) {
                 code += "    std::vector<" + directReaderType +
                         "> __or_initial_global_window_" +
                         directReader->calcParamName + ";\n";
@@ -1464,22 +1661,21 @@ void emitResidentHaloInitFunction2D(std::string& code,
                 code += "            }\n";
                 code += "        }\n";
                 code += "    }\n";
-                if (spatial2D) {
-                    code += "    dacpp::mpi::operator_resident::scatter_window_2d_spatial(__or_initial_global_window_" +
-                            directReader->calcParamName + ", ctx." +
-                            localName(*directReader) +
-                            ", ctx.__or_output_rows, ctx.__or_output_cols, ctx.__or_input_rows, ctx.__or_input_cols, ctx.__or_spatial_halo_width, ctx.__or_spatial_layout, ctx.mpi_rank, ctx.mpi_size, " +
-                            directReaderMpiType + ");\n";
-                } else {
-                    code += "    dacpp::mpi::operator_resident::scatter_window_2d_rows_temporal(__or_initial_global_window_" +
-                            directReader->calcParamName + ", ctx." +
-                            localName(*directReader) +
-                            ", ctx.__or_output_rows, ctx.__or_input_cols, ctx.__or_temporal_block_size, ctx.__or_halo_layout, ctx.mpi_rank, ctx.mpi_size, " +
-                            directReaderMpiType + ");\n";
-                }
+                code += "    dacpp::mpi::operator_resident::scatter_window_2d_spatial(__or_initial_global_window_" +
+                        directReader->calcParamName + ", ctx." +
+                        localName(*directReader) +
+                        ", ctx.__or_output_rows, ctx.__or_output_cols, ctx.__or_input_rows, ctx.__or_input_cols, ctx.__or_spatial_halo_width, ctx.__or_spatial_layout, ctx.mpi_rank, ctx.mpi_size, " +
+                        directReaderMpiType + ");\n";
                 code += "    // Direct-reader recurrence state " +
                         directReader->calcParamName +
                         " is embedded in the widened resident halo layout for k=2 replay.\n";
+            } else if (plan.orLoopLower.stencilResidentHalo.temporalBlockSize > 1) {
+                code += "    dacpp::mpi::operator_resident::scatter_window_2d_rows_temporal_offset(__or_initial_global_" +
+                        directReader->calcParamName + ", ctx." +
+                        localName(*directReader) +
+                        ", ctx.__or_output_rows, ctx.__or_output_cols, ctx.__or_input_cols, ctx.__or_temporal_block_size, ctx.__or_followup_row_offset, ctx.__or_followup_col_offset, ctx.__or_halo_layout, ctx.mpi_rank, ctx.mpi_size, " +
+                        directReaderMpiType + ");\n";
+                code += "    // Direct-reader recurrence state is packed straight into the temporal resident halo layout.\n";
             } else {
             code += "    std::vector<" + directReaderType + "> __or_initial_owned_" +
                     directReader->calcParamName +
@@ -1527,6 +1723,38 @@ void emitResidentHaloRunFunction2D(std::string& code,
     const bool temporalBlocked = temporalBlockSize > 1;
     const bool spatial2D =
         plan.orLoopLower.stencilResidentHalo.spatial2DEnabled;
+    const bool canonicalRowTemporalViewFastPath =
+        isCanonicalRowTemporalResidentHalo2D(plan);
+    const bool rowTemporalBoundaryFastPath =
+        !spatial2D &&
+        canUseRowTemporalBoundaryFastPath(
+            plan, reader, sitePlan.boundaryLocalUpdates);
+    bool rowTemporalBufferBlockFastPath =
+        temporalBlocked && !spatial2D && !directReader &&
+        canonicalRowTemporalViewFastPath && rowTemporalBoundaryFastPath;
+    if (rowTemporalBufferBlockFastPath) {
+        bool sawWindowReader = false;
+        bool sawPureWriter = false;
+        for (const auto& param : plan.params) {
+            if (param.paramIndex == reader.paramIndex &&
+                param.access == ParamAccessKind::StencilWindow) {
+                sawWindowReader = true;
+                continue;
+            }
+            if (param.paramIndex == writer.paramIndex &&
+                param.access == ParamAccessKind::OutputDirect &&
+                param.writes &&
+                !param.reads) {
+                sawPureWriter = true;
+                continue;
+            }
+            rowTemporalBufferBlockFastPath = false;
+            break;
+        }
+        rowTemporalBufferBlockFastPath =
+            rowTemporalBufferBlockFastPath && sawWindowReader &&
+            sawPureWriter && plan.params.size() == 2;
+    }
     const std::string localReaderRowsExpr =
         spatial2D ? "ctx.__or_spatial_layout.local_row_count"
                   : "ctx.__or_halo_layout.local_row_count";
@@ -1607,6 +1835,7 @@ void emitResidentHaloRunFunction2D(std::string& code,
                 localName(reader), "__or_local_reader_row_begin",
                 "__or_local_reader_rows", "__or_local_reader_col_begin",
                 "__or_local_reader_cols", "__or_local_reader_cols",
+                localName(reader) + ".size()",
                 "__or_input_rows", "__or_input_cols");
             code += "    }\n";
             code += "    dacpp::mpi::recordProfileSegment(ctx.__or_profile, dacpp::mpi::ProfileSegment::Halo, dacpp_profile_halo_start);\n";
@@ -1661,9 +1890,30 @@ void emitResidentHaloRunFunction2D(std::string& code,
             code += indent + "            auto* __or_direct_reader_data = __or_direct_reader_acc.template get_multi_ptr<sycl::access::decorated::no>().get();\n";
     }
         code += indent + "            auto* __or_writer_data = __or_writer_acc.template get_multi_ptr<sycl::access::decorated::no>().get();\n";
+        if (canonicalRowTemporalViewFastPath) {
+            code += indent + "            const int __or_reader_base_idx = static_cast<int>((local_row + " +
+                    readerRowOffsetExpr +
+                    ") * static_cast<int>(__or_local_reader_cols) + local_col + static_cast<int>(" +
+                    readerColOffsetExpr + "));\n";
+            code += indent + "            auto* __or_reader_base = __or_reader_data + __or_reader_base_idx;\n";
+            code += indent + "            const int __or_writer_base_idx = static_cast<int>((local_row + " +
+                    writerRowOffsetExpr +
+                    ") * static_cast<int>(__or_local_reader_cols) + local_col + static_cast<int>(" +
+                    writerColOffsetExpr + "));\n";
+            code += indent + "            auto* __or_writer_base = __or_writer_data + __or_writer_base_idx;\n";
+            if (directReader) {
+                code += indent + "            auto* __or_direct_reader_base = __or_direct_reader_data + __or_writer_base_idx;\n";
+            }
+        }
     for (const auto& param : plan.params) {
         const std::string paramType = elemType(plan, param);
         if (param.access == ParamAccessKind::StencilWindow) {
+            if (canonicalRowTemporalViewFastPath) {
+                code += indent + "            dacpp::mpi::ResidentHaloView2D<const " +
+                        paramType + "> view_" + param.calcParamName +
+                        "{__or_reader_base, 0, static_cast<int>(__or_local_reader_cols)};\n";
+                continue;
+            }
                 code += indent + "            dacpp::mpi::ResidentHaloView2D<const " +
                     paramType + "> view_" + param.calcParamName +
                     "{__or_reader_data, static_cast<int>((local_row + " +
@@ -1674,6 +1924,12 @@ void emitResidentHaloRunFunction2D(std::string& code,
         }
         if (directReader &&
             param.paramIndex == directReader->paramIndex) {
+            if (canonicalRowTemporalViewFastPath) {
+                code += indent + "            dacpp::mpi::ContiguousView1D<const " +
+                        paramType + "> view_" + param.calcParamName +
+                        "{__or_direct_reader_base, 0};\n";
+                continue;
+            }
                 code += indent + "            dacpp::mpi::ContiguousView1D<const " +
                     paramType + "> view_" + param.calcParamName +
                     "{__or_direct_reader_data, static_cast<int>((local_row + " +
@@ -1685,6 +1941,12 @@ void emitResidentHaloRunFunction2D(std::string& code,
         if (param.access == ParamAccessKind::OutputDirect &&
             param.writes &&
             !param.reads) {
+            if (canonicalRowTemporalViewFastPath) {
+                code += indent + "            dacpp::mpi::ContiguousView1D<" +
+                        paramType + "> view_" + param.calcParamName +
+                        "{__or_writer_base, 0};\n";
+                continue;
+            }
                 code += indent + "            dacpp::mpi::ContiguousView1D<" +
                     paramType + "> view_" + param.calcParamName +
                     "{__or_writer_data, static_cast<int>((local_row + " +
@@ -1809,6 +2071,7 @@ void emitResidentHaloRunFunction2D(std::string& code,
             localName(reader), "__or_local_reader_row_begin",
             "__or_local_reader_rows", "__or_local_reader_col_begin",
             "__or_local_reader_cols", "__or_local_reader_cols",
+            localName(reader) + ".size()",
             "__or_input_rows", "__or_input_cols");
         code += "    }\n";
         code += "    dacpp::mpi::recordProfileSegment(ctx.__or_profile, dacpp::mpi::ProfileSegment::Kernel, dacpp_profile_kernel_start);\n";
@@ -1820,6 +2083,120 @@ void emitResidentHaloRunFunction2D(std::string& code,
     }
     if (temporalBlocked) {
         code += "    auto dacpp_profile_kernel_start = dacpp::mpi::profileSegmentStart();\n";
+        if (rowTemporalBufferBlockFastPath) {
+            code += "    {\n";
+            code += "        sycl::buffer<" + readerType +
+                    ", 1> __or_reader_buf(" + localName(reader) +
+                    ".data(), sycl::range<1>(" + localName(reader) +
+                    ".size()));\n";
+            code += "        sycl::buffer<" + writerType +
+                    ", 1> __or_writer_buf(" + localName(writer) +
+                    ".data(), sycl::range<1>(" + localName(writer) +
+                    ".size()));\n";
+            code += "        bool __or_current_in_reader_buf = true;\n";
+            code += "        for (int __or_block_step = 0; __or_block_step < __or_inner_steps; ++__or_block_step) {\n";
+            code += "            const int64_t __or_compute_row_begin = std::max<int64_t>(1, ctx.__or_halo_layout.owned_row_offset + 1 - (__or_inner_steps - __or_block_step - 1));\n";
+            code += "            const int64_t __or_compute_row_end = std::min<int64_t>(__or_local_reader_rows - 1, ctx.__or_halo_layout.owned_row_offset + 1 + __or_local_output_rows + (__or_inner_steps - __or_block_step - 1));\n";
+            code += "            const int64_t __or_compute_rows = std::max<int64_t>(0, __or_compute_row_end - __or_compute_row_begin);\n";
+            code += "            __or_kernel_item_count = dacpp::mpi::operator_resident::checked_mul_int64_or_abort(__or_compute_rows, __or_local_output_cols, \"[DACPP][MPI][OR] temporal resident halo 2D kernel item count overflow\");\n";
+            code += "            if (__or_kernel_item_count > 0) {\n";
+            code += "                if (__or_current_in_reader_buf) {\n";
+            code += "                    q.submit([&](sycl::handler& h) {\n";
+            code += "                        auto __or_reader_acc = __or_reader_buf.get_access<sycl::access::mode::read>(h);\n";
+            code += "                        auto __or_writer_acc = __or_writer_buf.get_access<sycl::access::mode::discard_write>(h);\n";
+            code += "                        h.parallel_for(sycl::range<1>(static_cast<std::size_t>(__or_kernel_item_count)), [=](sycl::id<1> idx) {\n";
+            code += "                            const int item_linear = static_cast<int>(idx[0]);\n";
+            code += "                            const int local_row = item_linear / static_cast<int>(__or_local_output_cols);\n";
+            code += "                            const int local_col = item_linear % static_cast<int>(__or_local_output_cols);\n";
+            code += "                            auto* __or_reader_data = __or_reader_acc.template get_multi_ptr<sycl::access::decorated::no>().get();\n";
+            code += "                            auto* __or_writer_data = __or_writer_acc.template get_multi_ptr<sycl::access::decorated::no>().get();\n";
+            code += "                            const int __or_reader_base_idx = static_cast<int>((local_row + __or_compute_row_begin - 1) * static_cast<int>(__or_local_reader_cols) + local_col);\n";
+            code += "                            auto* __or_reader_base = __or_reader_data + __or_reader_base_idx;\n";
+            code += "                            const int __or_writer_base_idx = static_cast<int>((local_row + __or_compute_row_begin) * static_cast<int>(__or_local_reader_cols) + local_col + static_cast<int>(__or_writer_col_offset));\n";
+            code += "                            auto* __or_writer_base = __or_writer_data + __or_writer_base_idx;\n";
+            code += "                            dacpp::mpi::ResidentHaloView2D<const " +
+                    readerType +
+                    "> view_" + reader.calcParamName +
+                    "{__or_reader_base, 0, static_cast<int>(__or_local_reader_cols)};\n";
+            code += "                            dacpp::mpi::ContiguousView1D<" +
+                    writerType + "> view_" + writer.calcParamName +
+                    "{__or_writer_base, 0};\n";
+            code += "                            " + calcName + "_mpi_local(view_" +
+                    reader.calcParamName + ", view_" + writer.calcParamName +
+                    ");\n";
+            code += "                        });\n";
+            code += "                    });\n";
+            code += "                } else {\n";
+            code += "                    q.submit([&](sycl::handler& h) {\n";
+            code += "                        auto __or_reader_acc = __or_writer_buf.get_access<sycl::access::mode::read>(h);\n";
+            code += "                        auto __or_writer_acc = __or_reader_buf.get_access<sycl::access::mode::discard_write>(h);\n";
+            code += "                        h.parallel_for(sycl::range<1>(static_cast<std::size_t>(__or_kernel_item_count)), [=](sycl::id<1> idx) {\n";
+            code += "                            const int item_linear = static_cast<int>(idx[0]);\n";
+            code += "                            const int local_row = item_linear / static_cast<int>(__or_local_output_cols);\n";
+            code += "                            const int local_col = item_linear % static_cast<int>(__or_local_output_cols);\n";
+            code += "                            auto* __or_reader_data = __or_reader_acc.template get_multi_ptr<sycl::access::decorated::no>().get();\n";
+            code += "                            auto* __or_writer_data = __or_writer_acc.template get_multi_ptr<sycl::access::decorated::no>().get();\n";
+            code += "                            const int __or_reader_base_idx = static_cast<int>((local_row + __or_compute_row_begin - 1) * static_cast<int>(__or_local_reader_cols) + local_col);\n";
+            code += "                            auto* __or_reader_base = __or_reader_data + __or_reader_base_idx;\n";
+            code += "                            const int __or_writer_base_idx = static_cast<int>((local_row + __or_compute_row_begin) * static_cast<int>(__or_local_reader_cols) + local_col + static_cast<int>(__or_writer_col_offset));\n";
+            code += "                            auto* __or_writer_base = __or_writer_data + __or_writer_base_idx;\n";
+            code += "                            dacpp::mpi::ResidentHaloView2D<const " +
+                    readerType +
+                    "> view_" + reader.calcParamName +
+                    "{__or_reader_base, 0, static_cast<int>(__or_local_reader_cols)};\n";
+            code += "                            dacpp::mpi::ContiguousView1D<" +
+                    writerType + "> view_" + writer.calcParamName +
+                    "{__or_writer_base, 0};\n";
+            code += "                            " + calcName + "_mpi_local(view_" +
+                    reader.calcParamName + ", view_" + writer.calcParamName +
+                    ");\n";
+            code += "                        });\n";
+            code += "                    });\n";
+            code += "                }\n";
+            code += "            }\n";
+            code += "            __or_current_in_reader_buf = !__or_current_in_reader_buf;\n";
+            code += "            if (__or_current_in_reader_buf) {\n";
+            code += "                q.submit([&](sycl::handler& h) {\n";
+            code += "                    auto __or_boundary_acc = __or_reader_buf.get_access<sycl::access::mode::read_write>(h);\n";
+            code += "                    h.parallel_for(sycl::range<1>(1), [=](sycl::id<1>) {\n";
+            code += "                        auto* __or_boundary_data = __or_boundary_acc.template get_multi_ptr<sycl::access::decorated::no>().get();\n";
+            emitResidentHaloBoundaryRefresh2D(
+                code, plan, sitePlan.boundaryLocalUpdates, reader,
+                "__or_boundary_data", "__or_local_reader_row_begin",
+                "__or_local_reader_rows", "__or_local_reader_col_begin",
+                "__or_local_reader_cols", "__or_local_reader_cols",
+                "static_cast<std::size_t>(__or_local_reader_rows * __or_local_reader_cols)",
+                "__or_input_rows", "__or_input_cols");
+            code += "                    });\n";
+            code += "                });\n";
+            code += "            } else {\n";
+            code += "                q.submit([&](sycl::handler& h) {\n";
+            code += "                    auto __or_boundary_acc = __or_writer_buf.get_access<sycl::access::mode::read_write>(h);\n";
+            code += "                    h.parallel_for(sycl::range<1>(1), [=](sycl::id<1>) {\n";
+            code += "                        auto* __or_boundary_data = __or_boundary_acc.template get_multi_ptr<sycl::access::decorated::no>().get();\n";
+            emitResidentHaloBoundaryRefresh2D(
+                code, plan, sitePlan.boundaryLocalUpdates, reader,
+                "__or_boundary_data", "__or_local_reader_row_begin",
+                "__or_local_reader_rows", "__or_local_reader_col_begin",
+                "__or_local_reader_cols", "__or_local_reader_cols",
+                "static_cast<std::size_t>(__or_local_reader_rows * __or_local_reader_cols)",
+                "__or_input_rows", "__or_input_cols");
+            code += "                    });\n";
+            code += "                });\n";
+            code += "            }\n";
+            code += "        }\n";
+            code += "    }\n";
+            code += "    if ((__or_inner_steps & 1) != 0) {\n";
+            code += "        std::swap(" + localName(reader) + ", " +
+                    localName(writer) + ");\n";
+            code += "    }\n";
+            code += "    dacpp::mpi::recordProfileSegment(ctx.__or_profile, dacpp::mpi::ProfileSegment::Kernel, dacpp_profile_kernel_start);\n";
+            code += "    __or_time_step += __or_inner_steps;\n";
+            code += "    }\n";
+            code += "    // P4.6 temporal-block=2 keeps the latest state in the reader vector after per-block buffer reuse.\n";
+            code += "}\n";
+            return;
+        }
         code += "    for (int __or_block_step = 0; __or_block_step < __or_inner_steps; ++__or_block_step) {\n";
         code += "        const int64_t __or_compute_row_begin = std::max<int64_t>(1, ctx.__or_halo_layout.owned_row_offset + 1 - (__or_inner_steps - __or_block_step - 1));\n";
         code += "        const int64_t __or_compute_row_end = std::min<int64_t>(__or_local_reader_rows - 1, ctx.__or_halo_layout.owned_row_offset + 1 + __or_local_output_rows + (__or_inner_steps - __or_block_step - 1));\n";
@@ -1841,6 +2218,7 @@ void emitResidentHaloRunFunction2D(std::string& code,
             localName(reader), "__or_local_reader_row_begin",
             "__or_local_reader_rows", "__or_local_reader_col_begin",
             "__or_local_reader_cols", "__or_local_reader_cols",
+            localName(reader) + ".size()",
             "__or_input_rows", "__or_input_cols");
         code += "    }\n";
         code += "    dacpp::mpi::recordProfileSegment(ctx.__or_profile, dacpp::mpi::ProfileSegment::Kernel, dacpp_profile_kernel_start);\n";
@@ -1872,7 +2250,8 @@ void emitResidentHaloRunFunction2D(std::string& code,
         code, plan, sitePlan.boundaryLocalUpdates, reader, localName(writer),
         "__or_local_reader_row_begin", "__or_local_reader_rows",
         "__or_local_reader_col_begin", "__or_local_reader_cols",
-        "__or_local_reader_cols", "__or_input_rows", "__or_input_cols");
+        "__or_local_reader_cols", localName(writer) + ".size()",
+        "__or_input_rows", "__or_input_cols");
     code += "    dacpp::mpi::recordProfileSegment(ctx.__or_profile, dacpp::mpi::ProfileSegment::Halo, dacpp_profile_halo_start);\n";
     if (directReader) {
         code += "    ctx." + localName(*directReader) + ".swap(ctx." +

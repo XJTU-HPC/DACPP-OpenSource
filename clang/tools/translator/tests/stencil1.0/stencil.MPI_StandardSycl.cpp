@@ -21,7 +21,7 @@ namespace sycl_compat = cl::sycl;
 #define STENCIL_TIME_STEPS 200
 #endif
 
-class StencilNaiveKernel;
+class StencilRowHaloKernel;
 
 namespace {
 
@@ -58,7 +58,11 @@ int main(int argc, char** argv) {
     const int local_rows = rows_for_rank(rank, size);
     const int global_begin = row_begin_for_rank(rank, size);
     const std::size_t global_size = static_cast<std::size_t>(NX) * NY;
-    const std::size_t local_size = static_cast<std::size_t>(local_rows) * NY;
+    const std::size_t local_owned_size =
+        static_cast<std::size_t>(local_rows) * NY;
+    const int halo_rows = local_rows > 0 ? local_rows + 2 : 0;
+    const std::size_t local_halo_size =
+        static_cast<std::size_t>(halo_rows) * NY;
 
     const double dx = Lx / (NX - 1);
     const double dy = Ly / (NY - 1);
@@ -75,16 +79,20 @@ int main(int argc, char** argv) {
         offset += counts[r];
     }
 
-    std::vector<double> global_curr(global_size, 0.0);
-    std::vector<double> global_next(global_size, 0.0);
-    std::vector<double> local_next(local_size, 0.0);
+    std::vector<double> global_curr(rank == 0 ? global_size : 0, 0.0);
+    std::vector<double> local_curr(local_halo_size, 0.0);
+    std::vector<double> local_next(local_halo_size, 0.0);
 
     const double sigma = 1.0;
-    for (int i = 0; i < NX; ++i) {
+    for (int lr = 0; lr < halo_rows; ++lr) {
+        const int gi = global_begin + lr - 1;
+        if (gi < 0 || gi >= NX) {
+            continue;
+        }
         for (int j = 0; j < NY; ++j) {
-            const double x = i * dx;
+            const double x = gi * dx;
             const double y = j * dy;
-            global_curr[static_cast<std::size_t>(i) * NY + j] =
+            local_curr[static_cast<std::size_t>(lr) * NY + j] =
                 std::exp(-((x - Lx / 2.0) * (x - Lx / 2.0) +
                            (y - Ly / 2.0) * (y - Ly / 2.0)) /
                          (2.0 * sigma * sigma));
@@ -97,11 +105,55 @@ int main(int argc, char** argv) {
     const auto t0 = std::chrono::steady_clock::now();
 
     for (int step = 0; step < TIME_STEPS; ++step) {
+        if (local_rows > 0) {
+            const int prev = rank > 0 ? rank - 1 : MPI_PROC_NULL;
+            const int next_rank = rank + 1 < size ? rank + 1 : MPI_PROC_NULL;
+            MPI_Request reqs[4];
+            int req_count = 0;
+            if (prev != MPI_PROC_NULL) {
+                MPI_Irecv(local_curr.data(),
+                          NY,
+                          MPI_DOUBLE,
+                          prev,
+                          100,
+                          MPI_COMM_WORLD,
+                          &reqs[req_count++]);
+                MPI_Isend(local_curr.data() + NY,
+                          NY,
+                          MPI_DOUBLE,
+                          prev,
+                          101,
+                          MPI_COMM_WORLD,
+                          &reqs[req_count++]);
+            }
+            if (next_rank != MPI_PROC_NULL) {
+                MPI_Irecv(local_curr.data() +
+                              static_cast<std::size_t>(local_rows + 1) * NY,
+                          NY,
+                          MPI_DOUBLE,
+                          next_rank,
+                          101,
+                          MPI_COMM_WORLD,
+                          &reqs[req_count++]);
+                MPI_Isend(local_curr.data() +
+                              static_cast<std::size_t>(local_rows) * NY,
+                          NY,
+                          MPI_DOUBLE,
+                          next_rank,
+                          100,
+                          MPI_COMM_WORLD,
+                          &reqs[req_count++]);
+            }
+            if (req_count > 0) {
+                MPI_Waitall(req_count, reqs, MPI_STATUSES_IGNORE);
+            }
+        }
+
         std::fill(local_next.begin(), local_next.end(), 0.0);
 
-        if (local_size > 0) {
+        if (local_owned_size > 0) {
             sycl_compat::buffer<double, 1> curr_buf(
-                global_curr.data(), sycl_compat::range<1>(global_curr.size()));
+                local_curr.data(), sycl_compat::range<1>(local_curr.size()));
             sycl_compat::buffer<double, 1> next_buf(
                 local_next.data(), sycl_compat::range<1>(local_next.size()));
 
@@ -111,19 +163,19 @@ int main(int argc, char** argv) {
                 auto next =
                     next_buf.get_access<sycl_compat::access::mode::write>(h);
 
-                h.parallel_for<StencilNaiveKernel>(
-                    sycl_compat::range<1>(local_next.size()),
+                h.parallel_for<StencilRowHaloKernel>(
+                    sycl_compat::range<1>(local_owned_size),
                     [=](sycl_compat::id<1> idx) {
                         const int item = static_cast<int>(idx[0]);
                         const int lr = item / NY;
                         const int j = item % NY;
                         const int gi = global_begin + lr;
                         const std::size_t pos =
-                            static_cast<std::size_t>(gi) * NY + j;
+                            static_cast<std::size_t>(lr + 1) * NY + j;
 
                         if (gi <= 0 || gi >= NX - 1 || j <= 0 ||
                             j >= NY - 1) {
-                            next[idx] = 0.0;
+                            next[pos] = 0.0;
                             return;
                         }
 
@@ -135,35 +187,38 @@ int main(int argc, char** argv) {
                             (curr[pos + 1] - 2.0 * curr[pos] +
                              curr[pos - 1]) /
                             (dy * dy);
-                        next[idx] =
+                        next[pos] =
                             curr[pos] + alpha * delta_t * (u_xx + u_yy);
                     });
             });
             q.wait();
         }
 
-        MPI_Allgatherv(local_next.data(),
-                       static_cast<int>(local_next.size()),
-                       MPI_DOUBLE,
-                       global_next.data(),
-                       counts.data(),
-                       displs.data(),
-                       MPI_DOUBLE,
-                       MPI_COMM_WORLD);
-
-        for (int j = 0; j <= NY - 1; ++j) {
-            global_next[j] = global_next[static_cast<std::size_t>(1) * NY + j];
-            global_next[static_cast<std::size_t>(NX - 1) * NY + j] =
-                global_next[static_cast<std::size_t>(NX - 2) * NY + j];
+        if (local_rows > 0 && global_begin == 0 && local_rows > 1) {
+            for (int j = 0; j <= NY - 1; ++j) {
+                local_next[static_cast<std::size_t>(1) * NY + j] =
+                    local_next[static_cast<std::size_t>(2) * NY + j];
+            }
         }
-        for (int i = 0; i < NX - 1; ++i) {
-            global_next[static_cast<std::size_t>(i) * NY] =
-                global_next[static_cast<std::size_t>(i) * NY + 1];
-            global_next[static_cast<std::size_t>(i) * NY + NY - 1] =
-                global_next[static_cast<std::size_t>(i) * NY + NY - 2];
+        if (local_rows > 0 && global_begin + local_rows == NX &&
+            local_rows > 1) {
+            for (int j = 0; j <= NY - 1; ++j) {
+                local_next[static_cast<std::size_t>(local_rows) * NY + j] =
+                    local_next[static_cast<std::size_t>(local_rows - 1) * NY +
+                               j];
+            }
+        }
+        for (int lr = 0; lr < local_rows; ++lr) {
+            const int gi = global_begin + lr;
+            if (gi >= NX - 1) {
+                continue;
+            }
+            const std::size_t row = static_cast<std::size_t>(lr + 1) * NY;
+            local_next[row] = local_next[row + 1];
+            local_next[row + NY - 1] = local_next[row + NY - 2];
         }
 
-        std::swap(global_curr, global_next);
+        std::swap(local_curr, local_next);
     }
 
     MPI_Barrier(MPI_COMM_WORLD);
@@ -175,8 +230,21 @@ int main(int argc, char** argv) {
         &local_seconds, &max_seconds, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
 
     if (rank == 0) {
-        std::cerr << "[MPI_StandardSycl][stencil][naive] seconds="
+        std::cerr << "[MPI_StandardSycl][stencil][row-halo] seconds="
                   << max_seconds << std::endl;
+    }
+
+    MPI_Gatherv(local_rows > 0 ? local_curr.data() + NY : nullptr,
+                static_cast<int>(local_owned_size),
+                MPI_DOUBLE,
+                rank == 0 ? global_curr.data() : nullptr,
+                counts.data(),
+                displs.data(),
+                MPI_DOUBLE,
+                0,
+                MPI_COMM_WORLD);
+
+    if (rank == 0) {
         std::cout << "{";
         for (int j = 0; j < NY; ++j) {
             std::cout << global_curr[j];
@@ -199,7 +267,7 @@ int main(int argc, char** argv) {
                0,
                MPI_COMM_WORLD);
     if (rank == 0) {
-        std::cerr << "[MPI_StandardSycl][stencil][naive] e2e_seconds="
+        std::cerr << "[MPI_StandardSycl][stencil][row-halo] e2e_seconds="
                   << e2e_seconds << std::endl;
     }
 

@@ -18,9 +18,12 @@ void emitKernel(std::string& code, const ShellPartitionPlan& plan) {
     }
     code += "            q.submit([&](sycl::handler& h) {\n";
     for (const auto& param : plan.params) {
-        const std::string mode =
-            param.reads && !param.writes ? "sycl::access::mode::read"
-                                         : "sycl::access::mode::read_write";
+        std::string mode = "sycl::access::mode::read_write";
+        if (param.reads && !param.writes) {
+            mode = "sycl::access::mode::read";
+        } else if (param.writes && !param.reads) {
+            mode = "sycl::access::mode::discard_write";
+        }
         code += "                auto __or_acc_" + param.calcParamName +
                 " = __or_buffer_" + param.calcParamName +
                 ".get_access<" + mode + ">(h);\n";
@@ -138,7 +141,7 @@ void emitFusedPointwiseRowBlock2DKernel(std::string& code,
             ".get_access<sycl::access::mode::read>(h);\n";
     code += "                auto __or_acc_" + lastWriter->calcParamName +
             " = __or_buffer_" + lastWriter->calcParamName +
-            ".get_access<sycl::access::mode::read_write>(h);\n";
+            ".get_access<sycl::access::mode::discard_write>(h);\n";
     code += "                h.parallel_for(sycl::range<1>(static_cast<std::size_t>(__or_local_item_count)), [=](sycl::id<1> idx) {\n";
     code += "                    const int item_linear = static_cast<int>(idx[0]);\n";
     code += "                    auto* __or_data_" + firstReader->calcParamName +

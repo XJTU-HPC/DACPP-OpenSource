@@ -81,53 +81,24 @@ int main(int argc, char** argv) {
         offset += counts[static_cast<std::size_t>(r)];
     }
 
-    // Keep DACPP's host-side benchmark shape: all ranks construct the full
-    // tensors, but only rank 0 scatters the resident slice used by the MPI loop.
-    std::vector<double> global_prev(static_cast<std::size_t>(NX) * NY, 0.0);
-    std::vector<double> global_curr(static_cast<std::size_t>(NX) * NY, 0.0);
-    std::vector<double> global_next(static_cast<std::size_t>(NX) * NY, 0.0);
+    std::vector<double> h_prev(local_with_halo, 0.0);
+    std::vector<double> h_curr(local_with_halo, 0.0);
+    std::vector<double> h_next(local_with_halo, 0.0);
 
     const double sigma = 0.5;
-    for (int i = 0; i < NX; ++i) {
+    for (int lr = 0; lr < local_rows; ++lr) {
+        const int gi = global_begin + lr;
         for (int j = 0; j < NY; ++j) {
-            const double x = i * dx;
+            const double x = gi * dx;
             const double y = j * dy;
-            global_prev[static_cast<std::size_t>(i) * NY + j] =
+            h_prev[static_cast<std::size_t>(lr + 1) * NY + j] =
                 std::exp(-((x - Lx / 2) * (x - Lx / 2) +
                            (y - Ly / 2) * (y - Ly / 2)) /
                          (2 * sigma * sigma));
         }
     }
 
-    std::vector<double> owned_prev(static_cast<std::size_t>(local_rows) * NY,
-                                   0.0);
-    MPI_Scatterv(rank == 0 ? global_prev.data() : nullptr,
-                 rank == 0 ? counts.data() : nullptr,
-                 rank == 0 ? displs.data() : nullptr,
-                 MPI_DOUBLE,
-                 owned_prev.data(),
-                 static_cast<int>(owned_prev.size()),
-                 MPI_DOUBLE,
-                 0,
-                 MPI_COMM_WORLD);
-
-    std::vector<double> h_prev(local_with_halo, 0.0);
-    std::vector<double> h_curr(local_with_halo, 0.0);
-    std::vector<double> h_next(local_with_halo, 0.0);
-    for (int lr = 0; lr < local_rows; ++lr) {
-        std::copy(owned_prev.begin() + static_cast<std::ptrdiff_t>(lr * NY),
-                  owned_prev.begin() +
-                      static_cast<std::ptrdiff_t>((lr + 1) * NY),
-                  h_prev.begin() +
-                      static_cast<std::ptrdiff_t>((lr + 1) * NY));
-    }
-
     sycl_compat::queue q{sycl_compat::default_selector_v};
-
-    std::vector<double> send_top(NY, 0.0);
-    std::vector<double> send_bottom(NY, 0.0);
-    std::vector<double> recv_top(NY, 0.0);
-    std::vector<double> recv_bottom(NY, 0.0);
 
     const int up = rank > 0 ? rank - 1 : MPI_PROC_NULL;
     const int down = rank + 1 < size ? rank + 1 : MPI_PROC_NULL;
@@ -136,48 +107,44 @@ int main(int argc, char** argv) {
     const auto t0 = std::chrono::steady_clock::now();
 
     for (int step = 0; step < TIME_STEPS; ++step) {
-        std::copy(h_curr.begin() + static_cast<std::ptrdiff_t>(pitch),
-                  h_curr.begin() + static_cast<std::ptrdiff_t>(2 * pitch),
-                  send_top.begin());
-        std::copy(h_curr.begin() +
-                      static_cast<std::ptrdiff_t>(local_rows * NY),
-                  h_curr.begin() +
-                      static_cast<std::ptrdiff_t>((local_rows + 1) * NY),
-                  send_bottom.begin());
-
-        MPI_Sendrecv(send_top.data(),
-                     NY,
-                     MPI_DOUBLE,
-                     up,
-                     0,
-                     recv_bottom.data(),
-                     NY,
-                     MPI_DOUBLE,
-                     down,
-                     0,
-                     MPI_COMM_WORLD,
-                     MPI_STATUS_IGNORE);
-        MPI_Sendrecv(send_bottom.data(),
-                     NY,
-                     MPI_DOUBLE,
-                     down,
-                     1,
-                     recv_top.data(),
-                     NY,
-                     MPI_DOUBLE,
-                     up,
-                     1,
-                     MPI_COMM_WORLD,
-                     MPI_STATUS_IGNORE);
-
+        MPI_Request reqs[4];
+        int req_count = 0;
         if (up != MPI_PROC_NULL) {
-            std::copy(recv_top.begin(), recv_top.end(), h_curr.begin());
+            MPI_Irecv(h_curr.data(),
+                      NY,
+                      MPI_DOUBLE,
+                      up,
+                      1,
+                      MPI_COMM_WORLD,
+                      &reqs[req_count++]);
+            MPI_Isend(h_curr.data() + pitch,
+                      NY,
+                      MPI_DOUBLE,
+                      up,
+                      0,
+                      MPI_COMM_WORLD,
+                      &reqs[req_count++]);
         }
         if (down != MPI_PROC_NULL) {
-            std::copy(recv_bottom.begin(),
-                      recv_bottom.end(),
-                      h_curr.begin() +
-                          static_cast<std::ptrdiff_t>((local_rows + 1) * NY));
+            MPI_Irecv(h_curr.data() +
+                          static_cast<std::size_t>(local_rows + 1) * pitch,
+                      NY,
+                      MPI_DOUBLE,
+                      down,
+                      0,
+                      MPI_COMM_WORLD,
+                      &reqs[req_count++]);
+            MPI_Isend(h_curr.data() +
+                          static_cast<std::size_t>(local_rows) * pitch,
+                      NY,
+                      MPI_DOUBLE,
+                      down,
+                      1,
+                      MPI_COMM_WORLD,
+                      &reqs[req_count++]);
+        }
+        if (req_count > 0) {
+            MPI_Waitall(req_count, reqs, MPI_STATUSES_IGNORE);
         }
 
         {

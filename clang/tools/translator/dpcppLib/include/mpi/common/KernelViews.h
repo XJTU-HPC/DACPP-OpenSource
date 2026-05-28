@@ -3,6 +3,12 @@
 
 #include <cstdint>
 
+#if defined(__GNUC__) || defined(__clang__)
+#define DACPP_MPI_ALWAYS_INLINE __attribute__((always_inline)) inline
+#else
+#define DACPP_MPI_ALWAYS_INLINE inline
+#endif
+
 namespace dacpp {
 namespace mpi {
 
@@ -12,7 +18,7 @@ struct View1D {
     const int32_t* slots = nullptr;
     int offset = 0;
 
-    decltype(auto) operator[](int idx) const {
+    DACPP_MPI_ALWAYS_INLINE decltype(auto) operator[](int idx) const {
         return data[slots[offset + idx]];
     }
 };
@@ -23,7 +29,7 @@ struct View2DRow {
     const int32_t* slots = nullptr;
     int offset = 0;
 
-    decltype(auto) operator[](int idx) const {
+    DACPP_MPI_ALWAYS_INLINE decltype(auto) operator[](int idx) const {
         return data[slots[offset + idx]];
     }
 };
@@ -35,7 +41,7 @@ struct View2D {
     int offset = 0;
     int cols = 0;
 
-    View2DRow<T> operator[](int row) const {
+    DACPP_MPI_ALWAYS_INLINE View2DRow<T> operator[](int row) const {
         return View2DRow<T>{data, slots, offset + row * cols};
     }
 };
@@ -45,7 +51,7 @@ struct ContiguousView1D {
     T* data = nullptr;
     int offset = 0;
 
-    decltype(auto) operator[](int idx) const {
+    DACPP_MPI_ALWAYS_INLINE decltype(auto) operator[](int idx) const {
         return data[offset + idx];
     }
 };
@@ -55,7 +61,7 @@ struct ResidentHaloView1D {
     T* data = nullptr;
     int offset = 0;
 
-    decltype(auto) operator[](int idx) const {
+    DACPP_MPI_ALWAYS_INLINE decltype(auto) operator[](int idx) const {
         return data[offset + idx];
     }
 };
@@ -68,7 +74,7 @@ struct ResidentHaloInteriorView1D {
     int rowOffset = 0;
     int colOffset = 0;
 
-    decltype(auto) operator[](int idx) const {
+    DACPP_MPI_ALWAYS_INLINE decltype(auto) operator[](int idx) const {
         const int row = idx / interiorCols;
         const int col = idx % interiorCols;
         return data[(row + rowOffset) * fullCols + (col + colOffset)];
@@ -80,7 +86,7 @@ struct ResidentHaloView2DRow {
     T* data = nullptr;
     int offset = 0;
 
-    decltype(auto) operator[](int idx) const {
+    DACPP_MPI_ALWAYS_INLINE decltype(auto) operator[](int idx) const {
         return data[offset + idx];
     }
 };
@@ -91,7 +97,7 @@ struct ResidentHaloView2D {
     int offset = 0;
     int cols = 0;
 
-    ResidentHaloView2DRow<T> operator[](int row) const {
+    DACPP_MPI_ALWAYS_INLINE ResidentHaloView2DRow<T> operator[](int row) const {
         return ResidentHaloView2DRow<T>{data, offset + row * cols};
     }
 };
@@ -101,7 +107,7 @@ struct ContiguousView2DRow {
     T* data = nullptr;
     int offset = 0;
 
-    decltype(auto) operator[](int idx) const {
+    DACPP_MPI_ALWAYS_INLINE decltype(auto) operator[](int idx) const {
         return data[offset + idx];
     }
 };
@@ -112,12 +118,14 @@ struct ContiguousView2D {
     int offset = 0;
     int cols = 0;
 
-    ContiguousView2DRow<T> operator[](int row) const {
+    DACPP_MPI_ALWAYS_INLINE ContiguousView2DRow<T> operator[](int row) const {
         return ContiguousView2DRow<T>{data, offset + row * cols};
     }
 };
 
 }  // namespace mpi
 }  // namespace dacpp
+
+#undef DACPP_MPI_ALWAYS_INLINE
 
 #endif
