@@ -1,116 +1,200 @@
-// Image Adjustment — MPI + SYCL standard implementation
-// Element-parallel operations: color adjustment and brightness enhancement.
-// Split image rows across ranks.
-
 #include <CL/sycl.hpp>
 #include <mpi.h>
 
 #include <algorithm>
+#include <chrono>
 #include <iostream>
 #include <vector>
 
-namespace sycl = cl::sycl;
+namespace sycl_compat = cl::sycl;
+
+#ifndef IMAGE_WIDTH
+#define IMAGE_WIDTH 4
+#endif
+
+#ifndef IMAGE_HEIGHT
+#define IMAGE_HEIGHT 4
+#endif
 
 struct Pixel {
-    int r, g, b;
-    friend std::ostream& operator<<(std::ostream& os, const Pixel& p) {
-        os << "(" << p.r << ", " << p.g << ", " << p.b << ")";
-        return os;
-    }
+    int r;
+    int g;
+    int b;
 };
 
+std::ostream& operator<<(std::ostream& os, const Pixel& p) {
+    os << "(" << p.r << ", " << p.g << ", " << p.b << ")";
+    return os;
+}
+
+class ImageAdjustRedKernel;
+class ImageAdjustBrightnessKernel;
+
+namespace {
+
+constexpr int width = IMAGE_WIDTH;
+constexpr int height = IMAGE_HEIGHT;
+constexpr int total = width * height;
+
+int rows_for_rank(int rank, int size) {
+    const int base = height / size;
+    const int rem = height % size;
+    return base + (rank < rem ? 1 : 0);
+}
+
+int row_begin_for_rank(int rank, int size) {
+    const int base = height / size;
+    const int rem = height % size;
+    return rank * base + std::min(rank, rem);
+}
+
+} // namespace
+
 int main(int argc, char** argv) {
+    const auto e2e_t0 = std::chrono::steady_clock::now();
     MPI_Init(&argc, &argv);
 
-    int rank = 0, size = 1;
+    int rank = 0;
+    int size = 1;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &size);
 
-    constexpr int width = 4;
-    constexpr int height = 4;
-    constexpr int total = width * height;
-
-    // Divide rows across ranks
-    const int base = height / size;
-    const int rem  = height % size;
-    const int local_rows = base + (rank < rem ? 1 : 0);
-    const int row_begin = rank * base + std::min(rank, rem);
+    const int local_rows = rows_for_rank(rank, size);
+    const int row_begin = row_begin_for_rank(rank, size);
     const int local_count = local_rows * width;
 
-    // Initialize local portion of the image
-    std::vector<Pixel> image(local_count, {100, 100, 100});
-    std::vector<Pixel> image2(local_count, {0, 0, 0});
-    std::vector<Pixel> image3(local_count, {0, 0, 0});
+    std::vector<Pixel> image(total, {100, 100, 100});
+    std::vector<Pixel> local_image(local_count, {100, 100, 100});
+    for (int lr = 0; lr < local_rows; ++lr) {
+        const int gi = row_begin + lr;
+        for (int j = 0; j < width; ++j) {
+            local_image[static_cast<std::size_t>(lr) * width + j] =
+                image[static_cast<std::size_t>(gi) * width + j];
+        }
+    }
+    std::vector<Pixel> local_image2(local_count, {100, 100, 100});
+    std::vector<Pixel> local_image3(local_count, {0, 0, 0});
 
-    sycl::queue q{sycl::default_selector_v};
+    sycl_compat::queue q{sycl_compat::default_selector_v};
 
-    // Step 1: Color adjustment — match the DAC calc, which only writes red.
-    {
-        sycl::buffer<Pixel, 1> buf_in(image.data(), sycl::range<1>(local_count));
-        sycl::buffer<Pixel, 1> buf_out(image2.data(), sycl::range<1>(local_count));
+    MPI_Barrier(MPI_COMM_WORLD);
+    const auto t0 = std::chrono::steady_clock::now();
 
-        q.submit([&](sycl::handler& h) {
-            auto acc_in  = buf_in.get_access<sycl::access::mode::read>(h);
-            auto acc_out = buf_out.get_access<sycl::access::mode::read_write>(h);
-            h.parallel_for(sycl::range<1>(local_count), [=](sycl::id<1> idx) {
-                acc_out[idx].r = std::min(255, acc_in[idx].r + 50);
+    if (local_count > 0) {
+        {
+            sycl_compat::buffer<Pixel, 1> in_buf(
+                local_image.data(), sycl_compat::range<1>(local_image.size()));
+            sycl_compat::buffer<Pixel, 1> out_buf(
+                local_image2.data(), sycl_compat::range<1>(local_image2.size()));
+
+            q.submit([&](sycl_compat::handler& h) {
+                auto in =
+                    in_buf.get_access<sycl_compat::access::mode::read>(h);
+                auto out =
+                    out_buf.get_access<sycl_compat::access::mode::read_write>(h);
+                h.parallel_for<ImageAdjustRedKernel>(
+                    sycl_compat::range<1>(
+                        static_cast<std::size_t>(local_count)),
+                    [=](sycl_compat::id<1> idx) {
+                        Pixel p = out[idx];
+                        p.r = sycl_compat::min(255, in[idx].r + 50);
+                        out[idx] = p;
+                    });
             });
-        });
-        q.wait();
+            q.wait();
+        }
+
+        {
+            sycl_compat::buffer<Pixel, 1> in_buf(
+                local_image2.data(), sycl_compat::range<1>(local_image2.size()));
+            sycl_compat::buffer<Pixel, 1> out_buf(
+                local_image3.data(), sycl_compat::range<1>(local_image3.size()));
+
+            q.submit([&](sycl_compat::handler& h) {
+                auto in =
+                    in_buf.get_access<sycl_compat::access::mode::read>(h);
+                auto out =
+                    out_buf.get_access<sycl_compat::access::mode::write>(h);
+                h.parallel_for<ImageAdjustBrightnessKernel>(
+                    sycl_compat::range<1>(
+                        static_cast<std::size_t>(local_count)),
+                    [=](sycl_compat::id<1> idx) {
+                        Pixel p;
+                        p.r = sycl_compat::min(255, in[idx].r + 30);
+                        p.g = sycl_compat::min(255, in[idx].g + 30);
+                        p.b = sycl_compat::min(255, in[idx].b + 30);
+                        out[idx] = p;
+                    });
+            });
+            q.wait();
+        }
     }
 
-    // Step 2: Brightness enhancement — increase RGB by 30
-    {
-        sycl::buffer<Pixel, 1> buf_in(image2.data(), sycl::range<1>(local_count));
-        sycl::buffer<Pixel, 1> buf_out(image3.data(), sycl::range<1>(local_count));
-
-        q.submit([&](sycl::handler& h) {
-            auto acc_in  = buf_in.get_access<sycl::access::mode::read>(h);
-            auto acc_out = buf_out.get_access<sycl::access::mode::write>(h);
-            h.parallel_for(sycl::range<1>(local_count), [=](sycl::id<1> idx) {
-                acc_out[idx].r = std::min(255, acc_in[idx].r + 30);
-                acc_out[idx].g = std::min(255, acc_in[idx].g + 30);
-                acc_out[idx].b = std::min(255, acc_in[idx].b + 30);
-            });
-        });
-        q.wait();
-    }
-
-    // Gather final image to rank 0
-    std::vector<int> counts(size), displs(size);
+    std::vector<int> counts(size, 0);
+    std::vector<int> displs(size, 0);
     int offset = 0;
     for (int r = 0; r < size; ++r) {
-        int lr = base + (r < rem ? 1 : 0);
-        counts[r] = lr * width;
+        counts[r] = rows_for_rank(r, size) * width;
         displs[r] = offset;
         offset += counts[r];
     }
 
-    std::vector<int> byte_counts(size), byte_displs(size);
+    std::vector<int> byte_counts(size, 0);
+    std::vector<int> byte_displs(size, 0);
     for (int r = 0; r < size; ++r) {
-        byte_counts[r] = counts[r] * sizeof(Pixel);
-        byte_displs[r] = displs[r] * sizeof(Pixel);
+        byte_counts[r] = counts[r] * static_cast<int>(sizeof(Pixel));
+        byte_displs[r] = displs[r] * static_cast<int>(sizeof(Pixel));
     }
 
-    std::vector<Pixel> global_image;
-    if (rank == 0) global_image.resize(total);
+    std::vector<Pixel> global_image(total, {0, 0, 0});
+    MPI_Gatherv(local_image3.data(),
+                local_count * static_cast<int>(sizeof(Pixel)),
+                MPI_BYTE,
+                global_image.data(),
+                byte_counts.data(),
+                byte_displs.data(),
+                MPI_BYTE,
+                0,
+                MPI_COMM_WORLD);
 
-    MPI_Gatherv(image3.data(), local_count * sizeof(Pixel), MPI_BYTE,
-                rank == 0 ? global_image.data() : nullptr,
-                byte_counts.data(), byte_displs.data(),
-                MPI_BYTE, 0, MPI_COMM_WORLD);
+    MPI_Barrier(MPI_COMM_WORLD);
+    const auto t1 = std::chrono::steady_clock::now();
+    const double local_seconds =
+        std::chrono::duration<double>(t1 - t0).count();
+    double max_seconds = 0.0;
+    MPI_Reduce(
+        &local_seconds, &max_seconds, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
 
     if (rank == 0) {
+        std::cerr << "[MPI_StandardSycl][imageAdjustment][naive] seconds="
+                  << max_seconds << std::endl;
         std::cout << "Original Image:" << std::endl;
         std::cout << "\nImage After Color Adjustment:" << std::endl;
         std::cout << "\nImage After Brightness Enhancement:" << std::endl;
-        // Print as 2D grid
         for (int i = 0; i < height; ++i) {
             for (int j = 0; j < width; ++j) {
-                std::cout << global_image[i * width + j] << " ";
+                std::cout << global_image[static_cast<std::size_t>(i) * width +
+                                          j]
+                          << " ";
             }
             std::cout << std::endl;
         }
+    }
+
+    const auto e2e_t1 = std::chrono::steady_clock::now();
+    const double e2e_local_seconds =
+        std::chrono::duration<double>(e2e_t1 - e2e_t0).count();
+    double e2e_seconds = 0.0;
+    MPI_Reduce(&e2e_local_seconds,
+               &e2e_seconds,
+               1,
+               MPI_DOUBLE,
+               MPI_MAX,
+               0,
+               MPI_COMM_WORLD);
+    if (rank == 0) {
+        std::cerr << "[MPI_StandardSycl][imageAdjustment][naive] e2e_seconds="
+                  << e2e_seconds << std::endl;
     }
 
     MPI_Finalize();

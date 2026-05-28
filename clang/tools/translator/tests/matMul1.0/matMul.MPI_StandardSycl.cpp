@@ -1,129 +1,176 @@
-// Matrix Multiplication — MPI + SYCL standard implementation
-// Split output rows across ranks. Each rank computes its portion of C = A * B.
-// A is 4x5, B is 5x4 (column-major), C is 4x4.
-//
-// Communication aligned with DACPP generated code:
-//   - MPI_Scatterv distributes A rows (RowPartitionFullRow)
-//   - MPI_Bcast broadcasts full B to all ranks
-//   - MPI_Gatherv collects C results
-
 #include <CL/sycl.hpp>
 #include <mpi.h>
 
 #include <algorithm>
+#include <chrono>
 #include <iostream>
 #include <vector>
 
-namespace sycl = cl::sycl;
+namespace sycl_compat = cl::sycl;
+
+#ifndef MATMUL_M
+#define MATMUL_M 4
+#endif
+
+#ifndef MATMUL_K
+#define MATMUL_K 5
+#endif
+
+#ifndef MATMUL_N
+#define MATMUL_N 4
+#endif
+
+class MatMulNaiveKernel;
+
+namespace {
+
+constexpr int M = MATMUL_M;
+constexpr int K = MATMUL_K;
+constexpr int N = MATMUL_N;
+
+int rows_for_rank(int rank, int size) {
+    const int base = M / size;
+    const int rem = M % size;
+    return base + (rank < rem ? 1 : 0);
+}
+
+int row_begin_for_rank(int rank, int size) {
+    const int base = M / size;
+    const int rem = M % size;
+    return rank * base + std::min(rank, rem);
+}
+
+} // namespace
 
 int main(int argc, char** argv) {
+    const auto e2e_t0 = std::chrono::steady_clock::now();
     MPI_Init(&argc, &argv);
 
-    int rank = 0, size = 1;
+    int rank = 0;
+    int size = 1;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &size);
 
-    constexpr int M = 4, K = 5, N = 4;
-
-    // A (4x5) row-major — all ranks allocate; rank 0 holds source data
-    std::vector<int> dataA{
-        1, 2, 3, 4, 5,
-        6, 7, 8, 9, 10,
-        11, 12, 13, 14, 15,
-        16, 17, 18, 19, 20
-    };
-
-    // B (5x4) column-major storage as in dac version
-    std::vector<int> dataB{
-        1, 5, 9, 13,
-        17, 2, 6, 10,
-        14, 18, 3, 7,
-        11, 15, 19, 4,
-        8, 12, 16, 20
-    };
-
-    // Partition C rows across ranks
-    const int base = M / size;
-    const int rem  = M % size;
-    const int local_rows = base + (rank < rem ? 1 : 0);
-    const int row_begin = rank * base + std::min(rank, rem);
+    const int local_rows = rows_for_rank(rank, size);
+    const int row_begin = row_begin_for_rank(rank, size);
     const int local_count = local_rows * N;
 
-    // --- Scatter A rows: rank 0 distributes row-blocks (aligned with DACPP RowPartitionFullRow) ---
-    std::vector<int> counts_A(size), displs_A(size);
-    for (int r = 0; r < size; ++r) {
-        int lr = base + (r < rem ? 1 : 0);
-        int rb = r * base + std::min(r, rem);
-        counts_A[r] = lr * K;
-        displs_A[r] = rb * K;
+    std::vector<int> A(static_cast<std::size_t>(M) * K, 0);
+    std::vector<int> B(static_cast<std::size_t>(K) * N, 0);
+    for (int i = 0; i < M; ++i) {
+        for (int k = 0; k < K; ++k) {
+            A[static_cast<std::size_t>(i) * K + k] = i * K + k + 1;
+        }
     }
-    std::vector<int> localA(local_rows * K);
-    MPI_Scatterv(rank == 0 ? dataA.data() : nullptr,
-                 counts_A.data(), displs_A.data(), MPI_INT,
-                 localA.data(), local_rows * K, MPI_INT,
-                 0, MPI_COMM_WORLD);
+    if (K == 5 && N == 4) {
+        B = {1,  5,  9,  13, 17, 2,  6,  10, 14, 18,
+             3,  7,  11, 15, 19, 4,  8,  12, 16, 20};
+    } else {
+        for (int k = 0; k < K; ++k) {
+            for (int j = 0; j < N; ++j) {
+                B[static_cast<std::size_t>(k) * N + j] = k * N + j + 1;
+            }
+        }
+    }
 
-    // --- Broadcast B: all ranks receive full B matrix (aligned with DACPP Bcast) ---
-    MPI_Bcast(dataB.data(), K * N, MPI_INT, 0, MPI_COMM_WORLD);
-
-    // --- Compute C = localA * B ---
     std::vector<int> local_result(local_count, 0);
 
+    sycl_compat::queue q{sycl_compat::default_selector_v};
+
+    MPI_Barrier(MPI_COMM_WORLD);
+    const auto t0 = std::chrono::steady_clock::now();
+
     if (local_rows > 0) {
-        sycl::queue q{sycl::default_selector_v};
+        sycl_compat::buffer<int, 1> a_buf(A.data(), sycl_compat::range<1>(A.size()));
+        sycl_compat::buffer<int, 1> b_buf(B.data(), sycl_compat::range<1>(B.size()));
+        sycl_compat::buffer<int, 1> c_buf(local_result.data(),
+                                          sycl_compat::range<1>(local_result.size()));
 
-        sycl::buffer<int, 1> bufA(localA.data(), sycl::range<1>(local_rows * K));
-        sycl::buffer<int, 1> bufB(dataB.data(), sycl::range<1>(K * N));
-        sycl::buffer<int, 1> bufC(local_result.data(), sycl::range<1>(local_count));
+        q.submit([&](sycl_compat::handler& h) {
+            auto a = a_buf.get_access<sycl_compat::access::mode::read>(h);
+            auto b = b_buf.get_access<sycl_compat::access::mode::read>(h);
+            auto c = c_buf.get_access<sycl_compat::access::mode::write>(h);
 
-        q.submit([&](sycl::handler& h) {
-            auto a = bufA.get_access<sycl::access::mode::read>(h);
-            auto b = bufB.get_access<sycl::access::mode::read>(h);
-            auto c = bufC.get_access<sycl::access::mode::write>(h);
-
-            h.parallel_for(sycl::range<2>(local_rows, N), [=](sycl::id<2> idx) {
-                const int local_i = static_cast<int>(idx[0]);
-                const int j = static_cast<int>(idx[1]);
-                int sum = 0;
-                for (int k = 0; k < K; ++k) {
-                    sum += a[local_i * K + k] * b[k * N + j];
-                }
-                c[local_i * N + j] = sum;
-            });
+            h.parallel_for<MatMulNaiveKernel>(
+                sycl_compat::range<2>(static_cast<std::size_t>(local_rows),
+                                       static_cast<std::size_t>(N)),
+                [=](sycl_compat::id<2> idx) {
+                    const int lr = static_cast<int>(idx[0]);
+                    const int j = static_cast<int>(idx[1]);
+                    const int gi = row_begin + lr;
+                    int sum = 0;
+                    for (int k = 0; k < K; ++k) {
+                        sum += a[static_cast<std::size_t>(gi) * K + k] *
+                               b[static_cast<std::size_t>(k) * N + j];
+                    }
+                    c[static_cast<std::size_t>(lr) * N + j] = sum;
+                });
         });
         q.wait();
     }
 
-    // --- Gather results to rank 0 ---
-    std::vector<int> counts(size), displs(size);
+    std::vector<int> counts(size, 0);
+    std::vector<int> displs(size, 0);
     int offset = 0;
     for (int r = 0; r < size; ++r) {
-        int lr = (M / size) + (r < rem ? 1 : 0);
-        counts[r] = lr * N;
+        counts[r] = rows_for_rank(r, size) * N;
         displs[r] = offset;
         offset += counts[r];
     }
 
-    std::vector<int> global_result;
-    if (rank == 0) global_result.resize(M * N);
+    std::vector<int> global_result(static_cast<std::size_t>(M) * N, 0);
+    MPI_Gatherv(local_result.data(),
+                local_count,
+                MPI_INT,
+                global_result.data(),
+                counts.data(),
+                displs.data(),
+                MPI_INT,
+                0,
+                MPI_COMM_WORLD);
 
-    MPI_Gatherv(local_result.data(), local_count, MPI_INT,
-                rank == 0 ? global_result.data() : nullptr,
-                counts.data(), displs.data(),
-                MPI_INT, 0, MPI_COMM_WORLD);
+    MPI_Barrier(MPI_COMM_WORLD);
+    const auto t1 = std::chrono::steady_clock::now();
+    const double local_seconds =
+        std::chrono::duration<double>(t1 - t0).count();
+    double max_seconds = 0.0;
+    MPI_Reduce(
+        &local_seconds, &max_seconds, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
 
     if (rank == 0) {
+        std::cerr << "[MPI_StandardSycl][matmul][naive] seconds="
+                  << max_seconds << std::endl;
         std::cout << "{";
         for (int i = 0; i < M; ++i) {
             std::cout << "{";
             for (int j = 0; j < N; ++j) {
-                std::cout << global_result[i * N + j];
-                if (j < N - 1) std::cout << ", ";
+                std::cout << global_result[static_cast<std::size_t>(i) * N + j];
+                if (j + 1 < N) {
+                    std::cout << ", ";
+                }
             }
             std::cout << "}";
-            if (i < M - 1) std::cout << ", ";
+            if (i + 1 < M) {
+                std::cout << ", ";
+            }
         }
         std::cout << "}" << std::endl;
+    }
+
+    const auto e2e_t1 = std::chrono::steady_clock::now();
+    const double e2e_local_seconds =
+        std::chrono::duration<double>(e2e_t1 - e2e_t0).count();
+    double e2e_seconds = 0.0;
+    MPI_Reduce(&e2e_local_seconds,
+               &e2e_seconds,
+               1,
+               MPI_DOUBLE,
+               MPI_MAX,
+               0,
+               MPI_COMM_WORLD);
+    if (rank == 0) {
+        std::cerr << "[MPI_StandardSycl][matmul][naive] e2e_seconds="
+                  << e2e_seconds << std::endl;
     }
 
     MPI_Finalize();

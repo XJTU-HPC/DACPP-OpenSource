@@ -7,7 +7,7 @@
 #include <iostream>
 #include <vector>
 
-namespace sycl = cl::sycl;
+namespace sycl_compat = cl::sycl;
 
 #ifndef WAVE_NX
 #define WAVE_NX 8
@@ -20,6 +20,8 @@ namespace sycl = cl::sycl;
 #ifndef WAVE_TIME_STEPS
 #define WAVE_TIME_STEPS 10
 #endif
+
+class WaveEquationStandardHaloKernel;
 
 namespace {
 
@@ -45,6 +47,7 @@ int row_begin_for_rank(int rank, int size) {
 } // namespace
 
 int main(int argc, char** argv) {
+    const auto e2e_t0 = std::chrono::steady_clock::now();
     MPI_Init(&argc, &argv);
 
     int rank = 0;
@@ -69,31 +72,57 @@ int main(int argc, char** argv) {
     const double dy = Ly / (NY - 1);
     const double dt = 0.5 * std::fmin(dx, dy) / c;
 
-    std::vector<double> h_prev(local_with_halo, 0.0);
-    std::vector<double> h_curr(local_with_halo, 0.0);
-    std::vector<double> h_next(local_with_halo, 0.0);
+    std::vector<int> counts(size, 0);
+    std::vector<int> displs(size, 0);
+    int offset = 0;
+    for (int r = 0; r < size; ++r) {
+        counts[static_cast<std::size_t>(r)] = rows_for_rank(r, size) * NY;
+        displs[static_cast<std::size_t>(r)] = offset;
+        offset += counts[static_cast<std::size_t>(r)];
+    }
+
+    // Keep DACPP's host-side benchmark shape: all ranks construct the full
+    // tensors, but only rank 0 scatters the resident slice used by the MPI loop.
+    std::vector<double> global_prev(static_cast<std::size_t>(NX) * NY, 0.0);
+    std::vector<double> global_curr(static_cast<std::size_t>(NX) * NY, 0.0);
+    std::vector<double> global_next(static_cast<std::size_t>(NX) * NY, 0.0);
 
     const double sigma = 0.5;
-    for (int lr = 0; lr < local_rows; ++lr) {
-        const int gi = global_begin + lr;
+    for (int i = 0; i < NX; ++i) {
         for (int j = 0; j < NY; ++j) {
-            const double x = gi * dx;
+            const double x = i * dx;
             const double y = j * dy;
-            h_prev[static_cast<std::size_t>(lr + 1) * pitch + j] =
+            global_prev[static_cast<std::size_t>(i) * NY + j] =
                 std::exp(-((x - Lx / 2) * (x - Lx / 2) +
                            (y - Ly / 2) * (y - Ly / 2)) /
                          (2 * sigma * sigma));
         }
     }
 
-    sycl::queue q{sycl::default_selector_v};
-    double* d_prev = sycl::malloc_device<double>(local_with_halo, q);
-    double* d_curr = sycl::malloc_device<double>(local_with_halo, q);
-    double* d_next = sycl::malloc_device<double>(local_with_halo, q);
+    std::vector<double> owned_prev(static_cast<std::size_t>(local_rows) * NY,
+                                   0.0);
+    MPI_Scatterv(rank == 0 ? global_prev.data() : nullptr,
+                 rank == 0 ? counts.data() : nullptr,
+                 rank == 0 ? displs.data() : nullptr,
+                 MPI_DOUBLE,
+                 owned_prev.data(),
+                 static_cast<int>(owned_prev.size()),
+                 MPI_DOUBLE,
+                 0,
+                 MPI_COMM_WORLD);
 
-    q.memcpy(d_prev, h_prev.data(), sizeof(double) * local_with_halo).wait();
-    q.memcpy(d_curr, h_curr.data(), sizeof(double) * local_with_halo).wait();
-    q.memcpy(d_next, h_next.data(), sizeof(double) * local_with_halo).wait();
+    std::vector<double> h_prev(local_with_halo, 0.0);
+    std::vector<double> h_curr(local_with_halo, 0.0);
+    std::vector<double> h_next(local_with_halo, 0.0);
+    for (int lr = 0; lr < local_rows; ++lr) {
+        std::copy(owned_prev.begin() + static_cast<std::ptrdiff_t>(lr * NY),
+                  owned_prev.begin() +
+                      static_cast<std::ptrdiff_t>((lr + 1) * NY),
+                  h_prev.begin() +
+                      static_cast<std::ptrdiff_t>((lr + 1) * NY));
+    }
+
+    sycl_compat::queue q{sycl_compat::default_selector_v};
 
     std::vector<double> send_top(NY, 0.0);
     std::vector<double> send_bottom(NY, 0.0);
@@ -107,11 +136,14 @@ int main(int argc, char** argv) {
     const auto t0 = std::chrono::steady_clock::now();
 
     for (int step = 0; step < TIME_STEPS; ++step) {
-        q.memcpy(send_top.data(), d_curr + pitch, sizeof(double) * pitch).wait();
-        q.memcpy(send_bottom.data(),
-                 d_curr + static_cast<std::size_t>(local_rows) * pitch,
-                 sizeof(double) * pitch)
-            .wait();
+        std::copy(h_curr.begin() + static_cast<std::ptrdiff_t>(pitch),
+                  h_curr.begin() + static_cast<std::ptrdiff_t>(2 * pitch),
+                  send_top.begin());
+        std::copy(h_curr.begin() +
+                      static_cast<std::ptrdiff_t>(local_rows * NY),
+                  h_curr.begin() +
+                      static_cast<std::ptrdiff_t>((local_rows + 1) * NY),
+                  send_bottom.begin());
 
         MPI_Sendrecv(send_top.data(),
                      NY,
@@ -139,49 +171,62 @@ int main(int argc, char** argv) {
                      MPI_STATUS_IGNORE);
 
         if (up != MPI_PROC_NULL) {
-            q.memcpy(d_curr, recv_top.data(), sizeof(double) * pitch).wait();
+            std::copy(recv_top.begin(), recv_top.end(), h_curr.begin());
         }
         if (down != MPI_PROC_NULL) {
-            q.memcpy(d_curr + static_cast<std::size_t>(local_rows + 1) * pitch,
-                     recv_bottom.data(),
-                     sizeof(double) * pitch)
-                .wait();
+            std::copy(recv_bottom.begin(),
+                      recv_bottom.end(),
+                      h_curr.begin() +
+                          static_cast<std::ptrdiff_t>((local_rows + 1) * NY));
         }
 
-        q.submit([&](sycl::handler& h) {
-            h.parallel_for(sycl::range<2>(
-                               static_cast<std::size_t>(local_rows),
-                               static_cast<std::size_t>(NY)),
-                           [=](sycl::id<2> idx) {
-                               const int lr = static_cast<int>(idx[0]) + 1;
-                               const int j = static_cast<int>(idx[1]);
-                               const int gi = global_begin + lr - 1;
-                               const std::size_t pos =
-                                   static_cast<std::size_t>(lr) * pitch + j;
+        {
+            sycl_compat::buffer<double, 1> prev_buf(
+                h_prev.data(), sycl_compat::range<1>(h_prev.size()));
+            sycl_compat::buffer<double, 1> curr_buf(
+                h_curr.data(), sycl_compat::range<1>(h_curr.size()));
+            sycl_compat::buffer<double, 1> next_buf(
+                h_next.data(), sycl_compat::range<1>(h_next.size()));
 
-                               if (gi == 0 || gi == NX - 1 || j == 0 ||
-                                   j == NY - 1) {
-                                   d_next[pos] = 0.0;
-                                   return;
-                               }
+            q.submit([&](sycl_compat::handler& h) {
+                auto prev =
+                    prev_buf.get_access<sycl_compat::access::mode::read>(h);
+                auto curr =
+                    curr_buf.get_access<sycl_compat::access::mode::read>(h);
+                auto next =
+                    next_buf.get_access<sycl_compat::access::mode::write>(h);
 
-                               const double center = d_curr[pos];
-                               const double u_xx =
-                                   (d_curr[pos + pitch] - 2.0 * center +
-                                    d_curr[pos - pitch]) /
-                                   (dx * dx);
-                               const double u_yy =
-                                   (d_curr[pos + 1] - 2.0 * center +
-                                    d_curr[pos - 1]) /
-                                   (dy * dy);
-                               d_next[pos] =
-                                   2.0 * center - d_prev[pos] +
-                                   c * c * dt * dt * (u_xx + u_yy);
-                           });
-        }).wait();
+                h.parallel_for<WaveEquationStandardHaloKernel>(
+                    sycl_compat::range<2>(static_cast<std::size_t>(local_rows),
+                                          static_cast<std::size_t>(NY)),
+                    [=](sycl_compat::id<2> idx) {
+                        const int lr = static_cast<int>(idx[0]) + 1;
+                        const int j = static_cast<int>(idx[1]);
+                        const int gi = global_begin + lr - 1;
+                        const std::size_t pos =
+                            static_cast<std::size_t>(lr) * NY + j;
 
-        std::swap(d_prev, d_curr);
-        std::swap(d_curr, d_next);
+                        if (gi == 0 || gi == NX - 1 || j == 0 || j == NY - 1) {
+                            next[pos] = 0.0;
+                            return;
+                        }
+
+                        const double center = curr[pos];
+                        const double u_xx =
+                            (curr[pos + NY] - 2.0 * center + curr[pos - NY]) /
+                            (dx * dx);
+                        const double u_yy =
+                            (curr[pos + 1] - 2.0 * center + curr[pos - 1]) /
+                            (dy * dy);
+                        next[pos] = 2.0 * center - prev[pos] +
+                                    c * c * dt * dt * (u_xx + u_yy);
+                    });
+            });
+            q.wait();
+        }
+
+        std::swap(h_prev, h_curr);
+        std::swap(h_curr, h_next);
     }
 
     MPI_Barrier(MPI_COMM_WORLD);
@@ -192,25 +237,19 @@ int main(int argc, char** argv) {
     MPI_Reduce(
         &local_seconds, &max_seconds, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
 
-    std::vector<double> local_out(static_cast<std::size_t>(local_rows) * pitch);
-    q.memcpy(local_out.data(), d_curr + pitch, sizeof(double) * local_out.size())
-        .wait();
-
-    std::vector<int> counts;
-    std::vector<int> displs;
-    std::vector<double> global_out;
-    if (rank == 0) {
-        counts.resize(size, 0);
-        displs.resize(size, 0);
-        int offset = 0;
-        for (int r = 0; r < size; ++r) {
-            counts[r] = rows_for_rank(r, size) * NY;
-            displs[r] = offset;
-            offset += counts[r];
-        }
-        global_out.resize(static_cast<std::size_t>(NX) * NY);
+    std::vector<double> local_out(static_cast<std::size_t>(local_rows) * NY);
+    for (int lr = 0; lr < local_rows; ++lr) {
+        std::copy(h_curr.begin() +
+                      static_cast<std::ptrdiff_t>((lr + 1) * NY),
+                  h_curr.begin() +
+                      static_cast<std::ptrdiff_t>((lr + 2) * NY),
+                  local_out.begin() + static_cast<std::ptrdiff_t>(lr * NY));
     }
 
+    std::vector<double> global_out;
+    if (rank == 0) {
+        global_out.resize(static_cast<std::size_t>(NX) * NY);
+    }
     MPI_Gatherv(local_out.data(),
                 static_cast<int>(local_out.size()),
                 MPI_DOUBLE,
@@ -224,26 +263,23 @@ int main(int argc, char** argv) {
     if (rank == 0) {
         std::cerr << "[MPI_StandardSycl][wave] seconds=" << max_seconds
                   << std::endl;
-        std::cout << "{";
-        for (int i = 0; i < NX; ++i) {
-            std::cout << "{";
-            for (int j = 0; j < NY; ++j) {
-                std::cout << global_out[static_cast<std::size_t>(i) * NY + j];
-                if (j + 1 < NY) {
-                    std::cout << ", ";
-                }
-            }
-            std::cout << "}";
-            if (i + 1 < NX) {
-                std::cout << ", ";
-            }
-        }
-        std::cout << "}" << std::endl;
     }
 
-    sycl::free(d_prev, q);
-    sycl::free(d_curr, q);
-    sycl::free(d_next, q);
+    const auto e2e_t1 = std::chrono::steady_clock::now();
+    const double e2e_local_seconds =
+        std::chrono::duration<double>(e2e_t1 - e2e_t0).count();
+    double e2e_seconds = 0.0;
+    MPI_Reduce(&e2e_local_seconds,
+               &e2e_seconds,
+               1,
+               MPI_DOUBLE,
+               MPI_MAX,
+               0,
+               MPI_COMM_WORLD);
+    if (rank == 0) {
+        std::cerr << "[MPI_StandardSycl][wave] e2e_seconds=" << e2e_seconds
+                  << std::endl;
+    }
 
     MPI_Finalize();
     return 0;

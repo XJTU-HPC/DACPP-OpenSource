@@ -2,18 +2,50 @@
 #include <mpi.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <iostream>
 #include <vector>
 
-using namespace std;
-namespace sycl = cl::sycl;
+namespace sycl_compat = cl::sycl;
 
-const double dt = 0.1;
-const double T = 5.0;
-const size_t numIsotopes = 10;
+#ifndef DECAY_DT
+#define DECAY_DT 0.1
+#endif
+
+#ifndef DECAY_TOTAL_TIME
+#define DECAY_TOTAL_TIME 5.0
+#endif
+
+#ifndef DECAY_NUM_ISOTOPES
+#define DECAY_NUM_ISOTOPES 10
+#endif
+
+class DecayNaiveKernel;
+
+namespace {
+
+constexpr double dt = DECAY_DT;
+constexpr double total_time = DECAY_TOTAL_TIME;
+constexpr int num_isotopes = DECAY_NUM_ISOTOPES;
+constexpr int steps = static_cast<int>(total_time / dt);
+
+int items_for_rank(int rank, int size) {
+    const int base = num_isotopes / size;
+    const int rem = num_isotopes % size;
+    return base + (rank < rem ? 1 : 0);
+}
+
+int item_begin_for_rank(int rank, int size) {
+    const int base = num_isotopes / size;
+    const int rem = num_isotopes % size;
+    return rank * base + std::min(rank, rem);
+}
+
+} // namespace
 
 int main(int argc, char** argv) {
+    const auto e2e_t0 = std::chrono::steady_clock::now();
     MPI_Init(&argc, &argv);
 
     int rank = 0;
@@ -21,111 +53,122 @@ int main(int argc, char** argv) {
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &size);
 
-    const size_t steps = static_cast<size_t>(T / dt);
+    const int local_count = items_for_rank(rank, size);
+    const int local_begin = item_begin_for_rank(rank, size);
 
-    const size_t base_count = numIsotopes / static_cast<size_t>(size);
-    const size_t remainder = numIsotopes % static_cast<size_t>(size);
-    const size_t local_count =
-        base_count + (static_cast<size_t>(rank) < remainder ? 1 : 0);
-    const size_t global_begin =
-        static_cast<size_t>(rank) * base_count +
-        std::min(static_cast<size_t>(rank), remainder);
-
-    vector<double> local_lambdas(local_count);
-    vector<double> local_N0s(local_count, 1000.0);
-    vector<double> local_A(local_count, 0.0);
-
-    for (size_t i = 0; i < local_count; ++i) {
-        const size_t global_i = global_begin + i;
-        local_lambdas[i] = 0.01 + 0.01 * global_i;
+    std::vector<double> n0s(num_isotopes, 1000.0);
+    std::vector<double> lambdas(num_isotopes, 0.0);
+    for (int i = 0; i < num_isotopes; ++i) {
+        lambdas[i] = 0.01 + 0.01 * i;
     }
 
-    sycl::queue q{sycl::default_selector_v};
+    std::vector<double> local_a(local_count, 0.0);
 
-    sycl::buffer<double, 1> n0s_buf(local_N0s.data(), sycl::range<1>(local_count));
-    sycl::buffer<double, 1> lambdas_buf(local_lambdas.data(), sycl::range<1>(local_count));
-    sycl::buffer<double, 1> local_a_buf(local_A.data(), sycl::range<1>(local_count));
-
-    vector<int> recv_counts;
-    vector<int> recv_displs;
-    vector<double> gathered_A;
-    vector<double> A;
-
-    if (rank == 0) {
-        recv_counts.resize(static_cast<size_t>(size), 0);
-        recv_displs.resize(static_cast<size_t>(size), 0);
-        int displacement = 0;
-        for (int r = 0; r < size; ++r) {
-            const size_t r_count =
-                base_count + (static_cast<size_t>(r) < remainder ? 1 : 0);
-            recv_counts[static_cast<size_t>(r)] = static_cast<int>(r_count);
-            recv_displs[static_cast<size_t>(r)] = displacement;
-            displacement += static_cast<int>(r_count);
-        }
-
-        gathered_A.assign(numIsotopes, 0.0);
-        A.assign(steps * numIsotopes, 0.0);
+    std::vector<int> counts(size, 0);
+    std::vector<int> displs(size, 0);
+    int offset = 0;
+    for (int r = 0; r < size; ++r) {
+        counts[r] = items_for_rank(r, size);
+        displs[r] = offset;
+        offset += counts[r];
     }
 
-    double t = 0.0;
-    size_t step = 0;
+    std::vector<double> gathered_a(num_isotopes, 0.0);
+    std::vector<double> all_a(static_cast<std::size_t>(steps) * num_isotopes,
+                              0.0);
 
-    while (t <= T) {
-        const double current_t = t;
+    sycl_compat::queue q{sycl_compat::default_selector_v};
 
-        q.submit([&](sycl::handler& h) {
-            auto n0s_acc = n0s_buf.get_access<sycl::access::mode::read>(h);
-            auto lambdas_acc = lambdas_buf.get_access<sycl::access::mode::read>(h);
-            auto local_a_acc =
-                local_a_buf.get_access<sycl::access::mode::discard_write>(h);
+    MPI_Barrier(MPI_COMM_WORLD);
+    const auto t0 = std::chrono::steady_clock::now();
 
-            h.parallel_for(sycl::range<1>(local_count), [=](sycl::id<1> idx) {
-                const size_t i = idx[0];
-                local_a_acc[i] =
-                    n0s_acc[i] * sycl::exp(-lambdas_acc[i] * current_t);
+    for (int step = 0; step <= steps; ++step) {
+        const double current_t = step * dt;
+
+        if (local_count > 0) {
+            sycl_compat::buffer<double, 1> n0s_buf(
+                n0s.data(), sycl_compat::range<1>(n0s.size()));
+            sycl_compat::buffer<double, 1> lambdas_buf(
+                lambdas.data(), sycl_compat::range<1>(lambdas.size()));
+            sycl_compat::buffer<double, 1> local_a_buf(
+                local_a.data(), sycl_compat::range<1>(local_a.size()));
+
+            q.submit([&](sycl_compat::handler& h) {
+                auto n0 =
+                    n0s_buf.get_access<sycl_compat::access::mode::read>(h);
+                auto lambda =
+                    lambdas_buf.get_access<sycl_compat::access::mode::read>(h);
+                auto out =
+                    local_a_buf.get_access<sycl_compat::access::mode::write>(h);
+
+                h.parallel_for<DecayNaiveKernel>(
+                    sycl_compat::range<1>(
+                        static_cast<std::size_t>(local_count)),
+                    [=](sycl_compat::id<1> idx) {
+                        const int global_i =
+                            local_begin + static_cast<int>(idx[0]);
+                        out[idx] = n0[global_i] *
+                                   sycl_compat::exp(-lambda[global_i] *
+                                                    current_t);
+                    });
             });
-        }).wait();
-
-        {
-            auto local_a_acc = local_a_buf.get_access<sycl::access::mode::read>();
-            for (size_t i = 0; i < local_count; ++i) {
-                local_A[i] = local_a_acc[i];
-            }
+            q.wait();
         }
 
-        MPI_Gatherv(local_A.data(),
-                    static_cast<int>(local_count),
+        MPI_Gatherv(local_a.data(),
+                    local_count,
                     MPI_DOUBLE,
-                    rank == 0 ? gathered_A.data() : nullptr,
-                    rank == 0 ? recv_counts.data() : nullptr,
-                    rank == 0 ? recv_displs.data() : nullptr,
+                    gathered_a.data(),
+                    counts.data(),
+                    displs.data(),
                     MPI_DOUBLE,
                     0,
                     MPI_COMM_WORLD);
 
-        const size_t row = static_cast<size_t>(10.0 * current_t);
-        if (rank == 0 && row < steps) {
-            for (size_t i = 0; i < numIsotopes; ++i) {
-                A[row * numIsotopes + i] = gathered_A[i];
+        const int row = static_cast<int>(10.0 * current_t);
+        if (rank == 0 && row >= 0 && row < steps) {
+            for (int i = 0; i < num_isotopes; ++i) {
+                all_a[static_cast<std::size_t>(row) * num_isotopes + i] =
+                    gathered_a[i];
             }
-        }
-
-        t += dt;
-        ++step;
-        if (step > steps) {
-            break;
         }
     }
 
+    MPI_Barrier(MPI_COMM_WORLD);
+    const auto t1 = std::chrono::steady_clock::now();
+    const double local_seconds =
+        std::chrono::duration<double>(t1 - t0).count();
+    double max_seconds = 0.0;
+    MPI_Reduce(
+        &local_seconds, &max_seconds, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+
     if (rank == 0) {
-        cout << "{";
-        for (size_t i = 0; i < numIsotopes; ++i) {
-            cout << A[1 * numIsotopes + i];
-            if (i + 1 < numIsotopes) {
-                cout << ", ";
+        std::cerr << "[MPI_StandardSycl][decay][naive] seconds="
+                  << max_seconds << std::endl;
+        std::cout << "{";
+        for (int i = 0; i < num_isotopes; ++i) {
+            std::cout << all_a[static_cast<std::size_t>(1) * num_isotopes + i];
+            if (i + 1 < num_isotopes) {
+                std::cout << ", ";
             }
         }
-        cout << "}" << endl;
+        std::cout << "}" << std::endl;
+    }
+
+    const auto e2e_t1 = std::chrono::steady_clock::now();
+    const double e2e_local_seconds =
+        std::chrono::duration<double>(e2e_t1 - e2e_t0).count();
+    double e2e_seconds = 0.0;
+    MPI_Reduce(&e2e_local_seconds,
+               &e2e_seconds,
+               1,
+               MPI_DOUBLE,
+               MPI_MAX,
+               0,
+               MPI_COMM_WORLD);
+    if (rank == 0) {
+        std::cerr << "[MPI_StandardSycl][decay][naive] e2e_seconds="
+                  << e2e_seconds << std::endl;
     }
 
     MPI_Finalize();

@@ -1,139 +1,155 @@
-// MDP / Fokker-Planck equation — MPI + SYCL standard implementation
-// 1D stencil: diffusion + drift update, time-stepping loop.
-// Spatial domain split across ranks with 1-element halo exchange per step.
-
 #include <CL/sycl.hpp>
 #include <mpi.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <iostream>
 #include <vector>
 
-namespace sycl = cl::sycl;
-
-const double A = 1.0;   // attraction coefficient
-const double D = 0.1;   // diffusion coefficient
-const double dx = 0.1;  // spatial step
-const double dt = 0.01; // time step
+namespace sycl_compat = cl::sycl;
 
 #ifndef MDP_N
 #define MDP_N 150
 #endif
 
 #ifndef MDP_T
-#define MDP_T 10000
+#define MDP_T 1000
 #endif
 
+class MDPNaiveKernel;
+
+namespace {
+
+constexpr double A = 1.0;
+constexpr double D = 0.1;
+constexpr double dx = 0.1;
+constexpr double dt = 0.01;
 constexpr int N = MDP_N;
 constexpr int T = MDP_T;
+constexpr int interior = N - 2;
+
+int items_for_rank(int rank, int size) {
+    const int base = interior / size;
+    const int rem = interior % size;
+    return base + (rank < rem ? 1 : 0);
+}
+
+int item_begin_for_rank(int rank, int size) {
+    const int base = interior / size;
+    const int rem = interior % size;
+    return rank * base + std::min(rank, rem);
+}
+
+} // namespace
 
 int main(int argc, char** argv) {
+    const auto e2e_t0 = std::chrono::steady_clock::now();
     MPI_Init(&argc, &argv);
 
-    int rank = 0, size = 1;
+    int rank = 0;
+    int size = 1;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &size);
 
-    // We compute interior points 1..N-2 (N-2 points)
-    const int interior = N - 2;
-    if (size > interior) {
-        if (rank == 0) std::cerr << "MPI size too large\n";
-        MPI_Abort(MPI_COMM_WORLD, 1);
-    }
+    const int local_count = items_for_rank(rank, size);
+    const int output_begin = item_begin_for_rank(rank, size);
+    const int global_begin = 1 + output_begin;
 
-    const int base = interior / size;
-    const int rem  = interior % size;
-    const int local_count = base + (rank < rem ? 1 : 0);
-    const int local_begin = 1 + rank * base + std::min(rank, rem);
-
-    const int prev = rank > 0 ? rank - 1 : MPI_PROC_NULL;
-    const int next = rank + 1 < size ? rank + 1 : MPI_PROC_NULL;
-
-    // Local arrays: 1 left halo + local_count + 1 right halo
-    const int local_ext = local_count + 2;
-    std::vector<double> p(local_ext, 0.0);
-    std::vector<double> new_p(local_ext, 0.0);
-
-    // Initialize with Gaussian distribution
-    for (int li = 0; li < local_count; ++li) {
-        const int gi = local_begin + li;
-        double x = gi * dx;
-        p[li + 1] = std::exp(-std::pow(x - 5.0, 2) / 2.0);
-    }
-
-    sycl::queue q{sycl::default_selector_v};
-
-    MPI_Barrier(MPI_COMM_WORLD);
-    const double t0 = MPI_Wtime();
-
-    for (int t = 0; t < T; ++t) {
-        // Halo exchange
-        double send_left  = p[1];
-        double send_right = p[local_count];
-        double recv_left  = 0.0;
-        double recv_right = 0.0;
-
-        MPI_Sendrecv(&send_left,  1, MPI_DOUBLE, prev, 0,
-                     &recv_right, 1, MPI_DOUBLE, next, 0,
-                     MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-        MPI_Sendrecv(&send_right, 1, MPI_DOUBLE, next, 1,
-                     &recv_left,  1, MPI_DOUBLE, prev, 1,
-                     MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-
-        if (prev != MPI_PROC_NULL) p[0] = recv_left;
-        if (next != MPI_PROC_NULL) p[local_count + 1] = recv_right;
-
-        // SYCL kernel
-        {
-            sycl::buffer<double, 1> buf_p(p.data(), sycl::range<1>(local_ext));
-            sycl::buffer<double, 1> buf_np(new_p.data(), sycl::range<1>(local_ext));
-
-            q.submit([&](sycl::handler& h) {
-                auto acc_p  = buf_p.get_access<sycl::access::mode::read>(h);
-                auto acc_np = buf_np.get_access<sycl::access::mode::write>(h);
-
-                h.parallel_for(sycl::range<1>(local_count), [=](sycl::id<1> idx) {
-                    const int li = static_cast<int>(idx[0]) + 1;
-                    double diffusion = D * (acc_p[li + 1] - 2 * acc_p[li] + acc_p[li - 1]) / (dx * dx);
-                    double drift = -A * (acc_p[li + 1] - acc_p[li - 1]) / (2 * dx);
-                    acc_np[li] = acc_p[li] + dt * (diffusion + drift);
-                });
-            });
-            q.wait();
-        }
-
-        std::swap(p, new_p);
-    }
-
-    MPI_Barrier(MPI_COMM_WORLD);
-    const double elapsed = MPI_Wtime() - t0;
-    double max_elapsed = 0.0;
-    MPI_Reduce(&elapsed, &max_elapsed, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
-
-    // Gather all interior points
-    std::vector<int> counts(size), displs(size);
+    std::vector<int> counts(size, 0);
+    std::vector<int> displs(size, 0);
     int offset = 0;
     for (int r = 0; r < size; ++r) {
-        counts[r] = (interior / size) + (r < rem ? 1 : 0);
+        counts[r] = items_for_rank(r, size);
         displs[r] = offset;
         offset += counts[r];
     }
 
-    std::vector<double> local_out(p.begin() + 1, p.begin() + 1 + local_count);
+    std::vector<double> p(N, 0.0);
+    for (int i = 0; i < N; ++i) {
+        const double x = i * dx;
+        p[i] = std::exp(-std::pow(x - 5.0, 2.0) / 2.0);
+    }
+    std::vector<double> local_new(local_count, 0.0);
+    std::vector<double> global_new(interior, 0.0);
 
-    std::vector<double> global_p;
-    if (rank == 0) global_p.resize(N, 0.0);
+    sycl_compat::queue q{sycl_compat::default_selector_v};
 
-    MPI_Gatherv(local_out.data(), local_count, MPI_DOUBLE,
-                rank == 0 ? global_p.data() + 1 : nullptr,
-                counts.data(), displs.data(),
-                MPI_DOUBLE, 0, MPI_COMM_WORLD);
+    MPI_Barrier(MPI_COMM_WORLD);
+    const auto t0 = std::chrono::steady_clock::now();
+
+    for (int t = 0; t < T; ++t) {
+        std::fill(local_new.begin(), local_new.end(), 0.0);
+
+        if (local_count > 0) {
+            sycl_compat::buffer<double, 1> p_buf(
+                p.data(), sycl_compat::range<1>(p.size()));
+            sycl_compat::buffer<double, 1> out_buf(
+                local_new.data(), sycl_compat::range<1>(local_new.size()));
+
+            q.submit([&](sycl_compat::handler& h) {
+                auto in = p_buf.get_access<sycl_compat::access::mode::read>(h);
+                auto out =
+                    out_buf.get_access<sycl_compat::access::mode::write>(h);
+
+                h.parallel_for<MDPNaiveKernel>(
+                    sycl_compat::range<1>(
+                        static_cast<std::size_t>(local_count)),
+                    [=](sycl_compat::id<1> idx) {
+                        const int gi = global_begin + static_cast<int>(idx[0]);
+                        const double diffusion =
+                            D * (in[gi + 1] - 2.0 * in[gi] + in[gi - 1]) /
+                            (dx * dx);
+                        const double drift =
+                            -A * (in[gi + 1] - in[gi - 1]) / (2.0 * dx);
+                        out[idx] = in[gi] + dt * (diffusion + drift);
+                    });
+            });
+            q.wait();
+        }
+
+        MPI_Allgatherv(local_new.data(),
+                       local_count,
+                       MPI_DOUBLE,
+                       global_new.data(),
+                       counts.data(),
+                       displs.data(),
+                       MPI_DOUBLE,
+                       MPI_COMM_WORLD);
+
+        for (int i = 0; i < interior; ++i) {
+            p[i + 1] = global_new[i];
+        }
+    }
+
+    MPI_Barrier(MPI_COMM_WORLD);
+    const auto t1 = std::chrono::steady_clock::now();
+    const double local_seconds =
+        std::chrono::duration<double>(t1 - t0).count();
+    double max_seconds = 0.0;
+    MPI_Reduce(
+        &local_seconds, &max_seconds, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
 
     if (rank == 0) {
-        std::cerr << "[MPI_StandardSycl][mdp] seconds=" << max_elapsed << std::endl;
-        // Match dac version output: p[2]
-        std::cout << global_p[2] << std::endl;
+        std::cerr << "[MPI_StandardSycl][mdp][naive] seconds=" << max_seconds
+                  << std::endl;
+        std::cout << p[2] << std::endl;
+    }
+
+    const auto e2e_t1 = std::chrono::steady_clock::now();
+    const double e2e_local_seconds =
+        std::chrono::duration<double>(e2e_t1 - e2e_t0).count();
+    double e2e_seconds = 0.0;
+    MPI_Reduce(&e2e_local_seconds,
+               &e2e_seconds,
+               1,
+               MPI_DOUBLE,
+               MPI_MAX,
+               0,
+               MPI_COMM_WORLD);
+    if (rank == 0) {
+        std::cerr << "[MPI_StandardSycl][mdp][naive] e2e_seconds="
+                  << e2e_seconds << std::endl;
     }
 
     MPI_Finalize();

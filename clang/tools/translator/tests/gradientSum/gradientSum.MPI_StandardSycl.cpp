@@ -1,81 +1,151 @@
 #include <CL/sycl.hpp>
 #include <mpi.h>
+
+#include <algorithm>
+#include <chrono>
 #include <iostream>
 #include <vector>
-#include <random>
-#include <algorithm>
 
-using namespace sycl;
+namespace sycl_compat = cl::sycl;
 
-constexpr size_t NUM_NEURONS = 8192;
-constexpr size_t INPUT_SIZE  = 8;
+#ifndef GRADIENT_NUM_NEURONS
+#define GRADIENT_NUM_NEURONS 8192
+#endif
+
+#ifndef GRADIENT_INPUT_SIZE
+#define GRADIENT_INPUT_SIZE 8
+#endif
+
+class GradientSumNaiveKernel;
+
+namespace {
+
+constexpr int NUM_NEURONS = GRADIENT_NUM_NEURONS;
+constexpr int INPUT_SIZE = GRADIENT_INPUT_SIZE;
+
+int rows_for_rank(int rank, int size) {
+    const int base = NUM_NEURONS / size;
+    const int rem = NUM_NEURONS % size;
+    return base + (rank < rem ? 1 : 0);
+}
+
+int row_begin_for_rank(int rank, int size) {
+    const int base = NUM_NEURONS / size;
+    const int rem = NUM_NEURONS % size;
+    return rank * base + std::min(rank, rem);
+}
+
+} // namespace
 
 int main(int argc, char** argv) {
+    const auto e2e_t0 = std::chrono::steady_clock::now();
     MPI_Init(&argc, &argv);
- 
-    int rank, size;
+
+    int rank = 0;
+    int size = 1;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &size);
 
-    // 检查进程数是否是 NUM_NEURONS 的约数
-    if (NUM_NEURONS % size != 0) {
-        if(rank==0)
-            std::cerr << "Error: MPI size must be a divisor of NUM_NEURONS=" 
-                      << NUM_NEURONS << std::endl;
-        MPI_Abort(MPI_COMM_WORLD, 1);
-    }
+    const int local_count = rows_for_rank(rank, size);
+    const int local_begin = row_begin_for_rank(rank, size);
 
-    size_t neurons_per_proc = NUM_NEURONS / size;
-
-    // 初始化梯度矩阵
-    std::vector<float> host_grads(NUM_NEURONS * INPUT_SIZE);
-    std::mt19937 gen(42);
-    std::uniform_real_distribution<float> dist(-0.1f, 0.1f);
-    for(int i=0;i<NUM_NEURONS;i++){
-        for(int j=0;j<INPUT_SIZE;j++){
-            host_grads[i*INPUT_SIZE+j] = i; // 可以用随机值 dist(gen) 替换
+    std::vector<float> host_grads(static_cast<std::size_t>(NUM_NEURONS) *
+                                  INPUT_SIZE);
+    for (int i = 0; i < NUM_NEURONS; ++i) {
+        for (int j = 0; j < INPUT_SIZE; ++j) {
+            host_grads[static_cast<std::size_t>(i) * INPUT_SIZE + j] =
+                static_cast<float>(i + j);
         }
     }
 
-    queue q;
+    std::vector<float> local_sum(local_count, 0.0f);
 
-    // 每个进程负责的列索引范围
-    size_t col_start = rank * neurons_per_proc;
-    size_t col_end   = col_start + neurons_per_proc;
+    sycl_compat::queue q{sycl_compat::default_selector_v};
 
-    std::vector<float> local_sum(neurons_per_proc, 0.0f);
+    MPI_Barrier(MPI_COMM_WORLD);
+    const auto t0 = std::chrono::steady_clock::now();
 
-    {
-        buffer<float,1> grad_buf(host_grads.data(), range<1>(NUM_NEURONS*INPUT_SIZE));
-        buffer<float,1> sum_buf(local_sum.data(), range<1>(neurons_per_proc));
+    if (local_count > 0) {
+        sycl_compat::buffer<float, 1> grad_buf(
+            host_grads.data(), sycl_compat::range<1>(host_grads.size()));
+        sycl_compat::buffer<float, 1> sum_buf(
+            local_sum.data(), sycl_compat::range<1>(local_sum.size()));
 
-        q.submit([&](handler &h){
-            auto grads_acc = grad_buf.get_access<access::mode::read>(h);
-            auto sum_acc   = sum_buf.get_access<access::mode::discard_write>(h);
+        q.submit([&](sycl_compat::handler& h) {
+            auto grads =
+                grad_buf.get_access<sycl_compat::access::mode::read>(h);
+            auto sums =
+                sum_buf.get_access<sycl_compat::access::mode::write>(h);
 
-            h.parallel_for<class kernel1>(range<1>(neurons_per_proc), [=](id<1> i){
-                size_t neuron = col_start + i;
-                float tmp = 0.0f;
-                for(size_t n=0; n<INPUT_SIZE; n++)
-                    tmp += grads_acc[neuron*INPUT_SIZE + n];
-                sum_acc[i] = tmp;
-            });
-        }).wait();
-    } // partial_buf 生命周期结束，会同步 host
+            h.parallel_for<GradientSumNaiveKernel>(
+                sycl_compat::range<1>(static_cast<std::size_t>(local_count)),
+                [=](sycl_compat::id<1> idx) {
+                    const int neuron = local_begin + static_cast<int>(idx[0]);
+                    float sum = 0.0f;
+                    for (int j = 0; j < INPUT_SIZE; ++j) {
+                        sum += grads[static_cast<std::size_t>(neuron) *
+                                         INPUT_SIZE +
+                                     j];
+                    }
+                    sums[idx] = sum;
+                });
+        });
+        q.wait();
+    }
 
-    // 聚合所有进程结果到 rank 0
+    std::vector<int> counts(size, 0);
+    std::vector<int> displs(size, 0);
+    int offset = 0;
+    for (int r = 0; r < size; ++r) {
+        counts[r] = rows_for_rank(r, size);
+        displs[r] = offset;
+        offset += counts[r];
+    }
+
     std::vector<float> global_sum(NUM_NEURONS, 0.0f);
-    MPI_Gather(local_sum.data(), neurons_per_proc, MPI_FLOAT,
-               global_sum.data(), neurons_per_proc, MPI_FLOAT,
-               0, MPI_COMM_WORLD);
+    MPI_Gatherv(local_sum.data(),
+                local_count,
+                MPI_FLOAT,
+                global_sum.data(),
+                counts.data(),
+                displs.data(),
+                MPI_FLOAT,
+                0,
+                MPI_COMM_WORLD);
 
-    if(rank==0){
-        int a=5;
-        if(NUM_NEURONS<5) a=NUM_NEURONS;
+    MPI_Barrier(MPI_COMM_WORLD);
+    const auto t1 = std::chrono::steady_clock::now();
+    const double local_seconds =
+        std::chrono::duration<double>(t1 - t0).count();
+    double max_seconds = 0.0;
+    MPI_Reduce(
+        &local_seconds, &max_seconds, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+
+    if (rank == 0) {
+        std::cerr << "[MPI_StandardSycl][gradientSum][naive] seconds="
+                  << max_seconds << std::endl;
+        const int print_count = std::min(5, NUM_NEURONS);
         std::cout << "First 5 neuron gradient sums:\n";
-        for(size_t i=0;i<a;i++)
+        for (int i = 0; i < print_count; ++i) {
             std::cout << global_sum[i] << " ";
+        }
         std::cout << std::endl;
+    }
+
+    const auto e2e_t1 = std::chrono::steady_clock::now();
+    const double e2e_local_seconds =
+        std::chrono::duration<double>(e2e_t1 - e2e_t0).count();
+    double e2e_seconds = 0.0;
+    MPI_Reduce(&e2e_local_seconds,
+               &e2e_seconds,
+               1,
+               MPI_DOUBLE,
+               MPI_MAX,
+               0,
+               MPI_COMM_WORLD);
+    if (rank == 0) {
+        std::cerr << "[MPI_StandardSycl][gradientSum][naive] e2e_seconds="
+                  << e2e_seconds << std::endl;
     }
 
     MPI_Finalize();

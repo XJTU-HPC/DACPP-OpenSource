@@ -1,117 +1,184 @@
-// Mandelbrot set — MPI + SYCL standard implementation
-// Element-parallel: split total_points across ranks, each rank computes its portion.
-
 #include <CL/sycl.hpp>
 #include <mpi.h>
 
 #include <algorithm>
-#include <complex>
-#include <cmath>
+#include <chrono>
 #include <iostream>
 #include <vector>
 
-namespace sycl = cl::sycl;
+namespace sycl_compat = cl::sycl;
 
 #ifndef MANDEL_N
 #define MANDEL_N 8
 #endif
 
-constexpr int row_count = MANDEL_N;
-constexpr int col_count = MANDEL_N;
-constexpr int max_iterations = 1000;
+#ifndef MANDEL_ROWS
+#define MANDEL_ROWS MANDEL_N
+#endif
+
+#ifndef MANDEL_COLS
+#define MANDEL_COLS MANDEL_N
+#endif
+
+#ifndef MANDEL_MAX_ITER
+#define MANDEL_MAX_ITER 1000
+#endif
+
+class MandelNaiveKernel;
+
+namespace {
+
+constexpr int row_count = MANDEL_ROWS;
+constexpr int col_count = MANDEL_COLS;
+constexpr int max_iterations = MANDEL_MAX_ITER;
+constexpr int total_points = row_count * col_count;
+
+int items_for_rank(int rank, int size) {
+    const int base = total_points / size;
+    const int rem = total_points % size;
+    return base + (rank < rem ? 1 : 0);
+}
+
+int item_begin_for_rank(int rank, int size) {
+    const int base = total_points / size;
+    const int rem = total_points % size;
+    return rank * base + std::min(rank, rem);
+}
+
+} // namespace
 
 int main(int argc, char** argv) {
+    const auto e2e_t0 = std::chrono::steady_clock::now();
     MPI_Init(&argc, &argv);
 
-    int rank = 0, size = 1;
+    int rank = 0;
+    int size = 1;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &size);
 
-    const int total_points = row_count * col_count;
+    const int local_count = items_for_rank(rank, size);
+    const int local_begin = item_begin_for_rank(rank, size);
 
-    // Initialize complex points on all ranks (small data, cheap to replicate)
-    std::vector<std::complex<float>> complex_points(total_points);
+    std::vector<float> points_real(total_points, 0.0f);
+    std::vector<float> points_imag(total_points, 0.0f);
     for (int i = 0; i < row_count; ++i) {
         for (int j = 0; j < col_count; ++j) {
-            int index = i * col_count + j;
-            float real = -1.5f + (i * (2.0f / row_count));
-            float imag = -1.0f + (j * (2.0f / col_count));
-            complex_points[index] = std::complex<float>(real, imag);
+            const int index = i * col_count + j;
+            points_real[index] =
+                -1.5f + (static_cast<float>(i) * (2.0f / row_count));
+            points_imag[index] =
+                -1.0f + (static_cast<float>(j) * (2.0f / col_count));
         }
     }
 
-    // Divide points across ranks
-    const int base = total_points / size;
-    const int rem  = total_points % size;
-    const int local_count = base + (rank < rem ? 1 : 0);
-    const int local_begin = rank * base + std::min(rank, rem);
-
     std::vector<int> local_flags(local_count, 0);
 
+    sycl_compat::queue q{sycl_compat::default_selector_v};
+
+    MPI_Barrier(MPI_COMM_WORLD);
+    const auto t0 = std::chrono::steady_clock::now();
+
     if (local_count > 0) {
-        sycl::queue q{sycl::default_selector_v};
+        sycl_compat::buffer<float, 1> real_buf(
+            points_real.data(), sycl_compat::range<1>(points_real.size()));
+        sycl_compat::buffer<float, 1> imag_buf(
+            points_imag.data(), sycl_compat::range<1>(points_imag.size()));
+        sycl_compat::buffer<int, 1> flags_buf(
+            local_flags.data(), sycl_compat::range<1>(local_flags.size()));
 
-        // Copy only the needed portion of complex_points to device
-        std::vector<std::complex<float>> local_points(
-            complex_points.begin() + local_begin,
-            complex_points.begin() + local_begin + local_count);
+        q.submit([&](sycl_compat::handler& h) {
+            auto real = real_buf.get_access<sycl_compat::access::mode::read>(h);
+            auto imag = imag_buf.get_access<sycl_compat::access::mode::read>(h);
+            auto flags =
+                flags_buf.get_access<sycl_compat::access::mode::write>(h);
 
-        sycl::buffer<std::complex<float>, 1> buf_pts(local_points.data(), sycl::range<1>(local_count));
-        sycl::buffer<int, 1> buf_flags(local_flags.data(), sycl::range<1>(local_count));
+            h.parallel_for<MandelNaiveKernel>(
+                sycl_compat::range<1>(static_cast<std::size_t>(local_count)),
+                [=](sycl_compat::id<1> idx) {
+                    const int global_i = local_begin + static_cast<int>(idx[0]);
+                    const float c_real = real[global_i];
+                    const float c_imag = imag[global_i];
+                    float z_real = 0.0f;
+                    float z_imag = 0.0f;
+                    int iterations = 0;
 
-        q.submit([&](sycl::handler& h) {
-            auto pts   = buf_pts.get_access<sycl::access::mode::read>(h);
-            auto flags = buf_flags.get_access<sycl::access::mode::write>(h);
-
-            h.parallel_for(sycl::range<1>(local_count), [=](sycl::id<1> idx) {
-                std::complex<float> c = pts[idx];
-                std::complex<float> z(0.0f, 0.0f);
-                int it = 0;
-
-                for (int i = 0; i < max_iterations; ++i) {
-                    if (sycl::sqrt(z.real() * z.real() + z.imag() * z.imag()) > 2.0f) {
-                        it = i;
-                        break;
+                    for (int it = 0; it < max_iterations; ++it) {
+                        if (sycl_compat::sqrt(z_real * z_real +
+                                              z_imag * z_imag) > 2.0f) {
+                            iterations = it;
+                            break;
+                        }
+                        const float next_real =
+                            z_real * z_real - z_imag * z_imag + c_real;
+                        const float next_imag =
+                            2.0f * z_real * z_imag + c_imag;
+                        z_real = next_real;
+                        z_imag = next_imag;
+                        iterations = max_iterations;
                     }
-                    z = std::complex<float>(
-                        z.real() * z.real() - z.imag() * z.imag() + c.real(),
-                        2.0f * z.real() * z.imag() + c.imag());
-                    it = max_iterations;
-                }
-
-                if (it == max_iterations) {
-                    flags[idx] = 1;
-                }
-            });
+                    flags[idx] = iterations == max_iterations ? 1 : 0;
+                });
         });
         q.wait();
     }
 
-    // Gather flags to rank 0
-    std::vector<int> counts(size), displs(size);
+    std::vector<int> counts(size, 0);
+    std::vector<int> displs(size, 0);
     int offset = 0;
     for (int r = 0; r < size; ++r) {
-        counts[r] = (total_points / size) + (r < rem ? 1 : 0);
+        counts[r] = items_for_rank(r, size);
         displs[r] = offset;
         offset += counts[r];
     }
 
-    std::vector<int> global_flags;
-    if (rank == 0) global_flags.resize(total_points, 0);
+    std::vector<int> global_flags(total_points, 0);
+    MPI_Gatherv(local_flags.data(),
+                local_count,
+                MPI_INT,
+                global_flags.data(),
+                counts.data(),
+                displs.data(),
+                MPI_INT,
+                0,
+                MPI_COMM_WORLD);
 
-    MPI_Gatherv(local_flags.data(), local_count, MPI_INT,
-                rank == 0 ? global_flags.data() : nullptr,
-                counts.data(), displs.data(),
-                MPI_INT, 0, MPI_COMM_WORLD);
+    MPI_Barrier(MPI_COMM_WORLD);
+    const auto t1 = std::chrono::steady_clock::now();
+    const double local_seconds =
+        std::chrono::duration<double>(t1 - t0).count();
+    double max_seconds = 0.0;
+    MPI_Reduce(
+        &local_seconds, &max_seconds, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
 
     if (rank == 0) {
         int mandelbrot_count = 0;
-        for (int f : global_flags) {
-            if (f == 1) mandelbrot_count++;
+        for (int flag : global_flags) {
+            if (flag == 1) {
+                ++mandelbrot_count;
+            }
         }
+        std::cerr << "[MPI_StandardSycl][mandel][naive] seconds="
+                  << max_seconds << std::endl;
         std::cout << "Mandelbrot Set Statistics:\n";
         std::cout << "Total points: " << total_points << "\n";
-        std::cout << "Points in the Mandelbrot set: " << mandelbrot_count << "\n";
+        std::cout << "Points in the Mandelbrot set: " << mandelbrot_count
+                  << "\n";
+    }
+
+    const auto e2e_t1 = std::chrono::steady_clock::now();
+    const double e2e_local_seconds =
+        std::chrono::duration<double>(e2e_t1 - e2e_t0).count();
+    double e2e_seconds = 0.0;
+    MPI_Reduce(&e2e_local_seconds,
+               &e2e_seconds,
+               1,
+               MPI_DOUBLE,
+               MPI_MAX,
+               0,
+               MPI_COMM_WORLD);
+    if (rank == 0) {
+        std::cerr << "[MPI_StandardSycl][mandel][naive] e2e_seconds="
+                  << e2e_seconds << std::endl;
     }
 
     MPI_Finalize();
