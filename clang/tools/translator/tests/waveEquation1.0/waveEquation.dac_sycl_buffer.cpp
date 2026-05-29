@@ -183,11 +183,10 @@ void __dacpp_mpi_or_waveEqShell_waveEq_0_run(__dacpp_mpi_or_waveEqShell_waveEq_0
             q.submit([&](sycl::handler& h) {
                 auto __or_reader_acc = __or_reader_buf.get_access<sycl::access::mode::read>(h);
                 auto __or_direct_reader_acc = __or_direct_reader_buf.get_access<sycl::access::mode::read>(h);
-                auto __or_writer_acc = __or_writer_buf.get_access<sycl::access::mode::read_write>(h);
-                h.parallel_for(sycl::range<1>(static_cast<std::size_t>(__or_kernel_item_count)), [=](sycl::id<1> idx) {
-                    const int item_linear = static_cast<int>(idx[0]);
-                    const int local_row = item_linear / static_cast<int>(__or_local_output_cols);
-                    const int local_col = item_linear % static_cast<int>(__or_local_output_cols);
+                auto __or_writer_acc = __or_writer_buf.get_access<sycl::access::mode::discard_write>(h);
+                h.parallel_for(sycl::range<2>(static_cast<std::size_t>(__or_compute_rows), static_cast<std::size_t>(__or_local_output_cols)), [=](sycl::id<2> idx) {
+                    const int local_row = static_cast<int>(idx[0]);
+                    const int local_col = static_cast<int>(idx[1]);
                     auto* __or_reader_data = __or_reader_acc.template get_multi_ptr<sycl::access::decorated::no>().get();
                     auto* __or_direct_reader_data = __or_direct_reader_acc.template get_multi_ptr<sycl::access::decorated::no>().get();
                     auto* __or_writer_data = __or_writer_acc.template get_multi_ptr<sycl::access::decorated::no>().get();

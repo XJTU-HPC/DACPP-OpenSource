@@ -10,18 +10,19 @@ namespace dacpp {
 }
 // 网格参数
 
-const int NX = 8192;    // x方向网格数量
-const int NY = 8192;    // y方向网格数量
-const double Lx = 10.0f; // x方向长度
-const double Ly = 10.0f; // y方向长度
-const double c = 1.0f;   // 波速
-const int TIME_STEPS = 100; // 时间步数
+constexpr int NX = 8192;    // x方向网格数量
+constexpr int NY = 8192;    // y方向网格数量
+constexpr double Lx = 10.0f; // x方向长度
+constexpr double Ly = 10.0f; // y方向长度
+constexpr double c = 1.0f;   // 波速
+constexpr int TIME_STEPS = 10000; // 时间步数
 // 网格步长
-const double dx = Lx / (NX - 1);
-const double dy = Ly / (NY - 1);
+constexpr double dx = Lx / (NX - 1);
+constexpr double dy = Ly / (NY - 1);
 
 // CFL条件
-const double dt = 0.5f * std::fmin(dx, dy) / c; // 满足稳定性条件
+constexpr double __dacpp_min_grid_spacing = (dx < dy) ? dx : dy;
+constexpr double dt = 0.5f * __dacpp_min_grid_spacing / c; // 满足稳定性条件
 
 
 
@@ -49,9 +50,24 @@ static inline bool __dacpp_mpi_is_root_rank() {
 
 using namespace sycl;
 
+namespace __dacpp_test {
+inline void print_e2e_summary(const char* label, int mpi_rank, int mpi_size, double total_time) {
+    double total_max = 0.0;
+    double total_sum = 0.0;
+    MPI_Reduce(&total_time, &total_max, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+    MPI_Reduce(&total_time, &total_sum, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+    if (mpi_rank == 0) {
+        std::printf("[MPI TEST] %s | ranks=%d | total_max=%.6f s | total_avg=%.6f s\n",
+                    label,
+                    mpi_size,
+                    total_max,
+                    total_sum / static_cast<double>(mpi_size));
+    }
+}
+}  // namespace __dacpp_test
+
 template <typename __dacpp_view_t0, typename __dacpp_view_t1, typename __dacpp_view_t2>
-inline void waveEq_mpi_local(__dacpp_view_t0 cur, __dacpp_view_t1 prev, __dacpp_view_t2 next) {
-    double dt = 0.5F * std::fmin(dx, dy) / c;
+__attribute__((always_inline)) inline void waveEq_mpi_local(__dacpp_view_t0 cur, __dacpp_view_t1 prev, __dacpp_view_t2 next) {
     double u_xx = (cur[2][1] - 2.F * cur[1][1] + cur[0][1]) / (dx * dx);
     double u_yy = (cur[1][2] - 2.F * cur[1][1] + cur[1][0]) / (dy * dy);
     next[0] = 2.F * cur[1][1] - prev[0] + (c * c) * dt * dt * (u_xx + u_yy);
@@ -135,21 +151,8 @@ void __dacpp_mpi_or_waveEqShell_waveEq_0_init(__dacpp_mpi_or_waveEqShell_waveEq_
     if (ctx.mpi_rank == 0) {
         __or_arg1.tensor2Array(__or_initial_global_prev);
     }
-    std::vector<double> __or_initial_global_window_prev;
-    if (ctx.mpi_rank == 0) {
-        __or_initial_global_window_prev.assign(static_cast<std::size_t>(__or_initial_reader_dense_count), double{});
-        for (int64_t __or_direct_row = 0; __or_direct_row < ctx.__or_output_rows; ++__or_direct_row) {
-            for (int64_t __or_direct_col = 0; __or_direct_col < ctx.__or_output_cols; ++__or_direct_col) {
-                const int64_t __or_direct_src = __or_direct_row * ctx.__or_output_cols + __or_direct_col;
-                const int64_t __or_direct_dst = (__or_direct_row + ctx.__or_followup_row_offset) * ctx.__or_input_cols + __or_direct_col + ctx.__or_followup_col_offset;
-                if (__or_direct_src >= 0 && __or_direct_dst >= 0 && static_cast<std::size_t>(__or_direct_src) < __or_initial_global_prev.size() && static_cast<std::size_t>(__or_direct_dst) < __or_initial_global_window_prev.size()) {
-                    __or_initial_global_window_prev[static_cast<std::size_t>(__or_direct_dst)] = __or_initial_global_prev[static_cast<std::size_t>(__or_direct_src)];
-                }
-            }
-        }
-    }
-    dacpp::mpi::operator_resident::scatter_window_2d_rows_temporal(__or_initial_global_window_prev, ctx.__or_local_prev, ctx.__or_output_rows, ctx.__or_input_cols, ctx.__or_temporal_block_size, ctx.__or_halo_layout, ctx.mpi_rank, ctx.mpi_size, MPI_DOUBLE);
-    // Direct-reader recurrence state prev is embedded in the widened resident halo layout for k=2 replay.
+    dacpp::mpi::operator_resident::scatter_window_2d_rows_temporal_offset(__or_initial_global_prev, ctx.__or_local_prev, ctx.__or_output_rows, ctx.__or_output_cols, ctx.__or_input_cols, ctx.__or_temporal_block_size, ctx.__or_followup_row_offset, ctx.__or_followup_col_offset, ctx.__or_halo_layout, ctx.mpi_rank, ctx.mpi_size, MPI_DOUBLE);
+    // Direct-reader recurrence state is packed straight into the temporal resident halo layout.
     dacpp::mpi::recordProfileSegment(ctx.__or_profile, dacpp::mpi::ProfileSegment::Scatter, dacpp_profile_scatter_start);
 }
 void __dacpp_mpi_or_waveEqShell_waveEq_0_run(__dacpp_mpi_or_waveEqShell_waveEq_0_ctx& ctx, dacpp::Matrix<double> & __or_arg0, dacpp::Matrix<double> & __or_arg1, dacpp::Matrix<double> & __or_arg2) {
@@ -196,17 +199,21 @@ void __dacpp_mpi_or_waveEqShell_waveEq_0_run(__dacpp_mpi_or_waveEqShell_waveEq_0
             q.submit([&](sycl::handler& h) {
                 auto __or_reader_acc = __or_reader_buf.get_access<sycl::access::mode::read>(h);
                 auto __or_direct_reader_acc = __or_direct_reader_buf.get_access<sycl::access::mode::read>(h);
-                auto __or_writer_acc = __or_writer_buf.get_access<sycl::access::mode::read_write>(h);
-                h.parallel_for<class __dacpp_sycl_kernel___dacpp_mpi_or_waveEqShell_waveEq_0_run_resident_row_temporal_kernel>(sycl::range<1>(static_cast<std::size_t>(__or_kernel_item_count)), [=](sycl::id<1> idx) {
-                    const int item_linear = static_cast<int>(idx[0]);
-                    const int local_row = item_linear / static_cast<int>(__or_local_output_cols);
-                    const int local_col = item_linear % static_cast<int>(__or_local_output_cols);
+                auto __or_writer_acc = __or_writer_buf.get_access<sycl::access::mode::discard_write>(h);
+                h.parallel_for<class __dacpp_sycl_kernel_waveEquation_row_temporal_0>(sycl::range<2>(static_cast<std::size_t>(__or_compute_rows), static_cast<std::size_t>(__or_local_output_cols)), [=](sycl::id<2> idx) {
+                    const int local_row = static_cast<int>(idx[0]);
+                    const int local_col = static_cast<int>(idx[1]);
                     auto* __or_reader_data = __or_reader_acc.template get_multi_ptr<sycl::access::decorated::no>().get();
                     auto* __or_direct_reader_data = __or_direct_reader_acc.template get_multi_ptr<sycl::access::decorated::no>().get();
                     auto* __or_writer_data = __or_writer_acc.template get_multi_ptr<sycl::access::decorated::no>().get();
-                    dacpp::mpi::ResidentHaloView2D<const double> view_cur{__or_reader_data, static_cast<int>((local_row + __or_compute_row_begin - 1) * static_cast<int>(__or_local_reader_cols) + local_col + static_cast<int>(0)), static_cast<int>(__or_local_reader_cols)};
-                    dacpp::mpi::ContiguousView1D<const double> view_prev{__or_direct_reader_data, static_cast<int>((local_row + __or_compute_row_begin) * static_cast<int>(__or_local_reader_cols) + local_col + static_cast<int>(__or_writer_col_offset))};
-                    dacpp::mpi::ContiguousView1D<double> view_next{__or_writer_data, static_cast<int>((local_row + __or_compute_row_begin) * static_cast<int>(__or_local_reader_cols) + local_col + static_cast<int>(__or_writer_col_offset))};
+                    const int __or_reader_base_idx = static_cast<int>((local_row + __or_compute_row_begin - 1) * static_cast<int>(__or_local_reader_cols) + local_col + static_cast<int>(0));
+                    auto* __or_reader_base = __or_reader_data + __or_reader_base_idx;
+                    const int __or_writer_base_idx = static_cast<int>((local_row + __or_compute_row_begin) * static_cast<int>(__or_local_reader_cols) + local_col + static_cast<int>(__or_writer_col_offset));
+                    auto* __or_writer_base = __or_writer_data + __or_writer_base_idx;
+                    auto* __or_direct_reader_base = __or_direct_reader_data + __or_writer_base_idx;
+                    dacpp::mpi::ResidentHaloView2D<const double> view_cur{__or_reader_base, 0, static_cast<int>(__or_local_reader_cols)};
+                    dacpp::mpi::ContiguousView1D<const double> view_prev{__or_direct_reader_base, 0};
+                    dacpp::mpi::ContiguousView1D<double> view_next{__or_writer_base, 0};
                     waveEq_mpi_local(view_cur, view_prev, view_next);
                 });
             });
@@ -215,67 +222,55 @@ void __dacpp_mpi_or_waveEqShell_waveEq_0_run(__dacpp_mpi_or_waveEqShell_waveEq_0
         std::swap(__or_local_prev, __or_local_cur);
         std::swap(__or_local_cur, __or_local_next);
     {
-        const int64_t __or_boundary_begin = static_cast<int64_t>(0);
-        const int64_t __or_boundary_end = static_cast<int64_t>(NX-1);
-        for (int64_t __or_boundary_idx = __or_boundary_begin; __or_boundary_idx <= __or_boundary_end; ++__or_boundary_idx) {
-            const int64_t __or_boundary_target_row = __or_boundary_idx;
-            const int64_t __or_boundary_target_col = NY-1;
-            const int64_t __or_boundary_source_row = __or_boundary_idx;
-            const int64_t __or_boundary_source_col = NY-1;
-            if (__or_boundary_target_row < 0 || __or_boundary_target_col < 0 || __or_boundary_target_row >= __or_input_rows || __or_boundary_target_col >= __or_input_cols) continue;
-            if (__or_boundary_target_row < __or_local_reader_row_begin || __or_boundary_target_row >= __or_local_reader_row_begin + __or_local_reader_rows) continue;
-            if (__or_boundary_target_col < __or_local_reader_col_begin || __or_boundary_target_col >= __or_local_reader_col_begin + __or_local_reader_cols) continue;
-            const int64_t __or_boundary_target_local = (__or_boundary_target_row - __or_local_reader_row_begin) * __or_local_reader_cols + (__or_boundary_target_col - __or_local_reader_col_begin);
-            if (__or_boundary_target_local < 0 || static_cast<std::size_t>(__or_boundary_target_local) >= __or_local_cur.size()) continue;
-            __or_local_cur[static_cast<std::size_t>(__or_boundary_target_local)] = static_cast<double>(0);
+        const int64_t __or_boundary_col = static_cast<int64_t>(NY-1);
+        if (__or_boundary_col >= __or_local_reader_col_begin && __or_boundary_col < __or_local_reader_col_begin + __or_local_reader_cols) {
+            const int64_t __or_boundary_begin = std::max<int64_t>(static_cast<int64_t>(0), __or_local_reader_row_begin);
+            const int64_t __or_boundary_end = std::min<int64_t>((static_cast<int64_t>(NX-1) + 1), __or_local_reader_row_begin + __or_local_reader_rows);
+            const int64_t __or_boundary_local_col = __or_boundary_col - __or_local_reader_col_begin;
+            for (int64_t __or_boundary_row = __or_boundary_begin; __or_boundary_row < __or_boundary_end; ++__or_boundary_row) {
+                const int64_t __or_boundary_target_local = (__or_boundary_row - __or_local_reader_row_begin) * __or_local_reader_cols + __or_boundary_local_col;
+                if (__or_boundary_target_local < 0 || static_cast<std::size_t>(__or_boundary_target_local) >= __or_local_cur.size()) continue;
+                __or_local_cur[static_cast<std::size_t>(__or_boundary_target_local)] = static_cast<double>(0);
+            }
         }
     }
     {
-        const int64_t __or_boundary_begin = static_cast<int64_t>(0);
-        const int64_t __or_boundary_end = static_cast<int64_t>(NX-1);
-        for (int64_t __or_boundary_idx = __or_boundary_begin; __or_boundary_idx <= __or_boundary_end; ++__or_boundary_idx) {
-            const int64_t __or_boundary_target_row = __or_boundary_idx;
-            const int64_t __or_boundary_target_col = 0;
-            const int64_t __or_boundary_source_row = __or_boundary_idx;
-            const int64_t __or_boundary_source_col = 0;
-            if (__or_boundary_target_row < 0 || __or_boundary_target_col < 0 || __or_boundary_target_row >= __or_input_rows || __or_boundary_target_col >= __or_input_cols) continue;
-            if (__or_boundary_target_row < __or_local_reader_row_begin || __or_boundary_target_row >= __or_local_reader_row_begin + __or_local_reader_rows) continue;
-            if (__or_boundary_target_col < __or_local_reader_col_begin || __or_boundary_target_col >= __or_local_reader_col_begin + __or_local_reader_cols) continue;
-            const int64_t __or_boundary_target_local = (__or_boundary_target_row - __or_local_reader_row_begin) * __or_local_reader_cols + (__or_boundary_target_col - __or_local_reader_col_begin);
-            if (__or_boundary_target_local < 0 || static_cast<std::size_t>(__or_boundary_target_local) >= __or_local_cur.size()) continue;
-            __or_local_cur[static_cast<std::size_t>(__or_boundary_target_local)] = static_cast<double>(0);
+        const int64_t __or_boundary_col = static_cast<int64_t>(0);
+        if (__or_boundary_col >= __or_local_reader_col_begin && __or_boundary_col < __or_local_reader_col_begin + __or_local_reader_cols) {
+            const int64_t __or_boundary_begin = std::max<int64_t>(static_cast<int64_t>(0), __or_local_reader_row_begin);
+            const int64_t __or_boundary_end = std::min<int64_t>((static_cast<int64_t>(NX-1) + 1), __or_local_reader_row_begin + __or_local_reader_rows);
+            const int64_t __or_boundary_local_col = __or_boundary_col - __or_local_reader_col_begin;
+            for (int64_t __or_boundary_row = __or_boundary_begin; __or_boundary_row < __or_boundary_end; ++__or_boundary_row) {
+                const int64_t __or_boundary_target_local = (__or_boundary_row - __or_local_reader_row_begin) * __or_local_reader_cols + __or_boundary_local_col;
+                if (__or_boundary_target_local < 0 || static_cast<std::size_t>(__or_boundary_target_local) >= __or_local_cur.size()) continue;
+                __or_local_cur[static_cast<std::size_t>(__or_boundary_target_local)] = static_cast<double>(0);
+            }
         }
     }
     {
-        const int64_t __or_boundary_begin = static_cast<int64_t>(0);
-        const int64_t __or_boundary_end = static_cast<int64_t>(NY-1);
-        for (int64_t __or_boundary_idx = __or_boundary_begin; __or_boundary_idx <= __or_boundary_end; ++__or_boundary_idx) {
-            const int64_t __or_boundary_target_row = NX - 1;
-            const int64_t __or_boundary_target_col = __or_boundary_idx;
-            const int64_t __or_boundary_source_row = NX - 1;
-            const int64_t __or_boundary_source_col = __or_boundary_idx;
-            if (__or_boundary_target_row < 0 || __or_boundary_target_col < 0 || __or_boundary_target_row >= __or_input_rows || __or_boundary_target_col >= __or_input_cols) continue;
-            if (__or_boundary_target_row < __or_local_reader_row_begin || __or_boundary_target_row >= __or_local_reader_row_begin + __or_local_reader_rows) continue;
-            if (__or_boundary_target_col < __or_local_reader_col_begin || __or_boundary_target_col >= __or_local_reader_col_begin + __or_local_reader_cols) continue;
-            const int64_t __or_boundary_target_local = (__or_boundary_target_row - __or_local_reader_row_begin) * __or_local_reader_cols + (__or_boundary_target_col - __or_local_reader_col_begin);
-            if (__or_boundary_target_local < 0 || static_cast<std::size_t>(__or_boundary_target_local) >= __or_local_cur.size()) continue;
-            __or_local_cur[static_cast<std::size_t>(__or_boundary_target_local)] = static_cast<double>(0);
+        const int64_t __or_boundary_row = static_cast<int64_t>(NX - 1);
+        if (__or_boundary_row >= __or_local_reader_row_begin && __or_boundary_row < __or_local_reader_row_begin + __or_local_reader_rows) {
+            const int64_t __or_boundary_begin = std::max<int64_t>(static_cast<int64_t>(0), __or_local_reader_col_begin);
+            const int64_t __or_boundary_end = std::min<int64_t>((static_cast<int64_t>(NY-1) + 1), __or_local_reader_col_begin + __or_local_reader_cols);
+            const int64_t __or_boundary_local_row = __or_boundary_row - __or_local_reader_row_begin;
+            for (int64_t __or_boundary_col = __or_boundary_begin; __or_boundary_col < __or_boundary_end; ++__or_boundary_col) {
+                const int64_t __or_boundary_target_local = __or_boundary_local_row * __or_local_reader_cols + (__or_boundary_col - __or_local_reader_col_begin);
+                if (__or_boundary_target_local < 0 || static_cast<std::size_t>(__or_boundary_target_local) >= __or_local_cur.size()) continue;
+                __or_local_cur[static_cast<std::size_t>(__or_boundary_target_local)] = static_cast<double>(0);
+            }
         }
     }
     {
-        const int64_t __or_boundary_begin = static_cast<int64_t>(0);
-        const int64_t __or_boundary_end = static_cast<int64_t>(NY-1);
-        for (int64_t __or_boundary_idx = __or_boundary_begin; __or_boundary_idx <= __or_boundary_end; ++__or_boundary_idx) {
-            const int64_t __or_boundary_target_row = 0;
-            const int64_t __or_boundary_target_col = __or_boundary_idx;
-            const int64_t __or_boundary_source_row = 0;
-            const int64_t __or_boundary_source_col = __or_boundary_idx;
-            if (__or_boundary_target_row < 0 || __or_boundary_target_col < 0 || __or_boundary_target_row >= __or_input_rows || __or_boundary_target_col >= __or_input_cols) continue;
-            if (__or_boundary_target_row < __or_local_reader_row_begin || __or_boundary_target_row >= __or_local_reader_row_begin + __or_local_reader_rows) continue;
-            if (__or_boundary_target_col < __or_local_reader_col_begin || __or_boundary_target_col >= __or_local_reader_col_begin + __or_local_reader_cols) continue;
-            const int64_t __or_boundary_target_local = (__or_boundary_target_row - __or_local_reader_row_begin) * __or_local_reader_cols + (__or_boundary_target_col - __or_local_reader_col_begin);
-            if (__or_boundary_target_local < 0 || static_cast<std::size_t>(__or_boundary_target_local) >= __or_local_cur.size()) continue;
-            __or_local_cur[static_cast<std::size_t>(__or_boundary_target_local)] = static_cast<double>(0);
+        const int64_t __or_boundary_row = static_cast<int64_t>(0);
+        if (__or_boundary_row >= __or_local_reader_row_begin && __or_boundary_row < __or_local_reader_row_begin + __or_local_reader_rows) {
+            const int64_t __or_boundary_begin = std::max<int64_t>(static_cast<int64_t>(0), __or_local_reader_col_begin);
+            const int64_t __or_boundary_end = std::min<int64_t>((static_cast<int64_t>(NY-1) + 1), __or_local_reader_col_begin + __or_local_reader_cols);
+            const int64_t __or_boundary_local_row = __or_boundary_row - __or_local_reader_row_begin;
+            for (int64_t __or_boundary_col = __or_boundary_begin; __or_boundary_col < __or_boundary_end; ++__or_boundary_col) {
+                const int64_t __or_boundary_target_local = __or_boundary_local_row * __or_local_reader_cols + (__or_boundary_col - __or_local_reader_col_begin);
+                if (__or_boundary_target_local < 0 || static_cast<std::size_t>(__or_boundary_target_local) >= __or_local_cur.size()) continue;
+                __or_local_cur[static_cast<std::size_t>(__or_boundary_target_local)] = static_cast<double>(0);
+            }
         }
     }
     }
@@ -363,7 +358,7 @@ void __dacpp_mpi_or_waveEqShell_waveEq_0_materialize(__dacpp_mpi_or_waveEqShell_
     }
     dacpp::mpi::recordProfileSegment(ctx.__or_profile, dacpp::mpi::ProfileSegment::Materialize, dacpp_profile_materialize_start);
     (void)__or_arg1;
-    // End-to-end timing is reported in main; keep generated segmented profiling quiet.
+    dacpp::mpi::reportSegmentedProfile("__dacpp_mpi_or_waveEqShell_waveEq_0_materialize", ctx.__or_profile, MPI_COMM_WORLD);
 }
 void __dacpp_mpi_or_waveEqShell_waveEq_0(dacpp::Matrix<double> & __or_arg0, dacpp::Matrix<double> & __or_arg1, dacpp::Matrix<double> & __or_arg2) {
     __dacpp_mpi_or_waveEqShell_waveEq_0_ctx ctx;
@@ -373,7 +368,7 @@ void __dacpp_mpi_or_waveEqShell_waveEq_0(dacpp::Matrix<double> & __or_arg0, dacp
 }
 
 int main() {
-    const auto e2e_t0 = std::chrono::steady_clock::now();
+    const auto __dacpp_test_e2e_start = std::chrono::steady_clock::now();
     int dacpp_mpi_finalize_needed = 0;
     int dacpp_mpi_initialized = 0;
     MPI_Initialized(&dacpp_mpi_initialized);
@@ -419,9 +414,13 @@ int main() {
     dacpp::Matrix<double> matNext = u_next_tensor[{1,NX-1}][{1,NY-1}];
     
         __dacpp_mpi_or_waveEqShell_waveEq_0_ctx __dacpp_mpi_or_ctx_0;
+    MPI_Barrier(MPI_COMM_WORLD);
+    const double __dacpp_test_total_start = MPI_Wtime();
     __dacpp_mpi_or_waveEqShell_waveEq_0_init(__dacpp_mpi_or_ctx_0, matCur, matPrev, matNext);
     __dacpp_mpi_or_waveEqShell_waveEq_0_run(__dacpp_mpi_or_ctx_0, matCur, matPrev, matNext);
     __dacpp_mpi_or_waveEqShell_waveEq_0_materialize(__dacpp_mpi_or_ctx_0, matCur, matPrev, matNext);
+    MPI_Barrier(MPI_COMM_WORLD);
+    const double __dacpp_test_total_time = MPI_Wtime() - __dacpp_test_total_start;
 for(int i = 0;false; i++) {
         ((void)0);
         
@@ -433,22 +432,24 @@ for(int i = 0;false; i++) {
     }
     //
     if (__dacpp_mpi_is_root_rank()) {
-        // Matrix output is intentionally disabled for large benchmark runs.
+        // Full matrix printing is intentionally disabled for Sunway runs.
     }
 
-    const auto e2e_t1 = std::chrono::steady_clock::now();
-    const double e2e_local_seconds =
-        std::chrono::duration<double>(e2e_t1 - e2e_t0).count();
-    double e2e_seconds = 0.0;
-    MPI_Reduce(&e2e_local_seconds,
-               &e2e_seconds,
+    __dacpp_test::print_e2e_summary("waveEquation.large_dac.sunway.cpp", mpi_rank, mpi_size, __dacpp_test_total_time);
+
+    const auto __dacpp_test_e2e_end = std::chrono::steady_clock::now();
+    const double __dacpp_test_e2e_local =
+        std::chrono::duration<double>(__dacpp_test_e2e_end - __dacpp_test_e2e_start).count();
+    double __dacpp_test_e2e_max = 0.0;
+    MPI_Reduce(&__dacpp_test_e2e_local,
+               &__dacpp_test_e2e_max,
                1,
                MPI_DOUBLE,
                MPI_MAX,
                0,
                MPI_COMM_WORLD);
     if (mpi_rank == 0) {
-        std::cerr << "[MPI_DAC][wave] e2e_seconds=" << e2e_seconds
+        std::cerr << "[MPI_DAC][wave] e2e_seconds=" << __dacpp_test_e2e_max
                   << std::endl;
     }
     
