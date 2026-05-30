@@ -1,6 +1,9 @@
 #include <iostream>
 #include <vector>
 #include <cmath>
+#include <cstdint>
+#include <cstdlib>
+#include <fstream>
 #include "ReconTensor.h"
 // #define DACPP_TRANSLATE_MODE 1
 
@@ -12,19 +15,31 @@ namespace dacpp {
 
 
 // 网格参数
-const int NX = 8;           // x方向网格数量
-const int NY = 8;           // y方向网格数量
-const double Lx = 10.0f;       // x方向长度
-const double Ly = 10.0f;       // y方向长度
-const double alpha = 0.01f;    // 热扩散系数
-const int TIME_STEPS = 10;  // 时间步数
+#ifndef STENCIL_NX
+#define STENCIL_NX 8
+#endif
+
+#ifndef STENCIL_NY
+#define STENCIL_NY 8
+#endif
+
+#ifndef STENCIL_TIME_STEPS
+#define STENCIL_TIME_STEPS 10
+#endif
+
+constexpr int NX = STENCIL_NX;           // x方向网格数量
+constexpr int NY = STENCIL_NY;           // y方向网格数量
+constexpr double Lx = 10.0f;       // x方向长度
+constexpr double Ly = 10.0f;       // y方向长度
+constexpr double alpha = 0.01f;    // 热扩散系数
+constexpr int TIME_STEPS = STENCIL_TIME_STEPS;  // 时间步数
 // 空间步长
-const double dx = Lx / (NX - 1);
-const double dy = Ly / (NY - 1);
+constexpr double dx = Lx / (NX - 1);
+constexpr double dy = Ly / (NY - 1);
 
 // 稳定性条件
-const double dt_stability = (dx * dx * dy * dy) / (2.0f * alpha * (dx * dx + dy * dy));
-const double delta_t = 0.4f * dt_stability; // 选择一个更严格的时间步长以确保稳定性
+constexpr double dt_stability = (dx * dx * dy * dy) / (2.0f * alpha * (dx * dx + dy * dy));
+constexpr double delta_t = 0.4f * dt_stability; // 选择一个更严格的时间步长以确保稳定性
 
 
 
@@ -51,6 +66,33 @@ static inline bool __dacpp_mpi_is_root_rank() {
 }
 
 using namespace sycl;
+
+namespace __dacpp_test {
+inline void print_e2e_summary(int mpi_rank, double total_time) {
+    double total_max = 0.0;
+    MPI_Reduce(
+        &total_time, &total_max, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+    if (mpi_rank == 0) {
+        std::cerr << "[MPI_DAC][stencil] e2e_seconds=" << total_max << std::endl;
+    }
+}
+
+#ifdef STENCIL_ENABLE_RESULT_DUMP
+inline void dump_result_if_requested(const std::vector<double>& values) {
+    const char* path = std::getenv("STENCIL_RESULT_DUMP");
+    if (path == nullptr || path[0] == '\0') {
+        return;
+    }
+    std::ofstream out(path, std::ios::binary);
+    const std::uint64_t rows = static_cast<std::uint64_t>(NX);
+    const std::uint64_t cols = static_cast<std::uint64_t>(NY);
+    out.write(reinterpret_cast<const char*>(&rows), sizeof(rows));
+    out.write(reinterpret_cast<const char*>(&cols), sizeof(cols));
+    out.write(reinterpret_cast<const char*>(values.data()),
+              static_cast<std::streamsize>(values.size() * sizeof(double)));
+}
+#endif
+}  // namespace __dacpp_test
 
 template <typename __dacpp_view_t0, typename __dacpp_view_t1>
 __attribute__((always_inline)) inline void stencil_mpi_local(__dacpp_view_t0 mat, __dacpp_view_t1 out) {
@@ -172,7 +214,7 @@ void __dacpp_mpi_or_stencilShell_stencil_0_run(__dacpp_mpi_or_stencilShell_stenc
                     q.submit([&](sycl::handler& h) {
                         auto __or_reader_acc = __or_reader_buf.get_access<sycl::access::mode::read>(h);
                         auto __or_writer_acc = __or_writer_buf.get_access<sycl::access::mode::discard_write>(h);
-                        h.parallel_for(sycl::range<1>(static_cast<std::size_t>(__or_kernel_item_count)), [=](sycl::id<1> idx) {
+                        h.parallel_for<class __dacpp_sycl_kernel_stencil_row_temporal_reader_to_writer_0>(sycl::range<1>(static_cast<std::size_t>(__or_kernel_item_count)), [=](sycl::id<1> idx) {
                             const int item_linear = static_cast<int>(idx[0]);
                             const int local_row = item_linear / static_cast<int>(__or_local_output_cols);
                             const int local_col = item_linear % static_cast<int>(__or_local_output_cols);
@@ -191,7 +233,7 @@ void __dacpp_mpi_or_stencilShell_stencil_0_run(__dacpp_mpi_or_stencilShell_stenc
                     q.submit([&](sycl::handler& h) {
                         auto __or_reader_acc = __or_writer_buf.get_access<sycl::access::mode::read>(h);
                         auto __or_writer_acc = __or_reader_buf.get_access<sycl::access::mode::discard_write>(h);
-                        h.parallel_for(sycl::range<1>(static_cast<std::size_t>(__or_kernel_item_count)), [=](sycl::id<1> idx) {
+                        h.parallel_for<class __dacpp_sycl_kernel_stencil_row_temporal_writer_to_reader_0>(sycl::range<1>(static_cast<std::size_t>(__or_kernel_item_count)), [=](sycl::id<1> idx) {
                             const int item_linear = static_cast<int>(idx[0]);
                             const int local_row = item_linear / static_cast<int>(__or_local_output_cols);
                             const int local_col = item_linear % static_cast<int>(__or_local_output_cols);
@@ -212,7 +254,7 @@ void __dacpp_mpi_or_stencilShell_stencil_0_run(__dacpp_mpi_or_stencilShell_stenc
             if (__or_current_in_reader_buf) {
                 q.submit([&](sycl::handler& h) {
                     auto __or_boundary_acc = __or_reader_buf.get_access<sycl::access::mode::read_write>(h);
-                    h.parallel_for(sycl::range<1>(1), [=](sycl::id<1>) {
+                    h.parallel_for<class __dacpp_sycl_kernel_stencil_boundary_reader_0>(sycl::range<1>(1), [=](sycl::id<1>) {
                         auto* __or_boundary_data = __or_boundary_acc.template get_multi_ptr<sycl::access::decorated::no>().get();
     {
         const int64_t __or_boundary_row = static_cast<int64_t>(0);
@@ -291,7 +333,7 @@ void __dacpp_mpi_or_stencilShell_stencil_0_run(__dacpp_mpi_or_stencilShell_stenc
             } else {
                 q.submit([&](sycl::handler& h) {
                     auto __or_boundary_acc = __or_writer_buf.get_access<sycl::access::mode::read_write>(h);
-                    h.parallel_for(sycl::range<1>(1), [=](sycl::id<1>) {
+                    h.parallel_for<class __dacpp_sycl_kernel_stencil_boundary_writer_0>(sycl::range<1>(1), [=](sycl::id<1>) {
                         auto* __or_boundary_data = __or_boundary_acc.template get_multi_ptr<sycl::access::decorated::no>().get();
     {
         const int64_t __or_boundary_row = static_cast<int64_t>(0);
@@ -489,6 +531,7 @@ void __dacpp_mpi_or_stencilShell_stencil_0(dacpp::Matrix<double> & __or_arg0, da
 }
 
 int main() {
+    const auto __dacpp_test_e2e_start = std::chrono::steady_clock::now();
     int dacpp_mpi_finalize_needed = 0;
     int dacpp_mpi_initialized = 0;
     MPI_Initialized(&dacpp_mpi_initialized);
@@ -545,12 +588,25 @@ for(int i=0;false;i++) {
         
     }
     if (__dacpp_mpi_is_root_rank()) {
-        matIn[0].print();
+        // Full matrix printing is intentionally disabled for Sunway runs.
+#ifdef STENCIL_ENABLE_RESULT_DUMP
+        std::vector<double> __dacpp_check_values;
+        matIn.tensor2Array(__dacpp_check_values);
+        __dacpp_test::dump_result_if_requested(__dacpp_check_values);
+#endif
     }
 
 
     // 输出最终结果的某些值作为示例
     //cout << "Final temperature at center: " << vec2D[(NX/2)*NY + (NY/2)] << "\n";
+
+    MPI_Barrier(MPI_COMM_WORLD);
+    const auto __dacpp_test_e2e_end = std::chrono::steady_clock::now();
+    const double __dacpp_test_e2e_seconds =
+        std::chrono::duration<double>(__dacpp_test_e2e_end -
+                                      __dacpp_test_e2e_start)
+            .count();
+    __dacpp_test::print_e2e_summary(mpi_rank, __dacpp_test_e2e_seconds);
 
     
     if (dacpp_mpi_finalize_needed) {

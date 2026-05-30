@@ -4,6 +4,9 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
+#include <cstdlib>
+#include <fstream>
 #include <iostream>
 #include <vector>
 
@@ -31,6 +34,22 @@ constexpr int TIME_STEPS = STENCIL_TIME_STEPS;
 constexpr double Lx = 10.0;
 constexpr double Ly = 10.0;
 constexpr double alpha = 0.01;
+
+#ifdef STENCIL_ENABLE_RESULT_DUMP
+void dump_result_if_requested(const std::vector<double>& values) {
+    const char* path = std::getenv("STENCIL_RESULT_DUMP");
+    if (path == nullptr || path[0] == '\0') {
+        return;
+    }
+    std::ofstream out(path, std::ios::binary);
+    const std::uint64_t rows = static_cast<std::uint64_t>(NX);
+    const std::uint64_t cols = static_cast<std::uint64_t>(NY);
+    out.write(reinterpret_cast<const char*>(&rows), sizeof(rows));
+    out.write(reinterpret_cast<const char*>(&cols), sizeof(cols));
+    out.write(reinterpret_cast<const char*>(values.data()),
+              static_cast<std::streamsize>(values.size() * sizeof(double)));
+}
+#endif
 
 int rows_for_rank(int rank, int size) {
     const int base = NX / size;
@@ -149,8 +168,6 @@ int main(int argc, char** argv) {
             }
         }
 
-        std::fill(local_next.begin(), local_next.end(), 0.0);
-
         if (local_owned_size > 0) {
             sycl_compat::buffer<double, 1> curr_buf(
                 local_curr.data(), sycl_compat::range<1>(local_curr.size()));
@@ -161,7 +178,8 @@ int main(int argc, char** argv) {
                 auto curr =
                     curr_buf.get_access<sycl_compat::access::mode::read>(h);
                 auto next =
-                    next_buf.get_access<sycl_compat::access::mode::write>(h);
+                    next_buf.get_access<
+                        sycl_compat::access::mode::discard_write>(h);
 
                 h.parallel_for<StencilRowHaloKernel>(
                     sycl_compat::range<1>(local_owned_size),
@@ -245,16 +263,13 @@ int main(int argc, char** argv) {
                 MPI_COMM_WORLD);
 
     if (rank == 0) {
-        std::cout << "{";
-        for (int j = 0; j < NY; ++j) {
-            std::cout << global_curr[j];
-            if (j + 1 < NY) {
-                std::cout << ", ";
-            }
-        }
-        std::cout << "}" << std::endl;
+        // Full result printing is intentionally disabled for Sunway benchmark runs.
+#ifdef STENCIL_ENABLE_RESULT_DUMP
+        dump_result_if_requested(global_curr);
+#endif
     }
 
+    MPI_Barrier(MPI_COMM_WORLD);
     const auto e2e_t1 = std::chrono::steady_clock::now();
     const double e2e_local_seconds =
         std::chrono::duration<double>(e2e_t1 - e2e_t0).count();
