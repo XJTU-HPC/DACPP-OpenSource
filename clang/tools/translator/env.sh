@@ -113,6 +113,31 @@ if [[ "$HOST_OS" == "Darwin" ]]; then
     fi
 fi
 
+dacpp_args_enable_mpi() {
+    local arg
+    for arg in "$@"; do
+        case "$arg" in
+            --)
+                break
+                ;;
+            --mpi|-mpi)
+                return 0
+                ;;
+            --mpi=*|-mpi=*)
+                local value="${arg#*=}"
+                case "$value" in
+                    0|false|False|FALSE|off|OFF)
+                        ;;
+                    *)
+                        return 0
+                        ;;
+                esac
+                ;;
+        esac
+    done
+    return 1
+}
+
 # dacpp test.cpp
 dacpp() {
 
@@ -133,6 +158,23 @@ dacpp() {
         -I"$WORK_DIR"/dacppLib/include
     )
 
+    TRANSLATOR_ARGS=()
+    USER_COMPILE_ARGS=()
+    local after_user_separator=0
+    local arg
+    for arg in "$@"; do
+        if [[ "$after_user_separator" == "0" && "$arg" == "--" ]]; then
+            after_user_separator=1
+            continue
+        fi
+
+        if [[ "$after_user_separator" == "1" ]]; then
+            USER_COMPILE_ARGS+=("$arg")
+        else
+            TRANSLATOR_ARGS+=("$arg")
+        fi
+    done
+
     if [[ "$HOST_OS" == "Darwin" ]]; then
         if [[ ${#COMMON_CXX_FLAGS[@]} -gt 0 ]]; then
             for flag in "${COMMON_CXX_FLAGS[@]}"; do
@@ -146,8 +188,18 @@ dacpp() {
         )
     fi
 
-    "$TRANSLATOR" "$@" \
+    if ! dacpp_args_enable_mpi "$@" && [[ -d "$WORK_DIR/single_overlay" ]]; then
+        INCLUDE_ARGS=(
+            -I"$WORK_DIR"/single_overlay/dacppLib/include
+            -I"$WORK_DIR"/single_overlay/dpcppLib/include
+            -I"$WORK_DIR"/single_overlay/rewriter/include
+            "${INCLUDE_ARGS[@]}"
+        )
+    fi
+
+    "$TRANSLATOR" "${TRANSLATOR_ARGS[@]}" \
     "${EXTRA_ARGS[@]}" -- \
+    "${USER_COMPILE_ARGS[@]}" \
     "${INCLUDE_ARGS[@]}"
 }
 
@@ -155,6 +207,12 @@ INCLUDE_DIRS=(
     "$WORK_DIR/dpcppLib/include/"
     "$WORK_DIR/dacppLib/include/"
     "$WORK_DIR/rewriter/include/"
+)
+
+SINGLE_INCLUDE_DIRS=(
+    "$WORK_DIR/single_overlay/dpcppLib/include/"
+    "$WORK_DIR/single_overlay/dacppLib/include/"
+    "$WORK_DIR/single_overlay/rewriter/include/"
 )
 
 # SRC_FILES=(
@@ -203,6 +261,12 @@ acpp-compile() {
 
     local input_cpp="$1"
     local output_bin="${2:-$(default_output_for_generated "$input_cpp")}"
+    local compile_include_dirs=("${INCLUDE_DIRS[@]}")
+
+    if [[ -d "$WORK_DIR/single_overlay" ]] &&
+       ! grep -Fq '"MPIPlanner.h"' "$input_cpp" 2>/dev/null; then
+        compile_include_dirs=("${SINGLE_INCLUDE_DIRS[@]}" "${INCLUDE_DIRS[@]}")
+    fi
 
     DYLD_LIBRARY_PATH="$ACPP_ROOT/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}" \
     "$ACPP_ROOT/bin/acpp" \
@@ -210,7 +274,7 @@ acpp-compile() {
         "$input_cpp" \
         "${COMMON_CXX_FLAGS[@]}" \
         "${ACPP_COMPILE_FLAGS[@]}" \
-        "${INCLUDE_DIRS[@]/#/-I}" \
+        "${compile_include_dirs[@]/#/-I}" \
         "${ACPP_LINK_FLAGS[@]}" \
         -o "$output_bin"
 }

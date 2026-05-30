@@ -77,18 +77,66 @@ set(REWRITER_SOURCES
   rewriter/lib/Multiple_template.cpp
 )
 
+set(SINGLE_TRANSLATOR_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/single_overlay)
+set(SINGLE_DACPPLIB_SOURCES
+  ${SINGLE_TRANSLATOR_ROOT}/dacppLib/lib/exception.cpp
+  ${SINGLE_TRANSLATOR_ROOT}/dacppLib/include/ReconTensor.h
+)
+set(SINGLE_PARSER_SOURCES
+  ${SINGLE_TRANSLATOR_ROOT}/parser/lib/ASTParse.cpp
+  ${SINGLE_TRANSLATOR_ROOT}/parser/lib/Calc.cpp
+  ${SINGLE_TRANSLATOR_ROOT}/parser/lib/DacppStructure.cpp
+  ${SINGLE_TRANSLATOR_ROOT}/parser/lib/Param.cpp
+  ${SINGLE_TRANSLATOR_ROOT}/parser/lib/Shell.cpp
+  ${SINGLE_TRANSLATOR_ROOT}/parser/lib/Split.cpp
+  ${SINGLE_TRANSLATOR_ROOT}/parser/lib/Dacfor.cpp
+)
+set(SINGLE_REWRITER_SOURCES
+  ${SINGLE_TRANSLATOR_ROOT}/rewriter/lib/Rewriter_Buffer_new.cpp
+  ${SINGLE_TRANSLATOR_ROOT}/rewriter/lib/buffer_template_new.cpp
+)
+
 add_library(DacppLib ${DACPPLIB_SOURCES})
 add_library(ParserLib ${PARSER_SOURCES})
 add_library(RewriterLib ${REWRITER_SOURCES})
+add_library(DacppLibSingle ${SINGLE_DACPPLIB_SOURCES})
+add_library(ParserLibSingle ${SINGLE_PARSER_SOURCES})
+add_library(RewriterLibSingle ${SINGLE_REWRITER_SOURCES})
+
+function(target_use_single_overlay target_name)
+  target_include_directories(${target_name} BEFORE PRIVATE
+    ${SINGLE_TRANSLATOR_ROOT}/dacppLib/include
+    ${SINGLE_TRANSLATOR_ROOT}/dpcppLib/include
+    ${SINGLE_TRANSLATOR_ROOT}/parser/include
+    ${SINGLE_TRANSLATOR_ROOT}/rewriter/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/dacppLib/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/dpcppLib/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/parser/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/rewriter/include
+  )
+endfunction()
+
+target_use_single_overlay(DacppLibSingle)
+target_use_single_overlay(ParserLibSingle)
+target_use_single_overlay(RewriterLibSingle)
 
 add_clang_executable(translator
   translator.cpp
+)
+
+add_clang_executable(translator_single
+  ${SINGLE_TRANSLATOR_ROOT}/translator.cpp
 )
 
 
 set_target_properties(translator PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/translator
 )
+set_target_properties(translator_single PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/translator
+)
+
+target_use_single_overlay(translator_single)
 
 
 clang_target_link_libraries(translator
@@ -103,5 +151,20 @@ clang_target_link_libraries(translator
   ParserLib
   RewriterLib
 )
+
+clang_target_link_libraries(translator_single
+  PRIVATE
+  clangAST
+  clangASTMatchers
+  clangBasic
+  clangFrontend
+  clangSerialization
+  clangTooling
+  DacppLibSingle
+  ParserLibSingle
+  RewriterLibSingle
+)
+
+add_dependencies(translator translator_single)
 
 add_subdirectory(tests)

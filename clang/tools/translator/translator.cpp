@@ -10,11 +10,20 @@
 #include "clang/Tooling/CommonOptionsParser.h"
 #include "clang/Tooling/Tooling.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/ADT/SmallString.h"
+#include "llvm/Support/FileSystem.h"
+#include "llvm/Support/Path.h"
+#include <cerrno>
+#include <cstdio>
+#include <cstring>
 #include <regex>
 #include <set>
 #include <string>
 #include <unordered_map>
 #include <functional>
+#include <vector>
+#include <sys/wait.h>
+#include <unistd.h>
 #include "clang/AST/ASTTypeTraits.h"
 
 #include "ASTParse.h"
@@ -34,6 +43,195 @@
 using namespace clang;
 
 namespace {
+
+bool isFalseBoolValue(const std::string& value) {
+    return value == "0" || value == "false" || value == "False" ||
+           value == "FALSE" || value == "off" || value == "OFF";
+}
+
+bool hasMpiRequest(int argc, const char **argv) {
+    for (int idx = 1; idx < argc; ++idx) {
+        const std::string arg = argv[idx] ? argv[idx] : "";
+        if (arg == "--") {
+            break;
+        }
+        if (arg == "--mpi" || arg == "-mpi") {
+            return true;
+        }
+        const std::string longPrefix = "--mpi=";
+        if (arg.rfind(longPrefix, 0) == 0) {
+            return !isFalseBoolValue(arg.substr(longPrefix.size()));
+        }
+        const std::string shortPrefix = "-mpi=";
+        if (arg.rfind(shortPrefix, 0) == 0) {
+            return !isFalseBoolValue(arg.substr(shortPrefix.size()));
+        }
+    }
+    return false;
+}
+
+std::string unsupportedSingleTranslatorMode(int argc, const char **argv) {
+    for (int idx = 1; idx < argc; ++idx) {
+        const std::string arg = argv[idx] ? argv[idx] : "";
+        if (arg == "--") {
+            break;
+        }
+
+        if (arg == "--usm" || arg == "-usm") {
+            return "usm";
+        }
+        if (arg == "--usm_time" || arg == "-usm_time") {
+            return "usm_time";
+        }
+
+        const std::string longModePrefix = "--mode=";
+        if (arg.rfind(longModePrefix, 0) == 0) {
+            const std::string value = arg.substr(longModePrefix.size());
+            if (value != "buffer") {
+                return value.empty() ? "<empty>" : value;
+            }
+        }
+
+        const std::string shortModePrefix = "-mode=";
+        if (arg.rfind(shortModePrefix, 0) == 0) {
+            const std::string value = arg.substr(shortModePrefix.size());
+            if (value != "buffer") {
+                return value.empty() ? "<empty>" : value;
+            }
+        }
+
+        if (arg == "--mode" || arg == "-mode") {
+            if (idx + 1 >= argc) {
+                return "<missing>";
+            }
+            const std::string value = argv[idx + 1] ? argv[idx + 1] : "";
+            if (value != "buffer") {
+                return value.empty() ? "<empty>" : value;
+            }
+            ++idx;
+        }
+    }
+    return "";
+}
+
+bool shouldStripForSingleTranslator(const std::string& arg,
+                                    int argc,
+                                    const char **argv,
+                                    int& idx) {
+    if (arg == "--buffer" || arg == "-buffer" ||
+        arg == "--mode=buffer" || arg == "-mode=buffer") {
+        return true;
+    }
+
+    const std::string longMpiPrefix = "--mpi=";
+    if (arg.rfind(longMpiPrefix, 0) == 0) {
+        return isFalseBoolValue(arg.substr(longMpiPrefix.size()));
+    }
+    const std::string shortMpiPrefix = "-mpi=";
+    if (arg.rfind(shortMpiPrefix, 0) == 0) {
+        return isFalseBoolValue(arg.substr(shortMpiPrefix.size()));
+    }
+
+    if ((arg == "--mode" || arg == "-mode") && idx + 1 < argc) {
+        const std::string value = argv[idx + 1] ? argv[idx + 1] : "";
+        if (value == "buffer") {
+            ++idx;
+            return true;
+        }
+    }
+
+    if (arg == "--mpi-output-sync" || arg == "-mpi-output-sync") {
+        if (idx + 1 < argc) {
+            ++idx;
+        }
+        return true;
+    }
+    if (arg.rfind("--mpi-output-sync=", 0) == 0 ||
+        arg.rfind("-mpi-output-sync=", 0) == 0) {
+        return true;
+    }
+
+    return false;
+}
+
+std::string singleTranslatorPath(const char *argv0) {
+    llvm::SmallString<256> current(
+        llvm::sys::fs::getMainExecutable(argv0,
+                                         reinterpret_cast<void*>(
+                                             &singleTranslatorPath)));
+    llvm::sys::path::remove_filename(current);
+    llvm::sys::path::append(current, "translator_single");
+    return std::string(current.str());
+}
+
+int runSingleTranslator(int argc, const char **argv) {
+    const std::string unsupportedMode =
+        unsupportedSingleTranslatorMode(argc, argv);
+    if (!unsupportedMode.empty()) {
+        std::fprintf(stderr,
+                     "translator_single only supports buffer mode for "
+                     "non-MPI translation; unsupported mode: %s\n",
+                     unsupportedMode.c_str());
+        return 2;
+    }
+
+    const std::string singlePath = singleTranslatorPath(argv[0]);
+    std::vector<std::string> args;
+    args.reserve(static_cast<std::size_t>(argc));
+    args.push_back(singlePath);
+
+    bool afterCompilerSeparator = false;
+    for (int idx = 1; idx < argc; ++idx) {
+        const std::string arg = argv[idx] ? argv[idx] : "";
+        if (arg == "--") {
+            afterCompilerSeparator = true;
+            args.push_back(arg);
+            continue;
+        }
+        if (!afterCompilerSeparator &&
+            shouldStripForSingleTranslator(arg, argc, argv, idx)) {
+            continue;
+        }
+        args.push_back(arg);
+    }
+
+    std::vector<char*> childArgv;
+    childArgv.reserve(args.size() + 1);
+    for (std::string& arg : args) {
+        childArgv.push_back(arg.data());
+    }
+    childArgv.push_back(nullptr);
+
+    const pid_t pid = fork();
+    if (pid == 0) {
+        execv(singlePath.c_str(), childArgv.data());
+        std::fprintf(stderr, "failed to exec %s: %s\n",
+                     singlePath.c_str(), std::strerror(errno));
+        _exit(127);
+    }
+    if (pid < 0) {
+        std::fprintf(stderr, "failed to fork translator_single: %s\n",
+                     std::strerror(errno));
+        return 127;
+    }
+
+    int status = 0;
+    while (waitpid(pid, &status, 0) < 0) {
+        if (errno == EINTR) {
+            continue;
+        }
+        std::fprintf(stderr, "failed to wait for translator_single: %s\n",
+                     std::strerror(errno));
+        return 127;
+    }
+    if (WIFEXITED(status)) {
+        return WEXITSTATUS(status);
+    }
+    if (WIFSIGNALED(status)) {
+        return 128 + WTERMSIG(status);
+    }
+    return 1;
+}
 
 class DacppMacroDetector : public PPCallbacks {
 public:
@@ -622,6 +820,10 @@ if (MpiOpt) {
 static llvm::cl::OptionCategory translator("translator options");
 
 int main(int argc, const char **argv) {
+  if (!hasMpiRequest(argc, argv)) {
+    return runSingleTranslator(argc, argv);
+  }
+
   // 所有命令行 Clang 工具通用的选项解析器
   // auto ExpectedParser =
   //     CommonOptionsParser::create(argc, argv, translator);
