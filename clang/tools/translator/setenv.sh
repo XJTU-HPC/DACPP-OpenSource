@@ -2,16 +2,26 @@
 
 # Check icpx availability
 if ! command -v icpx &> /dev/null; then
-    for oneapi_setvars in \
-        /home/tools/intel/oneapi/setvars.sh \
-        /opt/intel/oneapi/setvars.sh
-    do
-        if [[ -f "$oneapi_setvars" ]]; then
-            echo "Loading Intel oneAPI environment..."
-            source "$oneapi_setvars" &> /dev/null
-            break
-        fi
-    done
+    ONEAPI_SETVARS_CANDIDATES=()
+    if [[ -n "${ONEAPI_SETVARS:-}" ]]; then
+        ONEAPI_SETVARS_CANDIDATES+=("$ONEAPI_SETVARS")
+    fi
+    if [[ -n "${ONEAPI_ROOT:-}" ]]; then
+        ONEAPI_SETVARS_CANDIDATES+=("$ONEAPI_ROOT/setvars.sh")
+    fi
+    if [[ -n "${INTEL_ONEAPI_ROOT:-}" ]]; then
+        ONEAPI_SETVARS_CANDIDATES+=("$INTEL_ONEAPI_ROOT/setvars.sh")
+    fi
+
+    if [[ ${#ONEAPI_SETVARS_CANDIDATES[@]} -gt 0 ]]; then
+        for oneapi_setvars in "${ONEAPI_SETVARS_CANDIDATES[@]}"; do
+            if [[ -f "$oneapi_setvars" ]]; then
+                echo "Loading Intel oneAPI environment..."
+                source "$oneapi_setvars" &> /dev/null
+                break
+            fi
+        done
+    fi
 fi
 
 # Get the directory of this script
@@ -24,10 +34,15 @@ else
 fi
 WORK_DIR=$(dirname "$SCRIPT_PATH")
 HOST_OS=$(uname -s)
-DEFAULT_ACPP_ROOT=/Volumes/QUQ/working/sycl-install
+DACPP_TMP_ROOT="${DACPP_TMP_ROOT:-${TMPDIR:-/tmp}}"
+DACPP_TMP_ROOT="${DACPP_TMP_ROOT%/}"
 
-if [[ -z "${ACPP_ROOT:-}" && -d "$DEFAULT_ACPP_ROOT" ]]; then
-    ACPP_ROOT="$DEFAULT_ACPP_ROOT"
+if [[ -z "$DACPP_TMP_ROOT" ]]; then
+    DACPP_TMP_ROOT="/"
+fi
+
+if [[ -z "${ACPP_ROOT:-}" && -n "${ADAPTIVECPP_ROOT:-}" ]]; then
+    ACPP_ROOT="$ADAPTIVECPP_ROOT"
 fi
 
 resolve_brew_prefix() {
@@ -56,8 +71,22 @@ resolve_libomp_prefix() {
     resolve_brew_prefix libomp
 }
 
+resolve_tool() {
+    type -P "$1" 2>/dev/null || command -v "$1" 2>/dev/null || true
+}
+
 OPENMPI_PREFIX=$(resolve_openmpi_prefix)
 LIBOMP_PREFIX=$(resolve_libomp_prefix)
+DACPP_ICPX="${ICPX:-$(resolve_tool icpx)}"
+DACPP_MPICXX="${MPICXX:-$(resolve_tool mpicxx)}"
+
+if [[ -z "${I_MPI_CXX:-}" && -n "$DACPP_ICPX" ]]; then
+    export I_MPI_CXX="$DACPP_ICPX"
+fi
+
+if [[ -z "${OMPI_CXX:-}" && -n "$DACPP_ICPX" ]]; then
+    export OMPI_CXX="$DACPP_ICPX"
+fi
 
 ACPP_COMPILE_FLAGS=()
 ACPP_LINK_FLAGS=()
@@ -141,7 +170,7 @@ dacpp_args_enable_mpi() {
 # dacpp test.cpp
 dacpp() {
 
-    TRANSLATOR="$WORK_DIR"/../../../build/bin/translator/translator
+    TRANSLATOR="${DACPP_TRANSLATOR:-$WORK_DIR/../../../build/bin/translator/translator}"
 
     # Verify that the translator exists and is executable
     if [[ ! -x "$TRANSLATOR" ]]; then
@@ -199,7 +228,7 @@ dacpp() {
 
     "$TRANSLATOR" "${TRANSLATOR_ARGS[@]}" \
     "${EXTRA_ARGS[@]}" -- \
-    "${USER_COMPILE_ARGS[@]}" \
+    ${USER_COMPILE_ARGS[@]+"${USER_COMPILE_ARGS[@]}"} \
     "${INCLUDE_ARGS[@]}"
 }
 
@@ -218,10 +247,6 @@ SINGLE_INCLUDE_DIRS=(
 # SRC_FILES=(
 #     "$WORK_DIR/rewriter/lib/dacInfo.cpp"
 # )
-
-resolve_tool() {
-    type -P "$1" 2>/dev/null || command -v "$1" 2>/dev/null || true
-}
 
 generated_cpp_for() {
     local input="$1"
@@ -245,7 +270,7 @@ default_output_for_generated() {
     local generated="$1"
     local file_name
     file_name=$(basename "${generated%.*}")
-    printf '%s\n' "/tmp/$file_name"
+    printf '%s\n' "$DACPP_TMP_ROOT/$file_name"
 }
 
 acpp-compile() {
@@ -272,137 +297,114 @@ acpp-compile() {
     "$ACPP_ROOT/bin/acpp" \
         -O2 -std=c++17 \
         "$input_cpp" \
-        "${COMMON_CXX_FLAGS[@]}" \
-        "${ACPP_COMPILE_FLAGS[@]}" \
+        ${COMMON_CXX_FLAGS[@]+"${COMMON_CXX_FLAGS[@]}"} \
+        ${ACPP_COMPILE_FLAGS[@]+"${ACPP_COMPILE_FLAGS[@]}"} \
         "${compile_include_dirs[@]/#/-I}" \
-        "${ACPP_LINK_FLAGS[@]}" \
+        ${ACPP_LINK_FLAGS[@]+"${ACPP_LINK_FLAGS[@]}"} \
         -o "$output_bin"
 }
 
-dacpp-translate-and-build() {
+dacpp_prepare_compile_include_dirs() {
+    local input_cpp="$1"
+    DACPP_COMPILE_INCLUDE_DIRS=("${INCLUDE_DIRS[@]}")
+
+    if [[ -d "$WORK_DIR/single_overlay" ]] &&
+       ! grep -Fq '"MPIPlanner.h"' "$input_cpp" 2>/dev/null; then
+        DACPP_COMPILE_INCLUDE_DIRS=("${SINGLE_INCLUDE_DIRS[@]}" "${INCLUDE_DIRS[@]}")
+    fi
+}
+
+oneapi-compile() {
+    if [[ -z "$DACPP_ICPX" || ! -x "$DACPP_ICPX" ]]; then
+        echo "icpx not found. Set ONEAPI_SETVARS, ONEAPI_ROOT, INTEL_ONEAPI_ROOT, or ICPX." >&2
+        return 127
+    fi
+
     if [[ $# -lt 1 || $# -gt 2 ]]; then
-        echo "usage: dacpp-translate-and-build <source.dac.cpp> [output_bin]" >&2
+        echo "usage: oneapi-compile <generated.cpp> [output_bin]" >&2
         return 2
     fi
 
     local input_cpp="$1"
-    local output_bin="$2"
+    local output_bin="${2:-$(default_output_for_generated "$input_cpp")}"
+    dacpp_prepare_compile_include_dirs "$input_cpp"
 
-    dacpp "$input_cpp" --mpi || return $?
-
-    local generated_cpp
-    generated_cpp=$(generated_cpp_for "$input_cpp")
-
-    if [[ -z "$output_bin" ]]; then
-        acpp-compile "$generated_cpp"
-    else
-        acpp-compile "$generated_cpp" "$output_bin"
-    fi
+    "$DACPP_ICPX" \
+        -O2 -std=c++17 -fsycl \
+        "$input_cpp" \
+        ${COMMON_CXX_FLAGS[@]+"${COMMON_CXX_FLAGS[@]}"} \
+        "${DACPP_COMPILE_INCLUDE_DIRS[@]/#/-I}" \
+        ${ACPP_LINK_FLAGS[@]+"${ACPP_LINK_FLAGS[@]}"} \
+        -o "$output_bin"
 }
 
-ICPX=$(resolve_tool icpx)
-MPICXX=$(resolve_tool mpicxx)
-MPIICPC=$(resolve_tool mpiicpc)
-
-if [[ -z "$MPIICPC" ]]; then
-    MPIICPC="$MPICXX"
-fi
-
-# icpx -fsycl -fsycl-targets=nvptx64-nvidia-cuda --cuda-path=/data/cuda/cuda-11.8 -o test test.cpp
-icpx() {
-    if [[ -z "$ICPX" ]]; then
-        echo "icpx not found in PATH" >&2
+mpicxx-compile() {
+    if [[ -z "$DACPP_MPICXX" || ! -x "$DACPP_MPICXX" ]]; then
+        echo "mpicxx not found. Set MPICXX or load an MPI environment." >&2
         return 127
     fi
 
-    "$ICPX" "$@" \
-    "${COMMON_CXX_FLAGS[@]}" \
-    "${INCLUDE_DIRS[@]/#/-I}"
-
-}
-
-# icpx-cpu -o test test.cpp
-icpx-cpu() {
-    if [[ -z "$ICPX" ]]; then
-        echo "icpx not found in PATH" >&2
-        return 127
+    if [[ $# -lt 1 || $# -gt 2 ]]; then
+        echo "usage: mpicxx-compile <generated.cpp> [output_bin]" >&2
+        return 2
     fi
 
-    "$ICPX" -fsycl \
-     "$@" \
-    "${COMMON_CXX_FLAGS[@]}" \
-    "${INCLUDE_DIRS[@]/#/-I}"
-    
+    local input_cpp="$1"
+    local output_bin="${2:-$(default_output_for_generated "$input_cpp")}"
+    dacpp_prepare_compile_include_dirs "$input_cpp"
+
+    "$DACPP_MPICXX" \
+        -O2 -std=c++17 -fsycl \
+        "$input_cpp" \
+        ${COMMON_CXX_FLAGS[@]+"${COMMON_CXX_FLAGS[@]}"} \
+        "${DACPP_COMPILE_INCLUDE_DIRS[@]/#/-I}" \
+        ${ACPP_LINK_FLAGS[@]+"${ACPP_LINK_FLAGS[@]}"} \
+        -o "$output_bin"
 }
 
-# icpx-gpu -o test test.cpp
-icpx-gpu() {
-    if [[ -z "$ICPX" ]]; then
-        echo "icpx not found in PATH" >&2
-        return 127
-    fi
-
-    "$ICPX" -fsycl \
-    -fsycl-targets=nvptx64-nvidia-cuda \
-    --cuda-path=/home/tools/cuda/cuda-12.2 \
-     "$@" \
-    "${COMMON_CXX_FLAGS[@]}" \
-    "${INCLUDE_DIRS[@]/#/-I}"
-    
+dacpp_detect_sycl_compiler() {
+    case "${DACPP_SYCL_COMPILER:-auto}" in
+        adaptivecpp|acpp)
+            printf '%s\n' adaptivecpp
+            ;;
+        oneapi|icpx)
+            printf '%s\n' icpx
+            ;;
+        mpi|mpicxx)
+            printf '%s\n' mpicxx
+            ;;
+        auto|"")
+            if [[ -n "${ACPP_ROOT:-}" && -x "$ACPP_ROOT/bin/acpp" ]]; then
+                printf '%s\n' adaptivecpp
+            elif [[ -n "$DACPP_ICPX" && -x "$DACPP_ICPX" ]]; then
+                printf '%s\n' icpx
+            elif [[ -n "$DACPP_MPICXX" && -x "$DACPP_MPICXX" ]]; then
+                printf '%s\n' mpicxx
+            else
+                echo "No SYCL compiler found. Set ACPP_ROOT/ADAPTIVECPP_ROOT, load oneAPI, or set DACPP_SYCL_COMPILER." >&2
+                return 127
+            fi
+            ;;
+        *)
+            echo "Unsupported DACPP_SYCL_COMPILER='${DACPP_SYCL_COMPILER}' (use auto, adaptivecpp, icpx, or mpicxx)." >&2
+            return 2
+            ;;
+    esac
 }
 
-export I_MPI_CXX=icpx
+dacpp-compile() {
+    local compiler
+    compiler=$(dacpp_detect_sycl_compiler) || return $?
 
-#mpicxx -fsycl -o test test.cpp
-mpicxx () {
-    if [[ -z "$MPICXX" ]]; then
-        echo "mpicxx not found in PATH" >&2
-        return 127
-    fi
-    "$MPICXX" "$@" \
-    "${COMMON_CXX_FLAGS[@]}" \
-    "${INCLUDE_DIRS[@]/#/-I}"
-}
-
-# mpicxx-gpu -o test test.cpp
-mpicxx-gpu() {
-    if [[ -z "$MPICXX" ]]; then
-        echo "mpicxx not found in PATH" >&2
-        return 127
-    fi
-
-    "$MPICXX" -fsycl \
-    -fsycl-targets=nvptx64-nvidia-cuda \
-    --cuda-path=/home/tools/cuda/cuda-12.2 \
-     "$@" \
-    "${COMMON_CXX_FLAGS[@]}" \
-    "${INCLUDE_DIRS[@]/#/-I}"
-    
-}
-
-# mpiicpc -fsycl -o test test.cpp
-mpiicpc () {
-    if [[ -z "$MPIICPC" ]]; then
-        echo "mpiicpc/mpicxx not found in PATH" >&2
-        return 127
-    fi
-    "$MPIICPC" "$@" \
-    "${COMMON_CXX_FLAGS[@]}" \
-    "${INCLUDE_DIRS[@]/#/-I}"
-}
-
-# mpiicpc-gpu -o test test.cpp
-mpiicpc-gpu() {
-    if [[ -z "$MPIICPC" ]]; then
-        echo "mpiicpc/mpicxx not found in PATH" >&2
-        return 127
-    fi
-
-    "$MPIICPC" -fsycl \
-    -fsycl-targets=nvptx64-nvidia-cuda \
-    --cuda-path=/home/tools/cuda/cuda-12.2 \
-     "$@" \
-    "${COMMON_CXX_FLAGS[@]}" \
-    "${INCLUDE_DIRS[@]/#/-I}"
-    
+    case "$compiler" in
+        adaptivecpp)
+            acpp-compile "$@"
+            ;;
+        icpx)
+            oneapi-compile "$@"
+            ;;
+        mpicxx)
+            mpicxx-compile "$@"
+            ;;
+    esac
 }

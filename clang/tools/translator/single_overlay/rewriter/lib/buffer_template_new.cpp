@@ -207,7 +207,7 @@ const char *ACCESSOR_POINTER_Template = R"~~~(
 const char *DAC2SYCL_Template_2 = R"~~~(
 void {{DAC_SHELL_NAME}}({{DAC_SHELL_PARAMS}}) {
     auto selector = default_selector_v;
-    queue q(selector);
+    sycl::queue q(selector);
     ParameterGeneration para_gene_tool;
     {{OP_INIT}}
 	{{ParameterGenerate}}
