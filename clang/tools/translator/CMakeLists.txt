@@ -167,4 +167,6 @@ clang_target_link_libraries(translator_single
 
 add_dependencies(translator translator_single)
 
-add_subdirectory(tests)
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/CMakeLists.txt")
+  add_subdirectory(tests)
+endif()
